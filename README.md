@@ -1,3 +1,9 @@
+# To make this repo easier to be found, I create this independent repo for KataGomo
+## Original repo for KataGomo: https://github.com/hzyhhzy/KataGo
+## Original KataGo: https://github.com/lightvector/KataGo
+
+
+
 # Recent progresses (Latest update: 2024.10.26)
 
 | Branch     | Introduction   | Stage        | Cost (RTX4090 \* Day) | Model size| Notes                  |
