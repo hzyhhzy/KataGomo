@@ -324,15 +324,15 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   int myCapture = movePla == C_WHITE ? board.numBlackCaptures : board.numWhiteCaptures;
   int oppCapture = movePla == C_WHITE ? board.numBlackCaptures : board.numWhiteCaptures;
   if(myCapture > 0)
-    endAndSetWinner(movePla);
+    endAndSetWinner(opp);
   else if(oppCapture > 0)
-    endAndSetWinner(getOpp(movePla));
+    endAndSetWinner(movePla);
 
   //Break long cycles with no-result
   if(moveLoc != Board::PASS_LOC && rules.koRule == Rules::KO_SIMPLE) {
     //static_assert(false, "TODO: find a simple method to detect long cycles");
 
-    if(moveHistory.size() > board.x_size * board.y_size * 5) {
+    if(moveHistory.size() > board.x_size * board.y_size * 2) {
       isNoResult = true;
       isGameFinished = true;
       ASSERT_UNREACHABLE;

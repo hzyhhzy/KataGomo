@@ -945,6 +945,16 @@ void NNInputs::fillRowV7(
     rowGlobal[16] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
   }
 
+  bool compat2022 = nnInputParams.nnPolicyTemperature == 1.1875;
+  if(compat2022) {
+    rowGlobal[18] = (xSize * ySize) % 2;
+
+    rowGlobal[14] = nextPlayer == C_BLACK ? 1.0 : 0.0;
+
+    rowGlobal[8] = 1.0;
+    rowGlobal[3] = 1.0;
+    rowGlobal[2] = nextPlayer == C_BLACK ? -0.025 : 0.025;
+  }
 
 
 }
