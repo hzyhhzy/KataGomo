@@ -3,7 +3,6 @@
 POSLEN=9
 LRSCALE=2.0
 SAMPLEPEREPOCH=1000000
-SWASCALE=1.0 #1.0 to disable SWA. 8.0 is default but not good for short runs
 
 set -o pipefail
 {
@@ -17,6 +16,7 @@ if [[ $# -lt 5 ]]
 then
     echo "Usage: $0 BASEDIR TRAININGNAME MODELKIND BATCHSIZE EXPORTMODE OTHERARGS"
     echo "BASEDIR containing selfplay data and models and related directories"
+    echo "DATADIR containing shuffled selfplay data"
     echo "TRAININGNAME name to prefix models with, specific to this training daemon"
     echo "MODELKIND what size model to train, like b10c128, see ../modelconfigs.py"
     echo "BATCHSIZE number of samples to concat together per batch for training, must match shuffle"
@@ -24,6 +24,8 @@ then
     exit 0
 fi
 BASEDIR="$1"
+shift
+DATADIR="$1"
 shift
 TRAININGNAME="$1"
 shift
@@ -56,17 +58,20 @@ else
     exit 1
 fi
 
-time python3 ./train.py \
+     #-intermediate-loss-scale 0.0 \
+     #-main-loss-scale 1.0 \
+time python ./train.py \
      -traindir "$BASEDIR"/train/"$TRAININGNAME" \
-     -datadir "$BASEDIR"/shuffleddata/current/ \
+     -datadir "$DATADIR" \
      -exportdir "$BASEDIR"/"$EXPORT_SUBDIR" \
      -exportprefix "$TRAININGNAME" \
-     -max-epochs-this-instance 1 \
+     -max-epochs-this-instance 5 \
      -pos-len "$POSLEN" \
      -samples-per-epoch "$SAMPLEPEREPOCH" \
      -lr-scale "$LRSCALE" \
      -use-fp16 \
-     -swa-scale "$SWASCALE" \
+     -swa-scale 10.0 \
+     -swa-period-samples 100000 \
      -batch-size "$BATCHSIZE" \
      -model-kind "$MODELKIND" \
      $EXTRAFLAG \

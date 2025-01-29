@@ -8,6 +8,9 @@ import torch.nn.functional
 
 import modelconfigs
 
+import threading
+import concurrent.futures
+
 def read_npz_training_data(
     npz_files,
     batch_size: int,
@@ -22,9 +25,12 @@ def read_npz_training_data(
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
-    (h_base,h_builder) = build_history_matrices(model_config, device)
+    
+    #create loading file thread
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = None
 
-    for npz_file in npz_files:
+    def load_npz_file(npz_file):
         with np.load(npz_file) as npz:
             binaryInputNCHWPacked = npz["binaryInputNCHWPacked"]
             globalInputNC = npz["globalInputNC"]
@@ -47,6 +53,19 @@ def read_npz_training_data(
         assert binaryInputNCHW.shape[1] == num_bin_features
         assert globalInputNC.shape[1] == num_global_features
 
+        return [binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC if include_meta else None]
+
+    #read the first file
+    future = executor.submit(load_npz_file, npz_files[0])
+    npz_files.append("")
+    npz_files=npz_files[1:]
+    for npz_file in npz_files:
+        binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW, metadataInputNC = future.result()
+        
+        if npz_file != "":
+            future = executor.submit(load_npz_file, npz_file)
+        
+
         num_samples = binaryInputNCHW.shape[0]
         # Just discard stuff that doesn't divide evenly
         num_whole_steps = num_samples // (batch_size * world_size)
@@ -65,9 +84,6 @@ def read_npz_training_data(
             if include_meta:
                 batch_metadataInputNC = torch.from_numpy(metadataInputNC[start:end]).to(device)
 
-            (batch_binaryInputNCHW, batch_globalInputNC) = apply_history_matrices(
-                model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder
-            )
 
             if randomize_symmetries:
                 symm = int(rand.integers(0,8))
@@ -140,99 +156,3 @@ def apply_symmetry(tensor, symm):
     if symm == 7:
         return tensor.flip(-2)
 
-
-def build_history_matrices(model_config: modelconfigs.ModelConfig, device):
-    num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
-    assert num_bin_features == 22, "Currently this code is hardcoded for this many features"
-
-    h_base = torch.diag(
-        torch.tensor(
-            [
-                1.0,  # 0
-                1.0,  # 1
-                1.0,  # 2
-                1.0,  # 3
-                1.0,  # 4
-                1.0,  # 5
-                1.0,  # 6
-                1.0,  # 7
-                1.0,  # 8
-                0.0,  # 9   Location of move 1 turn ago
-                0.0,  # 10  Location of move 2 turns ago
-                0.0,  # 11  Location of move 3 turns ago
-                0.0,  # 12  Location of move 4 turns ago
-                0.0,  # 13  Location of move 5 turns ago
-                1.0,  # 14  Ladder-threatened stone
-                0.0,  # 15  Ladder-threatened stone, 1 turn ago
-                0.0,  # 16  Ladder-threatened stone, 2 turns ago
-                1.0,  # 17
-                1.0,  # 18
-                1.0,  # 19
-                1.0,  # 20
-                1.0,  # 21
-            ],
-            device=device,
-            requires_grad=False,
-        )
-    )
-    # Because we have ladder features that express past states rather than past diffs,
-    # the most natural encoding when we have no history is that they were always the
-    # same, rather than that they were all zero. So rather than zeroing them we have no
-    # history, we add entries in the matrix to copy them over.
-    # By default, without history, the ladder features 15 and 16 just copy over from 14.
-    h_base[14, 15] = 1.0
-    h_base[14, 16] = 1.0
-
-    h0 = torch.zeros(num_bin_features, num_bin_features, device=device, requires_grad=False)
-    # When have the prev move, we enable feature 9 and 15
-    h0[9, 9] = 1.0  # Enable 9 -> 9
-    h0[14, 15] = -1.0  # Stop copying 14 -> 15
-    h0[14, 16] = -1.0  # Stop copying 14 -> 16
-    h0[15, 15] = 1.0  # Enable 15 -> 15
-    h0[15, 16] = 1.0  # Start copying 15 -> 16
-
-    h1 = torch.zeros(num_bin_features, num_bin_features, device=device, requires_grad=False)
-    # When have the prevprev move, we enable feature 10 and 16
-    h1[10, 10] = 1.0  # Enable 10 -> 10
-    h1[15, 16] = -1.0  # Stop copying 15 -> 16
-    h1[16, 16] = 1.0  # Enable 16 -> 16
-
-    h2 = torch.zeros(num_bin_features, num_bin_features, device=device, requires_grad=False)
-    h2[11, 11] = 1.0
-
-    h3 = torch.zeros(num_bin_features, num_bin_features, device=device, requires_grad=False)
-    h3[12, 12] = 1.0
-
-    h4 = torch.zeros(num_bin_features, num_bin_features, device=device, requires_grad=False)
-    h4[13, 13] = 1.0
-
-    # (1, n_bin, n_bin)
-    h_base = h_base.reshape((1, num_bin_features, num_bin_features))
-    # (5, n_bin, n_bin)
-    h_builder = torch.stack((h0, h1, h2, h3, h4), dim=0)
-
-    return (h_base, h_builder)
-
-
-def apply_history_matrices(model_config, batch_binaryInputNCHW, batch_globalInputNC, batch_globalTargetsNC, h_base, h_builder):
-    num_global_features = modelconfigs.get_num_global_input_features(model_config)
-    # include_history = batch_globalTargetsNC[:,36:41]
-    should_stop_history = torch.rand_like(batch_globalTargetsNC[:,36:41]) >= 0.98
-    include_history = (torch.cumsum(should_stop_history,axis=1,dtype=torch.float32) <= 0.1).to(torch.float32)
-
-    # include_history: (N, 5)
-    # bi * ijk -> bjk, (N, 5) * (5, n_bin, n_bin) -> (N, n_bin, n_bin)
-    h_matrix = h_base + torch.einsum("bi,ijk->bjk", include_history, h_builder)
-
-
-    # batch_binaryInputNCHW: (N, n_bin_in, 19, 19)
-    # h_matrix: (N, n_bin_in, n_bin_out)
-    # Result: (N, n_bin_out, 19, 19)
-    batch_binaryInputNCHW = torch.einsum("bijk,bil->bljk", batch_binaryInputNCHW, h_matrix)
-
-    # First 5 global input features exactly correspond to include_history, pointwise multiply to
-    # enable/disable them
-    batch_globalInputNC = batch_globalInputNC * torch.nn.functional.pad(
-        include_history, ((0, num_global_features - include_history.shape[1])), value=1.0
-    )
-    return batch_binaryInputNCHW, batch_globalInputNC

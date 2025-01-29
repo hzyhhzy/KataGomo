@@ -68,6 +68,7 @@ if __name__ == "__main__":
     optional_args.add_argument('-model-kind', help='String name for what model config to use', required=False)
     optional_args.add_argument('-lr-scale', help='LR multiplier on the hardcoded schedule', type=float, required=False)
     optional_args.add_argument('-lr-scale-auto', help='LR auto scaling', required=False, action='store_true')
+    optional_args.add_argument('-wd-scale', help='Weight decay scale', type=float, required=False)
     optional_args.add_argument('-gnorm-clip-scale', help='Multiplier on gradient clipping threshold', type=float, required=False)
     optional_args.add_argument('-sub-epochs', help='Reload training data up to this many times per epoch', type=int, default=1, required=False)
     optional_args.add_argument('-swa-period-samples', help='How frequently to average an SWA sample, in samples', type=float, required=False)
@@ -154,6 +155,7 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
     samples_per_epoch = args["samples_per_epoch"]
     model_kind = args["model_kind"]
     lr_scale = args["lr_scale"]
+    wdscale = args["wd_scale"]
     lr_scale_auto = args["lr_scale_auto"]
     gnorm_clip_scale = args["gnorm_clip_scale"]
     sub_epochs = args["sub_epochs"]
@@ -203,6 +205,9 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
     if lr_scale_auto:
         assert lr_scale == 1.0, "Cannot specify both lr_scale and lr_scale_auto"
 
+    if wdscale is None:
+        wdscale = 1.0
+        
     if samples_per_epoch is None:
         samples_per_epoch = 1000000
     if max_train_bucket_size is None:
@@ -325,15 +330,15 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
                 torch.save(state_dict, get_checkpoint_path() + ".tmp")
                 os.replace(get_checkpoint_path() + ".tmp", get_checkpoint_path())
 
-    def get_weight_decay(raw_model, lr_scale, warmup_scale, train_state, running_metrics, group_name):
+    def get_weight_decay(raw_model, lr_scale, warmup_scale, train_state, running_metrics, group_name, wdscale):
         lr_scale_with_auto = lr_scale * lr_scale_auto_factor(train_state)
         if raw_model.get_norm_kind() == "fixup" or raw_model.get_norm_kind() == "fixscale":
             if group_name == "normal" or group_name == "normal_gamma" or group_name == "output":
-                return 0.000001 * world_size * batch_size / 256.0
+                return 0.000001 * world_size * batch_size / 256.0 * wdscale
             elif group_name == "noreg":
-                return 0.00000001 * world_size * batch_size / 256.0
+                return 0.00000001 * world_size * batch_size / 256.0 * wdscale
             elif group_name == "output_noreg":
-                return 0.00000001 * world_size * batch_size / 256.0
+                return 0.00000001 * world_size * batch_size / 256.0 * wdscale
             else:
                 assert False
         elif (
@@ -363,13 +368,13 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
                 # than expected.
                 # So we scale sublinearly with lr_scale so as to slightly preadjust to this effect.
                 # Adaptive scale should then help keep us there thereafter.
-                return 0.00125 * world_size * batch_size / 256.0 * math.pow(lr_scale_with_auto * warmup_scale,0.75) * adaptive_scale * gamma_scale
+                return 0.00125 * world_size * batch_size / 256.0 * math.pow(lr_scale_with_auto * warmup_scale,0.75) * adaptive_scale * gamma_scale * wdscale
             elif group_name == "output":
-                return 0.000001 * world_size * batch_size / 256.0
+                return 0.000001 * world_size * batch_size / 256.0 * wdscale
             elif group_name == "noreg":
-                return 0.000001 * world_size * batch_size / 256.0 * math.pow(lr_scale_with_auto * warmup_scale,0.75)
+                return 0.000001 * world_size * batch_size / 256.0 * math.pow(lr_scale_with_auto * warmup_scale,0.75) * wdscale
             elif group_name == "output_noreg":
-                return 0.00000001 * world_size * batch_size / 256.0
+                return 0.00000001 * world_size * batch_size / 256.0 * wdscale
             else:
                 assert False
         else:
@@ -381,28 +386,28 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
         param_groups = []
         param_groups.append({
             "params": reg_dict["normal"],
-            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="normal"),
+            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="normal", wdscale=wdscale),
             "group_name": "normal",
         })
         if len(reg_dict["normal_gamma"]) > 0:
             param_groups.append({
                 "params": reg_dict["normal_gamma"],
-                "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="normal_gamma"),
+                "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="normal_gamma", wdscale=wdscale),
                 "group_name": "normal_gamma",
             })
         param_groups.append({
             "params": reg_dict["output"],
-            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="output"),
+            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="output", wdscale=wdscale),
             "group_name": "output",
         })
         param_groups.append({
             "params": reg_dict["noreg"],
-            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="noreg"),
+            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="noreg", wdscale=wdscale),
             "group_name": "noreg",
         })
         param_groups.append({
             "params": reg_dict["output_noreg"],
-            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="output_noreg"),
+            "weight_decay": get_weight_decay(raw_model, lr_scale, warmup_scale=1.0, train_state=train_state, running_metrics=running_metrics, group_name="output_noreg", wdscale=wdscale),
             "group_name": "output_noreg",
         })
         num_params = len(list(raw_model.parameters()))
@@ -683,6 +688,7 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
                 train_state=train_state,
                 running_metrics=running_metrics,
                 group_name=group_name,
+                wdscale=wdscale
             )
             if param_group["weight_decay"] != new_weight_decay_this_group:
                 param_group["weight_decay"] = new_weight_decay_this_group
@@ -1128,11 +1134,11 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
                 if lookahead_k is not None and lookahead_print:
                     # Only accumulate metrics when lookahead is synced if lookahead_print is True
                     if lookahead_counter == 0:
-                        accumulate_metrics(running_metrics["sums"], running_metrics["weights"], metrics, batch_size, decay=math.exp(-0.001 * lookahead_k), new_weight=1.0)
+                        accumulate_metrics(running_metrics["sums"], running_metrics["weights"], metrics, batch_size, decay=math.exp(-0.01 * lookahead_k), new_weight=1.0)
                     else:
                         accumulate_metrics(running_metrics["sums"], running_metrics["weights"], metrics, batch_size, decay=1.0, new_weight=0.0)
                 else:
-                    accumulate_metrics(running_metrics["sums"], running_metrics["weights"], metrics, batch_size, decay=0.999, new_weight=1.0)
+                    accumulate_metrics(running_metrics["sums"], running_metrics["weights"], metrics, batch_size, decay=0.99, new_weight=1.0)
 
 
                 if batch_count_this_epoch % print_train_loss_every_batches == 0:
