@@ -1394,7 +1394,11 @@ FinishedGameData* Play::runGame(
   gameData->endHist = hist;
   if(hist.isGameFinished)
     gameData->hitTurnLimit = false;
-  else {
+  else if(shouldStop != nullptr && shouldStop()) {
+    gameData->hitTurnLimit = true;
+  } 
+  else
+  {
     ASSERT_UNREACHABLE;
     gameData->hitTurnLimit = true;
   }
