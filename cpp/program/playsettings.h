@@ -14,6 +14,9 @@ struct PlaySettings {
   //Temperature to use for placing handicap stones and for initializing the board position
   double policyInitAreaTemperature;
 
+  //prop of randomly select a balanced first move before selfplay/match
+  double balanceFirstMoveProp;
+
   //Occasionally fork an entire new game to try out an experimental move in the opening
   double earlyForkGameProb; //Expected number of early forked games per game
   double earlyForkGameExpectedMoveProp; //Fork on average within the first board area * this prop moves

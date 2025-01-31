@@ -2,6 +2,7 @@
 
 PlaySettings::PlaySettings()
   :initGamesWithPolicy(false),policyInitAreaProp(0.0),startPosesPolicyInitAreaProp(0.0),
+   balanceFirstMoveProp(0.0),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    earlyForkGameProb(0.0),earlyForkGameExpectedMoveProp(0.0),forkGameProb(0.0),forkGameMinChoices(1),earlyForkGameMaxChoices(1),forkGameMaxChoices(1),
@@ -33,6 +34,8 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
     playSettings.startPosesPolicyInitAreaProp = cfg.contains("startPosesPolicyInitAreaProp") ? cfg.getDouble("startPosesPolicyInitAreaProp",0.0,1.0) : 0.0;
     playSettings.policyInitAreaTemperature = cfg.contains("policyInitAreaTemperature") ? cfg.getDouble("policyInitAreaTemperature",0.1,5.0) : 1.0;
   }
+
+  playSettings.balanceFirstMoveProp = cfg.getDouble("balanceFirstMoveProp", 0.0, 1.0);
   playSettings.dynamicSelfKomiBonusMin = cfg.contains("dynamicSelfKomiBonusMin") ? cfg.getDouble("dynamicSelfKomiBonusMin",-100.0,100.0) : 0.0;
   playSettings.dynamicSelfKomiBonusMax = cfg.contains("dynamicSelfKomiBonusMax") ? cfg.getDouble("dynamicSelfKomiBonusMax",-100.0,100.0) : 0.0;
   playSettings.dynamicSelfKomiWinLossMin = cfg.contains("dynamicSelfKomiWinLossMin") ? cfg.getDouble("dynamicSelfKomiWinLossMin",-1.0,1.0) : -1.0;
@@ -48,6 +51,7 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
 
 PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
   PlaySettings playSettings;
+  playSettings.balanceFirstMoveProp = cfg.getDouble("balanceFirstMoveProp", 0.0, 1.0);
   playSettings.allowResignation = cfg.getBool("allowResignation");
   playSettings.resignThreshold = cfg.getDouble("resignThreshold",-1.0,0.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns",1,100);
@@ -56,6 +60,7 @@ PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
 
 PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
   PlaySettings playSettings;
+  playSettings.balanceFirstMoveProp = cfg.getDouble("balanceFirstMoveProp", 0.0, 1.0);
   playSettings.initGamesWithPolicy = cfg.getBool("initGamesWithPolicy");
   playSettings.policyInitAreaProp = cfg.contains("policyInitAreaProp") ? cfg.getDouble("policyInitAreaProp",0.0,1.0) : 0.04;
   playSettings.startPosesPolicyInitAreaProp = cfg.contains("startPosesPolicyInitAreaProp") ? cfg.getDouble("startPosesPolicyInitAreaProp",0.0,1.0) : 0.0;

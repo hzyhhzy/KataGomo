@@ -1103,6 +1103,50 @@ static Loc runBotWithLimits(
 }
 
 
+static void initializeBalancedRandomOpening(
+  Search* botB,
+  Search* botW,
+  Board& board,
+  BoardHistory& hist,
+  Player& nextPlayer,
+  Rand& gameRand,
+  bool forSelfplay) {
+  if (board.numStonesOnBoard() != 0)
+  {
+    cout << "Warning: call initializeBalancedRandomOpening in a non-empty board" << endl;
+    return;
+  }
+
+  double minAcceptRate = forSelfplay ? 0.02 : 0.001;
+
+  int firstx, firsty;
+  while(1) {
+    firstx = gameRand.nextUInt(board.x_size), firsty = gameRand.nextUInt(board.y_size);
+
+    Board boardCopy(board);
+    BoardHistory histCopy(hist);
+    Loc firstMove = Location::getLoc(firstx, firsty, board.x_size);
+    histCopy.makeBoardMoveAssumeLegal(boardCopy, firstMove, C_BLACK);
+
+    NNResultBuf nnbuf;
+    MiscNNInputParams nnInputParams;
+    botW->nnEvaluator->evaluate(boardCopy, histCopy, C_WHITE, nnInputParams, nnbuf, false, false);
+    std::shared_ptr<NNOutput> nnOutput = std::move(nnbuf.result);
+
+    double winrate = nnOutput->whiteWinProb;
+    double bias = 2 * winrate - 1;
+    double dropPow = forSelfplay ? 2.0 : 8.0;
+    double acceptRate = pow(1 - bias * bias, dropPow);
+    acceptRate = std::max(acceptRate, minAcceptRate);
+    if(gameRand.nextBool(acceptRate))
+      break;
+  }
+
+  Loc firstMove = Location::getLoc(firstx, firsty, board.x_size);
+  hist.makeBoardMoveAssumeLegal(board, firstMove, nextPlayer);
+  nextPlayer = getOpp(nextPlayer);
+  
+}
 FinishedGameData* Play::runGame(
   const Board& startBoard, Player startPla, const BoardHistory& startHist, 
   MatchPairer::BotSpec& botSpecB, MatchPairer::BotSpec& botSpecW,
@@ -1176,6 +1220,12 @@ FinishedGameData* Play::runGame(
       }
     }
   };
+
+  if (gameRand.nextBool(playSettings.balanceFirstMoveProp))
+  {
+    initializeBalancedRandomOpening(botB, botW, board, hist, pla, gameRand, playSettings.forSelfPlay);
+  }
+
 
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double proportionOfBoardArea = otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAreaProp : playSettings.policyInitAreaProp;
