@@ -27,6 +27,11 @@ Hash128 Board::ZOBRIST_NEXTPLA_HASH[4];
 Hash128 Board::ZOBRIST_MOVENUM_HASH[MAX_MOVE_NUM];
 Hash128 Board::ZOBRIST_MOVENUMSLC_HASH[MAX_MOVE_NUM];
 Hash128 Board::ZOBRIST_PLAYER_HASH[4];
+
+Hash128 Board::ZOBRIST_MM_RULE_HASH[MAX_MOVE_NUM];
+Hash128 Board::ZOBRIST_MC_RULE_HASH[MAX_MOVE_NUM];
+Hash128 Board::ZOBRIST_73RULE_LOC_HASH[MAX_ARR_SIZE][4];
+Hash128 Board::ZOBRIST_73RULE_HISTORY_HASH[MAX_ARR_SIZE][7][4];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
 
@@ -205,6 +210,11 @@ void Board::initHash()
       else
         ZOBRIST_BOARD_HASH[i][j] = nextHash();
     }
+    for(Color j = 0; j < 4; j++)
+      ZOBRIST_73RULE_LOC_HASH[i][j] = nextHash();
+    for(Color j = 0; j < 7; j++)
+      for(Color k = 0; k < 4; k++)
+        ZOBRIST_73RULE_HISTORY_HASH[i][j][k] = nextHash();
   }
 
   for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
@@ -223,9 +233,13 @@ void Board::initHash()
   for(int i = 0; i < MAX_MOVE_NUM; i++) {
     ZOBRIST_MOVENUM_HASH[i] = nextHash();
     ZOBRIST_MOVENUMSLC_HASH[i] = nextHash();
+    ZOBRIST_MC_RULE_HASH[i] = nextHash();
+    ZOBRIST_MM_RULE_HASH[i] = nextHash();
   }
   ZOBRIST_MOVENUM_HASH[0] = Hash128();
   ZOBRIST_MOVENUMSLC_HASH[0] = Hash128();
+  ZOBRIST_MC_RULE_HASH[0] = Hash128();
+  ZOBRIST_MM_RULE_HASH[0] = Hash128();
 
   //Reseed the random number generator so that these size hashes are also
   //not affected by the size of the board we compile with

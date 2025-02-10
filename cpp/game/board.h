@@ -165,6 +165,13 @@ struct Board
   static Hash128 ZOBRIST_MOVENUM_HASH[MAX_MOVE_NUM];
   static Hash128 ZOBRIST_MOVENUMSLC_HASH[MAX_MOVE_NUM];
   static Hash128 ZOBRIST_PLAYER_HASH[4];
+
+  static Hash128 ZOBRIST_MM_RULE_HASH[MAX_MOVE_NUM];
+  static Hash128 ZOBRIST_MC_RULE_HASH[MAX_MOVE_NUM];
+
+  static Hash128 ZOBRIST_73RULE_LOC_HASH[MAX_ARR_SIZE][4];
+  static Hash128 ZOBRIST_73RULE_HISTORY_HASH[MAX_ARR_SIZE][7][4];
+
   static const Hash128 ZOBRIST_GAME_IS_OVER;
 
   //Structs---------------------------------------

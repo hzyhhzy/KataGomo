@@ -146,6 +146,16 @@ void BoardHistory::printBasicInfo(ostream& out, const Board& board) const {
   Board::printBoard(out, board, Board::NULL_LOC, &moveHistory);
   out << "Next player: " << PlayerIO::playerToString(presumedNextMovePla) << endl;
   out << "Rules: " << rules.toJsonString() << endl;
+  out << "White 7-3 rule history: ";
+  auto w73 = get73ruleHistory(board, P_WHITE);
+  for(int i = 0; i < w73.size(); i++)
+    out << Location::toString(w73[i], board) << " ";
+  out << endl;
+  out << "Black 7-3 rule history: ";
+  auto b73 = get73ruleHistory(board, P_BLACK);
+  for(int i = 0; i < b73.size(); i++)
+    out << Location::toString(b73[i], board) << " ";
+  out << endl;
 }
 
 void BoardHistory::printDebugInfo(ostream& out, const Board& board) const {
@@ -159,6 +169,54 @@ void BoardHistory::printDebugInfo(ostream& out, const Board& board) const {
   for(int i = 0; i<moveHistory.size(); i++)
     out << Location::toString(moveHistory[i].loc,board) << " ";
   out << endl;
+}
+
+std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla, int maxLen) const {
+  std::vector<Loc> h;
+  int t = moveHistory.size() - 1;  // which move is pla's last move
+  if(pla == board.nextPla && board.stage == 1) {
+    t = moveHistory.size() - 4;
+    if(t < 0)
+      return h;
+    assert(moveHistory[t].pla == pla);
+    if(moveHistory[t].loc != board.midLocs[0])
+      return h;//chosen a different stone, ignore the history
+  }
+  else if(pla != board.nextPla && board.stage == 0)
+    t = moveHistory.size() - 1;
+  else if(pla != board.nextPla && board.stage == 1)
+    t = moveHistory.size() - 2;
+  else if(pla == board.nextPla && board.stage == 0)
+    t = moveHistory.size() - 3;
+
+  if(t < 0)
+    return h;
+
+  Loc nowloc = moveHistory[t].loc;
+
+  while (h.size() < maxLen && t >= 0) {
+    if(!board.isOnBoard(nowloc))
+      return h;
+    if(GameLogic::isInTrap(nowloc, getOpp(pla)))
+      return h;
+    assert(moveHistory[t].pla == pla);
+    assert(t - 1 >= 0 && moveHistory[t - 1].pla == pla);
+    if(nowloc == moveHistory[t].loc) {
+      h.push_back(moveHistory[t].loc);
+      nowloc = moveHistory[t - 1].loc;
+    } else
+      break;
+    t -= 4;
+  }
+
+  
+
+  return h;
+}
+
+std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla) const {
+  const int maxLen = 7;
+  return get73ruleHistory(board, pla, maxLen);
 }
 
 
@@ -241,6 +299,10 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
 
   //Fold in the ko, scoring, and suicide rules
   hash ^= Rules::ZOBRIST_SCORING_RULE_HASH[hist.rules.scoringRule];
+  hash ^= Board::ZOBRIST_MM_RULE_HASH[hist.rules.maxmoves];
+  hash ^= Board::ZOBRIST_MC_RULE_HASH[hist.rules.maxmovesNoCapture];
+
+
 
   return hash;
 }

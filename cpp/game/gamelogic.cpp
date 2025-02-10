@@ -16,8 +16,7 @@
 
 using namespace std;
 
-static bool isInTrap(Loc loc, Player pla)
-{
+bool GameLogic::isInTrap(Loc loc, Player pla) {
   if(pla == C_BLACK)
     return loc == Location::getLocConst(3, 7) || 
            loc == Location::getLocConst(2, 8) ||
@@ -388,6 +387,25 @@ Color GameLogic::checkWinnerAfterPlayed(
   
   if(getPiecePla(board.colors[getHomeLoc(getOpp(pla))]) == pla)
     return pla;
+
+  //check 7-3 rule
+  if(board.stage == 0) {
+    const int max73historyLen = 8;  // include the last move, so it is 7+1
+    auto movehist = hist.get73ruleHistory(board, pla, max73historyLen);
+    if(movehist.size() > 0) {
+      assert(movehist[0] == loc);
+      int count = 0;
+      for(int i = 0; i < movehist.size(); i++) {
+        if(movehist[i] == loc)
+          count += 1;
+      }
+      if(count >= 4)  // move into a location which has been played >= 3 times in the last 7 turns
+      {
+        return getOpp(pla);
+      }
+    }
+  }
+
 
   if(hist.rules.maxmoves != 0 && hist.rules.maxmoves <= board.movenum)
     return C_EMPTY;
