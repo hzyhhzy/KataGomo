@@ -521,16 +521,52 @@ void NNInputs::fillRowV7(
       setRowBin(rowBin,pos,0, 1.0f, posStride, featureStride);
 
       Color stone = board.colors[loc];
+      if(stone != C_EMPTY) {
+        Color stonePla = getPiecePla(stone);
+        Color stoneType = getPieceType(stone);
+        assert(stoneType >= 1 && stoneType <= 8);
+        int idx = 1 + (stoneType - 1) + (stonePla == nextPlayer ? 0 : 8);
 
-      //Features 1,2 - pla,opp stone
-      //Features 3,4,5 - 1,2,3 libs
-      if(stone == pla)
-        setRowBin(rowBin,pos,1, 1.0f, posStride, featureStride);
-      else if(stone == opp)
-        setRowBin(rowBin,pos,2, 1.0f, posStride, featureStride);
+        // Features 1~16 stones
+        setRowBin(rowBin, pos, idx, 1.0f, posStride, featureStride);
+      }
+
+      //17~21 home,trap,river
+      if(loc == GameLogic::getHomeLoc(nextPlayer))
+        setRowBin(rowBin, pos, 17, 1.0f, posStride, featureStride);
+      if(loc == GameLogic::getHomeLoc(getOpp(nextPlayer)))
+        setRowBin(rowBin, pos, 18, 1.0f, posStride, featureStride);
+      if(GameLogic::isInTrap(loc, nextPlayer))
+        setRowBin(rowBin, pos, 19, 1.0f, posStride, featureStride);
+      if(GameLogic::isInTrap(loc, getOpp(nextPlayer)))
+        setRowBin(rowBin, pos, 20, 1.0f, posStride, featureStride);
+      if(GameLogic::isInRiver(loc))
+        setRowBin(rowBin, pos, 21, 1.0f, posStride, featureStride);
 
     }
   }
+  //22~35  "7-3 rule" history
+  { 
+    auto h = hist.get73ruleHistory(board, nextPlayer);
+    assert(h.size() <= 7);
+    for(int i = 0; i < h.size(); i++) {
+      Loc loc = h[i];
+      assert(board.isOnBoard(loc));
+      int pos = NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen);
+      setRowBin(rowBin, pos, 22 + i, 1.0f, posStride, featureStride);
+    }
+  }
+  {
+    auto h = hist.get73ruleHistory(board, getOpp(nextPlayer));
+    assert(h.size() <= 7);
+    for(int i = 0; i < h.size(); i++) {
+      Loc loc = h[i];
+      assert(board.isOnBoard(loc));
+      int pos = NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen);
+      setRowBin(rowBin, pos, 29 + i, 1.0f, posStride, featureStride);
+    }
+  }
+
 
   // mid state
   if(board.stage == 0)  // choose
@@ -544,7 +580,7 @@ void NNInputs::fillRowV7(
       std::cout << "nninput: chosen move not on board ";
     } else {
       int pos = NNPos::locToPos(chosenMove, board.x_size, nnXLen, nnYLen);
-      setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
+      setRowBin(rowBin, pos, 38, 1.0f, posStride, featureStride);
     }
   } else
     ASSERT_UNREACHABLE;
@@ -558,7 +594,7 @@ void NNInputs::fillRowV7(
       setRowBin(
         rowBin,
         NNPos::locToPos(resultsBeforeNN.myOnlyLoc, board.x_size, nnXLen, nnYLen),
-        4,
+        39,
         1.0f,
         posStride,
         featureStride);
@@ -572,14 +608,44 @@ void NNInputs::fillRowV7(
   else
     ASSERT_UNREACHABLE;
 
+  if(hist.rules.maxmoves != 0) {
+    rowGlobal[8] = 1.0;
+    double boardArea = board.x_size * board.y_size;
+    double movenum = board.movenum;
+    double maxmoves = hist.rules.maxmoves;
+    rowGlobal[9] = exp(-(maxmoves - movenum) / 150.0);
+    rowGlobal[10] = exp(-(maxmoves - movenum) / 50.0);
+    rowGlobal[11] = exp(-(maxmoves - movenum) / 15.0);
+    rowGlobal[12] = exp(-(maxmoves - movenum) / 5.0);
+    rowGlobal[13] = exp(-(maxmoves - movenum) / 1.5);
+    rowGlobal[14] = 2 * ((int(maxmoves - movenum)) % 2) - 1;
+  }
+
+  if(hist.rules.maxmoves != 0) {
+    rowGlobal[15] = 1.0;
+    double boardArea = board.x_size * board.y_size;
+    double movenum = board.movenum;
+    double maxmoves = hist.rules.maxmoves;
+    rowGlobal[16] = exp(-(maxmoves - movenum) / 150.0);
+    rowGlobal[17] = exp(-(maxmoves - movenum) / 50.0);
+    rowGlobal[18] = exp(-(maxmoves - movenum) / 15.0);
+    rowGlobal[19] = exp(-(maxmoves - movenum) / 5.0);
+    rowGlobal[20] = exp(-(maxmoves - movenum) / 1.5);
+    rowGlobal[21] = 2 * ((int(maxmoves - movenum)) % 2) - 1;
+  }
   
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.
   if(nnInputParams.playoutDoublingAdvantage != 0) {
-    rowGlobal[15] = 1.0;
-    rowGlobal[16] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
+    rowGlobal[23] = 1.0;
+    rowGlobal[24] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
   }
 
   // noResultUtilityForWhite
-  rowGlobal[17] = pla == C_WHITE ? nnInputParams.noResultUtilityForWhite : -nnInputParams.noResultUtilityForWhite;
+  rowGlobal[25] = pla == C_WHITE ? nnInputParams.noResultUtilityForWhite : -nnInputParams.noResultUtilityForWhite;
+
+
+
+
+
 }

@@ -28,8 +28,7 @@ bool GameLogic::isInTrap(Loc loc, Player pla) {
   else
     return false;
 }
-static bool isInRiver(Loc loc)
-{
+bool GameLogic::isInRiver(Loc loc) {
   return 
     loc == Location::getLocConst(1, 3) ||
     loc == Location::getLocConst(1, 4) ||
@@ -45,7 +44,7 @@ static bool isInRiver(Loc loc)
     loc == Location::getLocConst(5, 5) ;
 }
 
-static Loc getHomeLoc(Player pla) {
+Loc GameLogic::getHomeLoc(Player pla) {
   if(pla == C_BLACK)
     return Location::getLocConst(3, 8);
   else if(pla == C_WHITE)

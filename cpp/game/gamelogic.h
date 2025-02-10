@@ -26,6 +26,9 @@ namespace GameLogic {
   static const MovePriority MP_ILLEGAL = -1;//illegal moves
 
   bool isInTrap(Loc loc, Player pla);
+  bool isInRiver(Loc loc);
+  Loc getHomeLoc(Player pla);
+
   bool isLegal(const Board& board, Player pla, Loc loc);
 
   MovePriority getMovePriorityAssumeLegal(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
