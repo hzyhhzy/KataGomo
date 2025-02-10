@@ -388,7 +388,11 @@ Color GameLogic::checkWinnerAfterPlayed(
   
   if(getPiecePla(board.colors[getHomeLoc(getOpp(pla))]) == pla)
     return pla;
-  //TODO: move limit
+
+  if(hist.rules.maxmoves != 0 && hist.rules.maxmoves <= board.movenum)
+    return C_EMPTY;
+  if(hist.rules.maxmovesNoCapture != 0 && hist.rules.maxmovesNoCapture <= board.movenumslc)
+    return C_EMPTY;
 
 
   return C_WALL;

@@ -2333,6 +2333,66 @@ int MainCmds::gtp(const vector<string>& args) {
       engine->stopAndWait();
     }
 
+    else if(command == "maxmoves" || command == "mm")  // Maxmoves settings
+    {
+      int tmp;
+      if(pieces.size() != 1 || (!Global::tryStringToInt(pieces[0], tmp))) {
+        responseIsError = true;
+        response = "Expected one integer arguments for maxmoves but got '" + Global::concat(pieces, " ") + "'";
+      } else {
+        Rules currentRules = engine->getCurrentRules();
+        Rules newRules;
+        bool parseSuccess = false;
+        try {
+          newRules = Rules::updateRules("mm", pieces[0], currentRules);
+          parseSuccess = true;
+        } catch(const StringError& err) {
+          responseIsError = true;
+          response = err.what();
+        }
+        if(parseSuccess) {
+          string error;
+          bool suc = engine->setRules(newRules, error);
+          if(!suc) {
+            responseIsError = true;
+            response = error;
+          }
+          logger.write("Changed rules to " + newRules.toString());
+          if(!logger.isLoggingToStderr())
+            cerr << "Changed rules to " + newRules.toString() << endl;
+        }
+      }
+    } 
+    else if(command == "maxmovesnocapture" || command == "mc")  // MaxmovesNoCapture settings
+    {
+      int tmp;
+      if(pieces.size() != 1 || (!Global::tryStringToInt(pieces[0], tmp))) {
+        responseIsError = true;
+        response = "Expected one integer arguments for maxmovesnocapture but got '" + Global::concat(pieces, " ") + "'";
+      } else {
+        Rules currentRules = engine->getCurrentRules();
+        Rules newRules;
+        bool parseSuccess = false;
+        try {
+          newRules = Rules::updateRules("mc", pieces[0], currentRules);
+          parseSuccess = true;
+        } catch(const StringError& err) {
+          responseIsError = true;
+          response = err.what();
+        }
+        if(parseSuccess) {
+          string error;
+          bool suc = engine->setRules(newRules, error);
+          if(!suc) {
+            responseIsError = true;
+            response = error;
+          }
+          logger.write("Changed rules to " + newRules.toString());
+          if(!logger.isLoggingToStderr())
+            cerr << "Changed rules to " + newRules.toString() << endl;
+        }
+      }
+    } 
     else {
       responseIsError = true;
       response = "unknown command";

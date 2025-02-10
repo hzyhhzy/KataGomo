@@ -25,6 +25,7 @@ Hash128 Board::ZOBRIST_STAGENUM_HASH[STAGE_NUM_EACH_PLA];
 Hash128 Board::ZOBRIST_STAGELOC_HASH[MAX_ARR_SIZE][STAGE_NUM_EACH_PLA];
 Hash128 Board::ZOBRIST_NEXTPLA_HASH[4];
 Hash128 Board::ZOBRIST_MOVENUM_HASH[MAX_MOVE_NUM];
+Hash128 Board::ZOBRIST_MOVENUMSLC_HASH[MAX_MOVE_NUM];
 Hash128 Board::ZOBRIST_PLAYER_HASH[4];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
@@ -112,6 +113,7 @@ Board::Board(const Board& other)
   memcpy(colors, other.colors, sizeof(Color)*MAX_ARR_SIZE);
 
   movenum = other.movenum;
+  movenumslc = other.movenumslc;
   pos_hash = other.pos_hash;
 
   memcpy(adj_offsets, other.adj_offsets, sizeof(short) * 8);
@@ -134,6 +136,7 @@ void Board::init(int xS, int yS)
     colors[i] = C_WALL;
 
   movenum = 0;
+  movenumslc = 0;
 
   for(int y = 0; y < y_size; y++)
   {
@@ -219,8 +222,10 @@ void Board::initHash()
 
   for(int i = 0; i < MAX_MOVE_NUM; i++) {
     ZOBRIST_MOVENUM_HASH[i] = nextHash();
+    ZOBRIST_MOVENUMSLC_HASH[i] = nextHash();
   }
   ZOBRIST_MOVENUM_HASH[0] = Hash128();
+  ZOBRIST_MOVENUMSLC_HASH[0] = Hash128();
 
   //Reseed the random number generator so that these size hashes are also
   //not affected by the size of the board we compile with
@@ -339,9 +344,11 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     stage = 0;
     pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
 
+    bool eat = false;
     if(isOnBoard(loc)) {
       Loc chosenLoc = midLocs[0];
       if(isOnBoard(chosenLoc)) {
+        eat = colors[loc] != C_EMPTY;
         setStone(loc, colors[chosenLoc]);
         setStone(chosenLoc, C_EMPTY);
       }
@@ -359,6 +366,12 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
     movenum++;
     pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
+
+    pos_hash ^= ZOBRIST_MOVENUMSLC_HASH[movenumslc];
+    movenumslc++;
+    if(eat)
+      movenumslc = 0;
+    pos_hash ^= ZOBRIST_MOVENUMSLC_HASH[movenumslc];
 
   } 
   else
@@ -429,6 +442,7 @@ void Board::checkConsistency() const {
   }
 
   tmp_pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
+  tmp_pos_hash ^= ZOBRIST_MOVENUMSLC_HASH[movenumslc];
 
   tmp_pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
   tmp_pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
@@ -774,6 +788,7 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
     }
     out << "\n";
   }
+  out << "Moves=" << board.movenum << ", MovesNoCapture=" << board.movenumslc << "\n";
   out << "\n";
 }
 

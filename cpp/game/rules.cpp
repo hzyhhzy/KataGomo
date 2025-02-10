@@ -10,6 +10,8 @@ using json = nlohmann::json;
 Rules::Rules() {
   //Defaults if not set - closest match to TT rules
   scoringRule = SCORING_AREA;
+  maxmoves = 0;
+  maxmovesNoCapture = 200;//100 turns no capture
 }
 
 Rules::Rules(
@@ -23,12 +25,13 @@ Rules::~Rules() {
 
 bool Rules::operator==(const Rules& other) const {
   return
-    scoringRule == other.scoringRule;
+    scoringRule == other.scoringRule &&
+    maxmoves==other.maxmoves&&
+    maxmovesNoCapture==other.maxmovesNoCapture;
 }
 
 bool Rules::operator!=(const Rules& other) const {
-  return
-    scoringRule != other.scoringRule ;
+  return !(*this == other);
 }
 
 
@@ -56,6 +59,8 @@ string Rules::writeScoringRule(int scoringRule) {
 
 ostream& operator<<(ostream& out, const Rules& rules) {
   out << "score" << Rules::writeScoringRule(rules.scoringRule);
+  out << "mm" << rules.maxmoves;
+  out << "mc" << rules.maxmovesNoCapture;
   return out;
 }
 
@@ -75,6 +80,8 @@ string Rules::toJsonString() const {
 json Rules::toJson() const {
   json ret;
   ret["scoring"] = writeScoringRule(scoringRule);
+  ret["mm"] = maxmoves;
+  ret["mc"] = maxmovesNoCapture;
   return ret;
 }
 
@@ -85,6 +92,8 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   string value = Global::trim(Global::toUpper(v));
   if(key == "score") rules.scoringRule = Rules::parseScoringRule(value);
   else if(key == "scoring") rules.scoringRule = Rules::parseScoringRule(value);
+  else if(key == "mm" || key == "maxmoves" ) rules.maxmoves = Global::stringToInt(v);
+  else if(key == "mc" || key == "maxmovesnocapture" ) rules.maxmovesNoCapture = Global::stringToInt(v);
   else throw IOError("Unknown rules option: " + key);
   return rules;
 }
@@ -108,6 +117,10 @@ static Rules parseRulesHelper(const string& sOrig) {
           rules.scoringRule = Rules::parseScoringRule(iter.value().get<string>());
         else if(key == "scoring")
           rules.scoringRule = Rules::parseScoringRule(iter.value().get<string>());
+        else if(key == "mm" || key == "maxmoves")
+          rules.maxmoves = iter.value().get<int>();
+        else if(key == "mc" || key == "maxmovesnocapture")
+          rules.maxmovesNoCapture = iter.value().get<int>();
         else
           throw IOError("Unknown rules option: " + key);
       }
@@ -117,44 +130,9 @@ static Rules parseRulesHelper(const string& sOrig) {
     }
   }
 
-  //This is more of a legacy internal format, not recommended for users to provide
+  // This is more of a legacy internal format, not recommended for users to provide
   else {
-    auto startsWithAndStrip = [](string& str, const string& prefix) {
-      bool matches = str.length() >= prefix.length() && str.substr(0,prefix.length()) == prefix;
-      if(matches)
-        str = str.substr(prefix.length());
-      str = Global::trim(str);
-      return matches;
-    };
-
-    //Default if not specified
-    rules = Rules::getTrompTaylorish();
-
-    string s = sOrig;
-    s = Global::trim(s);
-
-    //But don't allow the empty string
-    if(s.length() <= 0)
-      throw IOError("Could not parse rules: " + sOrig);
-
-    while(true) {
-      if(s.length() <= 0)
-        break;
-
-      if(startsWithAndStrip(s,"scoring")) {
-        if(startsWithAndStrip(s,"AREA")) rules.scoringRule = Rules::SCORING_AREA;
-        else throw IOError("Could not parse rules: " + sOrig);
-        continue;
-      }
-      if(startsWithAndStrip(s,"score")) {
-        if(startsWithAndStrip(s,"AREA")) rules.scoringRule = Rules::SCORING_AREA;
-        else throw IOError("Could not parse rules: " + sOrig);
-        continue;
-      }
-
-      //Unknown rules format
-      else throw IOError("Could not parse rules: " + sOrig);
-    }
+    throw IOError("Could not parse rules: " + sOrig);
   }
 
   return rules;

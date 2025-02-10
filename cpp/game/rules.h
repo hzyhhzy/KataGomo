@@ -12,6 +12,9 @@ struct Rules {
   static const int SCORING_AREA = 0;
   int scoringRule;
 
+  int maxmoves;
+  int maxmovesNoCapture;
+
 
 
   Rules();
