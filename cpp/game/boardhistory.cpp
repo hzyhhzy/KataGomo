@@ -302,6 +302,15 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
   hash ^= Board::ZOBRIST_MM_RULE_HASH[hist.rules.maxmoves];
   hash ^= Board::ZOBRIST_MC_RULE_HASH[hist.rules.maxmovesNoCapture];
 
+  auto h1 = hist.get73ruleHistory(board, C_BLACK);
+  auto h2 = hist.get73ruleHistory(board, C_WHITE);
+  for (int i = 0; i < h1.size(); i++)
+  {
+    hash ^= Board::ZOBRIST_73RULE_HISTORY_HASH[h1[i]][i][C_BLACK];
+  }
+  for(int i = 0; i < h2.size(); i++) {
+    hash ^= Board::ZOBRIST_73RULE_HISTORY_HASH[h2[i]][i][C_WHITE];
+  }
 
 
   return hash;
