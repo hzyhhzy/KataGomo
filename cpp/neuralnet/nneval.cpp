@@ -689,6 +689,12 @@ void NNEvaluator::evaluate(
   //by making the successive searches distribute their playouts less coherently and using the cache more poorly.
   
     float* policy = buf.result->policyProbs;
+    //const bool debug_value = true;
+    //if(debug_value) {
+    //  for(int i = 0; i < policySize; i++) {
+    //    policy[i] = (rand() % 1024) * 0.0005;
+    //  }
+    //}
 
     float nnPolicyInvTemperature = 1.0f / nnInputParams.nnPolicyTemperature;
 
@@ -780,6 +786,20 @@ void NNEvaluator::evaluate(
         double varTimeLeftPreSoftplus = buf.result->varTimeLeft;
         double shorttermWinlossErrorPreSoftplus = buf.result->shorttermWinlossError;
 
+        //if(debug_value) {
+        //  float stoneDif = 0;
+        //  for(int x = 0; x < board.x_size; x++)
+        //    for(int y = 0; y < board.y_size; y++) {
+        //      Color c = board.colors[Location::getLoc(x, y, board.x_size)];
+        //      if(getPiecePla(c) == nextPlayer) {
+        //        stoneDif += pow(double(getPieceType(c)), 0.7);
+        //      } else
+        //        stoneDif -= pow(double(getPieceType(c)), 0.7);
+        //    }
+        //  winLogits = 0.3 * stoneDif;
+        //  lossLogits = -0.3 * stoneDif;
+        //  noResultLogits = -5.0;
+        //}
         
         if(resultsBeforeNN.winner == C_EMPTY) {  // draw
           winProb = 0.0;

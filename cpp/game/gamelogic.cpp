@@ -119,12 +119,14 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
         return false;
       if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
         return false;
+      return true;
     }
     else if(loc1 == Location::getLocConst(6, 3)) {
       if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
         return false;
       if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
         return false;
+      return true;
     } 
     else
       return false;
@@ -136,12 +138,14 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
         return false;
       if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
         return false;
+      return true;
     }
     else if(loc1 == Location::getLocConst(6, 4)) {
       if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
         return false;
       if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
         return false;
+      return true;
     } 
     else
       return false;
@@ -153,19 +157,21 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
         return false;
       if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
         return false;
+      return true;
     }
     else if(loc1 == Location::getLocConst(6, 5)) {
       if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
         return false;
       if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
         return false;
+      return true;
     } 
     else
       return false;
   }
   else if (loc0 == Location::getLocConst(1, 2))
   {
-    if(loc1 != Location::getLocConst(1, 5))
+    if(loc1 != Location::getLocConst(1, 6))
       return false;
     if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
       return false;
@@ -177,7 +183,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
   }
   else if (loc0 == Location::getLocConst(2, 2))
   {
-    if(loc1 != Location::getLocConst(2, 5))
+    if(loc1 != Location::getLocConst(2, 6))
       return false;
     if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
       return false;
@@ -189,7 +195,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
   }
   else if (loc0 == Location::getLocConst(4, 2))
   {
-    if(loc1 != Location::getLocConst(4, 5))
+    if(loc1 != Location::getLocConst(4, 6))
       return false;
     if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
       return false;
@@ -201,7 +207,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
   }
   else if (loc0 == Location::getLocConst(5, 2))
   {
-    if(loc1 != Location::getLocConst(5, 5))
+    if(loc1 != Location::getLocConst(5, 6))
       return false;
     if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
       return false;
@@ -211,7 +217,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
       return false;
     return true;
   }
-  else if (loc0 == Location::getLocConst(1, 5))
+  else if (loc0 == Location::getLocConst(1, 6))
   {
     if(loc1 != Location::getLocConst(1, 2))
       return false;
@@ -223,7 +229,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
       return false;
     return true;
   }
-  else if (loc0 == Location::getLocConst(2, 5))
+  else if (loc0 == Location::getLocConst(2, 6))
   {
     if(loc1 != Location::getLocConst(2, 2))
       return false;
@@ -235,7 +241,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
       return false;
     return true;
   }
-  else if (loc0 == Location::getLocConst(4, 5))
+  else if (loc0 == Location::getLocConst(4, 6))
   {
     if(loc1 != Location::getLocConst(4, 2))
       return false;
@@ -247,7 +253,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
       return false;
     return true;
   }
-  else if (loc0 == Location::getLocConst(5, 5))
+  else if (loc0 == Location::getLocConst(5, 6))
   {
     if(loc1 != Location::getLocConst(5, 2))
       return false;
@@ -302,7 +308,9 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     int dx = x1 - x0;
     if(dx != 0 && dy != 0)
       return false;
-    if(dx * dx + dy * dy != 1 && ((p0 != C_LION && p0 != C_TIGER) || (!board.maybeCrossRiver(chosenMove, loc))))
+    if(dx * dx + dy * dy != 1 && !((p0 == C_LION || p0 == C_TIGER) && board.maybeCrossRiver(chosenMove, loc)))
+      return false;
+    if(loc == getHomeLoc(pla))
       return false;
 
     bool inTrap = isInTrap(loc, pla);  // my trap, can eat opponent's any piece
@@ -311,7 +319,7 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     if(inRiver && p0 != C_RAT) {
       return false;  // other pieces cannot move into river
     }
-    if(p1 == C_RAT && isInRiver(chosenMove)) {
+    if(p0 == C_RAT && p1 != C_EMPTY && isInRiver(chosenMove)) {
       return false;  // rat in river cannot eat piece on land
     }
 
