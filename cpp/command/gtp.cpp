@@ -283,8 +283,8 @@ struct GTPEngine {
 
     bool wasDefault = false;
     if(boardXSize == -1 || boardYSize == -1) {
-      boardXSize = Board::DEFAULT_LEN;
-      boardYSize = Board::DEFAULT_LEN;
+      boardXSize = Board::DEFAULT_LEN_X;
+      boardYSize = Board::DEFAULT_LEN_Y;
       wasDefault = true;
     }
 

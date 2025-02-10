@@ -11,41 +11,77 @@
 #include "../core/hash.h"
 #include "../external/nlohmann_json/json.hpp"
 
-#ifndef COMPILE_MAX_BOARD_LEN 
-#define COMPILE_MAX_BOARD_LEN 8
+#ifdef COMPILE_MAX_BOARD_LEN
+static_assert(COMPILE_MAX_BOARD_LEN should not be defined);
 #endif
+#define COMPILE_MAX_BOARD_LEN 9  // 9x7 board
 
-//how many stages in each move
-//eg: Chess has 2 stages: moving which piece, and where to place.
+// how many stages in each move
+// eg: Chess has 2 stages: moving which piece, and where to place.
 static const int STAGE_NUM_EACH_PLA = 2;
 
-//max moves num of a game
+// max moves num of a game
 static const int MAX_MOVE_NUM = 100 * COMPILE_MAX_BOARD_LEN * COMPILE_MAX_BOARD_LEN;
 
-
-//TYPES AND CONSTANTS-----------------------------------------------------------------
+// TYPES AND CONSTANTS-----------------------------------------------------------------
 
 struct Board;
 
-//Player
+// Player
 typedef int8_t Player;
+static constexpr Player P_EMPTY = 0;
 static constexpr Player P_BLACK = 1;
 static constexpr Player P_WHITE = 2;
+static constexpr Player P_NONE = 3;
 
-//Color of a point on the board
+// Color of a point on the board
 typedef int8_t Color;
+
+// first 4 colors are reserved, to avoid potential bugs
 static constexpr Color C_EMPTY = 0;
 static constexpr Color C_BLACK = 1;
 static constexpr Color C_WHITE = 2;
 static constexpr Color C_WALL = 3;
-static constexpr int NUM_BOARD_COLORS = 4;
 
-static inline Color getOpp(Color c)
-{return c ^ 3;}
+// no color pieces
+static constexpr Color C_RAT = 0x1;       // lv1 rat
+static constexpr Color C_CAT = 0x2;       // lv2 cat
+static constexpr Color C_DOG = 0x3;       // lv3 dog
+static constexpr Color C_WOLF = 0x4;      // lv4 wolf
+static constexpr Color C_LEOPARD = 0x5;   // lv5 leopard
+static constexpr Color C_TIGER = 0x6;     // lv6 tiger
+static constexpr Color C_LION = 0x7;      // lv7 lion
+static constexpr Color C_ELEPHANT = 0x8;  // lv8 elephant
+
+// static constexpr Color C_TRAP = 0x9;   // trap around home
+// static constexpr Color C_HOME = 0x10;   // game end when enter opponent's home
+
+// color = 16*player + piece
+// eg: black king =  1 * 16 + 1 = 0x11,   white pawn = 2 * 16 + 7 = 0x27
+
+// static constexpr Color C_RIVER = 0x11; //river, river does not have color
+
+static constexpr int NUM_BOARD_COLORS = 0x30;
+
+static inline Color getOpp(Color c) {
+  return c ^ 3;
+}
+
+static_assert(NUM_BOARD_COLORS == 0x30, "This depend on getPiece,getPiecePla,getPieceType");
+static inline Color getPiece(Player p, Color piece) {
+  return (p << 4) | piece;
+}
+static inline Player getPiecePla(Color c) {
+  return c >> 4;
+}
+static inline Color getPieceType(Color c) {
+  return c & 0xF;
+}
 
 //Conversions for players and colors
 namespace PlayerIO {
   char colorToChar(Color c);
+  Color charToColor(char c);
   std::string playerToStringShort(Player p);
   std::string playerToString(Player p);
   bool tryParsePlayer(const std::string& s, Player& pla);
@@ -55,8 +91,10 @@ namespace PlayerIO {
 //Location of a point on the board
 //(x,y) is represented as (x+1) + (y+1)*(x_size+1)
 typedef short Loc;
-namespace Location
-{
+namespace Location {
+  constexpr Loc getLocConst(int x, int y) {
+    return (x + 1) + (y + 1) * (7 + 1);
+  }
   Loc getLoc(int x, int y, int x_size);
   int getX(Loc loc, int x_size);
   int getY(Loc loc, int x_size);
@@ -106,7 +144,8 @@ struct Board
   //Board parameters and Constants----------------------------------------
 
   static constexpr int MAX_LEN = COMPILE_MAX_BOARD_LEN;  //Maximum edge length allowed for the board
-  static constexpr int DEFAULT_LEN = std::min(MAX_LEN,19); //Default edge length for board if unspecified
+  static constexpr int DEFAULT_LEN_X = 7; //Default edge length for board if unspecified
+  static constexpr int DEFAULT_LEN_Y = 9; //Default edge length for board if unspecified
   static constexpr int MAX_PLAY_SIZE = MAX_LEN * MAX_LEN;  //Maximum number of playable spaces
   static constexpr int MAX_ARR_SIZE = (MAX_LEN+1)*(MAX_LEN+2)+1; //Maximum size of arrays needed
 
@@ -146,6 +185,8 @@ struct Board
   //Count the number of stones on the board
   int numStonesOnBoard() const;
   int numPlaStonesOnBoard(Player pla) const;
+
+  bool maybeCrossRiver(Loc loc0, Loc loc1) const;
 
 
   //Sets the specified stone if possible, including overwriting existing stones.
@@ -212,6 +253,7 @@ struct Board
 
   private:
   void init(int xS, int yS);
+
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 

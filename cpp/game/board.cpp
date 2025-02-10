@@ -30,6 +30,8 @@ const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOB
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
 
 //LOCATION--------------------------------------------------------------------------------
+
+
 Loc Location::getLoc(int x, int y, int x_size)
 {
   return (x+1) + (y+1)*(x_size+1);
@@ -93,7 +95,7 @@ bool Location::isNearCentral(Loc loc, int x_size, int y_size) {
 
 Board::Board()
 {
-  init(DEFAULT_LEN,DEFAULT_LEN);
+  init(DEFAULT_LEN_X,DEFAULT_LEN_Y);
 }
 
 Board::Board(int x, int y)
@@ -122,7 +124,7 @@ Board::Board(const Board& other)
 void Board::init(int xS, int yS)
 {
   assert(IS_ZOBRIST_INITALIZED);
-  if(xS < 0 || yS < 0 || xS > MAX_LEN || yS > MAX_LEN)
+  if(xS != 7 || yS != 9)
     throw StringError("Board::init - invalid board size");
 
   x_size = xS;
@@ -153,18 +155,27 @@ void Board::init(int xS, int yS)
 
   Location::getAdjacentOffsets(adj_offsets, x_size);
 
-  if(y_size < 4) {
-    cout << "y_size < 4 is not supported for Breakthrough";
-    return;
-  }
+  // initial stone
 
-  //initial stones of breakthrough
-  for(int x = 0; x < x_size; x++) {
-    setStone(Location::getLoc(x, 0, x_size), C_WHITE);
-    setStone(Location::getLoc(x, 1, x_size), C_WHITE);
-    setStone(Location::getLoc(x, y_size - 1, x_size), C_BLACK);
-    setStone(Location::getLoc(x, y_size - 2, x_size), C_BLACK);
-  }
+  // White pieces
+  setStone(Location::getLoc(0, 0, x_size), getPiece(P_WHITE, C_LION));
+  setStone(Location::getLoc(6, 0, x_size), getPiece(P_WHITE, C_TIGER));
+  setStone(Location::getLoc(1, 1, x_size), getPiece(P_WHITE, C_DOG));
+  setStone(Location::getLoc(5, 1, x_size), getPiece(P_WHITE, C_CAT));
+  setStone(Location::getLoc(0, 2, x_size), getPiece(P_WHITE, C_RAT));
+  setStone(Location::getLoc(2, 2, x_size), getPiece(P_WHITE, C_LEOPARD));
+  setStone(Location::getLoc(4, 2, x_size), getPiece(P_WHITE, C_WOLF));
+  setStone(Location::getLoc(6, 2, x_size), getPiece(P_WHITE, C_ELEPHANT));
+
+  // Black pieces (mirrored on x and y-axis)
+  setStone(Location::getLoc(6, 8, x_size), getPiece(P_BLACK, C_LION));
+  setStone(Location::getLoc(0, 8, x_size), getPiece(P_BLACK, C_TIGER));
+  setStone(Location::getLoc(5, 7, x_size), getPiece(P_BLACK, C_DOG));
+  setStone(Location::getLoc(1, 7, x_size), getPiece(P_BLACK, C_CAT));
+  setStone(Location::getLoc(6, 6, x_size), getPiece(P_BLACK, C_RAT));
+  setStone(Location::getLoc(4, 6, x_size), getPiece(P_BLACK, C_LEOPARD));
+  setStone(Location::getLoc(2, 6, x_size), getPiece(P_BLACK, C_WOLF));
+  setStone(Location::getLoc(0, 6, x_size), getPiece(P_BLACK, C_ELEPHANT));
 }
 
 void Board::initHash()
@@ -312,30 +323,28 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     std::cout << "Error next player ";
   }
 
-  pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
-  movenum++;
-  pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
 
   if(stage == 0)  //choose
   {
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
     stage = 1;
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[0];
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
 
     midLocs[0] = loc;
     pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][0];
   } 
   else if(stage == 1)  //place
   {
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
     stage = 0;
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[0];
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
 
     if(isOnBoard(loc)) {
       Loc chosenLoc = midLocs[0];
-      if(isOnBoard(chosenLoc))
+      if(isOnBoard(chosenLoc)) {
+        setStone(loc, colors[chosenLoc]);
         setStone(chosenLoc, C_EMPTY);
-      setStone(loc, nextPla);
+      }
     }
 
     for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
@@ -343,9 +352,13 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
       midLocs[i] = Board::NULL_LOC;
     }
 
-    nextPla = getOpp(nextPla);
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[getOpp(nextPla)];
     pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+    nextPla = getOpp(nextPla);
+    pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+
+    pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
+    movenum++;
+    pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
 
   } 
   else
@@ -462,12 +475,50 @@ bool Board::isEqualForTesting(const Board& other) const {
 
 char PlayerIO::colorToChar(Color c)
 {
+  if(c == C_EMPTY)
+    return '.';
+
+  Player p = getPiecePla(c);
+  c = getPieceType(c);
+
+  char t = '#';
+
   switch(c) {
-  case C_BLACK: return 'X';
-  case C_WHITE: return 'O';
-  case C_EMPTY: return '.';
+    case C_RAT: t = 'r'; break;
+    case C_CAT: t = 'c'; break;
+    case C_DOG: t = 'd'; break;
+    case C_WOLF: t = 'w'; break;
+    case C_LEOPARD: t = 'j'; break;
+    case C_TIGER: t = 't'; break;
+    case C_LION: t = 'l'; break;
+    case C_ELEPHANT: t = 'e'; break;
   default:  return '#';
   }
+  if(p == C_BLACK)
+    t += ('A' - 'a');
+  return t;
+}
+
+Color PlayerIO::charToColor(char c) {
+  if(c == ' ' || c == '.')
+    return C_EMPTY;
+  Color t = C_WALL;
+  Player pla = (c >= 'A' && c <= 'Z') ? C_BLACK : C_WHITE;
+  if(c >= 'A' && c <= 'Z')
+    c += ('a' - 'A');
+  switch(c) {
+    case 'r': t = C_RAT; break;
+    case 'c': t = C_CAT; break;
+    case 'd': t = C_DOG; break;
+    case 'w': t = C_WOLF; break;
+    case 'j': t = C_LEOPARD; break;
+    case 't': t = C_TIGER; break;
+    case 'l': t = C_LION; break;
+    case 'e': t = C_ELEPHANT; break;
+  default:  return C_WALL;
+  }
+  t = getPiece(pla, t);
+  return t;
 }
 
 string PlayerIO::playerToString(Color c)

@@ -16,7 +16,254 @@
 
 using namespace std;
 
+static bool isInTrap(Loc loc, Player pla)
+{
+  if(pla == C_BLACK)
+    return loc == Location::getLocConst(3, 7) || 
+           loc == Location::getLocConst(2, 8) ||
+           loc == Location::getLocConst(4, 8);
+  else if(pla == C_WHITE)
+    return loc == Location::getLocConst(3, 1) || 
+           loc == Location::getLocConst(2, 0) ||
+           loc == Location::getLocConst(4, 0);
+  else
+    return false;
+}
+static bool isInRiver(Loc loc)
+{
+  return 
+    loc == Location::getLocConst(1, 3) ||
+    loc == Location::getLocConst(1, 4) ||
+    loc == Location::getLocConst(1, 5) ||
+    loc == Location::getLocConst(2, 3) ||
+    loc == Location::getLocConst(2, 4) ||
+    loc == Location::getLocConst(2, 5) ||
+    loc == Location::getLocConst(4, 3) ||
+    loc == Location::getLocConst(4, 4) ||
+    loc == Location::getLocConst(4, 5) ||
+    loc == Location::getLocConst(5, 3) ||
+    loc == Location::getLocConst(5, 4) ||
+    loc == Location::getLocConst(5, 5) ;
+}
 
+static Loc getHomeLoc(Player pla) {
+  if(pla == C_BLACK)
+    return Location::getLocConst(3, 8);
+  else if(pla == C_WHITE)
+    return Location::getLocConst(3, 0);
+  else
+    return Board::NULL_LOC;
+}
+
+bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
+  if (loc0 == Location::getLocConst(0, 3))
+  {
+    if(loc1 != Location::getLocConst(3, 3))
+      return false;
+    if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if(loc0 == Location::getLocConst(0, 4)) {
+    if(loc1 != Location::getLocConst(3, 4))
+      return false;
+    if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if(loc0 == Location::getLocConst(0, 5)) {
+    if(loc1 != Location::getLocConst(3, 5))
+      return false;
+    if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
+      return false;
+    return true;
+  } 
+  else if (loc0 == Location::getLocConst(6, 3))
+  {
+    if(loc1 != Location::getLocConst(3, 3))
+      return false;
+    if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if(loc0 == Location::getLocConst(6, 4)) {
+    if(loc1 != Location::getLocConst(3, 4))
+      return false;
+    if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if(loc0 == Location::getLocConst(6, 5)) {
+    if(loc1 != Location::getLocConst(3, 5))
+      return false;
+    if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(3, 3))
+  {
+    if(loc1 == Location::getLocConst(0, 3)) {
+      if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
+        return false;
+      if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
+        return false;
+    }
+    else if(loc1 == Location::getLocConst(6, 3)) {
+      if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
+        return false;
+      if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
+        return false;
+    } 
+    else
+      return false;
+  }
+  else if (loc0 == Location::getLocConst(3, 4))
+  {
+    if(loc1 == Location::getLocConst(0, 4)) {
+      if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
+        return false;
+      if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
+        return false;
+    }
+    else if(loc1 == Location::getLocConst(6, 4)) {
+      if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
+        return false;
+      if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
+        return false;
+    } 
+    else
+      return false;
+  }
+  else if (loc0 == Location::getLocConst(3, 5))
+  {
+    if(loc1 == Location::getLocConst(0, 5)) {
+      if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
+        return false;
+      if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
+        return false;
+    }
+    else if(loc1 == Location::getLocConst(6, 5)) {
+      if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
+        return false;
+      if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
+        return false;
+    } 
+    else
+      return false;
+  }
+  else if (loc0 == Location::getLocConst(1, 2))
+  {
+    if(loc1 != Location::getLocConst(1, 5))
+      return false;
+    if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(2, 2))
+  {
+    if(loc1 != Location::getLocConst(2, 5))
+      return false;
+    if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(4, 2))
+  {
+    if(loc1 != Location::getLocConst(4, 5))
+      return false;
+    if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(5, 2))
+  {
+    if(loc1 != Location::getLocConst(5, 5))
+      return false;
+    if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(1, 5))
+  {
+    if(loc1 != Location::getLocConst(1, 2))
+      return false;
+    if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(2, 5))
+  {
+    if(loc1 != Location::getLocConst(2, 2))
+      return false;
+    if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(4, 5))
+  {
+    if(loc1 != Location::getLocConst(4, 2))
+      return false;
+    if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+  else if (loc0 == Location::getLocConst(5, 5))
+  {
+    if(loc1 != Location::getLocConst(5, 2))
+      return false;
+    if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
+      return false;
+    if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
+      return false;
+    return true;
+  }
+
+  return false;
+
+
+}
 
 
 bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
@@ -33,27 +280,55 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
 
   if(board.stage == 0)  // choose a piece
   {
-    return board.colors[loc] == pla;
+    return getPiecePla(board.colors[loc]) == pla;
   } 
   else if(board.stage == 1)  // place the piece
   {
-    Color c = board.colors[loc];
     Color opp = getOpp(pla);
     Loc chosenMove = board.midLocs[0];
+    Color c0 = board.colors[chosenMove];
+    Color c1 = board.colors[loc];
+    assert(getPiecePla(c0) == pla);
+    if(getPiecePla(c1) == pla)
+      return false;  // cannot eat my piece
+    Color p0 = getPieceType(c0);
+    Color p1 = getPieceType(c1);  // opponent piece(1~8) or empty(0)
+
     int x0 = Location::getX(chosenMove, board.x_size);
     int y0 = Location::getY(chosenMove, board.x_size);
     int x1 = Location::getX(loc, board.x_size);
     int y1 = Location::getY(loc, board.x_size);
     int dy = y1 - y0;
     int dx = x1 - x0;
-    if(!((pla == C_BLACK && dy == -1) || (pla == C_WHITE && dy == 1)))
+    if(dx != 0 && dy != 0)
       return false;
-    if(dx == 1 || dx == -1)
-      return c == opp || c == C_EMPTY;
-    else if(dx == 0)
-      return c == C_EMPTY;
-    else
+    if(dx * dx + dy * dy != 1 && ((p0 != C_LION && p0 != C_TIGER) || (!board.maybeCrossRiver(chosenMove, loc))))
       return false;
+
+    bool inTrap = isInTrap(loc, pla);  // my trap, can eat opponent's any piece
+    bool inRiver = isInRiver(loc);
+
+    if(inRiver && p0 != C_RAT) {
+      return false;  // other pieces cannot move into river
+    }
+    if(p1 == C_RAT && isInRiver(chosenMove)) {
+      return false;  // rat in river cannot eat piece on land
+    }
+
+    if(p1 == C_EMPTY) {
+      return true;  // can move to empty space
+    }
+    if(inTrap) {
+      return true;  // can eat any piece in my trap
+    }
+    if(p0 == C_RAT && p1 == C_ELEPHANT) {
+      return true;  // rat can eat elephant
+    }
+    if(p0 >= p1 && (p0 != C_ELEPHANT || p1 != C_RAT)) {
+      return true; // can eat smaller piece, but elephant cannot eat rat
+    }
+    return false; // cannot eat bigger piece
+
   }
   ASSERT_UNREACHABLE;
   return false;
@@ -65,11 +340,10 @@ GameLogic::MovePriority GameLogic::getMovePriorityAssumeLegal(const Board& board
 
   int y = Location::getY(loc, board.x_size);
   if(board.stage == 0) {
-    if((pla == C_BLACK && y == 1) || (pla == C_WHITE && y == board.y_size - 2))
-      return MP_WINNING;
+    return MP_NORMAL;
   }
   else if(board.stage == 1) {
-    if((pla == C_BLACK && y == 0) || (pla == C_WHITE && y == board.y_size - 1))
+    if(loc==getHomeLoc(getOpp(pla)))
       return MP_SUDDEN_WIN;
   }
 
@@ -98,9 +372,9 @@ Color GameLogic::checkWinnerAfterPlayed(
     return getOpp(pla);  //pass is not allowed
   
   
-  int y = Location::getY(loc, board.x_size);
-  if((pla == C_BLACK && y == 0) || (pla == C_WHITE && y == board.y_size - 1))
-      return pla;
+  if(getPiecePla(board.colors[getHomeLoc(getOpp(pla))]) == pla)
+    return pla;
+  //TODO: move limit
 
 
   return C_WALL;
