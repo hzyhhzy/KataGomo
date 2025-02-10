@@ -319,7 +319,13 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     if(inRiver && p0 != C_RAT) {
       return false;  // other pieces cannot move into river
     }
-    if(p0 == C_RAT && p1 != C_EMPTY && isInRiver(chosenMove)) {
+    else if(inRiver)
+    {
+      if(p1 != C_EMPTY && !isInRiver(chosenMove))
+        return false; //cannot eat opponent's rat in river
+    }
+
+    if(p0 == C_RAT && p1 != C_EMPTY && isInRiver(chosenMove) && !inRiver) {
       return false;  // rat in river cannot eat piece on land
     }
 
