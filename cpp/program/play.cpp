@@ -51,10 +51,10 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     throw IOError("scoringRules must have at least one value in " + cfg.getFileName());
 
 
-  allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
-  allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
+  //allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
+  //allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
 
-  allowRectangleProb = cfg.contains("allowRectangleProb") ? cfg.getDouble("allowRectangleProb",0.0,1.0) : 0.0;
+  //allowRectangleProb = cfg.contains("allowRectangleProb") ? cfg.getDouble("allowRectangleProb",0.0,1.0) : 0.0;
 
   auto generateCumProbs = [](const vector<Sgf::PositionSample> poses, double lambda, double& effectiveSampleSize) {
     int minInitialTurnNumber = 0;
@@ -199,29 +199,17 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     }
   }
 
-  if(allowedBSizes.size() <= 0)
-    throw IOError("bSizes must have at least one value in " + cfg.getFileName());
-  if(allowedBSizes.size() != allowedBSizeRelProbs.size())
-    throw IOError("bSizes and bSizeRelProbs must have same number of values in " + cfg.getFileName());
+  //if(allowedBSizes.size() <= 0)
+  //  throw IOError("bSizes must have at least one value in " + cfg.getFileName());
+  //if(allowedBSizes.size() != allowedBSizeRelProbs.size())
+  //  throw IOError("bSizes and bSizeRelProbs must have same number of values in " + cfg.getFileName());
 
-  minBoardXSize = allowedBSizes[0];
-  minBoardYSize = allowedBSizes[0];
-  maxBoardXSize = allowedBSizes[0];
-  maxBoardYSize = allowedBSizes[0];
-  for(int bSize: allowedBSizes) {
-    minBoardXSize = std::min(minBoardXSize, bSize);
-    minBoardYSize = std::min(minBoardYSize, bSize);
-    maxBoardXSize = std::max(maxBoardXSize, bSize);
-    maxBoardYSize = std::max(maxBoardYSize, bSize);
-  }
-  for(const Sgf::PositionSample& pos : hintPoses) {
-    minBoardXSize = std::min(minBoardXSize, pos.board.x_size);
-    minBoardYSize = std::min(minBoardYSize, pos.board.y_size);
-    maxBoardXSize = std::max(maxBoardXSize, pos.board.x_size);
-    maxBoardYSize = std::max(maxBoardYSize, pos.board.y_size);
-  }
+  minBoardXSize = Board::DEFAULT_LEN_X;
+  minBoardYSize = Board::DEFAULT_LEN_Y;
+  maxBoardXSize = Board::DEFAULT_LEN_X;
+  maxBoardYSize = Board::DEFAULT_LEN_Y;
 
-  noResultRandRadius = cfg.contains("noResultRandRadius") ? cfg.getDouble("noResultRandRadius",0.0,1.0) : 0.0;
+  noResultRandRadius = cfg.getDouble("noResultRandRadius", 0.0, 1.0);
 }
 
 GameInitializer::~GameInitializer()
@@ -271,18 +259,14 @@ Rules GameInitializer::randomizeScoringAndTaxRules(Rules rules, Rand& randToUse)
 }
 
 bool GameInitializer::isAllowedBSize(int xSize, int ySize) {
-  if(!contains(allowedBSizes,xSize))
-    return false;
-  if(!contains(allowedBSizes,ySize))
-    return false;
-  if(allowRectangleProb <= 0.0 && xSize != ySize)
+  if(xSize != Board::DEFAULT_LEN_X || ySize != Board::DEFAULT_LEN_Y)
     return false;
   return true;
 }
 
-std::vector<int> GameInitializer::getAllowedBSizes() const {
-  return allowedBSizes;
-}
+//std::vector<int> GameInitializer::getAllowedBSizes() const {
+//  return allowedBSizes;
+//}
 int GameInitializer::getMinBoardXSize() const {
   return minBoardXSize;
 }
@@ -329,10 +313,6 @@ void GameInitializer::createGameSharedUnsynchronized(
   }
 
 
-  int xSizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
-  int ySizeIdx = xSizeIdx;
-  if(allowRectangleProb > 0 && rand.nextBool(allowRectangleProb))
-    ySizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
 
   Rules rules = createRulesUnsynchronized();
 
@@ -382,8 +362,37 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.hintPosHash = board.pos_hash;
   }
   else {
-    int xSize = allowedBSizes[xSizeIdx];
-    int ySize = allowedBSizes[ySizeIdx];
+    int xSize = Board::DEFAULT_LEN_X;
+    int ySize = Board::DEFAULT_LEN_Y;
+
+    //randomize maxmove rules
+    {
+      int maxmoves = rand.nextExponential() * 80 + 300 - rand.nextExponential() * 30; //mean 350
+      if(maxmoves > 1000)
+        maxmoves = 1000;
+      if(maxmoves < 10)
+        maxmoves = 10;
+      int maxmovesnc = rand.nextExponential() * 60 + 160 - rand.nextExponential() * 20; //mean 200
+      if(maxmovesnc > 800)
+        maxmovesnc = 800;
+      if(maxmovesnc < 10)
+        maxmovesnc = 10;
+      int r = rand.nextUInt(100);
+      if(r < 45) {
+        rules.maxmoves = maxmoves;
+        rules.maxmovesNoCapture = 0;
+      } 
+      else if(r < 90) {
+        rules.maxmoves = 0;
+        rules.maxmovesNoCapture = maxmovesnc;
+      } 
+      else 
+      {
+        rules.maxmoves = maxmoves;
+        rules.maxmovesNoCapture = maxmovesnc;
+      }
+    }
+
     board = Board(xSize,ySize);
     pla = P_BLACK;
     hist.clear(board,pla,rules);
@@ -1225,7 +1234,30 @@ FinishedGameData* Play::runGame(
     }
   };
 
+  
+  if(gameRand.nextBool(playSettings.randomInitPieceProb)) {
+    double density = playSettings.randomInitPieceDensity * pow(gameRand.nextExponential(), 2);
+    for(int x = 0; x < board.x_size; x++)
+      for(int y = 0; y < board.y_size; y++) {
+        if(gameRand.nextDouble() > density)
+          continue;
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        if(loc == GameLogic::getHomeLoc(C_BLACK) || loc == GameLogic::getHomeLoc(C_WHITE) || GameLogic::isInRiver(loc))
+          continue;
 
+        //will set a random piece
+        Color c = C_EMPTY;
+        int p = gameRand.nextUInt(30); // 2/3 prob is empty
+        if (p < 10)
+        {
+          assert(board.y_size == 9);
+          Player side = p <= y ? C_BLACK : C_WHITE;  // the more near the home, the higher prob is my piece
+          c = getPiece(side, 1 + gameRand.nextUInt(8));
+        }
+        board.setStone(loc, c);
+
+      }
+  }
 
 
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {

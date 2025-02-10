@@ -621,11 +621,11 @@ void NNInputs::fillRowV7(
     rowGlobal[14] = 2 * ((int(maxmoves - movenum)) % 2) - 1;
   }
 
-  if(hist.rules.maxmoves != 0) {
+  if(hist.rules.maxmovesNoCapture != 0) {
     rowGlobal[15] = 1.0;
     double boardArea = board.x_size * board.y_size;
-    double movenum = board.movenum;
-    double maxmoves = hist.rules.maxmoves;
+    double movenum = board.movenumslc;
+    double maxmoves = hist.rules.maxmovesNoCapture;
     rowGlobal[16] = exp(-(maxmoves - movenum) / 150.0);
     rowGlobal[17] = exp(-(maxmoves - movenum) / 50.0);
     rowGlobal[18] = exp(-(maxmoves - movenum) / 15.0);

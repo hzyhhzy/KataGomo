@@ -14,6 +14,8 @@ struct PlaySettings {
   //Temperature to use for placing handicap stones and for initializing the board position
   double policyInitAreaTemperature;
 
+  double randomInitPieceProb;
+  double randomInitPieceDensity;
 
 
   //With this probability, use only this many visits for a move, and record it with only this weight

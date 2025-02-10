@@ -80,7 +80,7 @@ class GameInitializer {
   Rules createRules();
   bool isAllowedBSize(int xSize, int ySize);
 
-  std::vector<int> getAllowedBSizes() const;
+  //std::vector<int> getAllowedBSizes() const;
   int getMinBoardXSize() const;
   int getMinBoardYSize() const;
   int getMaxBoardXSize() const;
@@ -102,10 +102,10 @@ class GameInitializer {
 
   std::vector<std::string> allowedScoringRuleStrs;
   std::vector<int> allowedScoringRules;
-  std::vector<int> allowedBSizes;
-  std::vector<double> allowedBSizeRelProbs;
+  //std::vector<int> allowedBSizes;
+  //std::vector<double> allowedBSizeRelProbs;
 
-  double allowRectangleProb;
+  //double allowRectangleProb;
 
 
   double noResultRandRadius;

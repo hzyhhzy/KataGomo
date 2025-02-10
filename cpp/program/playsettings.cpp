@@ -6,6 +6,8 @@ PlaySettings::PlaySettings()
     startPosesPolicyInitAvgMoveNum(0.0),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
+    randomInitPieceProb(0.0),
+    randomInitPieceDensity(0.02),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
    reduceVisits(false),reduceVisitsThreshold(100.0),reduceVisitsThresholdLookback(1),reducedVisitsMin(0),reducedVisitsWeight(1.0f),
    policySurpriseDataWeight(0.0),valueSurpriseDataWeight(0.0),scaleDataWeight(1.0),
@@ -26,6 +28,10 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
   playSettings.resignThreshold = cfg.getDouble("resignThreshold",-1.0,0.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns",1,100);
   playSettings.initGamesWithPolicy =  cfg.contains("initGamesWithPolicy") ? cfg.getBool("initGamesWithPolicy") : false;
+
+  playSettings.randomInitPieceProb = cfg.getDouble("randomInitPieceProb", 0.0, 1.0);
+  playSettings.randomInitPieceDensity = cfg.getDouble("randomInitPieceDensity", 0.0, 1.0);
+
   if(playSettings.initGamesWithPolicy) {
     playSettings.policyInitAvgMoveNum = cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0);
     playSettings.startPosesPolicyInitAvgMoveNum =
@@ -58,6 +64,8 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
 
   playSettings.policyInitAreaTemperature = cfg.contains("policyInitAreaTemperature") ? cfg.getDouble("policyInitAreaTemperature",0.1,5.0) : 1.0;
 
+  playSettings.randomInitPieceProb = cfg.getDouble("randomInitPieceProb", 0.0, 1.0);
+  playSettings.randomInitPieceDensity = cfg.getDouble("randomInitPieceDensity", 0.0, 1.0);
 
   playSettings.cheapSearchProb = cfg.getDouble("cheapSearchProb",0.0,1.0);
   playSettings.cheapSearchVisits = cfg.getInt("cheapSearchVisits",1,10000000);
