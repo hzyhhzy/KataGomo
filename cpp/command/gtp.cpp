@@ -366,6 +366,22 @@ struct GTPEngine {
     clearStatsForNewGame();
   }
 
+  bool setFEN(string fen, Player nextPlayer) {
+    assert(bot->getRootHist().rules == currentRules);
+    int newXSize = bot->getRootBoard().x_size;
+    int newYSize = bot->getRootBoard().y_size;
+    Board board(newXSize, newYSize);
+    bool suc = board.setFEN(fen, nextPlayer);
+    if(!suc)
+      return false;
+
+    BoardHistory hist(board, nextPlayer, currentRules);
+    vector<Move> newMoveHistory;
+    setPositionAndRules(nextPlayer, board, hist, board, nextPlayer, newMoveHistory);
+    clearStatsForNewGame();
+    return true;
+  }
+
   bool setPosition(const vector<Move>& initialStones) {
     assert(bot->getRootHist().rules == currentRules);
     int newXSize = bot->getRootBoard().x_size;
@@ -2392,7 +2408,35 @@ int MainCmds::gtp(const vector<string>& args) {
             cerr << "Changed rules to " + newRules.toString() << endl;
         }
       }
+    }
+    // export FEN
+    else if(command == "getfen") {
+      if(pieces.size() != 0) {
+        responseIsError = true;
+        response = "Expected zero arguments for getfen but got '" + Global::concat(pieces, " ") + "'";
+      } else
+        response = engine->bot->getRootBoard().getFEN();
     } 
+    else if(command == "setfen") {
+      if(pieces.size() != 2) {
+        responseIsError = true;
+        response = "Expected FEN string and nextplayer for setfen but got '" + Global::concat(pieces, " ") + "'";
+      } else if(pieces[1] != "b" && pieces[1] != "w") {
+        responseIsError = true;
+        response =
+          "The second parameter of setfen should be 'b' for black or 'w' for red. But got '" + pieces[1] + "' ";
+      } else {
+        string fen = pieces[0];
+        Player nextPla =
+          pieces[1] == "w" ? C_BLACK : C_WHITE;  // 'w'=RedPieces=bottom=C_BLACK, 'b'=BlackPieces=top=C_WHITE
+        bool suc = engine->setFEN(fen, nextPla);
+        if(!suc) {
+          responseIsError = true;
+          response = "Illegal FEN";
+        }
+        maybeStartPondering = false;
+      }
+    }
     else {
       responseIsError = true;
       response = "unknown command";

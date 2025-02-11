@@ -497,6 +497,88 @@ bool Board::isEqualForTesting(const Board& other) const {
   return true;
 }
 
+bool Board::setFEN(std::string fen, Player nextPlayer) {
+  init(DEFAULT_LEN_X, DEFAULT_LEN_Y);
+  pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+  nextPla = nextPlayer;
+  pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+
+  auto lines = Global::split(fen, '/');
+  if(lines.size() != y_size)
+    return false;
+
+  assert(x_size <= 9);
+  for(int y = 0; y < y_size; y++) {
+    string line = lines[y];
+
+    int x = 0;
+    for(int p = 0; p < line.size(); p++) {
+      if(x >= x_size)
+        return false;
+
+      char c = line[p];
+      if(c >= '0' && c <= '9') {
+        int emptylen = c - '0';
+        for(int i = 0; i < emptylen; i++) {
+          if(x >= x_size)
+            return false;
+          setStone(Location::getLoc(x, y, x_size), C_EMPTY);
+          x++;
+        }
+      } else {
+        Color color = PlayerIO::charToColor(c);
+        if(color == C_WALL)
+          return false;
+        setStone(Location::getLoc(x, y, x_size), color);
+        x++;
+      }
+    }
+    if(x != x_size)
+      return false;
+  }
+  return true;
+}
+
+bool Board::setFEN(std::string fen) {
+  if(fen.size() <= 3)
+    return false;
+  char color = fen[fen.size() - 1];
+  Player pla = color == 'b' ? C_WHITE :  // black plays first in katago, but white plays first in chess
+                 color == 'w' ? C_BLACK
+                              : C_EMPTY;
+  if(pla == C_EMPTY)
+    return false;
+  return setFEN(fen.substr(0, fen.size() - 2), pla);
+}
+
+std::string Board::getFEN() const {
+  string fen;
+  for(int y = 0; y < y_size; y++) {
+    if(y != 0)
+      fen += "/";
+
+    int emptylen = 0;
+    for(int x = 0; x < x_size; x++) {
+      char c = PlayerIO::colorToChar(colors[Location::getLoc(x, y, x_size)]);
+      if(c == '.')
+        emptylen += 1;
+      else {
+        if(emptylen > 0)
+          fen += to_string(emptylen);
+        emptylen = 0;
+        fen += c;
+      }
+    }
+    if(emptylen > 0)
+      fen += to_string(emptylen);
+  }
+  fen += " ";
+  if(nextPla == C_WHITE)
+    fen += "b";
+  else
+    fen += "w";
+  return fen;
+}
 
 
 //IO FUNCS------------------------------------------------------------------------------------------

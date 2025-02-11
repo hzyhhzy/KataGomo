@@ -227,6 +227,10 @@ struct Board
   //If we need a version to be used in "prod", we could make an efficient version maybe as operator==.
   bool isEqualForTesting(const Board& other) const;
 
+  bool setFEN(std::string fen, Player nextPlayer);
+  bool setFEN(std::string fen);
+  std::string getFEN() const;
+
   static Board parseBoard(int xSize, int ySize, const std::string& s);
   static Board parseBoard(int xSize, int ySize, const std::string& s, char lineDelimiter);
   static void printBoard(std::ostream& out, const Board& board, Loc markLoc, const std::vector<Move>* hist);
