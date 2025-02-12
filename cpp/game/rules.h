@@ -8,12 +8,17 @@
 
 struct Rules {
 
-
-  static const int SCORING_AREA = 0;
+  //rules variants
+  //too lazy to give them names
+  static const int SCORING_0 = 0; //default: rat on land and river CANNOT eat each other, lion and tiger CANNOT jump rat of same player
+  static const int SCORING_1 = 1; //rat on land and river CAN eat each other, lion and tiger CANNOT jump rat of same player
+  static const int SCORING_2 = 2; //rat on land and river CANNOT eat each other, lion and tiger CAN jump rat of same player
+  static const int SCORING_3 = 3; //rat on land and river CAN eat each other, lion and tiger CAN jump rat of same player
+  static const int SCORING_4 = 4; //reserve
   int scoringRule;
 
-  int maxmoves;
-  int maxmovesNoCapture;
+  int maxmoves;//draw if these many moves
+  int maxmovesNoCapture;//draw if these many moves without capture
 
 
 

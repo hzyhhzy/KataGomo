@@ -259,9 +259,8 @@ bool Board::isOnBoard(Loc loc) const {
 }
 
 //Check if moving here is illegal.
-bool Board::isLegal(Loc loc, Player pla) const
-{
-  return GameLogic::isLegal(*this, pla, loc);
+bool Board::isLegal(Loc loc, Player pla, const Rules& rules) const {
+  return GameLogic::isLegal(*this, rules, pla, loc);
 }
 
 bool Board::isEmpty() const {

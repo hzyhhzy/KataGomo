@@ -604,7 +604,18 @@ void NNInputs::fillRowV7(
 
 
   //Scoring
-  if(hist.rules.scoringRule == Rules::SCORING_AREA) {}
+  if(hist.rules.scoringRule == Rules::SCORING_0) {
+  }
+  else if(hist.rules.scoringRule == Rules::SCORING_1) {
+      rowGlobal[6] = 1.0;
+  }
+  else if(hist.rules.scoringRule == Rules::SCORING_2) {
+      rowGlobal[7] = 1.0;
+  }
+  else if(hist.rules.scoringRule == Rules::SCORING_3) {
+      rowGlobal[6] = 1.0;
+      rowGlobal[7] = 1.0;
+  }
   else
     ASSERT_UNREACHABLE;
 

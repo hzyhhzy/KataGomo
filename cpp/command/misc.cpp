@@ -1571,7 +1571,7 @@ int MainCmds::dataminesgfs(const vector<string>& args) {
     Board board = treeHist.initialBoard;
     for(int i = 0; i<startTurn; i++) {
       //Just in case
-      if(!board.isLegal(treeHist.moveHistory[i].loc,treeHist.moveHistory[i].pla))
+      if(!board.isLegal(treeHist.moveHistory[i].loc, treeHist.moveHistory[i].pla, treeHist.rules))
         return;
       board.playMoveAssumeLegal(treeHist.moveHistory[i].loc,treeHist.moveHistory[i].pla);
     }

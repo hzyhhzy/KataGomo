@@ -26,6 +26,7 @@ static const int MAX_MOVE_NUM = 100 * COMPILE_MAX_BOARD_LEN * COMPILE_MAX_BOARD_
 // TYPES AND CONSTANTS-----------------------------------------------------------------
 
 struct Board;
+struct Rules;
 
 // Player
 typedef int8_t Player;
@@ -185,7 +186,7 @@ struct Board
 
   //Functions------------------------------------
 
-  bool isLegal(Loc loc, Player pla) const;
+  bool isLegal(Loc loc, Player pla, const Rules& rules) const;
   //Check if this location is on the board
   bool isOnBoard(Loc loc) const;
   //Is this board empty?
@@ -194,7 +195,7 @@ struct Board
   int numStonesOnBoard() const;
   int numPlaStonesOnBoard(Player pla) const;
 
-  bool maybeCrossRiver(Loc loc0, Loc loc1) const;
+  bool maybeCrossRiver(Loc loc0, Loc loc1, Color allowRatSide) const;
 
 
   //Sets the specified stone if possible, including overwriting existing stones.

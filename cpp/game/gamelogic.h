@@ -29,7 +29,7 @@ namespace GameLogic {
   bool isInRiver(Loc loc);
   Loc getHomeLoc(Player pla);
 
-  bool isLegal(const Board& board, Player pla, Loc loc);
+  bool isLegal(const Board& board, const Rules& rules, Player pla, Loc loc);
 
   MovePriority getMovePriorityAssumeLegal(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
   MovePriority getMovePriority(const Board& board, const BoardHistory& hist, Player pla, Loc loc);

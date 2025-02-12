@@ -53,215 +53,56 @@ Loc GameLogic::getHomeLoc(Player pla) {
     return Board::NULL_LOC;
 }
 
-bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
-  if (loc0 == Location::getLocConst(0, 3))
-  {
-    if(loc1 != Location::getLocConst(3, 3))
-      return false;
-    if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if(loc0 == Location::getLocConst(0, 4)) {
-    if(loc1 != Location::getLocConst(3, 4))
-      return false;
-    if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if(loc0 == Location::getLocConst(0, 5)) {
-    if(loc1 != Location::getLocConst(3, 5))
-      return false;
-    if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
-      return false;
-    return true;
-  } 
-  else if (loc0 == Location::getLocConst(6, 3))
-  {
-    if(loc1 != Location::getLocConst(3, 3))
-      return false;
-    if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if(loc0 == Location::getLocConst(6, 4)) {
-    if(loc1 != Location::getLocConst(3, 4))
-      return false;
-    if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if(loc0 == Location::getLocConst(6, 5)) {
-    if(loc1 != Location::getLocConst(3, 5))
-      return false;
-    if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(3, 3))
-  {
-    if(loc1 == Location::getLocConst(0, 3)) {
-      if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
+bool Board::maybeCrossRiver(Loc loc0, Loc loc1, Color allowRatSide) const {
+  Color selfRat = allowRatSide == C_EMPTY ? C_EMPTY : getPiece(allowRatSide, C_RAT);
+  auto check2 = [&](Loc l0, Loc l1, Loc m0, Loc m1) { 
+    if ((loc0 == l0 && loc1 == l1) || (loc0 == l1 && loc1 == l0)) {
+      if(colors[m0] != C_EMPTY && colors[m0] != selfRat)
         return false;
-      if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
+      if(colors[m1] != C_EMPTY && colors[m1] != selfRat)
         return false;
       return true;
     }
-    else if(loc1 == Location::getLocConst(6, 3)) {
-      if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
+    return false;
+  };
+  auto check3 = [&](Loc l0, Loc l1, Loc m0, Loc m1, Loc m2) {
+    if((loc0 == l0 && loc1 == l1) || (loc0 == l1 && loc1 == l0)) {
+      if(colors[m0] != C_EMPTY && colors[m0] != selfRat)
         return false;
-      if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
+      if(colors[m1] != C_EMPTY && colors[m1] != selfRat)
         return false;
-      return true;
-    } 
-    else
-      return false;
-  }
-  else if (loc0 == Location::getLocConst(3, 4))
-  {
-    if(loc1 == Location::getLocConst(0, 4)) {
-      if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
-        return false;
-      if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
+      if(colors[m2] != C_EMPTY && colors[m2] != selfRat)
         return false;
       return true;
     }
-    else if(loc1 == Location::getLocConst(6, 4)) {
-      if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
-        return false;
-      if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
-        return false;
+    return false;
+  };
+
+  for(int y = 3; y <= 5; y++)
+    if(check2(
+         Location::getLocConst(0, y),
+         Location::getLocConst(3, y),
+         Location::getLocConst(1, y),
+         Location::getLocConst(2, y)))
       return true;
-    } 
-    else
-      return false;
-  }
-  else if (loc0 == Location::getLocConst(3, 5))
-  {
-    if(loc1 == Location::getLocConst(0, 5)) {
-      if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
-        return false;
-      if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
-        return false;
+  for(int y = 3; y <= 5; y++)
+    if(check2(
+         Location::getLocConst(3, y),
+         Location::getLocConst(6, y),
+         Location::getLocConst(4, y),
+         Location::getLocConst(5, y)))
       return true;
-    }
-    else if(loc1 == Location::getLocConst(6, 5)) {
-      if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
-        return false;
-      if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
-        return false;
+
+  for(int x = 1; x <= 5; x++) {
+    if(x == 3)
+      continue;
+    if(check3(
+         Location::getLocConst(x, 2),
+         Location::getLocConst(x, 6),
+         Location::getLocConst(x, 3),
+         Location::getLocConst(x, 4),
+         Location::getLocConst(x, 5)))
       return true;
-    } 
-    else
-      return false;
-  }
-  else if (loc0 == Location::getLocConst(1, 2))
-  {
-    if(loc1 != Location::getLocConst(1, 6))
-      return false;
-    if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(2, 2))
-  {
-    if(loc1 != Location::getLocConst(2, 6))
-      return false;
-    if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(4, 2))
-  {
-    if(loc1 != Location::getLocConst(4, 6))
-      return false;
-    if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(5, 2))
-  {
-    if(loc1 != Location::getLocConst(5, 6))
-      return false;
-    if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(1, 6))
-  {
-    if(loc1 != Location::getLocConst(1, 2))
-      return false;
-    if(colors[Location::getLocConst(1, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(1, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(1, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(2, 6))
-  {
-    if(loc1 != Location::getLocConst(2, 2))
-      return false;
-    if(colors[Location::getLocConst(2, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(2, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(4, 6))
-  {
-    if(loc1 != Location::getLocConst(4, 2))
-      return false;
-    if(colors[Location::getLocConst(4, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(4, 5)] != C_EMPTY)
-      return false;
-    return true;
-  }
-  else if (loc0 == Location::getLocConst(5, 6))
-  {
-    if(loc1 != Location::getLocConst(5, 2))
-      return false;
-    if(colors[Location::getLocConst(5, 3)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(5, 4)] != C_EMPTY)
-      return false;
-    if(colors[Location::getLocConst(5, 5)] != C_EMPTY)
-      return false;
-    return true;
   }
 
   return false;
@@ -270,7 +111,7 @@ bool Board::maybeCrossRiver(Loc loc0, Loc loc1) const {
 }
 
 
-bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
+bool GameLogic::isLegal(const Board& board, const Rules& rules, Player pla, Loc loc) {
   if(pla != board.nextPla) {
     std::cout << "Error next player ";
     return false;
@@ -306,7 +147,10 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     int dx = x1 - x0;
     if(dx != 0 && dy != 0)
       return false;
-    if(dx * dx + dy * dy != 1 && !((p0 == C_LION || p0 == C_TIGER) && board.maybeCrossRiver(chosenMove, loc)))
+
+    bool allowJumpSelfRat = rules.scoringRule == Rules::SCORING_2 || rules.scoringRule == Rules::SCORING_3;
+
+    if(dx * dx + dy * dy != 1 && !((p0 == C_LION || p0 == C_TIGER) && board.maybeCrossRiver(chosenMove, loc, allowJumpSelfRat?pla:C_EMPTY)))
       return false;
     if(loc == getHomeLoc(pla))
       return false;
@@ -314,17 +158,23 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     bool inTrap = isInTrap(loc, pla);  // my trap, can eat opponent's any piece
     bool inRiver = isInRiver(loc);
 
+    bool allowLandRiverRatEat =
+      rules.scoringRule == Rules::SCORING_1 ||
+      rules.scoringRule == Rules::SCORING_3;  // whether allow rat on land and rat in river eat each other
+
+
     if(inRiver && p0 != C_RAT) {
       return false;  // other pieces cannot move into river
     }
-    else if(inRiver)
+    else if(inRiver && !allowLandRiverRatEat)
     {
       if(p1 != C_EMPTY && !isInRiver(chosenMove))
         return false; //cannot eat opponent's rat in river
     }
 
     if(p0 == C_RAT && p1 != C_EMPTY && isInRiver(chosenMove) && !inRiver) {
-      return false;  // rat in river cannot eat piece on land
+      if(!(allowLandRiverRatEat && p1 == C_RAT)) //maybe rat in river can eat rat on land
+        return false;  // rat in river cannot eat piece on land
     }
 
     if(p1 == C_EMPTY) {
@@ -366,7 +216,7 @@ GameLogic::MovePriority GameLogic::getMovePriorityAssumeLegal(const Board& board
 GameLogic::MovePriority GameLogic::getMovePriority(const Board& board, const BoardHistory& hist, Player pla, Loc loc) {
   if(loc == Board::PASS_LOC)
     return MP_NORMAL;
-  if(!board.isLegal(loc, pla))
+  if(!board.isLegal(loc, pla, hist.rules))
     return MP_ILLEGAL;
   MovePriority MP = getMovePriorityAssumeLegal(board, hist, pla, loc);
   return MP;

@@ -230,7 +230,10 @@ string GTPConfig::makeConfig(
     assert(pos != string::npos);
     config.replace(pos, key.size(), replacement);
   };
-  if(rules.scoringRule == Rules::SCORING_AREA)            replace("$$SCORING_RULE", "scoringRule = AREA  # options: AREA, TERRITORY");
+  if(rules.scoringRule == Rules::SCORING_0)            replace("$$SCORING_RULE", "scoringRule = 0  # options: 0,1,2,3");
+  else if(rules.scoringRule == Rules::SCORING_1)            replace("$$SCORING_RULE", "scoringRule = 1  # options: 0,1,2,3");
+  else if(rules.scoringRule == Rules::SCORING_2)            replace("$$SCORING_RULE", "scoringRule = 2  # options: 0,1,2,3");
+  else if(rules.scoringRule == Rules::SCORING_3)            replace("$$SCORING_RULE", "scoringRule = 3  # options: 0,1,2,3");
   else { ASSERT_UNREACHABLE; }
 
 

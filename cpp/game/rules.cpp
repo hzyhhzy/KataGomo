@@ -9,7 +9,7 @@ using json = nlohmann::json;
 
 Rules::Rules() {
   //Defaults if not set - closest match to TT rules
-  scoringRule = SCORING_AREA;
+  scoringRule = SCORING_0;
   maxmoves = 0;
   maxmovesNoCapture = 200;//100 turns no capture
 }
@@ -37,23 +37,34 @@ bool Rules::operator!=(const Rules& other) const {
 
 Rules Rules::getTrompTaylorish() {
   Rules rules;
-  rules.scoringRule = SCORING_AREA;
+  rules.scoringRule = SCORING_0;
   return rules;
 }
 
 
 
 set<string> Rules::scoringRuleStrings() {
-  return {"AREA"};
+  return {
+    "0",
+    "1",
+    "2",
+    "3"
+  };
 }
 
 int Rules::parseScoringRule(const string& s) {
-  if(s == "AREA") return Rules::SCORING_AREA;
+  if(s == "0") return Rules::SCORING_0;
+  else if(s == "1") return Rules::SCORING_1;
+  else if(s == "2") return Rules::SCORING_2;
+  else if(s == "3") return Rules::SCORING_3;
   else throw IOError("Rules::parseScoringRule: Invalid scoring rule: " + s);
 }
 
 string Rules::writeScoringRule(int scoringRule) {
-  if(scoringRule == Rules::SCORING_AREA) return string("AREA");
+  if(scoringRule == Rules::SCORING_0) return string("0");
+  else if(scoringRule == Rules::SCORING_1) return string("1");
+  else if(scoringRule == Rules::SCORING_2) return string("2");
+  else if(scoringRule == Rules::SCORING_3) return string("3");
   return string("UNKNOWN");
 }
 
@@ -103,7 +114,7 @@ static Rules parseRulesHelper(const string& sOrig) {
   string lowercased = Global::trim(Global::toLower(sOrig));
   
   if(lowercased == "tromp-taylor" || lowercased == "tromp_taylor" || lowercased == "tromp taylor" || lowercased == "tromptaylor") {
-    rules.scoringRule = Rules::SCORING_AREA;
+    rules.scoringRule = Rules::SCORING_0;
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
     //Default if not specified
