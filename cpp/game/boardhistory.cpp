@@ -197,7 +197,7 @@ std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla, 
   while (h.size() < maxLen && t >= 0) {
     if(!board.isOnBoard(nowloc))
       return h;
-    if(GameLogic::isInTrap(nowloc, getOpp(pla)))
+    if(GameLogic::isInTrap(nowloc, pla))
       return h;
     assert(moveHistory[t].pla == pla);
     assert(t - 1 >= 0 && moveHistory[t - 1].pla == pla);
