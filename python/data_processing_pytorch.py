@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional
 
+import concurrent.futures
 import modelconfigs
 
 def read_npz_training_data(
@@ -15,14 +16,19 @@ def read_npz_training_data(
     rank: int,
     pos_len: int,
     device,
-    randomize_symmetries: bool,
+    randomize_symmetries: int,
+    value_sampling_proportion: float,
     model_config: modelconfigs.ModelConfig,
 ):
     rand = np.random.default_rng(seed=list(os.urandom(12)))
     num_bin_features = modelconfigs.get_num_bin_input_features(model_config)
     num_global_features = modelconfigs.get_num_global_input_features(model_config)
 
-    for npz_file in npz_files:
+    #create loading file thread
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = None
+
+    def load_npz_file(npz_file):
         with np.load(npz_file) as npz:
             binaryInputNCHWPacked = npz["binaryInputNCHWPacked"]
             globalInputNC = npz["globalInputNC"]
@@ -42,12 +48,23 @@ def read_npz_training_data(
 
         assert binaryInputNCHW.shape[1] == num_bin_features
         assert globalInputNC.shape[1] == num_global_features
+        return [binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW]
+
+    #read the first file
+    future = executor.submit(load_npz_file, npz_files[0])
+    npz_files.append("")
+    npz_files=npz_files[1:]
+    for npz_file in npz_files:
+        binaryInputNCHW, globalInputNC, policyTargetsNCMove, globalTargetsNC, scoreDistrN, valueTargetsNCHW = future.result()
+
+        if npz_file != "":
+            future = executor.submit(load_npz_file, npz_file)
 
         num_samples = binaryInputNCHW.shape[0]
         # Just discard stuff that doesn't divide evenly
         num_whole_steps = num_samples // (batch_size * world_size)
 
-        logging.info(f"Beginning {npz_file} with {num_whole_steps * world_size} usable batches, my rank is {rank}")
+        #logging.info(f"Beginning {npz_file} with {num_whole_steps * world_size} usable batches, my rank is {rank}")
         for n in range(num_whole_steps):
             start = (n * world_size + rank) * batch_size
             end = start + batch_size
@@ -60,15 +77,29 @@ def read_npz_training_data(
             batch_valueTargetsNCHW = torch.from_numpy(valueTargetsNCHW[start:end]).to(device)
 
 
-            if randomize_symmetries:
-                symm = 5*int(rand.integers(0,2)) # 0:no sym   5:x-flip   others are not allowed
+            if randomize_symmetries != 1:
+                if randomize_symmetries==2:
+                    symm = 5 * int(rand.integers(0, 2))  # 0:no sym   5:x-flip   others are not allowed
+                elif randomize_symmetries==4:
+                    symm = 5 * int(rand.integers(0, 2)) + 2 * int(rand.integers(0, 2))
+                elif randomize_symmetries==8:
+                    symm = int(rand.integers(0,8))
+                else:
+                    raise ValueError("read_npz_training_data(): randomize_symmetries should be 1 (no symmetry), 2 (x-axis symmetry), or 4 (x-axis or y-axis symmetry), or 8 (all symmetry)")
                 batch_binaryInputNCHW = apply_symmetry(batch_binaryInputNCHW, symm)
                 batch_policyTargetsNCMove = apply_symmetry_policy(batch_policyTargetsNCMove, symm, pos_len)
                 batch_valueTargetsNCHW = apply_symmetry(batch_valueTargetsNCHW, symm)
+
+            value_sampling = (torch.rand(size=[end - start]) < value_sampling_proportion).float()
+            if(value_sampling_proportion>0):
+                value_sampling=value_sampling/value_sampling_proportion
+            value_sampling=value_sampling.to(device)
+            batch_globalTargetsNC[:,24] = value_sampling
+
             batch_binaryInputNCHW = batch_binaryInputNCHW.contiguous()
             batch_policyTargetsNCMove = batch_policyTargetsNCMove.contiguous()
             batch_valueTargetsNCHW = batch_valueTargetsNCHW.contiguous()
-
+            
             batch = dict(
                 binaryInputNCHW = batch_binaryInputNCHW,
                 globalInputNC = batch_globalInputNC,

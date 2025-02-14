@@ -60,27 +60,31 @@ else
 fi
 
 time python ./train.py \
-     -traindir "$BASEDIR"\\train\\"$TRAININGNAME" \
-     -datadir "$BASEDIR"\\shuffleddata\\current\\ \
-     -exportdir "$BASEDIR"\\"$EXPORT_SUBDIR" \
+     -traindir "$BASEDIR"/train/"$TRAININGNAME" \
+     -datadir "$BASEDIR"/shuffleddata/current/ \
+     -exportdir "$BASEDIR"/"$EXPORT_SUBDIR" \
      -exportprefix "$TRAININGNAME" \
-     -pos-len 8 \
+     -pos-len 9 \
      -batch-size "$BATCHSIZE" \
      -model-kind "$MODELKIND" \
      -max-epochs-this-instance 1 \
-     -lr-scale 1\
+     -lr-scale 2.0 \
      -samples-per-epoch 1000000 \
+     -sub-epochs 1 \
     -soft-policy-weight-scale 8.0 \
-    -value-loss-scale 0.6 \
-    -td-value-loss-scales 0.6,0.6,0.6 \
-    -main-loss-scale 0.2 \
-    -intermediate-loss-scale 0.8 \
     -lookahead-alpha 0.5 \
     -lookahead-k 6 \
-	-swa-scale 1.0\
+    -value-loss-scale 0.6 \
+    -td-value-loss-scales 0.6,0.6,0.6 \
+    -swa-scale 8.0 \
+    -swa-period-samples 100000 \
+    -use-fp16 \
+    -randomize-symmetries 2 \
+    -main-loss-scale 0.2 \
+    -intermediate-loss-scale 0.8 \
      $EXTRAFLAG \
      "$@" \
-     2>&1 | tee -a "$BASEDIR"\\train\\"$TRAININGNAME"\\stdout.txt
+     2>&1 | tee -a "$BASEDIR"/train/"$TRAININGNAME"/stdout.txt
 
 exit 0
 }

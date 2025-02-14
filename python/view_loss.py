@@ -1,6 +1,8 @@
 baseDir="../data/train/"
-lossItems={"p0loss":(1.5,2.5),"vloss":(0.5,0.9),"loss":(0,0)} #name,ylim,  0 means default
-trainDirs=["b10c256nbt-fson-mish-rvgl-bnh"];
+lossItems={"p0loss":(0.9,1.3),"vloss":(0.3,1.2),"loss":(31.8,32.6)} #name,ylim,  0 means default
+trainDirs=["b10c384n"]
+xAxisScales=[1,]
+xAxisBiases=[0,]
 lossTypes=["train","val"]
 outputFile="../loss.png"
 
@@ -10,6 +12,8 @@ lossKeys=list(lossItems.keys())
 nKeys=len(lossKeys)
 
 
+import time
+#time.sleep(600)
 
 import json
 import os
@@ -28,6 +32,8 @@ def readJsonFile(path,lossKeys):
         if(len(line)<5):
             continue #bad line
         j=json.loads(line)
+        if("p0loss" not in j):
+            continue #bad line
         if("nsamp_train" in j):
             nsamp=j["nsamp_train"]
         else:
@@ -43,7 +49,7 @@ def readJsonFile(path,lossKeys):
 #os.makedirs(outputDir,exist_ok=True)
 
 
-fig=plt.figure(figsize=(6,4*nKeys),dpi=400)
+fig=plt.figure(figsize=(9,6*nKeys),dpi=300)
 plt.subplots_adjust(hspace=0.5)
 for i in range(nKeys):
     key=lossKeys[i]
@@ -80,7 +86,11 @@ for i in range(nKeys):
 isSingleDir = len(trainDirs)==1
 if(isSingleDir):
     fig.suptitle(trainDirs[0])
-for trainDir in trainDirs:
+    
+for dirID in range(len(trainDirs)):
+    trainDir=trainDirs[dirID]
+    xScale=xAxisScales[dirID]
+    xBias=xAxisBiases[dirID]
     for lossType in lossTypes:
         jsonPath=os.path.join(baseDir,trainDir,"metrics_"+lossType+".json")
         jsonData=readJsonFile(jsonPath,lossKeys)
@@ -89,7 +99,8 @@ for trainDir in trainDirs:
             key = lossKeys[i]
             ax = plt.subplot(nKeys, 1, i + 1)
             plotLabel=lossType if isSingleDir else trainDir+"."+lossType
-            ax.plot(jsonData["nsamp"], jsonData[key], label=plotLabel)
+            xdata=[x/xScale+xBias for x in jsonData["nsamp"]]
+            ax.plot(xdata, jsonData[key], label=plotLabel)
             ax.legend(loc="upper right")
 
 

@@ -94,6 +94,9 @@ if __name__ == "__main__":
   parser.add_argument('-intermediate-loss-scale', type=float, help='Loss factor scale for intermediate head', required=False)
   parser.add_argument('-intermediate-distill-scale', type=float, help='Distill factor scale for intermediate head', required=False)
 
+  parser.add_argument('-value-sampling-proportion', type=float, default=1.0, help='Proportion of samples with value. Value targets of other samples are ignored', required=False)
+  parser.add_argument('-randomize-symmetries', type=int, default=8, help='Randomize symmetries of data. Should be 1 (no symmetry), 2 (x-axis symmetry), or 4 (x-axis or y-axis symmetry), or 8 (all symmetry)', required=False)
+
   args = vars(parser.parse_args())
 
 
@@ -172,6 +175,9 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
   main_loss_scale = args["main_loss_scale"]
   intermediate_loss_scale = args["intermediate_loss_scale"]
   intermediate_distill_scale = args["intermediate_distill_scale"]
+
+  value_sampling_proportion = args["value_sampling_proportion"]
+  randomize_symmetries = args["randomize_symmetries"]
 
   if lr_scale is None:
     lr_scale = 1.0
@@ -492,19 +498,19 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
 
 
   # Print all model parameters just to get a summary
-  total_num_params = 0
-  total_trainable_params = 0
-  logging.info("Parameters in model:")
-  for name, param in raw_model.named_parameters():
-    product = 1
-    for dim in param.shape:
-      product *= int(dim)
-    if param.requires_grad:
-      total_trainable_params += product
-    total_num_params += product
-    logging.info(f"{name}, {list(param.shape)}, {product} params")
-  logging.info(f"Total num params: {total_num_params}")
-  logging.info(f"Total trainable params: {total_trainable_params}")
+  # total_num_params = 0
+  # total_trainable_params = 0
+  # logging.info("Parameters in model:")
+  # for name, param in raw_model.named_parameters():
+  #   product = 1
+  #   for dim in param.shape:
+  #     product *= int(dim)
+  #   if param.requires_grad:
+  #     total_trainable_params += product
+  #   total_num_params += product
+  #   logging.info(f"{name}, {list(param.shape)}, {product} params")
+  # logging.info(f"Total num params: {total_num_params}")
+  # logging.info(f"Total trainable params: {total_trainable_params}")
 
   lookahead_cache = {}
   if lookahead_k is not None:
@@ -791,7 +797,7 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
         metric_sums[metric] += metrics[metric]
         metric_weights[metric] += batch_size
 
-  def log_metrics(metric_sums, metric_weights, metrics, metrics_out):
+  def log_metrics(metric_sums, metric_weights, metrics, metrics_out, exportprefix="noname"):
     metrics_to_print = {}
     for metric in metric_sums:
       if metric.endswith("_sum"):
@@ -806,7 +812,10 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
       if metric not in metric_sums:
         metrics_to_print[metric] = metrics[metric]
 
-    logging.info(", ".join(["%s = %f" % (metric, metrics_to_print[metric]) for metric in metrics_to_print]))
+    if(("p0loss" in metrics_to_print) and ("nsamp_train" not in metrics_to_print)): #training
+      logging.info("{}: time: {:.2f} s, nsamp: {}, p0loss: {:.4f}, vloss: {:.4f}, loss: {:.3f}, pslr_batch: {:.3e}"                     .format(exportprefix,metrics_to_print["time_since_last_print"],metrics_to_print["nsamp"],metrics_to_print["p0loss"],metrics_to_print["vloss"],metrics_to_print["loss"],metrics_to_print["pslr_batch"]))
+    else: #other conditions
+      logging.info(", ".join(["%s = %f" % (metric, metrics_to_print[metric]) for metric in metrics_to_print]))
     if metrics_out:
       metrics_out.write(json.dumps(metrics_to_print) + "\n")
       metrics_out.flush()
@@ -919,7 +928,8 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
         rank,
         pos_len=pos_len,
         device=device,
-        randomize_symmetries=True,
+        randomize_symmetries=randomize_symmetries,
+        value_sampling_proportion=value_sampling_proportion,
         model_config=model_config
       ):
         optimizer.zero_grad(set_to_none=True)
@@ -1019,7 +1029,7 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
           timediff = t1 - last_train_stats_time
           last_train_stats_time = t1
           metrics["time_since_last_print"] = timediff
-          log_metrics(running_metrics["sums"], running_metrics["weights"], metrics, train_metrics_out)
+          log_metrics(running_metrics["sums"], running_metrics["weights"], metrics, train_metrics_out,exportprefix=exportprefix)
 
         # Update LR more frequently at the start for smoother warmup ramp and wd adjustment
         if train_state["global_step_samples"] <= 50000000 and batch_count_this_epoch % 10 == 0:
@@ -1132,7 +1142,8 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
             rank=0,        # Only the main process validates
             pos_len=pos_len,
             device=device,
-            randomize_symmetries=True,
+            randomize_symmetries=randomize_symmetries,
+            value_sampling_proportion=value_sampling_proportion,
             model_config=model_config
           ):
             model_outputs = ddp_model(batch["binaryInputNCHW"],batch["globalInputNC"])
@@ -1158,7 +1169,7 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
             val_metric_weights["nsamp_train"] = running_metrics["weights"]["nsamp"]
             val_metric_sums["wsum_train"] = running_metrics["sums"]["wsum"]
             val_metric_weights["wsum_train"] = running_metrics["weights"]["wsum"]
-          log_metrics(val_metric_sums, val_metric_weights, metrics, val_metrics_out)
+          log_metrics(val_metric_sums, val_metric_weights, metrics, val_metrics_out,exportprefix=exportprefix)
           t1 = time.perf_counter()
           logging.info(f"Validation took {t1-t0} seconds")
           ddp_model.train()

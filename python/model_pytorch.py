@@ -1313,13 +1313,13 @@ class Model(torch.nn.Module):
         self.activation = "relu" if "activation" not in config else config["activation"]
 
         if config["initial_conv_1x1"]:
-            self.conv_spatial = torch.nn.Conv2d(22, self.c_trunk, kernel_size=1, padding="same", bias=False)
+            self.conv_spatial = torch.nn.Conv2d(modelconfigs.get_num_bin_input_features(config), self.c_trunk, kernel_size=1, padding="same", bias=False)
         else:
-            self.conv_spatial = torch.nn.Conv2d(22, self.c_trunk, kernel_size=3, padding="same", bias=False)
-        self.linear_global = torch.nn.Linear(19, self.c_trunk, bias=False)
+            self.conv_spatial = torch.nn.Conv2d(modelconfigs.get_num_bin_input_features(config), self.c_trunk, kernel_size=3, padding="same", bias=False)
+        self.linear_global = torch.nn.Linear(modelconfigs.get_num_global_input_features(config), self.c_trunk, bias=False)
 
-        self.bin_input_shape = [22, pos_len, pos_len]
-        self.global_input_shape = [19]
+        self.bin_input_shape = [modelconfigs.get_num_bin_input_features(config), pos_len, pos_len]
+        self.global_input_shape = [modelconfigs.get_num_global_input_features(config)]
 
         self.blocks = torch.nn.ModuleList()
         for block_config in self.block_kind:

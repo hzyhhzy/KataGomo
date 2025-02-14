@@ -488,6 +488,7 @@ class Metrics:
         )
         target_lead = target_global_nc[:, 21]
         target_variance_time = target_global_nc[:, 22]
+        value_weight = target_global_nc[:, 24] # not in origin data. added in data_processing_pytorch.py
         global_weight = target_global_nc[:, 25]
         target_weight_ownership = target_global_nc[:, 27]
         target_weight_lead = target_global_nc[:, 29]
@@ -528,11 +529,11 @@ class Metrics:
         ).sum()
 
         loss_value = self.loss_value_samplewise(
-            value_logits, target_value, global_weight
+            value_logits, target_value, global_weight*value_weight
         ).sum()
 
         loss_td_value_unsummed = self.loss_td_value_samplewise(
-            td_value_logits, target_td_value, global_weight
+            td_value_logits, target_td_value, global_weight*value_weight
         )
         assert self.num_td_values == 3
         loss_td_value1 = loss_td_value_unsummed[:,0].sum()

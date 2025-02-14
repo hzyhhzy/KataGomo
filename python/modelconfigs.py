@@ -16,20 +16,26 @@ ModelConfig = Dict[str,Any]
 # version = 10 # V7 features, shortterm value error prediction done properly
 # version = 11 # V7 features, New architectures!
 
+# version = 102 # V102 features, 32 bf and 48 gf
+
 def get_version(config: ModelConfig):
   return config["version"]
 
 def get_num_bin_input_features(config: ModelConfig):
   version = get_version(config)
   if version == 10 or version == 11:
-    return 22
+    return 40
+  elif version == 102:
+    return 32
   else:
     assert(False)
 
 def get_num_global_input_features(config: ModelConfig):
   version = get_version(config)
   if version == 10 or version == 11:
-    return 19
+    return 28
+  elif version == 102:
+    return 48
   else:
     assert(False)
 
@@ -106,6 +112,31 @@ b6c96 = {
   "sbv2_num_channels":48,
   "num_scorebeliefs":4,
   "v2_size":64,
+}
+b5c64 = {
+  "version":11,
+  "norm_kind":"fixup",
+  "bnorm_epsilon": 1e-4,
+  "bnorm_running_avg_momentum": 0.001,
+  "initial_conv_1x1": False,
+  "trunk_num_channels":64,
+  "mid_num_channels":64,
+  "gpool_num_channels":16,
+  "use_attention_pool":False,
+  "num_attention_pool_heads":4,
+  "block_kind": [
+    ["rconv1","regular"],
+    ["rconv2","regulargpool"],
+    ["rconv3","regular"],
+    ["rconv4","regulargpool"],
+    ["rconv5","regular"],
+  ],
+  "p1_num_channels":24,
+  "g1_num_channels":24,
+  "v1_num_channels":24,
+  "sbv2_num_channels":32,
+  "num_scorebeliefs":4,
+  "v2_size":48,
 }
 
 b10c128 = {
@@ -596,6 +627,76 @@ b10c384nbt = {
   "v2_size":112,
 }
 
+b20c256nbt = {
+  "version":11,
+  "norm_kind":"fixup",
+  "bnorm_epsilon": 1e-4,
+  "bnorm_running_avg_momentum": 0.001,
+  "initial_conv_1x1": False,
+  "trunk_num_channels":256,
+  "mid_num_channels":128,
+  "gpool_num_channels":64,
+  "use_attention_pool":False,
+  "num_attention_pool_heads":4,
+  "block_kind": [
+    ["rconv1","bottlenest2"],
+    ["rconv2","bottlenest2"],
+    ["rconv3","bottlenest2gpool"],
+    ["rconv4","bottlenest2"],
+    ["rconv5","bottlenest2"],
+    ["rconv6","bottlenest2gpool"],
+    ["rconv7","bottlenest2"],
+    ["rconv8","bottlenest2"],
+    ["rconv9","bottlenest2gpool"],
+    ["rconv10","bottlenest2"],
+    ["rconv11","bottlenest2"],
+    ["rconv12","bottlenest2gpool"],
+    ["rconv13","bottlenest2"],
+    ["rconv14","bottlenest2"],
+    ["rconv15","bottlenest2gpool"],
+    ["rconv16","bottlenest2"],
+    ["rconv17","bottlenest2"],
+    ["rconv18","bottlenest2gpool"],
+    ["rconv19","bottlenest2"],
+    ["rconv20","bottlenest2"],
+  ],
+  "p1_num_channels":48,
+  "g1_num_channels":48,
+  "v1_num_channels":48,
+  "sbv2_num_channels":96,
+  "num_scorebeliefs":8,
+  "v2_size":112,
+}
+
+
+b7c512nbt = {
+  "version":11,
+  "norm_kind":"fixup",
+  "bnorm_epsilon": 1e-4,
+  "bnorm_running_avg_momentum": 0.001,
+  "initial_conv_1x1": False,
+  "trunk_num_channels":512,
+  "mid_num_channels":256,
+  "gpool_num_channels":64,
+  "use_attention_pool":False,
+  "num_attention_pool_heads":4,
+  "block_kind": [
+    ["rconv1","bottlenest2"],
+    ["rconv2","bottlenest2gpool"],
+    ["rconv3","bottlenest2"],
+    ["rconv4","bottlenest2"],
+    ["rconv5","bottlenest2gpool"],
+    ["rconv6","bottlenest2"],
+    ["rconv7","bottlenest2"],
+  ],
+  "p1_num_channels":48,
+  "g1_num_channels":48,
+  "v1_num_channels":48,
+  "sbv2_num_channels":96,
+  "num_scorebeliefs":8,
+  "v2_size":112,
+}
+
 
 b10c480nb3t = {
   "version":11,
@@ -684,6 +785,34 @@ b5c512nnbt = {
   "v2_size":112,
 }
 
+b7c512nnbt = {
+  "version":11,
+  "norm_kind":"fixup",
+  "bnorm_epsilon": 1e-4,
+  "bnorm_running_avg_momentum": 0.001,
+  "initial_conv_1x1": True,
+  "trunk_num_channels":512,
+  "outermid_num_channels":256,
+  "mid_num_channels":128,
+  "gpool_num_channels":64,
+  "use_attention_pool":False,
+  "num_attention_pool_heads":4,
+  "block_kind": [
+    ["rconv1","bottlenest2bottlenest2"],
+    ["rconv2","bottlenest2bottlenest2gpool"],
+    ["rconv3","bottlenest2bottlenest2"],
+    ["rconv4","bottlenest2bottlenest2gpool"],
+    ["rconv5","bottlenest2bottlenest2"],
+    ["rconv6","bottlenest2bottlenest2gpool"],
+    ["rconv7","bottlenest2bottlenest2gpool"],
+  ],
+  "p1_num_channels":48,
+  "g1_num_channels":48,
+  "v1_num_channels":48,
+  "sbv2_num_channels":96,
+  "num_scorebeliefs":8,
+  "v2_size":112,
+}
 
 b20c384lbt = {
   "version":11,
@@ -1302,7 +1431,7 @@ b40c512nbt = {
   "initial_conv_1x1": False,
   "trunk_num_channels":512,
   "mid_num_channels":256,
-  "gpool_num_channels":128,
+  "gpool_num_channels":64,
   "use_attention_pool":False,
   "num_attention_pool_heads":4,
   "block_kind": [
@@ -1401,13 +1530,13 @@ base_config_of_name = {
   # Small nets
   "b2c16": b2c16,
   "b4c32": b4c32,
+  "b5c64": b5c64,
   "b6c96": b6c96,
   "b10c128": b10c128,
   "b15c192": b15c192,
 
 
   # Configs not too different in inference cost from b20c256
-  "b20c256": b20c256,
   "b30c256bt": b30c256bt,
   "b24c320bt": b24c320bt,
   "b20c384bt": b20c384bt,
@@ -1430,7 +1559,12 @@ base_config_of_name = {
   "b10c256nbt": b10c256nbt,
 
   # ~b20c256
+  "b20c256": b20c256,
+  "b7c512nnbt": b7c512nnbt,
+
+  "b20c256nbt": b20c256nbt,
   "b10c384nbt": b10c384nbt,
+  "b7c512nbt": b7c512nbt,
 
   # Configs not too different in inference cost from b40c256
   "b30c320": b30c320,
