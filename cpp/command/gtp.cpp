@@ -2426,17 +2426,17 @@ int MainCmds::gtp(const vector<string>& args) {
         }
       }
     } 
-    else if(Rules::SixWinRuleStrings().count(Global::toUpper(command)))  // Is Command a sixWin rule?
+    else if(Rules::SameTimeWinRuleStrings().count(Global::toUpper(command)))  // Is Command a SameTimeWin rule?
     {
       if(pieces.size() != 0) {
         responseIsError = true;
-        response = "Expected zero arguments for SixWinRule but got '" + Global::concat(pieces, " ") + "'";
+        response = "Expected zero arguments for SameTimeWinRule but got '" + Global::concat(pieces, " ") + "'";
       } else {
         Rules currentRules = engine->getCurrentRules();
         Rules newRules;
         bool parseSuccess = false;
         try {
-          newRules = Rules::updateRules("sixwinrule", command, currentRules);
+          newRules = Rules::updateRules("sametimewinrule", command, currentRules);
           parseSuccess = true;
         } catch(const StringError& err) {
           responseIsError = true;

@@ -8,20 +8,24 @@ using namespace std;
 using json = nlohmann::json;
 
 Rules::Rules() {
-  sixWinRule = SIXWINRULE_ALWAYS;
+  sameTimeWinRule = SAMETIMEWIN_SELF;
   wallBlock = false;
   VCNRule = VCNRULE_NOVC;
   firstPassWin = false;
   maxMoves = 0;
 }
 
-Rules::Rules(int sixWinRule, bool wallBlock, int VCNRule, bool firstPassWin, int maxMoves)
-  : sixWinRule(sixWinRule), wallBlock(wallBlock), VCNRule(VCNRule), firstPassWin(firstPassWin), maxMoves(maxMoves) {}
+Rules::Rules(int sameTimeWinRule, bool wallBlock, int VCNRule, bool firstPassWin, int maxMoves)
+  : sameTimeWinRule(sameTimeWinRule),
+    wallBlock(wallBlock),
+    VCNRule(VCNRule),
+    firstPassWin(firstPassWin),
+    maxMoves(maxMoves) {}
 
 Rules::~Rules() {}
 
 bool Rules::operator==(const Rules& other) const {
-  return sixWinRule == other.sixWinRule && wallBlock == other.wallBlock && VCNRule == other.VCNRule &&
+  return sameTimeWinRule == other.sameTimeWinRule && wallBlock == other.wallBlock && VCNRule == other.VCNRule &&
          firstPassWin == other.firstPassWin && maxMoves == other.maxMoves;
 }
 
@@ -34,32 +38,32 @@ Rules Rules::getTrompTaylorish() {
   return rules;
 }
 
-set<string> Rules::SixWinRuleStrings() {
-  return {"SIXWINRULE_ALWAYS", "SIXWINRULE_NEVER", "SIXWINRULE_CARO"};
+set<string> Rules::SameTimeWinRuleStrings() {
+  return {"SAMETIMEWIN_SELF", "SAMETIMEWIN_OPP", "SAMETIMEWIN_BLACK"};
 }
 set<string> Rules::VCNRuleStrings() {
   return {"NOVC", "VC1B", "VC2B", "VC3B", "VC4B", "VCTB", "VCFB", "VC1W", "VC2W", "VC3W", "VC4W", "VCTW", "VCFW"};
 }
 
-int Rules::parseSixWinRule(string s) {
+int Rules::parseSameTimeWinRule(string s) {
   s = Global::toUpper(s);
-  if(s == "SIXWINRULE_ALWAYS")
-    return Rules::SIXWINRULE_ALWAYS;
-  else if(s == "SIXWINRULE_NEVER")
-    return Rules::SIXWINRULE_NEVER;
-  else if(s == "SIXWINRULE_CARO")
-    return Rules::SIXWINRULE_CARO;
+  if(s == "SAMETIMEWIN_SELF")
+    return Rules::SAMETIMEWIN_SELF;
+  else if(s == "SAMETIMEWIN_OPP")
+    return Rules::SAMETIMEWIN_OPP;
+  else if(s == "SAMETIMEWIN_BLACK")
+    return Rules::SAMETIMEWIN_BLACK;
   else
-    throw IOError("Rules::parseSixWinRule: Invalid six win rule: " + s);
+    throw IOError("Rules::parseSameTimeWinRule: Invalid six win rule: " + s);
 }
 
-string Rules::writeSixWinRule(int sixWinRule) {
-  if(sixWinRule == Rules::SIXWINRULE_ALWAYS)
-    return string("SIXWINRULE_ALWAYS");
-  if(sixWinRule == Rules::SIXWINRULE_NEVER)
-    return string("SIXWINRULE_NEVER");
-  if(sixWinRule == Rules::SIXWINRULE_CARO)
-    return string("SIXWINRULE_CARO");
+string Rules::writeSameTimeWinRule(int s) {
+  if(s == Rules::SAMETIMEWIN_SELF)
+    return string("SAMETIMEWIN_SELF");
+  if(s == Rules::SAMETIMEWIN_OPP)
+    return string("SAMETIMEWIN_OPP");
+  if(s == Rules::SAMETIMEWIN_BLACK)
+    return string("SAMETIMEWIN_BLACK");
   return string("UNKNOWN");
 }
 
@@ -132,7 +136,7 @@ int Rules::vcLevel() const {
 }
 
 ostream& operator<<(ostream& out, const Rules& rules) {
-  out << "sixwinrule" << Rules::writeSixWinRule(rules.sixWinRule);
+  out << "sametimewinrule" << Rules::writeSameTimeWinRule(rules.sameTimeWinRule);
   out << "wallblock" << rules.wallBlock;
   out << "vcnrule" << Rules::writeVCNRule(rules.VCNRule);
   out << "firstpasswin" << rules.firstPassWin;
@@ -149,7 +153,7 @@ string Rules::toString() const {
 
 json Rules::toJson() const {
   json ret;
-  ret["sixwinrule"] = writeSixWinRule(sixWinRule);
+  ret["sametimewinrule"] = writeSameTimeWinRule(sameTimeWinRule);
   ret["vcnrule"] = writeVCNRule(VCNRule);
   ret["firstpasswin"] = firstPassWin;
   ret["maxmoves"] = maxMoves;
@@ -167,8 +171,8 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   Rules rules = oldRules;
   string key = Global::toLower(Global::trim(k));
   string value = Global::trim(Global::toUpper(v));
-  if(key == "sixwinrule")
-    rules.sixWinRule = Rules::parseSixWinRule(value);
+  if(key == "sametimewinrule")
+    rules.sameTimeWinRule = Rules::parseSameTimeWinRule(value);
   else if(key == "wallblock") {
     rules.wallBlock = Global::stringToBool(value);
   }
@@ -236,7 +240,7 @@ string Rules::toStringMaybeNice() const {
   return toString();
 }
 
-const Hash128 Rules::ZOBRIST_SIXWIN_RULE_HASH[3] = {
+const Hash128 Rules::ZOBRIST_SAMETIMEWIN_RULE_HASH[3] = {
   Hash128(0x72eeccc72c82a5e7ULL, 0x0d1265e413623e2bULL),  // Based on sha256 hash of Rules::TAX_NONE
   Hash128(0x125bfe48a41042d5ULL, 0x061866b5f2b98a79ULL),  // Based on sha256 hash of Rules::TAX_SEKI
   Hash128(0xa384ece9d8ee713cULL, 0xfdc9f3b5d1f3732bULL),  // Based on sha256 hash of Rules::TAX_ALL

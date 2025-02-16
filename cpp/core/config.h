@@ -4,5 +4,5 @@
 //#define FORGOMOCUP                //CPU only and single thread
 
 #ifndef COMPILE_MAX_BOARD_LEN
-#define COMPILE_MAX_BOARD_LEN 20 // Board::MAX_LEN, Normal gomoku/renju games are on 15x15 board
+#define COMPILE_MAX_BOARD_LEN 8 // Board::MAX_LEN, Normal gomoku/renju games are on 15x15 board
 #endif 

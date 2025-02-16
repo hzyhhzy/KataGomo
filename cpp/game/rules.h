@@ -7,10 +7,10 @@
 #include "../external/nlohmann_json/json.hpp"
 
 struct Rules {
-  static const int SIXWINRULE_ALWAYS = 0; //six or longer is always win
-  static const int SIXWINRULE_NEVER = 1;  // six or longer is never win
-  static const int SIXWINRULE_CARO = 2;   // oxxxxxx. is win, oxxxxxxo is not win
-  int sixWinRule;
+  static const int SAMETIMEWIN_SELF = 0; //same time connect four, who plays wins
+  static const int SAMETIMEWIN_OPP = 1;  // opp wins
+  static const int SAMETIMEWIN_BLACK = 2;  // always black win
+  int sameTimeWinRule;
 
   bool wallBlock;// whether regard wall as opp stone (if true, oxxxxx# is not win)
 
@@ -31,19 +31,19 @@ struct Rules {
 
 
   Rules();
-  Rules(int sixWinRule, bool wallBlock, int VCNRule, bool firstPassWin, int maxMoves);
+  Rules(int sameTimeWinRule, bool wallBlock, int VCNRule, bool firstPassWin, int maxMoves);
   ~Rules();
 
   bool operator==(const Rules& other) const;
   bool operator!=(const Rules& other) const;
 
-  static std::set<std::string> SixWinRuleStrings();
+  static std::set<std::string> SameTimeWinRuleStrings();
   static std::set<std::string> VCNRuleStrings();
 
   static Rules getTrompTaylorish();
 
-  static int parseSixWinRule(std::string s);
-  static std::string writeSixWinRule(int sixWinRule);
+  static int parseSameTimeWinRule(std::string s);
+  static std::string writeSameTimeWinRule(int s);
 
   static int parseVCNRule(std::string s);
   static std::string writeVCNRule(int VCNRule);
@@ -63,7 +63,7 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
   
-  static const Hash128 ZOBRIST_SIXWIN_RULE_HASH[3];
+  static const Hash128 ZOBRIST_SAMETIMEWIN_RULE_HASH[3];
   static const Hash128 ZOBRIST_WALLBLOCK_HASH;
   static const Hash128 ZOBRIST_VCNRULE_HASH_BASE;
   static const Hash128 ZOBRIST_FIRSTPASSWIN_HASH;

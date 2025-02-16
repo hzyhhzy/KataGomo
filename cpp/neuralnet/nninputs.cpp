@@ -546,13 +546,16 @@ void NNInputs::fillRowV7(
     }
   }
 
-  if(hist.rules.sixWinRule == Rules::SIXWINRULE_NEVER)
+  if(hist.rules.sameTimeWinRule == Rules::SAMETIMEWIN_SELF) {
+  } 
+  else if(hist.rules.sameTimeWinRule == Rules::SAMETIMEWIN_OPP) {
     rowGlobal[3] = 1.0;
-  else if(hist.rules.sixWinRule == Rules::SIXWINRULE_CARO)
+  } 
+  else if(hist.rules.sameTimeWinRule == Rules::SAMETIMEWIN_BLACK) {
     rowGlobal[4] = 1.0;
+    rowGlobal[5] = nextPlayer == P_BLACK ? 1: -1;
+  }
 
-  if(hist.rules.wallBlock)
-    rowGlobal[5] = 1.0;
 
   rowGlobal[13] =
     nextPlayer == P_BLACK ? -nnInputParams.noResultUtilityForWhite : nnInputParams.noResultUtilityForWhite;
@@ -671,28 +674,15 @@ void NNInputs::fillRowV101(
     }
   }
 
-  if(hist.rules.sixWinRule == Rules::SIXWINRULE_NEVER)
+  if(hist.rules.sameTimeWinRule == Rules::SAMETIMEWIN_SELF) {
+  } else if(hist.rules.sameTimeWinRule == Rules::SAMETIMEWIN_OPP) {
     rowGlobal[3] = 1.0;
-  else if(hist.rules.sixWinRule == Rules::SIXWINRULE_CARO)
+  } else if(hist.rules.sameTimeWinRule == Rules::SAMETIMEWIN_BLACK) {
     rowGlobal[4] = 1.0;
-
-  if(hist.rules.wallBlock)
-    rowGlobal[5] = 1.0;
-
-
-  int myPassNum = nextPlayer == C_BLACK ? board.blackPassNum : board.whitePassNum;
-  int oppPassNum = nextPlayer == C_WHITE ? board.blackPassNum : board.whitePassNum;
-  if(myPassNum > 0 && oppPassNum > 0)
-    cout << "myPassNum>0 && oppPassNum>0 in nninput";
-
-  if(!hist.rules.firstPassWin && hist.rules.VCNRule == Rules::VCNRULE_NOVC) {
-    rowGlobal[13] =
-      nextPlayer == P_BLACK ? -nnInputParams.noResultUtilityForWhite : nnInputParams.noResultUtilityForWhite;
-    rowGlobal[14] = oppPassNum > 0;
-  } else {
-    rowGlobal[13] = 0;
-    rowGlobal[14] = 0;
+    rowGlobal[5] = nextPlayer == P_BLACK ? 1 : -1;
   }
+
+
 
   if(board.isOnBoard(resultsBeforeNN.myOnlyLoc))
     setRowBin(
@@ -723,33 +713,6 @@ void NNInputs::fillRowV101(
     rowGlobal[16] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
   }
 
-  if(hist.rules.firstPassWin) {
-    rowGlobal[17] = 1.0;
-    rowGlobal[18] = myPassNum > 0;
-    rowGlobal[19] = oppPassNum > 0;
-  }
-
-  if(hist.rules.VCNRule != Rules::VCNRULE_NOVC) {
-    Color VCside = hist.rules.vcSide();
-    int VClevel = hist.rules.vcLevel();
-    int realVClevel = VClevel + myPassNum + oppPassNum;
-    if(realVClevel >= 1 && realVClevel <= 5) {
-      if(VCside == nextPlayer)
-        rowGlobal[19 + realVClevel] = 1.0;
-      else if(VCside == opp)
-        rowGlobal[24 + realVClevel] = 1.0;
-    } else {
-      cout << "illegal VCN rule in nninput:" << realVClevel << " " << VClevel << endl;
-    }
-  }
-
-  // if(maxmoves!=0)
-  //  31  maxmoves/boardarea
-  //  32  moves/boardarea
-  //  33  exp(-(maxmoves-moves)/50.0)
-  //  34  exp(-(maxmoves-moves)/15.0)
-  //  35  exp(-(maxmoves-moves)/5.0)
-  //  36  exp(-(maxmoves-moves)/1.5)
 
   if(hist.rules.maxMoves != 0) {
     rowGlobal[30] = 1.0;

@@ -22,7 +22,7 @@ Hash128 Board::ZOBRIST_SIZE_X_HASH[MAX_LEN+1];
 Hash128 Board::ZOBRIST_SIZE_Y_HASH[MAX_LEN+1];
 Hash128 Board::ZOBRIST_BOARD_HASH[MAX_ARR_SIZE][4];
 Hash128 Board::ZOBRIST_PLAYER_HASH[4];
-Hash128 Board::ZOBRIST_MOVENUM_HASH[MAX_ARR_SIZE];
+Hash128 Board::ZOBRIST_MOVENUM_HASH[MAX_ARR_SIZE * 100];
 Hash128 Board::ZOBRIST_BPASSNUM_HASH[MAX_ARR_SIZE];
 Hash128 Board::ZOBRIST_WPASSNUM_HASH[MAX_ARR_SIZE];
 Hash128 Board::ZOBRIST_BOARD_HASH2[MAX_ARR_SIZE][4];
@@ -176,8 +176,10 @@ void Board::initHash()
     }
   }
 
-  for(int i = 0; i < MAX_ARR_SIZE; i++) {
+  for(int i = 0; i < 100 * MAX_ARR_SIZE; i++) 
     ZOBRIST_MOVENUM_HASH[i] = nextHash();
+
+  for(int i = 0; i < MAX_ARR_SIZE; i++) {
     ZOBRIST_BPASSNUM_HASH[i] = nextHash();
     ZOBRIST_WPASSNUM_HASH[i] = nextHash();
   }
@@ -323,7 +325,25 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     }
     return;
   }
+
   setStone(loc, pla);
+
+  for (int a = 0; a < 8; a++)
+  {
+    Loc loc1 = loc + adj_offsets[a];
+    if(!isOnBoard(loc1))
+      continue;
+    if(colors[loc1] == C_EMPTY)
+      continue;
+    Loc loc2 = loc1 + adj_offsets[a];
+    if(!isOnBoard(loc2)) {
+      setStone(loc1, C_EMPTY);
+    } 
+    else if(colors[loc2] == C_EMPTY) {
+      setStone(loc2, colors[loc1]);
+      setStone(loc1, C_EMPTY);
+    }
+  }
 
 }
 

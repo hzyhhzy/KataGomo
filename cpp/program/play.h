@@ -101,8 +101,8 @@ class GameInitializer {
   Rand rand;
 
   
-  std::vector<std::string> allowedSixWinRuleStrs;
-  std::vector<int> allowedSixWinRules;
+  std::vector<std::string> allowedSameTimeWinRuleStrs;
+  std::vector<int> allowedSameTimeWinRules;
   std::vector<std::string> allowedVCNRuleStrs;
   std::vector<int> allowedVCNRules;
   std::vector<bool> allowedFirstPassWinRules;

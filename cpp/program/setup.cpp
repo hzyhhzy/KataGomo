@@ -689,11 +689,11 @@ Rules Setup::loadSingleRules(
   Rules rules;
 
   
-  if(cfg.contains("sixWinRule")) {
-    string sixWinRule = cfg.getString("sixWinRule", Rules::SixWinRuleStrings());
-    rules.sixWinRule = Rules::parseSixWinRule(sixWinRule);
+  if(cfg.contains("sameTimeWinRule")) {
+    string sameTimeWinRule = cfg.getString("sameTimeWinRule", Rules::SameTimeWinRuleStrings());
+    rules.sameTimeWinRule = Rules::parseSameTimeWinRule(sameTimeWinRule);
   } else {
-    rules.sixWinRule = Rules::SIXWINRULE_ALWAYS;
+    rules.sameTimeWinRule = Rules::SAMETIMEWIN_SELF;
   }
   if(cfg.contains("wallBlockRule")) {
     rules.wallBlock = cfg.getBool("wallBlockRule");

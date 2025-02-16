@@ -251,7 +251,7 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
 Hash128 BoardHistory::getRulesHash() const
 {
   Hash128 hash=Hash128();
-  hash ^= Rules::ZOBRIST_SIXWIN_RULE_HASH[rules.sixWinRule];
+  hash ^= Rules::ZOBRIST_SAMETIMEWIN_RULE_HASH[rules.sameTimeWinRule];
   if(rules.wallBlock)
     hash ^= Rules::ZOBRIST_WALLBLOCK_HASH;
   hash ^= Hash128::mixInt(Rules::ZOBRIST_VCNRULE_HASH_BASE,rules.VCNRule);

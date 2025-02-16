@@ -42,16 +42,16 @@ GameInitializer::GameInitializer(ConfigParser& cfg, Logger& logger, const string
 }
 
 void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
-  allowedSixWinRuleStrs = cfg.getStrings("sixWinRules", Rules::SixWinRuleStrings());
+  allowedSameTimeWinRuleStrs = cfg.getStrings("sameTimeWinRules", Rules::SameTimeWinRuleStrings());
   wallBlockRuleProb = cfg.contains("wallBlockRuleProb") ? cfg.getDouble("wallBlockRuleProb", 0.0, 1.0)
                       : cfg.contains("wallBlockRule")   ? (cfg.getBool("wallBlockRule") ? 1.0 : 0.0)
                                                         : 0.0;
 
-  for(size_t i = 0; i < allowedSixWinRuleStrs.size(); i++)
-    allowedSixWinRules.push_back(Rules::parseSixWinRule(allowedSixWinRuleStrs[i]));
+  for(size_t i = 0; i < allowedSameTimeWinRuleStrs.size(); i++)
+    allowedSameTimeWinRules.push_back(Rules::parseSameTimeWinRule(allowedSameTimeWinRuleStrs[i]));
 
-  if(allowedSixWinRules.size() <= 0)
-    throw IOError("SixWinRules must have at least one value in " + cfg.getFileName());
+  if(allowedSameTimeWinRules.size() <= 0)
+    throw IOError("SameTimeWinRules must have at least one value in " + cfg.getFileName());
 
   allowedVCNRuleStrs = cfg.getStrings("VCNRules", Rules::VCNRuleStrings());
 
@@ -313,7 +313,7 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
-  rules.sixWinRule = allowedSixWinRules[rand.nextUInt(allowedSixWinRules.size())];
+  rules.sameTimeWinRule = allowedSameTimeWinRules[rand.nextUInt(allowedSameTimeWinRules.size())];
   rules.wallBlock = rand.nextBool(wallBlockRuleProb);
   rules.VCNRule = allowedVCNRules[rand.nextUInt(allowedVCNRules.size())];
   if(rules.VCNRule == Rules::VCNRULE_NOVC)
@@ -400,9 +400,14 @@ void GameInitializer::createGameSharedUnsynchronized(
   else {
     int xSize = allowedBSizes[xSizeIdx];
     int ySize = allowedBSizes[ySizeIdx];
+
     if(!rules.firstPassWin && rules.VCNRule == Rules::VCNRULE_NOVC && rand.nextBool(moveLimitProb)) {
-      int maxMoves = rand.nextExponential() * 30 + 30 - rand.nextExponential() * 5;
-      if(maxMoves > xSize * ySize - 5)
+      int maxMoves = 0;
+      if(rand.nextBool(0.5))
+        maxMoves = rand.nextExponential() * 20 + 15 - rand.nextExponential() * 5;
+      else
+        maxMoves = rand.nextDouble() * xSize * ySize;
+      if(maxMoves > xSize * ySize * 10)
         maxMoves = 0;
       if(maxMoves < 10)
         maxMoves = 0;
@@ -1250,7 +1255,7 @@ FinishedGameData* Play::runGame(
   };
 
 
-  double balanceOpeningProb = playSettings.forSelfPlay ? 0.99 : 1.0;
+  double balanceOpeningProb = playSettings.forSelfPlay ? 0.5 : 1.0;
 
   if(gameRand.nextBool(balanceOpeningProb)) {
     if(board.numStonesOnBoard() != 0)
