@@ -48,6 +48,56 @@ static bool checkConnection(const Board& board, Player pla) {
   return false;
 }
 
+static int connectionLengthOneDirection(const Board& board, Player pla, bool isSixWin, Loc loc, short adj) {
+  Loc tmploc = loc;
+  int conNum = 0;
+  while(1) {
+    tmploc += adj;
+    if(!board.isOnBoard(tmploc))
+      break;
+    if(board.colors[tmploc] == pla)
+      conNum++;
+    else if(board.colors[tmploc] == C_EMPTY) {
+
+      break;
+    } else
+      break;
+  }
+  return conNum;
+}
+
+static bool isWinOneDirectionAssumeLegal(
+  const Board& board,
+  Player pla,
+  bool isSixWin,
+  Loc loc,
+  int adj) {
+  Player opp = getOpp(pla);
+  int myConNum = connectionLengthOneDirection(board, pla, isSixWin, loc, adj) +
+                 connectionLengthOneDirection(board, pla, isSixWin, loc, -adj) + 1;
+
+  if(myConNum == 4 || (myConNum > 4 && isSixWin))
+    return true;
+
+
+  return false;
+}
+
+bool GameLogic::isWinAssumeLegal(const Board& board, const BoardHistory& hist, Player pla, Loc loc) {
+  if(loc == Board::PASS_LOC)
+    return false;
+
+  bool isSixWin = true;
+
+  int adjs[4] = {1, (board.x_size + 1), (board.x_size + 1) + 1, (board.x_size + 1) - 1};  // +x +y +x+y -x+y
+  for(int i = 0; i < 4; i++) {
+    if(isWinOneDirectionAssumeLegal(board, pla, isSixWin, loc, adjs[i]))
+      return true;
+  }
+
+  return false;
+}
+
 Color GameLogic::checkWinnerAfterPlayed(
   const Board& board,
   const BoardHistory& hist,
@@ -91,8 +141,8 @@ Color GameLogic::checkWinnerAfterPlayed(
 
   if (board.movenum >= 10 * board.x_size * board.y_size)
   {
-    if(board.x_size * board.y_size >= 40)
-      cout << "Long game >= 10 * board.x_size * board.y_size" << endl;
+    //if(board.x_size * board.y_size >= 40)
+    //  cout << "Long game >= 10 * board.x_size * board.y_size" << endl;
     return C_EMPTY;
   }
 

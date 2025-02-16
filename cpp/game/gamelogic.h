@@ -19,8 +19,8 @@
 namespace GameLogic {
 
 
-  MovePriority getMovePriorityAssumeLegal(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
-  MovePriority getMovePriority(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
+  //check winner BEFORE played
+  bool isWinAssumeLegal(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
 
   //C_EMPTY = draw, C_WALL = not finished 
   Color checkWinnerAfterPlayed(const Board& board, const BoardHistory& hist, Player pla, Loc loc);

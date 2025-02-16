@@ -215,6 +215,9 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   isNoResult = false;
   isResignation = false;
 
+  bool winByConnectFour = GameLogic::isWinAssumeLegal(board, *this, movePla, moveLoc);
+
+
   board.playMoveAssumeLegal(moveLoc,movePla);
 
   
@@ -228,6 +231,8 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
 
 
   Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc);
+  if(winByConnectFour)
+    maybeWinner = movePla;
   if(maybeWinner!=C_WALL) { //game finished
     setWinner(maybeWinner);
   }
