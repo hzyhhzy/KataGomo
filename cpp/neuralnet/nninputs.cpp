@@ -713,14 +713,34 @@ void NNInputs::fillRowV101(
     rowGlobal[16] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
   }
 
+  int mm = hist.rules.maxMoves;
+  if(mm == 0)
+    mm = 10 * board.x_size * board.y_size;
 
-  if(hist.rules.maxMoves != 0) {
+  if(mm != 0) {
     rowGlobal[30] = 1.0;
     double boardArea = board.x_size * board.y_size;
     double movenum = board.movenum;
-    double maxmoves = hist.rules.maxMoves;
-    rowGlobal[31] = maxmoves / boardArea;
-    rowGlobal[32] = movenum / boardArea;
+    double maxmoves = mm;
+    double r = maxmoves / boardArea;
+    if (r > 1)
+    {
+      double r2 = movenum / boardArea;
+      if(r2 > r)
+        r2 = r;
+      if (r2 > 1)
+      {
+        r = r - r2 + 1;
+        r2 = 1;
+      }
+      r = 1 + log(r);
+      rowGlobal[31] = r;
+      rowGlobal[32] = r2;
+    } 
+    else {
+      rowGlobal[31] = r;
+      rowGlobal[32] = movenum / boardArea;
+    }
     rowGlobal[33] = exp(-(maxmoves - movenum) / 50.0);
     rowGlobal[34] = exp(-(maxmoves - movenum) / 15.0);
     rowGlobal[35] = exp(-(maxmoves - movenum) / 5.0);

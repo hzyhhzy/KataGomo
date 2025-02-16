@@ -412,6 +412,10 @@ void GameInitializer::createGameSharedUnsynchronized(
       if(maxMoves < 10)
         maxMoves = 0;
       rules.maxMoves = maxMoves;
+    } 
+    else if(rand.nextBool(0.8))
+    {
+      rules.maxMoves = xSize * ySize + rand.nextDouble() * 9.0 * xSize * ySize;
     }
     board = Board(xSize,ySize);
     pla = P_BLACK;
