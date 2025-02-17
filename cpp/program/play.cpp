@@ -403,8 +403,8 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     if(!rules.firstPassWin && rules.VCNRule == Rules::VCNRULE_NOVC && rand.nextBool(moveLimitProb)) {
       int maxMoves = 0;
-      if(rand.nextBool(0.5))
-        maxMoves = rand.nextExponential() * 20 + 15 - rand.nextExponential() * 5;
+      if(rand.nextBool(0.9))
+        maxMoves = rand.nextExponential() * 10 + 35 - rand.nextExponential() * 3;
       else
         maxMoves = rand.nextDouble() * xSize * ySize;
       if(maxMoves > xSize * ySize * 10)
