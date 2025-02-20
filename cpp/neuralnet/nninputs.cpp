@@ -619,6 +619,17 @@ void NNInputs::fillRowV7(
   else
     ASSERT_UNREACHABLE;
 
+
+  //drawJudge rule
+  if(hist.rules.drawJudgeRule == Rules::DRAWJUDGE_DRAW) {
+  } 
+  else if(hist.rules.drawJudgeRule == Rules::DRAWJUDGE_COUNT) {
+    rowGlobal[26] = 1.0;
+  }
+  else if(hist.rules.drawJudgeRule == Rules::DRAWJUDGE_WEIGHT) {
+    rowGlobal[27] = 1.0;
+  }
+
   if(hist.rules.maxmoves != 0) {
     rowGlobal[8] = 1.0;
     double boardArea = board.x_size * board.y_size;
@@ -654,7 +665,6 @@ void NNInputs::fillRowV7(
 
   // noResultUtilityForWhite
   rowGlobal[25] = pla == C_WHITE ? nnInputParams.noResultUtilityForWhite : -nnInputParams.noResultUtilityForWhite;
-
 
 
 

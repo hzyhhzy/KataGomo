@@ -34,6 +34,8 @@ struct BoardHistory {
   bool isGameFinished;
   //Winner of the game if the game is supposed to have ended now, C_EMPTY if it is a draw or isNoResult.
   Player winner;
+  //Score of drawJudgeRule. only used when draw
+  double finalScoreBlack;
   //True if this game is supposed to be ended but there is no result
   bool isNoResult;
   //True if this game is supposed to be ended but it was by resignation rather than an actual end position
@@ -80,13 +82,15 @@ struct BoardHistory {
   bool isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const;
 
   void setWinnerByResignation(Player pla);
-  void setWinner(Color pla);
+  void setWinner(Color pla, double bscore);
 
   void printBasicInfo(std::ostream& out, const Board& board) const;
   void printDebugInfo(std::ostream& out, const Board& board) const;
 
   std::vector<Loc> get73ruleHistory(const Board& board, Player pla, int maxLen) const;
   std::vector<Loc> get73ruleHistory(const Board& board, Player pla) const; //maxLen=7
+
+  double calculateScoreBlackWhenDraw(const Board& board) const;//calculate draw score
 
   //Compute a hash that takes into account the full situation, the rules, discretized komi, and any immediate ko prohibitions.
   static Hash128 getSituationRulesHash(

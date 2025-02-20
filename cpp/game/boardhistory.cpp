@@ -15,7 +15,9 @@ BoardHistory::BoardHistory()
    recentBoards(),
    currentRecentBoardIdx(0),
    presumedNextMovePla(P_BLACK),
-   isGameFinished(false),winner(C_EMPTY),
+    isGameFinished(false),
+    winner(C_EMPTY),
+    finalScoreBlack(0.0),
    isNoResult(false),isResignation(false)
 {
 }
@@ -32,7 +34,9 @@ BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
    recentBoards(),
    currentRecentBoardIdx(0),
    presumedNextMovePla(pla),
-   isGameFinished(false),winner(C_EMPTY),
+    isGameFinished(false),
+    winner(C_EMPTY),
+    finalScoreBlack(0.0),
    isNoResult(false),isResignation(false)
 {
 
@@ -48,7 +52,7 @@ BoardHistory::BoardHistory(const BoardHistory& other)
    recentBoards(),
    currentRecentBoardIdx(other.currentRecentBoardIdx),
    presumedNextMovePla(other.presumedNextMovePla),
-   isGameFinished(other.isGameFinished),winner(other.winner),
+   isGameFinished(other.isGameFinished),winner(other.winner),finalScoreBlack(other.finalScoreBlack),
    isNoResult(other.isNoResult),isResignation(other.isResignation)
 {
   std::copy(other.recentBoards, other.recentBoards+NUM_RECENT_BOARDS, recentBoards);
@@ -69,6 +73,7 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
   presumedNextMovePla = other.presumedNextMovePla;
   isGameFinished = other.isGameFinished;
   winner = other.winner;
+  finalScoreBlack = other.finalScoreBlack;
   isNoResult = other.isNoResult;
   isResignation = other.isResignation;
 
@@ -84,7 +89,9 @@ BoardHistory::BoardHistory(BoardHistory&& other) noexcept
   recentBoards(),
   currentRecentBoardIdx(other.currentRecentBoardIdx),
   presumedNextMovePla(other.presumedNextMovePla),
-  isGameFinished(other.isGameFinished),winner(other.winner),
+    isGameFinished(other.isGameFinished),
+    winner(other.winner),
+    finalScoreBlack(other.finalScoreBlack),
   isNoResult(other.isNoResult),isResignation(other.isResignation)
 {
   std::copy(other.recentBoards, other.recentBoards+NUM_RECENT_BOARDS, recentBoards);
@@ -102,6 +109,7 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
   presumedNextMovePla = other.presumedNextMovePla;
   isGameFinished = other.isGameFinished;
   winner = other.winner;
+  finalScoreBlack = other.finalScoreBlack;
   isNoResult = other.isNoResult;
   isResignation = other.isResignation;
 
@@ -127,6 +135,7 @@ void BoardHistory::clear(const Board& board, Player pla, const Rules& r) {
 
   isGameFinished = false;
   winner = C_EMPTY;
+  finalScoreBlack = 0;
   isNoResult = false;
   isResignation = false;
 
@@ -163,7 +172,7 @@ void BoardHistory::printDebugInfo(ostream& out, const Board& board) const {
   out << "Initial pla " << PlayerIO::playerToString(initialPla) << endl;
   out << "Rules " << rules << endl;
   out << "Presumed next pla " << PlayerIO::playerToString(presumedNextMovePla) << endl;
-  out << "Game result " << isGameFinished << " " << PlayerIO::playerToString(winner) << " "
+  out << "Game result " << isGameFinished << " " << PlayerIO::playerToString(winner) << " " << finalScoreBlack << " "
       << isNoResult << " " << isResignation << endl;
   out << "Last moves ";
   for(int i = 0; i<moveHistory.size(); i++)
@@ -219,6 +228,59 @@ std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla) 
   return get73ruleHistory(board, pla, maxLen);
 }
 
+double BoardHistory::calculateScoreBlackWhenDraw(const Board& board) const {
+  if(rules.drawJudgeRule == rules.DRAWJUDGE_DRAW)
+    return 0;
+  else if(rules.drawJudgeRule == rules.DRAWJUDGE_COUNT) {
+    double s = 0;
+    for(int y = 0; y < board.y_size; y++)
+      for(int x = 0; x < board.x_size; x++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        Color c = board.colors[loc];
+        if(c == C_EMPTY)
+          continue;
+        Color cp = getPiecePla(c);
+        Color ct = getPieceType(c);
+        if(cp == C_BLACK)
+          s += 1;
+        else
+          s -= 1;
+      }
+    return 0.3 * s;
+  } 
+  else if(rules.drawJudgeRule == rules.DRAWJUDGE_WEIGHT) {
+    double s = 0;
+    for(int y = 0; y < board.y_size; y++)
+      for(int x = 0; x < board.x_size; x++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        Color c = board.colors[loc];
+        if(c == C_EMPTY)
+          continue;
+        Color cp = getPiecePla(c);
+        Color ct = getPieceType(c);
+
+        double w = 1;
+        if(ct == C_ELEPHANT)
+          w = 4;
+        else if(ct == C_LION)
+          w = 4;
+        else if(ct == C_RAT)
+          w = 3;
+        else if(ct == C_TIGER)
+          w = 2;
+
+        if(cp == C_BLACK)
+          s += w;
+        else
+          s -= w;
+      }
+    return 0.15 * s;
+  } 
+  else
+    ASSERT_UNREACHABLE;
+  return 0;
+}
+
 
 const Board& BoardHistory::getRecentBoard(int numMovesAgo) const {
   assert(numMovesAgo >= 0 && numMovesAgo < NUM_RECENT_BOARDS);
@@ -235,13 +297,18 @@ void BoardHistory::setWinnerByResignation(Player pla) {
   isNoResult = false;
   isResignation = true;
   winner = pla;
+  finalScoreBlack = 0.0;
 }
 
-void BoardHistory::setWinner(Player pla) {
+void BoardHistory::setWinner(Player pla, double bscore) {
   isGameFinished = true;
   isNoResult = false;
   isResignation = false;
   winner = pla;
+  if(winner == C_EMPTY)
+    finalScoreBlack = bscore;
+  else
+    finalScoreBlack = 0;
 }
 
 bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) const {
@@ -270,6 +337,7 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   //If somehow we're making a move after the game was ended, just clear those values and continue
   isGameFinished = false;
   winner = C_EMPTY;
+  finalScoreBlack = 0.0;
   isNoResult = false;
   isResignation = false;
 
@@ -285,7 +353,13 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   presumedNextMovePla = board.nextPla;
   Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc);
   if(maybeWinner!=C_WALL) { //game finished
-    setWinner(maybeWinner);
+    double s = 0;
+    if (maybeWinner == C_EMPTY)
+    {
+      //drawJudge rule
+      s = calculateScoreBlackWhenDraw(board);
+    }
+    setWinner(maybeWinner, s);
   }
 
 }
@@ -299,6 +373,7 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
 
   //Fold in the ko, scoring, and suicide rules
   hash ^= Rules::ZOBRIST_SCORING_RULE_HASH[hist.rules.scoringRule];
+  hash ^= Rules::ZOBRIST_DRAWJUDGE_RULE_HASH[hist.rules.drawJudgeRule];
   hash ^= Board::ZOBRIST_MM_RULE_HASH[hist.rules.maxmoves];
   hash ^= Board::ZOBRIST_MC_RULE_HASH[hist.rules.maxmovesNoCapture];
 

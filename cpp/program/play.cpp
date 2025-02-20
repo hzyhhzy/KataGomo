@@ -50,6 +50,13 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   if(allowedScoringRules.size() <= 0)
     throw IOError("scoringRules must have at least one value in " + cfg.getFileName());
 
+  
+  allowedDrawJudgeRuleStrs = cfg.getStrings("drawJudgeRules", Rules::drawJudgeRuleStrings());
+
+  for(size_t i = 0; i < allowedDrawJudgeRuleStrs.size(); i++)
+    allowedDrawJudgeRules.push_back(Rules::parseDrawJudgeRule(allowedDrawJudgeRuleStrs[i]));
+  if(allowedDrawJudgeRules.size() <= 0)
+    throw IOError("drawJudgeRules must have at least one value in " + cfg.getFileName());
 
   //allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
   //allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
@@ -253,6 +260,7 @@ void GameInitializer::createGame(
 
 Rules GameInitializer::randomizeScoringAndTaxRules(Rules rules, Rand& randToUse) const {
   rules.scoringRule = allowedScoringRules[randToUse.nextUInt((uint32_t)allowedScoringRules.size())];
+  rules.drawJudgeRule = allowedDrawJudgeRules[randToUse.nextUInt((uint32_t)allowedDrawJudgeRules.size())];
 
 
   return rules;
@@ -288,6 +296,7 @@ Rules GameInitializer::createRules() {
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
   rules.scoringRule = allowedScoringRules[rand.nextUInt((uint32_t)allowedScoringRules.size())];
+  rules.drawJudgeRule = allowedDrawJudgeRules[rand.nextUInt((uint32_t)allowedDrawJudgeRules.size())];
 
   return rules;
 }
@@ -367,22 +376,23 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     //randomize maxmove rules
     {
-      int maxmoves = rand.nextExponential() * 80 + 200 - rand.nextExponential() * 30; //mean 350
+      int maxmoves = rand.nextExponential() * 80 + 200 - rand.nextExponential() * 30; //mean 250
       if(maxmoves > 700)
         maxmoves = 700;
       if(maxmoves < 10)
         maxmoves = 10;
-      int maxmovesnc = rand.nextExponential() * 40 + 120 - rand.nextExponential() * 20; //mean 200
+      int maxmovesnc = rand.nextExponential() * 40 + 120 - rand.nextExponential() * 20; //mean 140
       if(maxmovesnc > 400)
         maxmovesnc = 400;
       if(maxmovesnc < 10)
         maxmovesnc = 10;
       int r = rand.nextUInt(100);
-      if(r < 45) {
+
+      if(r < 30) {
         rules.maxmoves = maxmoves;
         rules.maxmovesNoCapture = 0;
       } 
-      else if(r < 90) {
+      else if(r < 95) {
         rules.maxmoves = 0;
         rules.maxmovesNoCapture = maxmovesnc;
       } 
@@ -1485,8 +1495,29 @@ FinishedGameData* Play::runGame(
         finalValueTargets.win = 1.0f;
       else if(hist.winner == C_BLACK)
         finalValueTargets.loss = 1.0f;
-      else 
-        finalValueTargets.noResult = 1.0f;
+      else {
+        double s = hist.finalScoreBlack;
+        if (s > 0)
+        {
+          if(s > 100)
+            s = 100;
+          finalValueTargets.noResult = 1 / (1 + s);
+          finalValueTargets.win = 0.0f;
+          finalValueTargets.loss = 1.0 - finalValueTargets.noResult;
+        }
+        else if (s < 0)
+        {
+          if(s < -100)
+            s = -100;
+          finalValueTargets.noResult = 1 / (1 - s);
+          finalValueTargets.win = 1.0 - finalValueTargets.noResult;
+          finalValueTargets.loss = 0.0f;
+        }
+        else
+        {
+          finalValueTargets.noResult = 1.0f;
+        }
+      }
 
 
 

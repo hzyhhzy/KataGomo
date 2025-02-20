@@ -42,6 +42,7 @@ static void writeLine(
   cout << nnYLen << " ";
   if(baseHist.isGameFinished) {
     cout << PlayerIO::playerToString(baseHist.winner) << " ";
+    cout << baseHist.finalScoreBlack << " ";
     cout << baseHist.isResignation << " ";
   }
   else {

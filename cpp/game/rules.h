@@ -17,14 +17,18 @@ struct Rules {
   static const int SCORING_4 = 4; //reserve
   int scoringRule;
 
+  static const int DRAWJUDGE_DRAW = 0;  // draw is draw:
+  static const int DRAWJUDGE_COUNT = 1;  // when draw, who has more pieces wins:
+  static const int DRAWJUDGE_WEIGHT = 2;  // when draw, the 8 type of pieces have different weights: 3 1 1 1 1 2 4 5:
+  int drawJudgeRule;
+
   int maxmoves;//draw if these many moves
   int maxmovesNoCapture;//draw if these many moves without capture
 
 
 
   Rules();
-  Rules(
-    int scoringRule
+  Rules(int scoringRule, int drawJudgeRule
   );
   ~Rules();
 
@@ -38,8 +42,11 @@ struct Rules {
   static Rules getSimpleTerritory();
 
   static std::set<std::string> scoringRuleStrings();
+  static std::set<std::string> drawJudgeRuleStrings();
   static int parseScoringRule(const std::string& s);
   static std::string writeScoringRule(int scoringRule);
+  static int parseDrawJudgeRule(const std::string& s);
+  static std::string writeDrawJudgeRule(int s);
 
 
   static Rules parseRules(const std::string& str);
@@ -53,7 +60,8 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
 
-  static const Hash128 ZOBRIST_SCORING_RULE_HASH[2];
+  static const Hash128 ZOBRIST_SCORING_RULE_HASH[5];
+  static const Hash128 ZOBRIST_DRAWJUDGE_RULE_HASH[3];
 
 };
 
