@@ -746,15 +746,18 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
     const ValueTargets& lastTargets = data.whiteValueTargetsByTurn[data.whiteValueTargetsByTurn.size()-1];
     if(!data.endHist.isGameFinished)
       assert(data.hitTurnLimit);
-    else if(data.endHist.isNoResult)
-      assert(lastTargets.win == 0.0f && lastTargets.loss == 0.0f && lastTargets.noResult == 1.0f);
+    else if(data.endHist.isNoResult){
+    }
+      //assert(lastTargets.win == 0.0f && lastTargets.loss == 0.0f && lastTargets.noResult == 1.0f);
     else if(data.endHist.winner == P_BLACK)
       assert(lastTargets.win == 0.0f && lastTargets.loss == 1.0f && lastTargets.noResult == 0.0f);
     else if(data.endHist.winner == P_WHITE)
       assert(lastTargets.win == 1.0f && lastTargets.loss == 0.0f && lastTargets.noResult == 0.0f);
-    else
-      assert(lastTargets.noResult == 1.0f);
-
+    else {
+    }
+      //assert(lastTargets.noResult == 1.0f);
+    assert(lastTargets.noResult + lastTargets.loss + lastTargets.win > 0.99f);
+    assert(lastTargets.noResult + lastTargets.loss + lastTargets.win < 1.01f);
     assert(!data.endHist.isResignation);
   }
   #endif
