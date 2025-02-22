@@ -82,7 +82,7 @@ void Tests::runTrainingWriteTests() {
     int boardXLen, int boardYLen,
     bool cheapLongSgf
   ) {
-    TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, nnXLen, nnYLen, debugOnlyWriteEvery, seedBase+"dwriter");
+    TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, nnXLen, nnYLen, debugOnlyWriteEvery, seedBase+"dwriter", NULL);
 
     NNEvaluator* nnEval = startNNEval("/dev/null",seedBase+"nneval",logger,0,inputsNHWC,useNHWC,false);
 
@@ -1144,7 +1144,7 @@ xxxxxxxx.
       GameRunner* gameRunner = new GameRunner(cfg, seed, playSettings, logger);
       auto shouldStop = []() { return false; };
       WaitableFlag* shouldPause = nullptr;
-      TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, 9, 9, debugOnlyWriteEvery, seed);
+      TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, 9, 9, debugOnlyWriteEvery, seed, NULL);
 
       Sgf::PositionSample startPosSample;
       startPosSample.board = Board(9,9);
@@ -1175,7 +1175,7 @@ xxxxxxxx.
       GameRunner* gameRunner = new GameRunner(cfg, seed, playSettings, logger);
       auto shouldStop = []() { return false; };
       WaitableFlag* shouldPause = nullptr;
-      TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, 9, 9, debugOnlyWriteEvery, seed);
+      TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, 9, 9, debugOnlyWriteEvery, seed, NULL);
 
       Sgf::PositionSample startPosSample;
       startPosSample.board = Board(9,9);
@@ -1286,7 +1286,7 @@ xxxxxxxx.
       GameRunner* gameRunner = new GameRunner(cfg, seed, playSettings, logger);
       auto shouldStop = []() { return false; };
       WaitableFlag* shouldPause = nullptr;
-      TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, 9, 9, debugOnlyWriteEvery, seed);
+      TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, 9, 9, debugOnlyWriteEvery, seed, NULL);
 
       Sgf::PositionSample startPosSample;
       startPosSample.board = Board::parseBoard(9,9,R"%%(
@@ -2661,7 +2661,7 @@ void Tests::runSekiTrainWriteTests(const string& modelFile) {
     int maxRows = 256;
     double firstFileMinRandProp = 1.0;
     int debugOnlyWriteEvery = 1000;
-    TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, nnXLen, nnYLen, debugOnlyWriteEvery, seedBase+"dwriter");
+    TrainingDataWriter dataWriter(&cout,inputsVersion, maxRows, firstFileMinRandProp, nnXLen, nnYLen, debugOnlyWriteEvery, seedBase+"dwriter", NULL);
 
     nnEval->clearCache();
     nnEval->clearStats();

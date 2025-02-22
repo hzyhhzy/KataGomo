@@ -6,6 +6,8 @@
 #include "../neuralnet/sgfmetadata.h"
 #include "../neuralnet/nninterface.h"
 
+class NNEvaluator;
+
 STRUCT_NAMED_PAIR(Loc,loc,int16_t,policyTarget,PolicyTargetMove);
 STRUCT_NAMED_PAIR(std::vector<PolicyTargetMove>*,policyTargets,int64_t,unreducedNumVisits,PolicyTarget);
 
@@ -284,19 +286,19 @@ struct TrainingWriteBuffers {
     int numExtraBlack,
     int mode,
     SGFMetadata* sgfMeta,
-    Rand& rand
+    Rand& rand,
+    NNEvaluator* distillEval
   );
 
   void writeToZipFile(const std::string& fileName);
   void writeToTextOstream(std::ostream& out);
 
 };
-
 class TrainingDataWriter {
  public:
-  TrainingDataWriter(const std::string& outputDir, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, const std::string& randSeed);
-  TrainingDataWriter(std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyWriteEvery, const std::string& randSeed);
-  TrainingDataWriter(const std::string& outputDir, std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyWriteEvery, const std::string& randSeed);
+  TrainingDataWriter(const std::string& outputDir, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, const std::string& randSeed, NNEvaluator* dEval);
+  TrainingDataWriter(std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyWriteEvery, const std::string& randSeed, NNEvaluator* dEval);
+  TrainingDataWriter(const std::string& outputDir, std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyWriteEvery, const std::string& randSeed, NNEvaluator* dEval);
   ~TrainingDataWriter();
 
   void writeGame(const FinishedGameData& data);
@@ -311,7 +313,7 @@ class TrainingDataWriter {
   int inputsVersion;
   Rand rand;
   TrainingWriteBuffers* writeBuffers;
-
+  NNEvaluator* distillEval;
   std::ostream* debugOut;
   int debugOnlyWriteEvery;
   int64_t rowCount;

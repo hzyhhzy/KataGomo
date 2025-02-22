@@ -32,29 +32,33 @@ static void signalHandler(int signal)
 //-----------------------------------------------------------------------------------------
 
 
-int MainCmds::selfplay(const vector<string>& args) {
+int MainCmds::distill(const vector<string>& args) {
   Board::initHash();
   ScoreValue::initTables();
   Rand seedRand;
 
   ConfigParser cfg;
   string modelsDir;
+  string labelModel;
   string outputDir;
   int64_t maxGamesTotal = ((int64_t)1) << 62;
   try {
-    KataGoCommandLine cmd("Generate training data via self play.");
+    KataGoCommandLine cmd("Generate training data via self play and labeling using another model.");
     cmd.addConfigFileArg("","");
     cmd.addOverrideConfigArg();
 
     TCLAP::ValueArg<string> modelsDirArg("","models-dir","Dir to poll and load models from",true,string(),"DIR");
+    TCLAP::ValueArg<string> modelLabelArg("", "model-label", "Path to load selfplay model", true, string(), "PATH");
     TCLAP::ValueArg<string> outputDirArg("","output-dir","Dir to output files",true,string(),"DIR");
     TCLAP::ValueArg<string> maxGamesTotalArg("","max-games-total","Terminate after this many games",false,string(),"NGAMES");
     cmd.add(modelsDirArg);
+    cmd.add(modelLabelArg);
     cmd.add(outputDirArg);
     cmd.add(maxGamesTotalArg);
     cmd.parseArgs(args);
 
     modelsDir = modelsDirArg.getValue();
+    labelModel = modelLabelArg.getValue();
     outputDir = outputDirArg.getValue();
     string maxGamesTotalStr = maxGamesTotalArg.getValue();
     if(maxGamesTotalStr != "") {
@@ -136,7 +140,7 @@ int MainCmds::selfplay(const vector<string>& args) {
   //Returns true if a new net was loaded.
   auto loadLatestNeuralNetIntoManager =
     [inputsVersion,&manager,maxRowsPerTrainFile,firstFileRandMinProp,dataBoardLen,
-     &modelsDir,&outputDir,&logger,&cfg,numGameThreads,
+     &modelsDir,labelModel,&outputDir,&logger,&cfg,numGameThreads,
      minBoardXSizeUsed,maxBoardXSizeUsed,minBoardYSizeUsed,maxBoardYSizeUsed](const string* lastNetName) -> bool {
 
     string modelName;
@@ -168,6 +172,14 @@ int MainCmds::selfplay(const vector<string>& args) {
       Setup::SETUP_FOR_OTHER
     );
     logger.write("Loaded latest neural net " + modelName + " from: " + modelFile);
+    
+    NNEvaluator* nnEvalLabel = Setup::initializeNNEvaluator(
+      labelModel,labelModel,expectedSha256,cfg,logger,rand,expectedConcurrentEvals,
+      maxBoardXSizeUsed,maxBoardYSizeUsed,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      Setup::SETUP_FOR_OTHER
+    );
+    logger.write("Loaded distill neural net " + modelName + " from: " + modelFile);
+
 
     string modelOutputDir = outputDir + "/" + modelName;
     string sgfOutputDir = modelOutputDir + "/sgfs";
@@ -214,7 +226,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     //simply controls the input feature version for the written data
     TrainingDataWriter* tdataWriter = new TrainingDataWriter(
       tdataOutputDir, inputsVersion, maxRowsPerTrainFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()),
-      NULL
+      nnEvalLabel
     );
     ofstream* sgfOut = NULL;
     if(sgfOutputDir.length() > 0) {
@@ -376,7 +388,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     modelLoadSleepVar.notify_all();
   }
   modelLoadLoopThread.join();
-
+  
   //At this point, nothing else except possibly data write loops are running, within the selfplay manager.
   delete manager;
 

@@ -2363,7 +2363,8 @@ int MainCmds::writetrainingdata(const vector<string>& args) {
           numExtraBlack,
           mode,
           &sgfMeta,
-          rand
+          rand,
+          NULL
         );
       }
     }

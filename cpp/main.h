@@ -11,6 +11,7 @@ namespace MainCmds {
   int tuner(const std::vector<std::string>& args);
   int match(const std::vector<std::string>& args);
   int selfplay(const std::vector<std::string>& args);
+  int distill(const std::vector<std::string>& args);
 
   int testgpuerror(const std::vector<std::string>& args);
 
