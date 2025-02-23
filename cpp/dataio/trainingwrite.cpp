@@ -791,8 +791,11 @@ void TrainingWriteBuffers::addRow(
       int16_t* target = rowPolicy + 0 * policySize;
       zeroPolicyTarget(policySize, target);
       for(size_t i = 0; i < policySize; i++) {
-        double p = nnResult.policyProbs[i] * fac;
-        target[i] = int16_t(p);
+        double p = nnResult.policyProbs[i] * fac; 
+        if(p > 0)
+          target[i] = int16_t(p);
+        else //notice that illegal moves are -1
+          target[i] = 0;
       }
 
       rowGlobal[26] = 1.0f;
