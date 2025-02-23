@@ -635,12 +635,15 @@ void NNInputs::fillRowV7(
     double boardArea = board.x_size * board.y_size;
     double movenum = board.movenum;
     double maxmoves = hist.rules.maxmoves;
-    rowGlobal[9] = exp(-(maxmoves - movenum) / 150.0);
-    rowGlobal[10] = exp(-(maxmoves - movenum) / 50.0);
-    rowGlobal[11] = exp(-(maxmoves - movenum) / 15.0);
-    rowGlobal[12] = exp(-(maxmoves - movenum) / 5.0);
-    rowGlobal[13] = exp(-(maxmoves - movenum) / 1.5);
-    rowGlobal[14] = 2 * ((int(maxmoves - movenum)) % 2) - 1;
+    double dif = maxmoves - movenum;
+    if(dif < 0)
+      dif = 0;
+    rowGlobal[9] = exp(-dif / 150.0);
+    rowGlobal[10] = exp(-dif / 50.0);
+    rowGlobal[11] = exp(-dif / 15.0);
+    rowGlobal[12] = exp(-dif / 5.0);
+    rowGlobal[13] = exp(-dif / 1.5);
+    rowGlobal[14] = 2 * ((int(dif)) % 2) - 1;
   }
 
   if(hist.rules.maxmovesNoCapture != 0) {
@@ -648,12 +651,15 @@ void NNInputs::fillRowV7(
     double boardArea = board.x_size * board.y_size;
     double movenum = board.movenumslc;
     double maxmoves = hist.rules.maxmovesNoCapture;
-    rowGlobal[16] = exp(-(maxmoves - movenum) / 150.0);
-    rowGlobal[17] = exp(-(maxmoves - movenum) / 50.0);
-    rowGlobal[18] = exp(-(maxmoves - movenum) / 15.0);
-    rowGlobal[19] = exp(-(maxmoves - movenum) / 5.0);
-    rowGlobal[20] = exp(-(maxmoves - movenum) / 1.5);
-    rowGlobal[21] = 2 * ((int(maxmoves - movenum)) % 2) - 1;
+    double dif = maxmoves - movenum;
+    if(dif < 0)
+      dif = 0;
+    rowGlobal[16] = exp(-dif / 150.0);
+    rowGlobal[17] = exp(-dif / 50.0);
+    rowGlobal[18] = exp(-dif / 15.0);
+    rowGlobal[19] = exp(-dif / 5.0);
+    rowGlobal[20] = exp(-dif / 1.5);
+    rowGlobal[21] = 2 * ((int(dif)) % 2) - 1;
   }
   
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
