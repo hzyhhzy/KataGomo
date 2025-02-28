@@ -755,6 +755,7 @@ void TrainingWriteBuffers::addRow(
       assert(playoutDoublingAdvantagePla == C_EMPTY);
       assert(playoutDoublingAdvantage == 0.0);
     }
+    nnInputParams.policyOptimism = 0.75;
 
     NNResultBuf nnResultBuf;
     Board boardCopy = board;
