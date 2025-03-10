@@ -2,6 +2,7 @@
 
 #include "../core/fileutils.h"
 #include "../neuralnet/modelversion.h"
+#include "../neuralnet/nneval.h"
 
 using namespace std;
 
@@ -285,7 +286,9 @@ void TrainingWriteBuffers::addRow(
   bool isSidePosition,
   int numNeuralNetsBehindLatest,
   const FinishedGameData& data,
-  Rand& rand
+  Rand& rand,
+  NNEvaluator* distillEval
+
 ) {
   (void)finalBoard;
   static_assert(NNModelVersion::latestInputsVersionImplemented == 102, "");
@@ -296,8 +299,8 @@ void TrainingWriteBuffers::addRow(
   assert(data.hasFullData);
   assert(curRows < maxRows);
 
+  MiscNNInputParams nnInputParams;
   {
-    MiscNNInputParams nnInputParams;
     nnInputParams.noResultUtilityForWhite = data.noResultUtilityForWhite;
     nnInputParams.fourAttackPolicyReduce = data.fourAttackPolicyReduce;
     //Note: this is coordinated with the fact that selfplay does not use this feature on side positions
@@ -338,192 +341,368 @@ void TrainingWriteBuffers::addRow(
       packBits(rowBin + c * posArea, posArea, rowBinPacked + c * packedBoardArea);
   }
 
-  //Vector for global targets and metadata
-  float* rowGlobal = globalTargetsNC.data + curRows * GLOBAL_TARGET_NUM_CHANNELS;
+  if(distillEval == NULL) {
+    // Vector for global targets and metadata
+    float* rowGlobal = globalTargetsNC.data + curRows * GLOBAL_TARGET_NUM_CHANNELS;
 
-  //Target weight for the whole row
-  rowGlobal[25] = targetWeight;
+    // Target weight for the whole row
+    rowGlobal[25] = targetWeight;
 
-  //Fill policy
-  int policySize = NNPos::getPolicySize(dataXLen,dataYLen);
-  int16_t* rowPolicy = policyTargetsNCMove.data + curRows * POLICY_TARGET_NUM_CHANNELS * policySize;
+    // Fill policy
+    int policySize = NNPos::getPolicySize(dataXLen, dataYLen);
+    int16_t* rowPolicy = policyTargetsNCMove.data + curRows * POLICY_TARGET_NUM_CHANNELS * policySize;
 
-  if(policyTarget0 != NULL) {
-    fillPolicyTarget(*policyTarget0, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 0 * policySize);
-    rowGlobal[26] = 1.0f;
-  }
-  else {
-    uniformPolicyTarget(policySize, rowPolicy + 0 * policySize);
-    rowGlobal[26] = 0.0f;
-  }
+    if(policyTarget0 != NULL) {
+      fillPolicyTarget(*policyTarget0, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 0 * policySize);
+      rowGlobal[26] = 1.0f;
+    } else {
+      uniformPolicyTarget(policySize, rowPolicy + 0 * policySize);
+      rowGlobal[26] = 0.0f;
+    }
 
-  if(policyTarget1 != NULL) {
-    fillPolicyTarget(*policyTarget1, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 1 * policySize);
-    rowGlobal[28] = 1.0f;
-  }
-  else {
-    uniformPolicyTarget(policySize, rowPolicy + 1 * policySize);
-    rowGlobal[28] = 0.0f;
-  }
+    if(policyTarget1 != NULL) {
+      fillPolicyTarget(*policyTarget1, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 1 * policySize);
+      rowGlobal[28] = 1.0f;
+    } else {
+      uniformPolicyTarget(policySize, rowPolicy + 1 * policySize);
+      rowGlobal[28] = 0.0f;
+    }
 
-  //Fill td-like value targets
-  int boardArea = board.x_size * board.y_size;
-  assert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < whiteValueTargets.size());
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 0.0, rowGlobal);
-  //These three constants used to be 'nicer' numbers 0.18, 0.06, 0.02, but we screwed up the functional form
-  //by omitting the "1.0 +" at the front (breaks scaling to small board sizes), so when we fixed this we also
-  //decreased the other numbers slightly to try to maximally limit the impact of the fix on the numerical values
-  //on the actual board sizes 9-19, since it would be costly to retest.
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0/(1.0 + boardArea * 0.176), rowGlobal+4);
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0/(1.0 + boardArea * 0.056), rowGlobal+8);
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0/(1.0 + boardArea * 0.016), rowGlobal+12);
-  fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0, rowGlobal+16);
+    // Fill td-like value targets
+    int boardArea = board.x_size * board.y_size;
+    assert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < whiteValueTargets.size());
+    fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 0.0, rowGlobal);
+    // These three constants used to be 'nicer' numbers 0.18, 0.06, 0.02, but we screwed up the functional form
+    // by omitting the "1.0 +" at the front (breaks scaling to small board sizes), so when we fixed this we also
+    // decreased the other numbers slightly to try to maximally limit the impact of the fix on the numerical values
+    // on the actual board sizes 9-19, since it would be costly to retest.
+    fillValueTDTargets(
+      whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0 / (1.0 + boardArea * 0.176), rowGlobal + 4);
+    fillValueTDTargets(
+      whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0 / (1.0 + boardArea * 0.056), rowGlobal + 8);
+    fillValueTDTargets(
+      whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0 / (1.0 + boardArea * 0.016), rowGlobal + 12);
+    fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0, rowGlobal + 16);
 
-  //Lead
-  rowGlobal[21] = 0.0f;
-  rowGlobal[29] = 0.0f;
+    // Lead
+    rowGlobal[21] = 0.0f;
+    rowGlobal[29] = 0.0f;
 
-  //Expected time of arrival of winloss variance, in turns
+    // Expected time of arrival of winloss variance, in turns
+    {
+      double sum = 0.0;
+      for(int i = whiteValueTargetsIdx + 1; i < whiteValueTargets.size(); i++) {
+        int turnsFromNow = i - whiteValueTargetsIdx;
+        const ValueTargets& prevTargets = whiteValueTargets[i - 1];
+        const ValueTargets& targets = whiteValueTargets[i];
+        double prevWL = prevTargets.win - prevTargets.loss;
+        double nextWL = targets.win - targets.loss;
+        double variance = (nextWL - prevWL) * (nextWL - prevWL);
+        sum += turnsFromNow * variance;
+      }
+      rowGlobal[22] = (float)sum;
+    }
+
+    // Unused
+    rowGlobal[23] = 0.0f;
+    rowGlobal[24] = 0.0f;
+    rowGlobal[30] = (float)policySurprise;
+    rowGlobal[31] = (float)policyEntropy;
+    rowGlobal[32] = (float)searchEntropy;
+    rowGlobal[35] = 0.0f;
+
+    // Fill in whether we should use history or not
+    bool useHist0 = rand.nextDouble() < 0.98;
+    bool useHist1 = useHist0 && rand.nextDouble() < 0.98;
+    bool useHist2 = useHist1 && rand.nextDouble() < 0.98;
+    bool useHist3 = useHist2 && rand.nextDouble() < 0.98;
+    bool useHist4 = useHist3 && rand.nextDouble() < 0.98;
+    rowGlobal[36] = useHist0 ? 1.0f : 0.0f;
+    rowGlobal[37] = useHist1 ? 1.0f : 0.0f;
+    rowGlobal[38] = useHist2 ? 1.0f : 0.0f;
+    rowGlobal[39] = useHist3 ? 1.0f : 0.0f;
+    rowGlobal[40] = useHist4 ? 1.0f : 0.0f;
+
+    // Fill in hash of game
+    Hash128 gameHash = data.gameHash;
+    rowGlobal[41] = (float)(gameHash.hash0 & 0x3FFFFF);
+    rowGlobal[42] = (float)((gameHash.hash0 >> 22) & 0x3FFFFF);
+    rowGlobal[43] = (float)((gameHash.hash0 >> 44) & 0xFFFFF);
+    rowGlobal[44] = (float)(gameHash.hash1 & 0x3FFFFF);
+    rowGlobal[45] = (float)((gameHash.hash1 >> 22) & 0x3FFFFF);
+    rowGlobal[46] = (float)((gameHash.hash1 >> 44) & 0xFFFFF);
+
+    // Various other data
+    rowGlobal[47] = 0.0f;
+    rowGlobal[48] = 1.0f;
+
+    // Earlier neural net metadata
+    rowGlobal[49] = data.changedNeuralNets.size() > 0 ? 1.0f : 0.0f;
+    rowGlobal[50] = (float)numNeuralNetsBehindLatest;
+
+    // Some misc metadata
+    rowGlobal[51] = (float)turnIdx;
+    rowGlobal[52] = data.hitTurnLimit ? 1.0f : 0.0f;
+    rowGlobal[53] = (float)data.startHist.moveHistory.size();
+    rowGlobal[54] = 0.0f;
+
+    // Metadata about how the game was initialized
+    rowGlobal[55] = (float)data.mode;
+    rowGlobal[56] = (float)hist.initialTurnNumber;
+
+    // Some stats
+    rowGlobal[57] = (float)(nextPlayer == P_WHITE ? nnRawStats.whiteWinLoss : -nnRawStats.whiteWinLoss);
+    rowGlobal[58] = 0.0f;
+    rowGlobal[59] = (float)nnRawStats.policyEntropy;
+
+    // Original number of visits
+    rowGlobal[60] = (float)unreducedNumVisits;
+
+    // Bonus points
+    rowGlobal[61] = 0.0f;
+
+    // Unused
+    rowGlobal[62] = 0.0f;
+
+    // Version
+    rowGlobal[63] = 1.0f;
+
+    assert(64 == GLOBAL_TARGET_NUM_CHANNELS);
+
+    int scoreDistrLen = posArea * 2 + NNPos::EXTRA_SCORE_DISTR_RADIUS * 2;
+    // int scoreDistrMid = posArea + NNPos::EXTRA_SCORE_DISTR_RADIUS;
+    int8_t* rowScoreDistr = scoreDistrN.data + curRows * scoreDistrLen;
+    int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
+
+    rowGlobal[27] = 0.0f;
+    rowGlobal[20] = 0.0f;
+
+    // Fill with zeros in case the buffers differ in size
+    for(int i = 0; i < posArea * 2; i++)
+      rowOwnership[i] = 0;
+
+    // Fill score vector "onehot"-like
+    for(int i = 0; i < scoreDistrLen; i++)
+      rowScoreDistr[i] = 0;
+
+    if(posHistForFutureBoards == NULL) {
+      rowGlobal[33] = 0.0f;
+      for(int i = 0; i < posArea; i++) {
+        rowOwnership[i + posArea * 2] = 0;
+        rowOwnership[i + posArea * 3] = 0;
+      }
+    } else {
+      const vector<Board>& boards = *posHistForFutureBoards;
+      assert(boards.size() == whiteValueTargets.size());
+      assert(boards.size() > 0);
+
+      rowGlobal[33] = 1.0f;
+      int endIdx = (int)boards.size() - 1;
+      const Board& board2 = boards[std::min(whiteValueTargetsIdx + 8, endIdx)];
+      const Board& board3 = boards[std::min(whiteValueTargetsIdx + 32, endIdx)];
+      assert(board2.y_size == board.y_size && board2.x_size == board.x_size);
+      assert(board3.y_size == board.y_size && board3.x_size == board.x_size);
+
+      for(int i = 0; i < posArea; i++) {
+        rowOwnership[i + posArea * 2] = 0;
+        rowOwnership[i + posArea * 3] = 0;
+      }
+      Player pla = nextPlayer;
+      Player opp = getOpp(nextPlayer);
+      for(int y = 0; y < board.y_size; y++) {
+        for(int x = 0; x < board.x_size; x++) {
+          int pos = NNPos::xyToPos(x, y, dataXLen);
+          Loc loc = Location::getLoc(x, y, board.x_size);
+          if(board2.colors[loc] == pla)
+            rowOwnership[pos + posArea * 2] = 1;
+          else if(board2.colors[loc] == opp)
+            rowOwnership[pos + posArea * 2] = -1;
+          if(board3.colors[loc] == pla)
+            rowOwnership[pos + posArea * 3] = 1;
+          else if(board3.colors[loc] == opp)
+            rowOwnership[pos + posArea * 3] = -1;
+        }
+      }
+    }
+
+    rowGlobal[34] = 0.0f;
+    for(int i = 0; i < posArea; i++) {
+      rowOwnership[i + posArea * 4] = 0;
+    }
+  } 
+  else  // Distill
   {
-    double sum = 0.0;
-    for(int i = whiteValueTargetsIdx+1; i<whiteValueTargets.size(); i++) {
-      int turnsFromNow = i-whiteValueTargetsIdx;
-      const ValueTargets& prevTargets = whiteValueTargets[i-1];
-      const ValueTargets& targets = whiteValueTargets[i];
-      double prevWL = prevTargets.win - prevTargets.loss;
-      double nextWL = targets.win - targets.loss;
-      double variance = (nextWL - prevWL) * (nextWL - prevWL);
-      sum += turnsFromNow * variance;
+
+    NNResultBuf nnResultBuf;
+    Board boardCopy = board;
+    distillEval->evaluate(boardCopy, hist, nextPlayer, nnInputParams, nnResultBuf, false);
+    NNOutput& nnResult = *(nnResultBuf.result);
+
+    // Vector for global targets and metadata
+    float* rowGlobal = globalTargetsNC.data + curRows * GLOBAL_TARGET_NUM_CHANNELS;
+
+    // Target weight for the whole row
+    float targetWeight1 = 1.0;
+    rowGlobal[25] = targetWeight1;
+
+    // Fill policy
+    int policySize = NNPos::getPolicySize(dataXLen, dataYLen);
+    int16_t* rowPolicy = policyTargetsNCMove.data + curRows * POLICY_TARGET_NUM_CHANNELS * policySize;
+
+    {
+      double maxPolicy = -1;
+      for(int i = 0; i < policySize; i++) {
+        double p = nnResult.getPolicyProb(i);
+        if(p > maxPolicy)
+          maxPolicy = p;
+      }
+      assert(maxPolicy > 0);
+      assert(maxPolicy < 1.001);
+
+      double fac = 30000 / maxPolicy;
+
+      int16_t* target = rowPolicy + 0 * policySize;
+      zeroPolicyTarget(policySize, target);
+      for(size_t i = 0; i < policySize; i++) {
+        double p = nnResult.getPolicyProb(i) * fac;
+        if(p > 0)
+          target[i] = int16_t(p);
+        else  // notice that illegal moves are -1
+          target[i] = 0;
+      }
+
+      rowGlobal[26] = 1.0f;
     }
-    rowGlobal[22] = (float)sum;
-  }
 
-  //Unused
-  rowGlobal[23] = 0.0f;
-  rowGlobal[24] = 0.0f;
-  rowGlobal[30] = (float)policySurprise;
-  rowGlobal[31] = (float)policyEntropy;
-  rowGlobal[32] = (float)searchEntropy;
-  rowGlobal[35] = 0.0f;
-
-  //Fill in whether we should use history or not
-  bool useHist0 = rand.nextDouble() < 0.98;
-  bool useHist1 = useHist0 && rand.nextDouble() < 0.98;
-  bool useHist2 = useHist1 && rand.nextDouble() < 0.98;
-  bool useHist3 = useHist2 && rand.nextDouble() < 0.98;
-  bool useHist4 = useHist3 && rand.nextDouble() < 0.98;
-  rowGlobal[36] = useHist0 ? 1.0f : 0.0f;
-  rowGlobal[37] = useHist1 ? 1.0f : 0.0f;
-  rowGlobal[38] = useHist2 ? 1.0f : 0.0f;
-  rowGlobal[39] = useHist3 ? 1.0f : 0.0f;
-  rowGlobal[40] = useHist4 ? 1.0f : 0.0f;
-
-  //Fill in hash of game
-  Hash128 gameHash = data.gameHash;
-  rowGlobal[41] = (float)(gameHash.hash0 & 0x3FFFFF);
-  rowGlobal[42] = (float)((gameHash.hash0 >> 22) & 0x3FFFFF);
-  rowGlobal[43] = (float)((gameHash.hash0 >> 44) & 0xFFFFF);
-  rowGlobal[44] = (float)(gameHash.hash1 & 0x3FFFFF);
-  rowGlobal[45] = (float)((gameHash.hash1 >> 22) & 0x3FFFFF);
-  rowGlobal[46] = (float)((gameHash.hash1 >> 44) & 0xFFFFF);
-
-  //Various other data
-  rowGlobal[47] = 0.0f;
-  rowGlobal[48] = 1.0f;
-
-  //Earlier neural net metadata
-  rowGlobal[49] = data.changedNeuralNets.size() > 0 ? 1.0f : 0.0f;
-  rowGlobal[50] = (float)numNeuralNetsBehindLatest;
-
-  //Some misc metadata
-  rowGlobal[51] = (float)turnIdx;
-  rowGlobal[52] = data.hitTurnLimit ? 1.0f : 0.0f;
-  rowGlobal[53] = (float)data.startHist.moveHistory.size();
-  rowGlobal[54] = 0.0f;
-
-  //Metadata about how the game was initialized
-  rowGlobal[55] = (float)data.mode;
-  rowGlobal[56] = (float)hist.initialTurnNumber;
-
-  //Some stats
-  rowGlobal[57] = (float)(nextPlayer == P_WHITE ? nnRawStats.whiteWinLoss : -nnRawStats.whiteWinLoss);
-  rowGlobal[58] = 0.0f;
-  rowGlobal[59] = (float)nnRawStats.policyEntropy;
-
-  //Original number of visits
-  rowGlobal[60] = (float)unreducedNumVisits;
-
-  //Bonus points
-  rowGlobal[61] = 0.0f; 
-
-  //Unused
-  rowGlobal[62] = 0.0f;
-
-  //Version
-  rowGlobal[63] = 1.0f;
-
-  assert(64 == GLOBAL_TARGET_NUM_CHANNELS);
-
-  int scoreDistrLen = posArea*2 + NNPos::EXTRA_SCORE_DISTR_RADIUS*2;
-  //int scoreDistrMid = posArea + NNPos::EXTRA_SCORE_DISTR_RADIUS;
-  int8_t* rowScoreDistr = scoreDistrN.data + curRows * scoreDistrLen;
-  int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
-
-
-  rowGlobal[27] = 0.0f;
-  rowGlobal[20] = 0.0f;
-
-  //Fill with zeros in case the buffers differ in size
-  for(int i = 0; i<posArea*2; i++)
-    rowOwnership[i] = 0;
-
-
-  //Fill score vector "onehot"-like
-  for(int i = 0; i<scoreDistrLen; i++)
-    rowScoreDistr[i] = 0;
-
-  if(posHistForFutureBoards == NULL) {
-    rowGlobal[33] = 0.0f;
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*2] = 0;
-      rowOwnership[i+posArea*3] = 0;
+    {
+      uniformPolicyTarget(policySize, rowPolicy + 1 * policySize);
+      rowGlobal[28] = 0.0f;
     }
-  }
-  else {
-    const vector<Board>& boards = *posHistForFutureBoards;
-    assert(boards.size() == whiteValueTargets.size());
-    assert(boards.size() > 0);
 
-    rowGlobal[33] = 1.0f;
-    int endIdx = (int)boards.size()-1;
-    const Board& board2 = boards[std::min(whiteValueTargetsIdx+8,endIdx)];
-    const Board& board3 = boards[std::min(whiteValueTargetsIdx+32,endIdx)];
-    assert(board2.y_size == board.y_size && board2.x_size == board.x_size);
-    assert(board3.y_size == board.y_size && board3.x_size == board.x_size);
+    {
+      double winValue = nextPlayer == C_WHITE ? nnResult.whiteWinProb : nnResult.whiteLossProb;
+      double lossValue = nextPlayer == C_WHITE ? nnResult.whiteLossProb : nnResult.whiteWinProb;
+      double noResultValue = nnResult.whiteNoResultProb;
+      double score = 0;
 
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*2] = 0;
-      rowOwnership[i+posArea*3] = 0;
+      // float originWR[4];
+      // fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 1.0, originWR);
+      // cout << "Distill: " << winValue << " " << score << "  Origin: " << originWR[0] << " " << originWR[3] << endl;
+
+      for(int t = 0; t < 5; t++) {
+        float* buf = rowGlobal + 4 * t;
+        buf[0] = (float)winValue;
+        buf[1] = (float)lossValue;
+        buf[2] = (float)noResultValue;
+        buf[3] = (float)score;
+      }
     }
-    Player pla = nextPlayer;
-    Player opp = getOpp(nextPlayer);
-    for(int y = 0; y<board.y_size; y++) {
-      for(int x = 0; x<board.x_size; x++) {
-        int pos = NNPos::xyToPos(x,y,dataXLen);
-        Loc loc = Location::getLoc(x,y,board.x_size);
-        if(board2.colors[loc] == pla) rowOwnership[pos+posArea*2] = 1;
-        else if(board2.colors[loc] == opp) rowOwnership[pos+posArea*2] = -1;
-        if(board3.colors[loc] == pla) rowOwnership[pos+posArea*3] = 1;
-        else if(board3.colors[loc] == opp) rowOwnership[pos+posArea*3] = -1;
+    // Lead
+    rowGlobal[21] = 0.0f;
+    rowGlobal[29] = 0.0f;
+
+    // Expected time of arrival of winloss variance, in turns
+    { rowGlobal[22] = nnResult.varTimeLeft; }
+
+    // Unused
+    rowGlobal[23] = 0.0f;
+    rowGlobal[24] = (float)(0.0f);
+    rowGlobal[30] = (float)policySurprise;
+    rowGlobal[31] = (float)policyEntropy;
+    rowGlobal[32] = (float)searchEntropy;
+    // Value weight
+    rowGlobal[35] = (float)(0.0f);
+
+    // Fill in whether we should use history or not
+    bool useHist0 = rand.nextDouble() < 0.98;
+    bool useHist1 = useHist0 && rand.nextDouble() < 0.98;
+    bool useHist2 = useHist1 && rand.nextDouble() < 0.98;
+    bool useHist3 = useHist2 && rand.nextDouble() < 0.98;
+    bool useHist4 = useHist3 && rand.nextDouble() < 0.98;
+    rowGlobal[36] = useHist0 ? 1.0f : 0.0f;
+    rowGlobal[37] = useHist1 ? 1.0f : 0.0f;
+    rowGlobal[38] = useHist2 ? 1.0f : 0.0f;
+    rowGlobal[39] = useHist3 ? 1.0f : 0.0f;
+    rowGlobal[40] = useHist4 ? 1.0f : 0.0f;
+
+    // Fill in hash of game
+    Hash128 gameHash = data.gameHash;
+    rowGlobal[41] = (float)(gameHash.hash0 & 0x3FFFFF);
+    rowGlobal[42] = (float)((gameHash.hash0 >> 22) & 0x3FFFFF);
+    rowGlobal[43] = (float)((gameHash.hash0 >> 44) & 0xFFFFF);
+    rowGlobal[44] = (float)(gameHash.hash1 & 0x3FFFFF);
+    rowGlobal[45] = (float)((gameHash.hash1 >> 22) & 0x3FFFFF);
+    rowGlobal[46] = (float)((gameHash.hash1 >> 44) & 0xFFFFF);
+
+    // Various other data
+    rowGlobal[47] = 0.0f;
+    rowGlobal[48] = 0.0f;
+
+    // Earlier neural net metadata
+    rowGlobal[49] = data.changedNeuralNets.size() > 0 ? 1.0f : 0.0f;
+    rowGlobal[50] = (float)numNeuralNetsBehindLatest;
+
+    // Some misc metadata
+    rowGlobal[51] = (float)turnIdx;
+    rowGlobal[52] = data.hitTurnLimit ? 1.0f : 0.0f;
+    rowGlobal[53] = (float)data.startHist.moveHistory.size();
+    rowGlobal[54] = 0.0f;
+
+    // Metadata about how the game was initialized
+    rowGlobal[55] = (float)data.mode;
+    rowGlobal[56] = (float)hist.initialTurnNumber;
+
+    // Some stats
+    rowGlobal[57] = (float)(nextPlayer == C_WHITE ? nnResult.whiteWinProb - nnResult.whiteLossProb
+                                                  : -(nnResult.whiteWinProb - nnResult.whiteLossProb));
+    rowGlobal[58] = 0.0f;
+    rowGlobal[59] = (float)nnRawStats.policyEntropy;
+
+    // Original number of visits
+    rowGlobal[60] = (float)unreducedNumVisits;
+
+    rowGlobal[61] = 0.0f;
+
+    // Game finished
+    rowGlobal[62] = 1.0f;
+
+    // Version
+    rowGlobal[63] = 2.0f;
+
+    assert(64 == GLOBAL_TARGET_NUM_CHANNELS);
+
+    int scoreDistrLen = posArea * 2 + NNPos::EXTRA_SCORE_DISTR_RADIUS * 2;
+    int scoreDistrMid = posArea + NNPos::EXTRA_SCORE_DISTR_RADIUS;
+    int8_t* rowScoreDistr = scoreDistrN.data + curRows * scoreDistrLen;
+    int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
+
+    {
+      rowGlobal[27] = 0.0f;
+      rowGlobal[20] = 0.0f;
+      for(int i = 0; i < posArea * 2; i++)
+        rowOwnership[i] = 0;
+      for(int i = 0; i < scoreDistrLen; i++)
+        rowScoreDistr[i] = 0;
+      // Dummy value, to make sure it still sums to 100
+      rowScoreDistr[scoreDistrMid - 1] = 50;
+      rowScoreDistr[scoreDistrMid] = 50;
+    }
+
+    {
+      rowGlobal[33] = 0.0f;
+      for(int i = 0; i < posArea; i++) {
+        rowOwnership[i + posArea * 2] = 0;
+        rowOwnership[i + posArea * 3] = 0;
+      }
+    }
+
+    {
+      rowGlobal[34] = 0.0f;
+      for(int i = 0; i < posArea; i++) {
+        rowOwnership[i + posArea * 4] = 0;
       }
     }
   }
-
-
-    rowGlobal[34] = 0.0f;
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*4] = 0;
-    }
 
   curRows++;
 }
@@ -631,15 +810,15 @@ void TrainingWriteBuffers::writeToTextOstream(ostream& out) {
 
 //-------------------------------------------------------------------------------------
 
-TrainingDataWriter::TrainingDataWriter(const string& outDir, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, const string& randSeed)
-  : TrainingDataWriter(outDir,NULL,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,1,randSeed)
+TrainingDataWriter::TrainingDataWriter(const string& outDir, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, const string& randSeed, NNEvaluator* dEval)
+  : TrainingDataWriter(outDir,NULL,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,1,randSeed,dEval)
 {}
-TrainingDataWriter::TrainingDataWriter(ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed)
-  : TrainingDataWriter(string(),dbgOut,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,onlyEvery,randSeed)
+TrainingDataWriter::TrainingDataWriter(ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed, NNEvaluator* dEval)
+  : TrainingDataWriter(string(),dbgOut,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,onlyEvery,randSeed,dEval)
 {}
 
-TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed)
-  :outputDir(outDir),inputsVersion(iVersion),rand(randSeed),writeBuffers(NULL),debugOut(dbgOut),debugOnlyWriteEvery(onlyEvery),rowCount(0)
+TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed, NNEvaluator* dEval)
+  :outputDir(outDir),inputsVersion(iVersion),rand(randSeed),writeBuffers(NULL),debugOut(dbgOut),debugOnlyWriteEvery(onlyEvery),rowCount(0),distillEval(dEval)
 {
   int numBinaryChannels;
   int numGlobalChannels;
@@ -820,7 +999,8 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             isSidePosition,
             numNeuralNetsBehindLatest,
             data,
-            rand
+            rand,
+            distillEval
           );
           writeAndClearIfFull();
         }
@@ -871,7 +1051,8 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
             isSidePosition,
             numNeuralNetsBehindLatest,
             data,
-            rand
+            rand,
+            distillEval
           );
           writeAndClearIfFull();
         }
