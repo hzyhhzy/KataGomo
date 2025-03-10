@@ -32,12 +32,13 @@ static void signalHandler(int signal)
 //-----------------------------------------------------------------------------------------
 
 
-int MainCmds::selfplay(const vector<string>& args) {
+int MainCmds::distill(const vector<string>& args) {
   Board::initHash();
   Rand seedRand;
 
   ConfigParser cfg;
   string modelsDir;
+  string labelModel;
   string outputDir;
   int64_t maxGamesTotal = ((int64_t)1) << 62;
   try {
@@ -46,14 +47,17 @@ int MainCmds::selfplay(const vector<string>& args) {
     cmd.addOverrideConfigArg();
 
     TCLAP::ValueArg<string> modelsDirArg("","models-dir","Dir to poll and load models from",true,string(),"DIR");
-    TCLAP::ValueArg<string> outputDirArg("","output-dir","Dir to output files",true,string(),"DIR");
+    TCLAP::ValueArg<string> modelLabelArg("", "model-label", "Path to load selfplay model", true, string(), "PATH");
+    TCLAP::ValueArg<string> outputDirArg("", "output-dir", "Dir to output files", true, string(), "DIR");
     TCLAP::ValueArg<string> maxGamesTotalArg("","max-games-total","Terminate after this many games",false,string(),"NGAMES");
     cmd.add(modelsDirArg);
+    cmd.add(modelLabelArg);
     cmd.add(outputDirArg);
     cmd.add(maxGamesTotalArg);
     cmd.parseArgs(args);
 
     modelsDir = modelsDirArg.getValue();
+    labelModel = modelLabelArg.getValue();
     outputDir = outputDirArg.getValue();
     string maxGamesTotalStr = maxGamesTotalArg.getValue();
     if(maxGamesTotalStr != "") {
@@ -136,11 +140,12 @@ int MainCmds::selfplay(const vector<string>& args) {
   std::signal(SIGINT, signalHandler);
   std::signal(SIGTERM, signalHandler);
 
+  NNEvaluator* nnEvalLabel;
 
   //Returns true if a new net was loaded.
   auto loadLatestNeuralNetIntoManager =
     [inputsVersion,&manager,maxRowsPerTrainFile,maxRowsPerValFile,firstFileRandMinProp,dataBoardLen,stopIfNewNet,
-     &modelsDir,&outputDir,&logger,&cfg,numGameThreads,
+     &modelsDir,labelModel,&outputDir,&logger,&cfg,numGameThreads,&nnEvalLabel,
      minBoardXSizeUsed,maxBoardXSizeUsed,minBoardYSizeUsed,maxBoardYSizeUsed](const string* lastNetName) -> bool {
 
     string modelName;
@@ -179,7 +184,24 @@ int MainCmds::selfplay(const vector<string>& args) {
       maxBoardXSizeUsed,maxBoardYSizeUsed,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_OTHER
     );
+
     logger.write("Loaded latest neural net " + modelName + " from: " + modelFile);
+    nnEvalLabel = Setup::initializeNNEvaluator(
+       labelModel,
+       labelModel,
+       expectedSha256,
+       cfg,
+       logger,
+       rand,
+       maxConcurrentEvals,
+       expectedConcurrentEvals,
+       maxBoardXSizeUsed,
+       maxBoardYSizeUsed,
+       defaultMaxBatchSize,
+       defaultRequireExactNNLen,
+       disableFP16,
+       Setup::SETUP_FOR_OTHER);
+     logger.write("Loaded distill neural net " + modelName + " from: " + modelFile);
 
     string modelOutputDir = outputDir + "/" + modelName;
     string sgfOutputDir = modelOutputDir + "/sgfs";
@@ -227,9 +249,9 @@ int MainCmds::selfplay(const vector<string>& args) {
     //Note that this inputsVersion passed here is NOT necessarily the same as the one used in the neural net self play, it
     //simply controls the input feature version for the written data
     TrainingDataWriter* tdataWriter = new TrainingDataWriter(
-      tdataOutputDir, inputsVersion, maxRowsPerTrainFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()), NULL);
+      tdataOutputDir, inputsVersion, maxRowsPerTrainFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()), nnEvalLabel);
     TrainingDataWriter* vdataWriter = new TrainingDataWriter(
-      vdataOutputDir, inputsVersion, maxRowsPerValFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()), NULL);
+      vdataOutputDir, inputsVersion, maxRowsPerValFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()), nnEvalLabel);
     ofstream* sgfOut = NULL;
     if(sgfOutputDir.length() > 0) {
       sgfOut = new ofstream();
@@ -400,6 +422,8 @@ int MainCmds::selfplay(const vector<string>& args) {
   //Delete and clean up everything else
   NeuralNet::globalCleanup();
   delete gameRunner;
+  
+  delete nnEvalLabel;
 
   if(sigReceived.load())
     logger.write("Exited cleanly after signal");

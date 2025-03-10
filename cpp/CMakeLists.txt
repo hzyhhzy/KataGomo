@@ -245,6 +245,7 @@ add_executable(katago
   command/runtests.cpp
   command/sandbox.cpp
   command/selfplay.cpp
+  command/distill.cpp
   command/tune.cpp
   main.cpp
   )
