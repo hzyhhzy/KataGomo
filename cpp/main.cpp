@@ -78,6 +78,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::matchauto(subArgs);
   else if(subcommand == "selfplay")
     return MainCmds::selfplay(subArgs);
+  else if(subcommand == "distill")
+    return MainCmds::distill(subArgs);
   else if(subcommand == "testgpuerror")
     return MainCmds::testgpuerror(subArgs);
   else if(subcommand == "samplesgfs")
