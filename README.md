@@ -1,6 +1,4 @@
-# Go-like games basic branch (2024.8)
-This branch is for games like Go (capture, area scoring)
+# GoModify2
 
-Modified from KataGo v1.15.3 https://github.com/lightvector/KataGo/releases/tag/v1.15.3   
-Various rules except Area+SimpleKo are removed   
-HumanSL is removed
+## Rule: one move should not be near the last move (4 directions)
+
