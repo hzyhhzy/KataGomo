@@ -12,7 +12,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #ifndef COMPILE_MAX_BOARD_LEN
-#define COMPILE_MAX_BOARD_LEN 9
+#define COMPILE_MAX_BOARD_LEN 19
 #endif
 
 //TYPES AND CONSTANTS-----------------------------------------------------------------
@@ -180,7 +180,7 @@ struct Board
   //Check if moving here would be an illegal self-capture
   bool isIllegalSuicide(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
   //Check if moving here is illegal due to simple ko
-  bool isKoBanned(Loc loc) const;
+  bool isKoBanned(Loc loc, int banRule) const;
   //Check if moving here is legal, ignoring simple ko
   bool isLegalIgnoringKo(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const;
   //Check if moving here is legal. Equivalent to isLegalIgnoringKo && !isKoBanned
@@ -257,10 +257,6 @@ struct Board
   //Get a random legal move that does not fill a simple eye.
   /* Loc getRandomMCLegal(Player pla); */
 
-  //Check if the given stone is in unescapable atari or can be put into unescapable atari.
-  //WILL perform a mutable search - may alter the linked lists or heads, etc.
-  bool searchIsLadderCaptured(Loc loc, bool defenderFirst, std::vector<Loc>& buf);
-  bool searchIsLadderCapturedAttackerFirst2Libs(Loc loc, std::vector<Loc>& buf, std::vector<Loc>& workingMoves);
 
   //If a point is a pass-alive stone or pass-alive territory for a color, mark it that color.
   //If nonPassAliveStones, also marks non-pass-alive stones that are not part of the opposing pass-alive territory.

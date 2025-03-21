@@ -341,7 +341,7 @@ bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) cons
   {
     //Only check ko bans during normal play.
     //Ko mechanics in the encore are totally different, we ignore simple ko loc.
-    if(board.isKoBanned(moveLoc))
+    if(board.isKoBanned(moveLoc,0))
       return false;
   }
   if(!board.isLegalIgnoringKo(moveLoc,movePla,rules.multiStoneSuicideLegal))
@@ -368,13 +368,13 @@ bool BoardHistory::passWouldEndGame(const Board& board, Player movePla) const {
 
 bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const {
   bool multiStoneSuicideLegal = true; //Tolerate suicide regardless of rules
-  if(board.isKoBanned(moveLoc))
+  if(board.isKoBanned(moveLoc,0))
     return false;
   return true;
 }
 bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla) {
   bool multiStoneSuicideLegal = true; //Tolerate suicide regardless of rules
-  if(board.isKoBanned(moveLoc))
+  if(board.isKoBanned(moveLoc,0))
     return false;
   
   makeBoardMoveAssumeLegal(board,moveLoc,movePla);
