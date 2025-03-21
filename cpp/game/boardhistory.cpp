@@ -880,10 +880,21 @@ bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player moveP
   return true;
 }
 bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla) {
-  bool multiStoneSuicideLegal = true; //Tolerate suicide regardless of rules
-  if(board.isKoBanned(moveLoc, 0))
+  bool multiStoneSuicideLegal = true;  // Tolerate suicide regardless of rules
+  if(encorePhase <= 0 && board.isKoBanned(moveLoc,0))
     return false;
-  makeBoardMoveAssumeLegal(board,moveLoc,movePla,NULL,preventEncore);
+  if(!isPassForKo(board, moveLoc, movePla) && !board.isLegalIgnoringKo(moveLoc, movePla, multiStoneSuicideLegal))
+    return false;
+  makeBoardMoveAssumeLegal(board, moveLoc, movePla, NULL);
+  return true;
+}
+bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla, bool preventEncore) {
+  bool multiStoneSuicideLegal = true;  // Tolerate suicide regardless of rules
+  if(encorePhase <= 0 && board.isKoBanned(moveLoc,0))
+    return false;
+  if(!isPassForKo(board, moveLoc, movePla) && !board.isLegalIgnoringKo(moveLoc, movePla, multiStoneSuicideLegal))
+    return false;
+  makeBoardMoveAssumeLegal(board, moveLoc, movePla, NULL, preventEncore);
   return true;
 }
 
