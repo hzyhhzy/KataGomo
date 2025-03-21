@@ -439,9 +439,19 @@ int Board::getNumLibertiesAfterPlay(Loc loc, Player pla, int max) const
 }
 
 //Check if moving here is illegal due to simple ko
-bool Board::isKoBanned(Loc loc) const
-{
-  return loc == ko_loc;
+bool Board::isKoBanned(Loc loc, int banRule) const {
+  if(loc == PASS_LOC)
+    return false;
+
+  if(banRule == 0) {
+    for(int i = 0; i < 4; i++) {
+      if(loc == ko_loc + adj_offsets[i])
+        return true;
+    }
+  } 
+  else
+    ASSERT_UNREACHABLE;
+  return false;
 }
 
 bool Board::isOnBoard(Loc loc) const {
@@ -457,7 +467,7 @@ bool Board::isLegal(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const
     loc >= 0 &&
     loc < MAX_ARR_SIZE &&
     (colors[loc] == C_EMPTY) &&
-    !isKoBanned(loc) &&
+    !isKoBanned(loc,0) &&
     !isIllegalSuicide(loc, pla, isMultiStoneSuicideLegal)
   );
 }
@@ -1007,6 +1017,8 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     return;
   }
 
+  ko_loc = loc;
+
   Player opp = getOpp(pla);
 
   //Add the new stone as an independent group
@@ -1021,7 +1033,6 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
 
   //Merge with surrounding friendly chains and capture any necessary opp chains
   int num_captured = 0; //Number of stones captured
-  Loc possible_ko_loc = NULL_LOC;  //What location a ko ban might become possible in
   int num_opps_seen = 0;  //How many opp chains we have seen so far
   Loc opp_heads_seen[4];   //Heads of the opp chains seen so far
 
@@ -1063,17 +1074,10 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
       if(getNumLiberties(adj) == 0)
       {
         num_captured += removeChain(adj);
-        possible_ko_loc = adj;
       }
     }
   }
 
-  //We have a ko if 1 stone was captured and the capturing move is one isolated stone
-  //And the capturing move itself now only has one liberty
-  if(num_captured == 1 && chain_data[chain_head[loc]].num_locs == 1 && chain_data[chain_head[loc]].num_liberties == 1)
-    ko_loc = possible_ko_loc;
-  else
-    ko_loc = NULL_LOC;
 
   if(pla == P_BLACK)
     numWhiteCaptures += num_captured;
@@ -1526,278 +1530,6 @@ bool Board::hasLibertyGainingCaptures(Loc loc) const {
   } while (cur != loc);
 
   return false;
-}
-
-bool Board::searchIsLadderCapturedAttackerFirst2Libs(Loc loc, vector<Loc>& buf, vector<Loc>& workingMoves) {
-  if(loc < 0 || loc >= MAX_ARR_SIZE)
-    return false;
-  if(colors[loc] != C_BLACK && colors[loc] != C_WHITE)
-    return false;
-  if(chain_data[chain_head[loc]].num_liberties != 2)
-    return false;
-
-  //Make it so that pla is always the defender
-  Player pla = colors[loc];
-  Player opp = getOpp(pla);
-
-  int numLibs = findLiberties(loc,buf,0,0);
-  assert(numLibs == 2);
-  (void)numLibs; //Avoid warning when asserts are off
-
-  Loc move0 = buf[0];
-  Loc move1 = buf[1];
-  bool move0Works = false;
-  bool move1Works = false;
-
-  //Suicide never relevant for ladders
-  //Attacker: A suicide move cannot reduce the defender's liberties
-  //Defender: A suicide move cannot gain liberties
-  bool isMultiStoneSuicideLegal = false;
-  if(isLegal(move0,opp,isMultiStoneSuicideLegal)) {
-    MoveRecord record = playMoveRecorded(move0,opp);
-    move0Works = searchIsLadderCaptured(loc,true,buf);
-    undo(record);
-  }
-  if(isLegal(move1,opp,isMultiStoneSuicideLegal)) {
-    MoveRecord record = playMoveRecorded(move1,opp);
-    move1Works = searchIsLadderCaptured(loc,true,buf);
-    undo(record);
-  }
-
-  if(move0Works || move1Works) {
-    workingMoves.clear();
-    if(move0Works)
-      workingMoves.push_back(move0);
-    if(move1Works)
-      workingMoves.push_back(move1);
-    return true;
-  }
-  return false;
-}
-
-bool Board::searchIsLadderCaptured(Loc loc, bool defenderFirst, vector<Loc>& buf) {
-  if(loc < 0 || loc >= MAX_ARR_SIZE)
-    return false;
-  if(colors[loc] != C_BLACK && colors[loc] != C_WHITE)
-    return false;
-
-  if(chain_data[chain_head[loc]].num_liberties > 2 || (defenderFirst && chain_data[chain_head[loc]].num_liberties > 1))
-    return false;
-
-  //Make it so that pla is always the defender
-  Player pla = colors[loc];
-  Player opp = getOpp(pla);
-
-  //Clear the ko loc for the defender at the root node - assume all kos work for the defender
-  Loc ko_loc_saved = ko_loc;
-  if(defenderFirst)
-    ko_loc = NULL_LOC;
-
-  //Stack for the search. These point to lists of possible moves to search at each level of the stack, indices refer to indices in [buf].
-  int stackSize = x_size*y_size*3/2+1; //A bit bigger due to paranoia about recaptures making the sequence longer.
-  static constexpr int arrSize = MAX_PLAY_SIZE * 3 / 2 + 1;
-  int moveListStarts[arrSize]; //Buf idx of start of list
-  int moveListLens[arrSize]; //Len of list
-  int moveListCur[arrSize]; //Current move list idx searched, equal to -1 if list has not been generated.
-  MoveRecord records[arrSize]; //Records so that we can undo moves as we search back up.
-  int stackIdx = 0;
-  int searchNodeCount = 0;
-  static const int MAX_LADDER_SEARCH_NODE_BUDGET = 25000;
-
-  moveListCur[0] = -1;
-  moveListStarts[0] = 0;
-  moveListLens[0] = 0;
-  bool returnValue = false;
-  bool returnedFromDeeper = false;
-  // bool print = true;
-
-  while(true) {
-    // if(print) cout << ": " << stackIdx << " " << moveListCur[stackIdx] << " " << moveListStarts[stackIdx] << " " << moveListLens[stackIdx] << " " << returnValue << " " << returnedFromDeeper << endl;
-
-    //Returned from the root - so that's the answer
-    if(stackIdx <= -1) {
-      assert(stackIdx == -1);
-      ko_loc = ko_loc_saved;
-      return returnValue;
-    }
-
-    //If we hit the stack limit, just consider it a failed ladder.
-    if(stackIdx >= stackSize-1) {
-      returnValue = true; returnedFromDeeper = true; stackIdx--; continue;
-    }
-    //If we hit a total node count limit, then just assume it doesn't work.
-    if(searchNodeCount >= MAX_LADDER_SEARCH_NODE_BUDGET) {
-      stackIdx -= 1;
-      while(stackIdx >= 0) {
-        undo(records[stackIdx]);
-        stackIdx -= 1;
-      }
-      return false;
-    }
-
-    bool isDefender = (defenderFirst && (stackIdx % 2) == 0) || (!defenderFirst && (stackIdx % 2) == 1);
-
-    //We just entered this level?
-    if(moveListCur[stackIdx] == -1) {
-      int libs = chain_data[chain_head[loc]].num_liberties;
-
-      //Base cases.
-      //If we are the attacker and the group has only 1 liberty, we already win.
-      if(!isDefender && libs <= 1) { returnValue = true; returnedFromDeeper = true; stackIdx--; continue; }
-      //If we are the attacker and the group has 3 liberties, we already lose.
-      if(!isDefender && libs >= 3) { returnValue = false; returnedFromDeeper = true; stackIdx--; continue; }
-      //If we are the defender and the group has 2 liberties, we already win.
-      if(isDefender && libs >= 2) { returnValue = false; returnedFromDeeper = true; stackIdx--; continue; }
-      //If we are the defender and the attacker left a simple ko point, assume we already win
-      //because we don't want to say yes on ladders that depend on kos
-      //This should also hopefully prevent any possible infinite loops - I don't know of any infinite loop
-      //that would come up in a continuous atari sequence that doesn't ever leave a simple ko point.
-      if(isDefender && ko_loc != NULL_LOC) { returnValue = false; returnedFromDeeper = true; stackIdx--; continue; }
-
-      //Otherwise we need to keep searching.
-      //Generate the move list. Attacker and defender generate moves on the group's liberties, but only the defender
-      //generates moves on surrounding capturable opposing groups.
-      int start = moveListStarts[stackIdx];
-      int moveListLen = 0;
-      if(isDefender) {
-        moveListLen = findLibertyGainingCaptures(loc,buf,start,start);
-        moveListLen += findLiberties(loc,buf,start,start+moveListLen);
-
-        int lowerBoundLibs;
-        int upperBoundLibs;
-        //List is always nonempty, and the last element always is the lone liberty of the defender group
-        getBoundNumLibertiesAfterPlay(buf[start+moveListLen-1], pla, lowerBoundLibs, upperBoundLibs);
-        //Defender immediately wins if there are provably enough libs
-        if(lowerBoundLibs >= 3)
-        { returnValue = false; returnedFromDeeper = true; stackIdx--; continue; }
-        //Attacker immediately wins if defender has not enough libs and there are no alternatives
-        if(moveListLen == 1 && upperBoundLibs <= 1)
-        { returnValue = true; returnedFromDeeper = true; stackIdx--; continue; }
-      }
-      else {
-        moveListLen += findLiberties(loc,buf,start,start);
-        // if(moveListLen != 2) {
-        //   cout << *this << endl;
-        //   cout << stackIdx << endl;
-        //   for(int i = 0; i<stackIdx; i++) {
-        //     cout << moveListCur[stackIdx] << " " << moveListStarts[stackIdx] << " " << moveListLens[stackIdx] << " "
-        //          << Location::toString(buf[moveListStarts[stackIdx] + moveListCur[stackIdx]],*this) << endl;
-        //   }
-        //   cout << "===" << endl;
-        //   checkConsistency();
-        // }
-        assert(moveListLen == 2);
-
-        int libs0 = getNumImmediateLiberties(buf[start]);
-        int libs1 = getNumImmediateLiberties(buf[start+1]);
-
-        //If we are the attacker and we're in a double-ko death situation, then assume we win.
-        //Both defender liberties must be ko mouths, connecting either ko mouth must not increase the defender's
-        //liberties, and none of the attacker's surrounding stones can currently be in atari.
-        //This is not complete - there are situations where the defender's connections increase liberties, or where
-        //the attacker has stones in atari, but where the defender is still in inescapable atari even if they have
-        //a large finite number of ko threats. But it's better than nothing.
-        if(libs0 == 0 && libs1 == 0 && wouldBeKoCapture(buf[start],opp) && wouldBeKoCapture(buf[start+1],opp)) {
-          if(getNumLibertiesAfterPlay(buf[start],pla,3) <= 2 && getNumLibertiesAfterPlay(buf[start+1],pla,3) <= 2) {
-            if(!hasLibertyGainingCaptures(loc))
-            { returnValue = true; returnedFromDeeper = true; stackIdx--; continue; }
-          }
-        }
-
-        //Early quitouts if the liberties are not adjacent
-        //(so that filling one doesn't fill an immediate liberty of the other)
-        if(!Location::isAdjacent(buf[start],buf[start+1],x_size)) {
-          //We lose automatically if both escapes get the defender too many libs
-          if(libs0 >= 3 && libs1 >= 3)
-          { returnValue = false; returnedFromDeeper = true; stackIdx--; continue; }
-          //Move 1 is not possible, so shrink the list
-          else if(libs0 >= 3)
-          { moveListLen = 1; }
-          //Move 0 is not possible, so swap and shrink the list
-          else if(libs1 >= 3)
-          { buf[start] = buf[start+1]; moveListLen = 1; }
-        }
-        //Order the two moves based on a simple heuristic - for each neighboring group with any liberties
-        //count that the opponent could connect to, count liberties - 1.5.
-        if(moveListLen > 1) {
-          libs0 = libs0 * 2 + countHeuristicConnectionLibertiesX2(buf[start],pla);
-          libs1 = libs1 * 2 + countHeuristicConnectionLibertiesX2(buf[start+1],pla);
-          if(libs1 > libs0) {
-            int tmp = buf[start];
-            buf[start] = buf[start+1];
-            buf[start+1] = tmp;
-          }
-        }
-      }
-      moveListLens[stackIdx] = moveListLen;
-
-      //And indicate to begin search on the first move generated.
-      moveListCur[stackIdx] = 0;
-    }
-    //Else, we returned from a deeper level (or the same level, via illegal move)
-    else {
-      assert(moveListCur[stackIdx] >= 0);
-      assert(moveListCur[stackIdx] < moveListLens[stackIdx]);
-      //If we returned from deeper we need to undo the move we made
-      if(returnedFromDeeper)
-        undo(records[stackIdx]);
-
-      //Defender has a move that is not ladder captured?
-      if(isDefender && !returnValue) {
-        //Return! (returnValue is still false, as desired)
-        returnedFromDeeper = true;
-        stackIdx--;
-        continue;
-      }
-      //Attacker has a move that does ladder capture?
-      if(!isDefender && returnValue) {
-        //Return! (returnValue is still true, as desired)
-        returnedFromDeeper = true;
-        stackIdx--;
-        continue;
-      }
-
-      //Move on to the next move to search
-      moveListCur[stackIdx]++;
-    }
-
-    //If there is no next move to search, then we lose.
-    if(moveListCur[stackIdx] >= moveListLens[stackIdx]) {
-      //For a defender, that means a ladder capture.
-      //For an attacker, that means no ladder capture found.
-      returnValue = isDefender;
-      returnedFromDeeper = true;
-      stackIdx--;
-      continue;
-    }
-
-    //Otherwise we do have an next move to search. Grab it.
-    Loc move = buf[moveListStarts[stackIdx] + moveListCur[stackIdx]];
-    Player p = (isDefender ? pla : opp);
-
-    // if(print) cout << "play " << Location::getX(move,x_size) << " " << Location::getY(move,x_size) << " " << p << endl;
-
-    //Illegal move - treat it the same as a failed move, but don't return up a level so that we
-    //loop again and just try the next move.
-    bool isMultiStoneSuicideLegal = false;
-    if(!isLegal(move,p,isMultiStoneSuicideLegal)) {
-      returnValue = isDefender;
-      returnedFromDeeper = false;
-      // if(print) cout << "illegal " << endl;
-      continue;
-    }
-
-    //Play and record the move!
-    records[stackIdx] = playMoveRecorded(move,p);
-    searchNodeCount++;
-
-    //And recurse to the next level
-    stackIdx++;
-    moveListCur[stackIdx] = -1;
-    moveListStarts[stackIdx] = moveListStarts[stackIdx-1] + moveListLens[stackIdx-1];
-    moveListLens[stackIdx] = 0;
-  }
-
 }
 
 void Board::calculateArea(
@@ -2359,15 +2091,6 @@ void Board::checkConsistency() const {
   //   if(empty_list.indices_[loc] != i)
   //     throw StringError(errLabel + "Empty list index for loc in index i is not i");
   // }
-
-  if(ko_loc != NULL_LOC) {
-    int x = Location::getX(ko_loc,x_size);
-    int y = Location::getY(ko_loc,x_size);
-    if(x < 0 || x >= x_size || y < 0 || y >= y_size)
-      throw StringError(errLabel + "Invalid simple ko loc");
-    if(getNumImmediateLiberties(ko_loc) != 0)
-      throw StringError(errLabel + "Simple ko loc has immediate liberties");
-  }
 
   short tmpAdjOffsets[8];
   Location::getAdjacentOffsets(tmpAdjOffsets,x_size);
