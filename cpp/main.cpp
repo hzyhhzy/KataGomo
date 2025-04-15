@@ -66,9 +66,11 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
   else if(subcommand == "gatekeeper")
     return MainCmds::gatekeeper(subArgs);
   else if(subcommand == "genconfig")
-    return MainCmds::genconfig(subArgs,args[0]);
+    return MainCmds::genconfig(subArgs, args[0]);
   else if(subcommand == "gtp")
     return MainCmds::gtp(subArgs);
+  else if(subcommand == "gom")
+    return MainCmds::gomprotocol(subArgs);
   else if(subcommand == "tuner")
     return MainCmds::tuner(subArgs);
   else if(subcommand == "match")
