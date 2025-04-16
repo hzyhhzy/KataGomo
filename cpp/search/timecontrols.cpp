@@ -103,6 +103,10 @@ TimeControls TimeControls::canadianOrByoYomiTime(
   return tc;
 }
 
+TimeControls TimeControls::gomocupTime(double mainTime, double perMoveTime) {
+  return fischerCappedTime(mainTime, 0, mainTime, perMoveTime);
+}
+
 std::string TimeControls::toDebugString(const Board& board, const BoardHistory& hist, double lagBuffer) const {
   std::ostringstream out;
   out << "originalMainTime " << originalMainTime;
@@ -274,8 +278,27 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
 
   double lagBufferToUse = lagBuffer;
 
+  //gomocup time handling
+  if(increment == 0 && numPeriodsLeftIncludingCurrent == 0) {
+    double tm = 1e10;
+    double step = floor(hist.moveHistory.size() / 2);
+    if(mainTimeLeft > 0)
+      tm = 0.4 * mainTimeLeft / pow(step + 10, 0.7);
+
+    tm = std::min(tm, maxTimePerMove);
+
+    if(step == 0)
+      tm -= 1.5;  
+
+    if(tm < 0)
+      tm = 0;
+
+    minTime = tm;
+    recommendedTime = tm;
+    maxTime = tm;
+  }
   //Fischer or absolute time handling
-  if(increment > 0 || numPeriodsLeftIncludingCurrent <= 0) {
+  else if(increment > 0 || numPeriodsLeftIncludingCurrent <= 0) {
     if(inOvertime)
       throw StringError("TimeControls: inOvertime with Fischer or absolute time, inconsistent time control?");
     if(numPeriodsLeftIncludingCurrent != 0)

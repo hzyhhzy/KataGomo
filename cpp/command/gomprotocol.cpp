@@ -155,6 +155,100 @@ static int parseByoYomiPeriods(const vector<string>& args, int argIdx) {
   return byoYomiPeriods;
 }
 
+static bool getTwoRandomMoveForSwap2(const Board& board, Loc& whiteLoc, Loc& blackLoc, string& responseMoves) {
+  if(board.movenum != 3)
+    return false;
+  double x1, x2, x3, y1, y2, y3;
+  int c = 0;
+  for(int x = 0; x < 15; x++)
+    for(int y = 0; y < 15; y++) {
+      Loc loc = Location::getLoc(x, y, 15);
+      if(board.colors[loc] != C_EMPTY) {
+        c++;
+        if(c == 1) {
+          x1 = x;
+          y1 = y;
+        } else if(c == 2) {
+          x2 = x;
+          y2 = y;
+        } else if(c == 3) {
+          x3 = x;
+          y3 = y;
+        }
+      }
+    }
+  if(c != 3)
+    return false;
+  double values[15][15];
+
+  for(int x = 0; x < 15; x++)
+    for(int y = 0; y < 15; y++) {
+      Loc loc = Location::getLoc(x, y, 15);
+      if((x == 0 || y == 0 || x == 15 || y == 15) && board.colors[loc] == C_EMPTY)
+        values[x][y] = -1.0 / sqrt((x - x1) * (x - x1) + (y - y1) * (y - y1)) -
+                       1.0 / sqrt((x - x2) * (x - x2) + (y - y2) * (y - y2)) -
+                       1.0 / sqrt((x - x3) * (x - x3) + (y - y3) * (y - y3));
+      else
+        values[x][y] = -1e32;
+    }
+  double bestValue;
+  int bestX, bestY;
+
+  bestValue = -1e30;
+  bestX = -1;
+  bestY = -1;
+  for(int x = 0; x < 15; x++)
+    for(int y = 0; y < 15; y++) {
+      if(values[x][y] > bestValue) {
+        bestValue = values[x][y];
+        bestX = x;
+        bestY = y;
+      }
+    }
+  values[bestX][bestY] = -1e31;
+  bestValue = -1e30;
+  bestX = -1;
+  bestY = -1;
+  for(int x = 0; x < 15; x++)
+    for(int y = 0; y < 15; y++) {
+      if(values[x][y] > bestValue) {
+        bestValue = values[x][y];
+        bestX = x;
+        bestY = y;
+      }
+    }
+  values[bestX][bestY] = -1e31;
+  bestValue = -1e30;
+  bestX = -1;
+  bestY = -1;
+  for(int x = 0; x < 15; x++)
+    for(int y = 0; y < 15; y++) {
+      if(values[x][y] > bestValue) {
+        bestValue = values[x][y];
+        bestX = x;
+        bestY = y;
+      }
+    }
+  values[bestX][bestY] = -1e31;
+  whiteLoc = Location::getLoc(bestX, bestY, 15);
+  responseMoves = to_string(bestX) + "," + to_string(bestY);
+  bestValue = -1e30;
+  bestX = -1;
+  bestY = -1;
+  for(int x = 0; x < 15; x++)
+    for(int y = 0; y < 15; y++) {
+      if(values[x][y] > bestValue) {
+        bestValue = values[x][y];
+        bestX = x;
+        bestY = y;
+      }
+    }
+  values[bestX][bestY] = -1e31;
+  blackLoc = Location::getLoc(bestX, bestY, 15);
+  responseMoves = responseMoves + " " + to_string(bestX) + "," + to_string(bestY);
+  return true;
+}
+
 
 
 static bool shouldResign(
@@ -188,9 +282,9 @@ static bool shouldResign(
   return true;
 }
 
-struct GTPEngine {
-  GTPEngine(const GTPEngine&) = delete;
-  GTPEngine& operator=(const GTPEngine&) = delete;
+struct GomEngine {
+  GomEngine(const GomEngine&) = delete;
+  GomEngine& operator=(const GomEngine&) = delete;
 
   const string nnModelFile;
   const int analysisPVLen;
@@ -225,7 +319,7 @@ struct GTPEngine {
 
   double genmoveTimeSum;
 
-  GTPEngine(
+  GomEngine(
     const string& modelFile, SearchParams initialParams, Rules initialRules,
     double staticPDA,
     double normAvoidRepeatedPatternUtility,
@@ -256,7 +350,7 @@ struct GTPEngine {
   {
   }
 
-  ~GTPEngine() {
+  ~GomEngine() {
     stopAndWait();
     delete bot;
     delete nnEval;
@@ -331,8 +425,8 @@ struct GTPEngine {
       boardYSize = nnEval->getNNYLen();
     }
     logger.write("Initializing board with boardXSize " + Global::intToString(boardXSize) + " boardYSize " + Global::intToString(boardYSize));
-    if(!loggingToStderr)
-      cerr << ("Initializing board with boardXSize " + Global::intToString(boardXSize) + " boardYSize " + Global::intToString(boardYSize)) << endl;
+    //if(!loggingToStderr)
+    //  cerr << ("Initializing board with boardXSize " + Global::intToString(boardXSize) + " boardYSize " + Global::intToString(boardYSize)) << endl;
 
     string searchRandSeed;
     if(cfg.contains("searchRandSeed"))
@@ -734,10 +828,7 @@ struct GTPEngine {
     recentWinLossValues.push_back(winLossValue);
 
     //Decide whether we should resign---------------------
-    bool resigned = allowResignation && shouldResign(
-      bot->getRootBoard(),bot->getRootHist(),pla,recentWinLossValues,
-      resignThreshold,resignConsecTurns
-    );
+    bool resigned = false;
 
 
     //Snapshot the time NOW - all meaningful play-related computation time is done, the rest is just
@@ -755,18 +846,19 @@ struct GTPEngine {
       if(perspective == P_BLACK || (perspective != P_BLACK && perspective != P_WHITE && pla == P_BLACK)) {
         winrate = 1.0 - winrate;
       }
-      cerr << "CHAT:"
+      cout << "MESSAGE "
            << "Visits " << visits << " Winrate " << Global::strprintf("%.2f%%", winrate * 100.0) << " Drawrate "
-           << Global::strprintf("%.2f%%", drawrate);
+           << Global::strprintf("%.2f%%", values.noResultValue * 100.0) << " Time "
+           << Global::strprintf("%.3f", timeTaken);
       if(params.playoutDoublingAdvantage != 0.0) {
-        cerr << Global::strprintf(
+          cout << Global::strprintf(
           " (PDA %.2f)",
           bot->getSearch()->getRootPla() == getOpp(params.playoutDoublingAdvantagePla) ?
           -params.playoutDoublingAdvantage : params.playoutDoublingAdvantage);
       }
-      cerr << " PV ";
-      bot->getSearch()->printPVForMove(cerr,bot->getSearch()->rootNode, moveLoc, analysisPVLen);
-      cerr << endl;
+      cout << " PV ";
+      bot->getSearch()->printPVForMove(cout, bot->getSearch()->rootNode, moveLoc, analysisPVLen);
+      cout << endl;
     }
 
     if(logSearchInfo) {
@@ -774,20 +866,19 @@ struct GTPEngine {
       PlayUtils::printGenmoveLog(sout,bot,nnEval,moveLoc,timeTaken,perspective);
       logger.write(sout.str());
     }
-    if(debug) {
-      PlayUtils::printGenmoveLog(cerr,bot,nnEval,moveLoc,timeTaken,perspective);
-    }
+    //if(debug) {
+    //  PlayUtils::printGenmoveLog(cerr,bot,nnEval,moveLoc,timeTaken,perspective);
+    //}
 
 
 
 
     //Actual reporting of chosen move---------------------
-    if(resigned)
-      response = "resign";
-    else
-      response = Location::toString(moveLoc,bot->getRootBoard());
+    int x = Location::getX(moveLoc, bot->getRootBoard().x_size);
+    int y = Location::getY(moveLoc, bot->getRootBoard().x_size);
+    response = to_string(x) + "," + to_string(y);
 
-    if(!resigned && moveLoc != Board::NULL_LOC && isLegal && playChosenMove) {
+    if(moveLoc != Board::NULL_LOC && isLegal && playChosenMove) {
       bool suc = bot->makeMove(moveLoc,pla);
       if(suc)
         moveHistory.push_back(Move(moveLoc,pla));
@@ -802,6 +893,105 @@ struct GTPEngine {
     }
 
     return;
+  }
+
+  double searchAndGetValue(
+    Player pla,
+    Logger& logger,
+    double searchTime,
+    bool logSearchInfo,
+    string& response,
+    bool& responseIsError,
+    AnalyzeArgs args) {
+    ClockTimer timer;
+
+    response = "";
+    responseIsError = false;
+
+    nnEval->clearStats();
+    TimeControls tc;
+    tc.maxTimePerMove = searchTime;
+
+    // Make sure we have the right parameters, in case someone ran analysis in the meantime.
+    if(params.playoutDoublingAdvantage != staticPlayoutDoublingAdvantage) {
+      params.playoutDoublingAdvantage = staticPlayoutDoublingAdvantage;
+      bot->setParams(params);
+    }
+
+    if(params.wideRootNoise != genmoveWideRootNoise) {
+      params.wideRootNoise = genmoveWideRootNoise;
+      bot->setParams(params);
+    }
+
+    // Play faster when winning
+    double searchFactor = 1.0;
+    lastSearchFactor = searchFactor;
+    Loc moveLoc;
+    bot->setAvoidMoveUntilByLoc(args.avoidMoveUntilByLocBlack, args.avoidMoveUntilByLocWhite);
+    moveLoc = bot->genMoveSynchronous(pla, tc, searchFactor);
+
+    bool isLegal = bot->isLegalStrict(moveLoc, pla);
+    if(moveLoc == Board::NULL_LOC || !isLegal) {
+      responseIsError = true;
+      response = "genmove returned null location or illegal move";
+      // cout<< "genmove returned null location or illegal move";
+      ostringstream sout;
+      sout << "genmove null location or illegal move!?!"
+           << "\n";
+      sout << bot->getRootBoard() << "\n";
+      sout << "Pla: " << PlayerIO::playerToString(pla) << "\n";
+      sout << "MoveLoc: " << Location::toString(moveLoc, bot->getRootBoard()) << "\n";
+      logger.write(sout.str());
+      genmoveTimeSum += timer.getSeconds();
+      return 0;
+    }
+
+    ReportedSearchValues values;
+    double winLossValue;
+    {
+      values = bot->getSearch()->getRootValuesRequireSuccess();
+      winLossValue = values.winLossValue;
+    }
+
+    // Snapshot the time NOW - all meaningful play-related computation time is done, the rest is just
+    // output of various things.
+    double timeTaken = timer.getSeconds();
+    genmoveTimeSum += timeTaken;
+
+    // Chatting and logging ----------------------------
+
+    int64_t visits = bot->getSearch()->getRootVisits();
+    double winrate = 0.5 * (1.0 + (values.winValue - values.lossValue));
+    // Print winrate from desired perspective
+    if(perspective == P_BLACK || (perspective != P_BLACK && perspective != P_WHITE && pla == P_BLACK)) {
+      winrate = 1.0 - winrate;
+    }
+    cout << "MESSAGE "
+         << "Visits " << visits << " Winrate " << Global::strprintf("%.2f%%", winrate * 100.0) << " Drawrate "
+         << Global::strprintf("%.2f%%", values.noResultValue * 100.0) << " Time "
+         << Global::strprintf("%.3f", timeTaken);
+    if(params.playoutDoublingAdvantage != 0.0) {
+      cerr << Global::strprintf(
+        " (PDA %.2f)",
+        bot->getSearch()->getRootPla() == getOpp(params.playoutDoublingAdvantagePla) ? -params.playoutDoublingAdvantage
+                                                                                     : params.playoutDoublingAdvantage);
+    }
+    cout << " PV ";
+    bot->getSearch()->printPVForMove(cerr, bot->getSearch()->rootNode, moveLoc, analysisPVLen);
+    cout << endl;
+
+    // Actual reporting of chosen move---------------------
+    int x = Location::getX(moveLoc, bot->getRootBoard().x_size);
+    int y = Location::getY(moveLoc, bot->getRootBoard().x_size);
+    response = to_string(x) + "," + to_string(y);
+
+    if(logSearchInfo) {
+      ostringstream sout;
+      PlayUtils::printGenmoveLog(sout, bot, nnEval, moveLoc, timeTaken, perspective);
+      logger.write(sout.str());
+    }
+
+    return values.winValue - values.lossValue;
   }
 
   void clearCache() {
@@ -965,12 +1155,12 @@ struct GTPEngine {
 
 
 //User should pre-fill pla with a default value, as it will not get filled in if the parsed command doesn't specify
-static GTPEngine::AnalyzeArgs parseAnalyzeCommand(
+static GomEngine::AnalyzeArgs parseAnalyzeCommand(
   const string& command,
   const vector<string>& pieces,
   Player& pla,
   bool& parseFailed,
-  GTPEngine* engine
+  GomEngine* engine
 ) {
   int numArgsParsed = 0;
 
@@ -1111,7 +1301,7 @@ static GTPEngine::AnalyzeArgs parseAnalyzeCommand(
     break;
   }
 
-  GTPEngine::AnalyzeArgs args = GTPEngine::AnalyzeArgs();
+  GomEngine::AnalyzeArgs args = GomEngine::AnalyzeArgs();
   args.analyzing = true;
   args.lz = isLZ;
   args.kata = isKata;
@@ -1127,7 +1317,7 @@ static GTPEngine::AnalyzeArgs parseAnalyzeCommand(
 }
 
 
-int MainCmds::gtp(const vector<string>& args) {
+int MainCmds::gomprotocol(const vector<string>& args) {
   Board::initHash();
   Rand seedRand;
 
@@ -1150,7 +1340,7 @@ int MainCmds::gtp(const vector<string>& args) {
     cmd.getConfig(cfg);
   }
   catch (TCLAP::ArgException &e) {
-    cerr << "Error: " << e.error() << " for argument " << e.argId() << endl;
+    cout << "Error: " << e.error() << " for argument " << e.argId() << endl;
     return 1;
   }
 
@@ -1166,15 +1356,15 @@ int MainCmds::gtp(const vector<string>& args) {
   logger.write("GTP Engine starting...");
   logger.write(Version::getKataGoVersionForHelp());
   //Also check loggingToStderr so that we don't duplicate the message from the log file
-  if(startupPrintMessageToStderr && !logger.isLoggingToStderr()) {
-    cerr << Version::getKataGoVersionForHelp() << endl;
-  }
+  //if(startupPrintMessageToStderr && !logger.isLoggingToStderr()) {
+  //  cerr << Version::getKataGoVersionForHelp() << endl;
+  //}
 
   Rules initialRules = Setup::loadSingleRules(cfg);
   logger.write("Using " + initialRules.toStringMaybeNice() + " rules initially, unless GTP/GUI overrides this");
-  if(startupPrintMessageToStderr && !logger.isLoggingToStderr()) {
-    cerr << "Using " + initialRules.toStringMaybeNice() + " rules initially, unless GTP/GUI overrides this" << endl;
-  }
+  //if(startupPrintMessageToStderr && !logger.isLoggingToStderr()) {
+  //  cerr << "Using " + initialRules.toStringMaybeNice() + " rules initially, unless GTP/GUI overrides this" << endl;
+  //}
 
   SearchParams initialParams = Setup::loadSingleParams(cfg,Setup::SETUP_FOR_GTP);
   logger.write("Using " + Global::intToString(initialParams.numThreads) + " CPU thread(s) for search");
@@ -1210,6 +1400,11 @@ int MainCmds::gtp(const vector<string>& args) {
   const double analysisWideRootNoise =
     cfg.contains("analysisWideRootNoise") ? cfg.getDouble("analysisWideRootNoise",0.0,5.0) : Setup::DEFAULT_ANALYSIS_WIDE_ROOT_NOISE;
 
+  double swap2time = cfg.contains("swap2timeDefault")
+                       ? cfg.getDouble("swap2timeDefault", 0.0, 1000000)
+                       : 5400;  // swap2局时，只用于开局阶段计算（因为这时候服务器没有告诉局时）
+
+
   std::unique_ptr<PatternBonusTable> patternBonusTable = nullptr;
   {
     std::vector<std::unique_ptr<PatternBonusTable>> tables = Setup::loadAvoidSgfPatternBonusTables(cfg,logger);
@@ -1219,7 +1414,7 @@ int MainCmds::gtp(const vector<string>& args) {
 
   Player perspective = Setup::parseReportAnalysisWinrates(cfg,C_EMPTY);
 
-  GTPEngine* engine = new GTPEngine(
+  GomEngine* engine = new GomEngine(
     nnModelFile,initialParams,initialRules,
     staticPlayoutDoublingAdvantage,
     normalAvoidRepeatedPatternUtility, 
@@ -1243,17 +1438,25 @@ int MainCmds::gtp(const vector<string>& args) {
   cfg.warnUnusedKeys(cerr,&logger);
 
   logger.write("Loaded config " + cfg.getFileName());
-  logger.write("Loaded model "+ nnModelFile);
-  cmd.logOverrides(logger);
-  logger.write("Model name: "+ (engine->nnEval == NULL ? string() : engine->nnEval->getInternalModelName()));
+  logger.write("Loaded model " + nnModelFile);
+  logger.write("Model name: " + (engine->nnEval == NULL ? string() : engine->nnEval->getInternalModelName()));
   logger.write("GTP ready, beginning main protocol loop");
-  //Also check loggingToStderr so that we don't duplicate the message from the log file
-  if(startupPrintMessageToStderr && !logger.isLoggingToStderr()) {
-    cerr << "Loaded config " << cfg.getFileName() << endl;
-    cerr << "Loaded model " << nnModelFile << endl;
-    cerr << "Model name: "+ (engine->nnEval == NULL ? string() : engine->nnEval->getInternalModelName()) << endl;
-    cerr << "GTP ready, beginning main protocol loop" << endl;
-  }
+  // Also check loggingToStderr so that we don't duplicate the message from the log file
+  cout << "MESSAGE QQ:2658628026" << endl;
+  cout << "MESSAGE Source code: (https://github.com/hzyhhzy/KataGomo/tree/Gom2024)" << endl;
+#ifdef FORGOMOCUP
+  cout << "MESSAGE This is a special version for Gomocup. It only supports single thread(maybe you can run it with "
+          "multithread, but some bugs may occur), and works only on CPU. If you want full strength version, please "
+          "download it on github.com/hzyhhzy/katago/tree/gomoku. You can download packages on release page(suggested), "
+          "or compile it yourself"
+       << endl;
+
+#endif
+  cout << "MESSAGE Board Size: " << COMPILE_MAX_BOARD_LEN << endl;
+  cout << "MESSAGE Loaded config " << cfg.getFileName() << endl;
+  cout << "MESSAGE Loaded model " << nnModelFile << endl;
+  cout << "MESSAGE Model name: " + (engine->nnEval == NULL ? string() : engine->nnEval->getInternalModelName()) << endl;
+  cout << "MESSAGE GTP ready, beginning main protocol loop" << endl;
 
   bool currentlyAnalyzing = false;
   string line;
@@ -1261,8 +1464,6 @@ int MainCmds::gtp(const vector<string>& args) {
     //Parse command, extracting out the command itself, the arguments, and any GTP id number for the command.
     string command;
     vector<string> pieces;
-    bool hasId = false;
-    int id = 0;
     {
       line = CommandLoop::processSingleCommandLine(line);
 
@@ -1279,25 +1480,15 @@ int MainCmds::gtp(const vector<string>& args) {
       if(logAllGTPCommunication)
         logger.write("Controller: " + line);
 
-      //Parse id number of command, if present
-      size_t digitPrefixLen = 0;
-      while(digitPrefixLen < line.length() && Global::isDigit(line[digitPrefixLen]))
-        digitPrefixLen++;
-      if(digitPrefixLen > 0) {
-        hasId = true;
-        try {
-          id = Global::parseDigits(line,0,digitPrefixLen);
-        }
-        catch(const IOError& e) {
-          cout << "? GTP id '" << id << "' could not be parsed: " << e.what() << endl;
-          continue;
-        }
-        line = line.substr(digitPrefixLen);
-      }
+      
+      // Convert , to spaces
+      for(size_t i = 0; i < line.length(); i++)
+        if(line[i] == ',')
+          line[i] = ' ';
 
       line = Global::trim(line);
       if(line.length() <= 0) {
-        cout << "? empty command" << endl;
+        //cout << "? empty command" << endl;
         continue;
       }
 
@@ -1449,8 +1640,8 @@ int MainCmds::gtp(const vector<string>& args) {
           response = error;
         }
         logger.write("Changed rules to " + newRules.toStringMaybeNice());
-        if(!logger.isLoggingToStderr())
-          cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
+        //if(!logger.isLoggingToStderr())
+        //  cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
       }
     }
 
@@ -1479,8 +1670,8 @@ int MainCmds::gtp(const vector<string>& args) {
             response = error;
           }
           logger.write("Changed rules to " + newRules.toStringMaybeNice());
-          if(!logger.isLoggingToStderr())
-            cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
+          //if(!logger.isLoggingToStderr())
+          //  cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
         }
       }
     }
@@ -1511,8 +1702,8 @@ int MainCmds::gtp(const vector<string>& args) {
           response = error;
         }
         logger.write("Changed rules to " + newRules.toStringMaybeNice());
-        if(!logger.isLoggingToStderr())
-          cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
+        //if(!logger.isLoggingToStderr())
+        //  cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
       }
     }
 
@@ -1979,7 +2170,7 @@ int MainCmds::gtp(const vector<string>& args) {
           allowResignation,resignThreshold,resignConsecTurns,
           logSearchInfo,debug,playChosenMove,
           response,responseIsError,maybeStartPondering,
-          GTPEngine::AnalyzeArgs()
+          GomEngine::AnalyzeArgs()
         );
       }
     }
@@ -1987,7 +2178,7 @@ int MainCmds::gtp(const vector<string>& args) {
     else if(command == "genmove_analyze" || command == "lz-genmove_analyze" || command == "kata-genmove_analyze") {
       Player pla = engine->bot->getRootPla();
       bool parseFailed = false;
-      GTPEngine::AnalyzeArgs analyzeArgs = parseAnalyzeCommand(command, pieces, pla, parseFailed, engine);
+      GomEngine::AnalyzeArgs analyzeArgs = parseAnalyzeCommand(command, pieces, pla, parseFailed, engine);
       if(parseFailed) {
         responseIsError = true;
         response = "Could not parse genmove_analyze arguments or arguments out of range: '" + Global::concat(pieces," ") + "'";
@@ -1997,10 +2188,8 @@ int MainCmds::gtp(const vector<string>& args) {
         bool playChosenMove = true;
 
         //Make sure the "equals" for GTP is printed out prior to the first analyze line, regardless of thread racing
-        if(hasId)
-          cout << "=" << Global::intToString(id) << endl;
-        else
-          cout << "=" << endl;
+        
+        cout << "=" << endl;
 
         engine->genMove(
           pla,
@@ -2019,8 +2208,8 @@ int MainCmds::gtp(const vector<string>& args) {
         }
         else {
           cout << endl;
-          if(!logger.isLoggingToStderr())
-            cerr << response << endl;
+          //if(!logger.isLoggingToStderr())
+          //  cerr << response << endl;
         }
       }
     }
@@ -2089,8 +2278,8 @@ int MainCmds::gtp(const vector<string>& args) {
                 out << "WARNING: Rules " << sgfRules.toJsonString()
                     << " from sgf not supported by neural net, using " << supportedRules.toJsonString() << " instead";
                 logger.write(out.str());
-                if(!logger.isLoggingToStderr())
-                  cerr << out.str() << endl;
+                //if(!logger.isLoggingToStderr())
+                //  cerr << out.str() << endl;
                 sgfRules = supportedRules;
               }
             }
@@ -2103,8 +2292,8 @@ int MainCmds::gtp(const vector<string>& args) {
                 ostringstream out;
                 out << "Changing rules to " << sgfRules.toJsonString();
                 logger.write(out.str());
-                if(!logger.isLoggingToStderr())
-                  cerr << out.str() << endl;
+                //if(!logger.isLoggingToStderr())
+                //  cerr << out.str() << endl;
               }
             }
 
@@ -2173,7 +2362,7 @@ int MainCmds::gtp(const vector<string>& args) {
     else if(command == "analyze" || command == "lz-analyze" || command == "kata-analyze") {
       Player pla = engine->bot->getRootPla();
       bool parseFailed = false;
-      GTPEngine::AnalyzeArgs analyzeArgs = parseAnalyzeCommand(command, pieces, pla, parseFailed, engine);
+      GomEngine::AnalyzeArgs analyzeArgs = parseAnalyzeCommand(command, pieces, pla, parseFailed, engine);
 
       if(parseFailed) {
         responseIsError = true;
@@ -2181,10 +2370,8 @@ int MainCmds::gtp(const vector<string>& args) {
       }
       else {
         //Make sure the "equals" for GTP is printed out prior to the first analyze line, regardless of thread racing
-        if(hasId)
-          cout << "=" << Global::intToString(id) << endl;
-        else
-          cout << "=" << endl;
+       
+        cout << "=" << endl;
 
         engine->analyze(pla, analyzeArgs);
 
@@ -2313,10 +2500,7 @@ int MainCmds::gtp(const vector<string>& args) {
             params.maxPlayouts = ((int64_t)1) << 50;
             params.maxVisits = numVisits;
             //Make sure the "equals" for GTP is printed out prior to the benchmark line
-            if(hasId)
-              cout << "=" << Global::intToString(id) << endl;
-            else
-              cout << "=" << endl;
+            cout << "=" << endl;
 
             try {
               PlayUtils::BenchmarkResults results = PlayUtils::benchmarkSearchOnPositionsAndPrint(
@@ -2378,8 +2562,8 @@ int MainCmds::gtp(const vector<string>& args) {
             response = error;
           }
           logger.write("Changed rules to " + newRules.toString());
-          if(!logger.isLoggingToStderr())
-            cerr << "Changed rules to " + newRules.toString() << endl;
+          //if(!logger.isLoggingToStderr())
+          //  cerr << "Changed rules to " + newRules.toString() << endl;
         }
       }
     } 
@@ -2415,8 +2599,8 @@ int MainCmds::gtp(const vector<string>& args) {
             response = error;
           }
           logger.write("Changed rules to " + newRules.toString());
-          if(!logger.isLoggingToStderr())
-            cerr << "Changed rules to " + newRules.toString() << endl;
+          //if(!logger.isLoggingToStderr())
+          //  cerr << "Changed rules to " + newRules.toString() << endl;
         }
       }
     } 
@@ -2444,8 +2628,8 @@ int MainCmds::gtp(const vector<string>& args) {
             response = error;
           }
           logger.write("Changed rules to " + newRules.toString());
-          if(!logger.isLoggingToStderr())
-            cerr << "Changed rules to " + newRules.toString() << endl;
+          //if(!logger.isLoggingToStderr())
+          //  cerr << "Changed rules to " + newRules.toString() << endl;
         }
       }
     } 
@@ -2473,9 +2657,287 @@ int MainCmds::gtp(const vector<string>& args) {
             response = error;
           }
           logger.write("Changed rules to " + newRules.toString());
-          if(!logger.isLoggingToStderr())
-            cerr << "Changed rules to " + newRules.toString() << endl;
+          //if(!logger.isLoggingToStderr())
+          //  cerr << "Changed rules to " + newRules.toString() << endl;
         }
+      }
+    }
+
+    else if(command == "ABOUT") {
+      response =
+        "name=\"KataGomo\", version=\"20250417\", author=\"HZY\", country=\"China\", email=\"2658628026@qq.com\", "
+        "others=\"Modified from Lightvector's Katago. Source code: https://github.com/hzyhhzy/KataGomo/tree/Gom2024 ";
+    }
+
+    else if(command == "END") {
+      shouldQuitAfterResponse = true;
+      logger.write("Quit requested by controller");
+    } 
+    else if(command == "START") {
+      response = "OK";
+    } 
+    else if(command == "RESTART") {
+      engine->clearBoard();
+      response = "OK";
+    }
+
+    else if(command == "INFO") {
+      if(pieces.size() == 0) {
+      } else {
+        string subcommand = pieces[0];
+        if(subcommand == "time_left") {
+          double time = 0;
+          if(pieces.size() != 2 || !Global::tryStringToDouble(pieces[1], time)) {
+            responseIsError = true;
+            response = "Expected 1 arguments for info:time_left but got '" + Global::concat(pieces, " ") + "'";
+          } else {
+            engine->bTimeControls = TimeControls::gomocupTime(time / 1000.0, engine->bTimeControls.maxTimePerMove);
+            engine->wTimeControls = engine->bTimeControls;
+          }
+        } else if(subcommand == "timeout_turn") {
+          double time = 0;
+          if(pieces.size() != 2 || !Global::tryStringToDouble(pieces[1], time)) {
+            responseIsError = true;
+            response = "Expected 1 arguments for info:time_left but got '" + Global::concat(pieces, " ") + "'";
+          } else {
+            engine->bTimeControls = TimeControls::gomocupTime(engine->bTimeControls.mainTimeLeft, time / 1000.0);
+            engine->wTimeControls = engine->bTimeControls;
+          }
+        }
+      }
+    }
+
+    else if(command == "BOARD") {
+      engine->clearCache();
+      engine->clearBoard();
+
+      string moveline;
+      vector<Move> initialStones;
+      Player p = P_BLACK;
+      while(getline(cin, moveline)) {
+        // Convert , to spaces
+        for(size_t i = 0; i < moveline.length(); i++)
+          if(moveline[i] == ',')
+            moveline[i] = ' ';
+
+        moveline = Global::trim(moveline);
+        // cout << moveline;
+        if(moveline == "DONE") {
+          bool debug = false;
+          bool playChosenMove = true;
+          engine->setPosition(initialStones);
+
+          engine->genMove(
+            p,
+            logger,
+            searchFactorWhenWinningThreshold,
+            searchFactorWhenWinning,
+            ogsChatToStderr,
+            allowResignation,
+            resignThreshold,
+            resignConsecTurns,
+            logSearchInfo,
+            debug,
+            playChosenMove,
+            response,
+            responseIsError,
+            maybeStartPondering,
+            GomEngine::AnalyzeArgs());
+          break;
+        } else {
+          stringstream ss(moveline);
+          int x, y;
+          ss >> x >> y;
+          if(x < 0 || x >= Board::MAX_LEN || y < 0 || y >= Board::MAX_LEN) {
+            responseIsError = true;
+            response = "Move Outside Board";
+          } else {
+            Loc loc = Location::getLoc(x, y, Board::MAX_LEN);
+            initialStones.push_back(Move(loc, p));
+            p = getOpp(p);
+          }
+        }
+      }
+    }
+
+    else if(command == "SWAP2BOARD") {
+      if(engine->getCurrentRules().basicRule != Rules::BASICRULE_STANDARD)
+        throw StringError("SWAP2 is only for STANDARD rule");
+      engine->clearCache();
+      engine->clearBoard();
+
+      string moveline;
+      vector<Move> initialStones;
+      Player p = P_BLACK;
+      while(getline(cin, moveline)) {
+        // Convert , to spaces
+        for(size_t i = 0; i < moveline.length(); i++)
+          if(moveline[i] == ',')
+            moveline[i] = ' ';
+
+        moveline = Global::trim(moveline);
+        // cout << moveline;
+        if(moveline == "DONE") {
+          bool debug = false;
+          bool playChosenMove = false;
+          int swap2num = initialStones.size();
+          if(swap2num == 0) {
+            static const string openings[10] = {
+              "5,0 6,0 6,1",
+              "3,14 12,14 4,14",
+              "7,0 11,0 5,0",
+              "7,0 9,0 7,1",
+              "1,1 2,1 3,2",
+              "7,0 5,0 6,1",
+              "1,2 0,0 2,1",
+              "0,0 0,3 3,2",
+              "8,1 9,0 10,0",
+              "7,0 6,0 8,1",
+            };
+            int choice = seedRand.nextUInt(10);
+            response = openings[choice];
+          } else if(swap2num == 3) {
+            engine->setPosition(initialStones);
+            double value = engine->searchAndGetValue(
+              p, logger, swap2time / 10, logSearchInfo, response, responseIsError, GomEngine::AnalyzeArgs());
+
+            string response1 = response;
+            if(value < -0.15) {
+              response = "SWAP";
+              cout << "MESSAGE White winrate = " << 50 * (value + 1) << "%, So engine plays black" << endl;
+            } else if(value > 0.15) {
+              cout << "MESSAGE White winrate = " << 50 * (value + 1) << "%, So engine plays white" << endl;
+            } else {
+              cout << "MESSAGE White winrate = " << 50 * (value + 1) << "%, So randomly plays 2 moves" << endl;
+              Loc blackLoc, whiteLoc;
+              string random2response;
+              getTwoRandomMoveForSwap2(engine->bot->getRootBoard(), whiteLoc, blackLoc, random2response);
+
+              bool suc1 = engine->play(whiteLoc, C_WHITE);
+              bool suc2 = engine->play(blackLoc, C_BLACK);
+              if(!suc1 || !suc2) {
+                cout << "DEBUG unknown error" << endl;
+                response = "SWAP";
+              }
+              double value2 = engine->searchAndGetValue(
+                p, logger, swap2time / 20, logSearchInfo, response, responseIsError, GomEngine::AnalyzeArgs());
+              if(value2 > -0.25 && value2 < 0.25) {
+                cout << "MESSAGE After these two moves, white winrate = " << 50 * (value2 + 1)
+                     << "%, So engine plays these two moves" << endl;
+                response = random2response;
+              } else {
+                if(value < 0)
+                  response = "SWAP";
+                else {
+                  cout << "MESSAGE After these two moves, white winrate = " << 50 * (value + 1)
+                       << "%, So not play these two moves" << endl;
+                  response = response1;
+                }
+              }
+            }
+          }
+
+          else if(swap2num == 5) {
+            engine->setPosition(initialStones);
+            double value = engine->searchAndGetValue(
+              p, logger, swap2time / 10, logSearchInfo, response, responseIsError, GomEngine::AnalyzeArgs());
+            if(value < 0) {
+              cout << "MESSAGE White winrate = " << 50 * (value + 1) << "%, So engine plays black" << endl;
+              response = "SWAP";
+            } else {
+              cout << "MESSAGE White winrate = " << 50 * (value + 1) << "%, So engine plays white" << endl;
+            }
+          }
+          break;
+
+        } else {
+          stringstream ss(moveline);
+          int x, y;
+          ss >> x >> y;
+          if(x < 0 || x >= Board::MAX_LEN || y < 0 || y >= Board::MAX_LEN) {
+            responseIsError = true;
+            response = "Move Outside Board";
+          } else {
+            Loc loc = Location::getLoc(x, y, Board::MAX_LEN);
+            initialStones.push_back(Move(loc, p));
+            p = getOpp(p);
+          }
+        }
+      }
+    }
+    /*
+    else if(command == "play") {
+      Player pla;
+      Loc loc;
+      if(pieces.size() != 2) {
+        responseIsError = true;
+        response = "Expected two arguments for play but got '" + Global::concat(pieces," ") + "'";
+      }
+      else if(!PlayerIO::tryParsePlayer(pieces[0],pla)) {
+        responseIsError = true;
+        response = "Could not parse color: '" + pieces[0] + "'";
+      }
+      else if(!tryParseLoc(pieces[1],engine->bot->getRootBoard(),loc)) {
+        responseIsError = true;
+        response = "Could not parse vertex: '" + pieces[1] + "'";
+      }
+      else {
+        bool suc = engine->play(loc,pla);
+        if(!suc) {
+          responseIsError = true;
+          response = "illegal move";
+        }
+        maybeStartPondering = true;
+      }
+    }
+    */
+    else if(command == "TURN") {
+      const Board& b = engine->bot->getRootBoard();
+      Player nextPla = b.movenum % 2 ? P_WHITE : P_BLACK;
+      Loc loc;
+      if(pieces.size() != 2) {
+        responseIsError = true;
+        response = "Expected 2 arguments for TURN but got '" + Global::concat(pieces, " ") + "'";
+      } else {
+        int x = stoi(pieces[0]), y = stoi(pieces[1]);
+        loc = Location::getLoc(x, y, engine->bot->getRootBoard().x_size);
+        bool suc = engine->play(loc, nextPla);
+        if(!suc) {
+          responseIsError = true;
+          response = "illegal move";
+        }
+      }
+      if(!responseIsError) {
+        bool debug = false;
+        bool playChosenMove = true;
+        nextPla = getOpp(nextPla);
+
+        engine->genMove(
+          nextPla,
+          logger,
+          searchFactorWhenWinningThreshold,
+          searchFactorWhenWinning,
+          ogsChatToStderr,
+          allowResignation,
+          resignThreshold,
+          resignConsecTurns,
+          logSearchInfo,
+          debug,
+          playChosenMove,
+          response,
+          responseIsError,
+          maybeStartPondering,
+          GomEngine::AnalyzeArgs());
+      }
+    }
+
+    else if(command == "setswap2time") {
+      float newSwap2Time = 5400;
+      if(pieces.size() != 1 || !Global::tryStringToFloat(pieces[0], newSwap2Time) || newSwap2Time <= 1) {
+        responseIsError = true;
+        response = "Expected single float argument for setSwap2Time but got '" + Global::concat(pieces, " ") + "'";
+      } else {
+        swap2time = newSwap2Time;
       }
     }
     else {
@@ -2485,19 +2947,12 @@ int MainCmds::gtp(const vector<string>& args) {
 
 
     //Postprocessing of response
-    if(hasId)
-      response = Global::intToString(id) + " " + response;
-    else
-      response = " " + response;
 
     if(responseIsError)
-      response = "?" + response;
-    else
-      response = "=" + response;
+      response = "ERROR " + response;
 
-    if(!suppressResponse) {
+    if((!suppressResponse) && (response != "")) {
       cout << response << endl;
-      cout << endl;
     }
 
     if(logAllGTPCommunication)

@@ -52,6 +52,7 @@ struct TimeControls {
     int numPeriods,
     int numStonesPerPeriod
   );
+  static TimeControls gomocupTime(double mainTime, double perMoveTime);
 
   bool isEffectivelyUnlimitedTime() const;
 

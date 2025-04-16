@@ -119,8 +119,15 @@ int main(int argc, const char* const* argv) {
   MainArgs::makeCoutAndCerrAcceptUTF8();
 
   if(args.size() < 2) {
+#ifndef FORGOMOCUP
     printHelp(args);
     return 0;
+#else
+    // init
+    VCFsolver::init();
+    return MainCmds::gomprotocol(args);
+#endif
+    
   }
   string cmdArg = string(args[1]);
   if(cmdArg == "-h" || cmdArg == "--h" || cmdArg == "-help" || cmdArg == "--help" || cmdArg == "help") {
