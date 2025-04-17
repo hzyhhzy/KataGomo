@@ -473,9 +473,14 @@ struct GomEngine {
     int newXSize = bot->getRootBoard().x_size;
     int newYSize = bot->getRootBoard().y_size;
     Board board(newXSize,newYSize);
-    bool suc = board.setStones(initialStones);
-    if(!suc)
-      return false;
+    //bool suc = board.setStones(initialStones);
+    for (int i = 0; i < initialStones.size(); i++)
+    {
+      auto mv = initialStones[i];
+      if(!board.isLegal(mv.loc, mv.pla))
+        return false;
+      board.playMoveAssumeLegal(mv.loc, mv.pla);
+    }
 
     //Sanity check
     for(int i = 0; i<initialStones.size(); i++) {
@@ -484,7 +489,7 @@ struct GomEngine {
         return false;
       }
     }
-    Player pla = P_BLACK;
+    Player pla = initialStones.size() == 0 ? C_BLACK : getOpp(initialStones[initialStones.size() - 1].pla);
     BoardHistory hist(board,pla,currentRules);
     hist.setInitialTurnNumber(board.numStonesOnBoard()); //Heuristic to guess at what turn this is
     vector<Move> newMoveHistory;
