@@ -1450,10 +1450,8 @@ int MainCmds::gomprotocol(const vector<string>& args) {
   cout << "MESSAGE QQ:2658628026" << endl;
   cout << "MESSAGE Source code: (https://github.com/hzyhhzy/KataGomo/tree/Gom2024)" << endl;
 #ifdef FORGOMOCUP
-  cout << "MESSAGE This is a special version for Gomocup. It only supports single thread(maybe you can run it with "
-          "multithread, but some bugs may occur), and works only on CPU. If you want full strength version, please "
-          "download it on github.com/hzyhhzy/katago/tree/gomoku. You can download packages on release page(suggested), "
-          "or compile it yourself"
+  cout << "MESSAGE This is a special version for Gomocup. It works only on CPU. If you want full strength version, please "
+          "download it on https://github.com/hzyhhzy/KataGomo/releases.  "
        << endl;
 
 #endif
