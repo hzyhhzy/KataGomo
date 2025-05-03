@@ -2677,7 +2677,41 @@ int MainCmds::gomprotocol(const vector<string>& args) {
       logger.write("Quit requested by controller");
     } 
     else if(command == "START") {
+      int newXSize = 0;
+      int newYSize = 0;
+      bool suc = false;
+
+      if(pieces.size() == 1) {
+        if(contains(pieces[0], ':')) {
+          vector<string> subpieces = Global::split(pieces[0], ':');
+          if(
+            subpieces.size() == 2 && Global::tryStringToInt(subpieces[0], newXSize) &&
+            Global::tryStringToInt(subpieces[1], newYSize))
+            suc = true;
+        } else {
+          if(Global::tryStringToInt(pieces[0], newXSize)) {
+            suc = true;
+            newYSize = newXSize;
+          }
+        }
+      } else if(pieces.size() == 2) {
+        if(Global::tryStringToInt(pieces[0], newXSize) && Global::tryStringToInt(pieces[1], newYSize))
+          suc = true;
+      }
       response = "OK";
+      if(!suc) {
+        responseIsError = true;
+        response = "Expected int argument for boardsize or pair of ints but got '" + Global::concat(pieces, " ") + "'";
+      } else if(newXSize < 2 || newYSize < 2) {
+        responseIsError = true;
+        response = "unacceptable size";
+      } else if(newXSize > Board::MAX_LEN || newYSize > Board::MAX_LEN) {
+        responseIsError = true;
+        response = Global::strprintf(
+          "unacceptable size (Board::MAX_LEN is %d, consider increasing and recompiling)", (int)Board::MAX_LEN);
+      } else {
+        engine->setOrResetBoardSize(cfg, logger, seedRand, newXSize, newYSize, logger.isLoggingToStderr());
+      }
     } 
     else if(command == "RESTART") {
       engine->clearBoard();
@@ -2751,11 +2785,13 @@ int MainCmds::gomprotocol(const vector<string>& args) {
           stringstream ss(moveline);
           int x, y;
           ss >> x >> y;
-          if(x < 0 || x >= Board::MAX_LEN || y < 0 || y >= Board::MAX_LEN) {
+          int xs = engine->bot->getRootBoard().x_size;
+          int ys = engine->bot->getRootBoard().y_size;
+          if(x < 0 || x >= xs || y < 0 || y >= ys) {
             responseIsError = true;
             response = "Move Outside Board";
           } else {
-            Loc loc = Location::getLoc(x, y, Board::MAX_LEN);
+            Loc loc = Location::getLoc(x, y, xs);
             initialStones.push_back(Move(loc, p));
             p = getOpp(p);
           }
@@ -2857,11 +2893,13 @@ int MainCmds::gomprotocol(const vector<string>& args) {
           stringstream ss(moveline);
           int x, y;
           ss >> x >> y;
-          if(x < 0 || x >= Board::MAX_LEN || y < 0 || y >= Board::MAX_LEN) {
+          int xs = engine->bot->getRootBoard().x_size;
+          int ys = engine->bot->getRootBoard().y_size;
+          if(x < 0 || x >= xs || y < 0 || y >= ys) {
             responseIsError = true;
             response = "Move Outside Board";
           } else {
-            Loc loc = Location::getLoc(x, y, Board::MAX_LEN);
+            Loc loc = Location::getLoc(x, y, xs);
             initialStones.push_back(Move(loc, p));
             p = getOpp(p);
           }
