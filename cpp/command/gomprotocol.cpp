@@ -2607,64 +2607,6 @@ int MainCmds::gomprotocol(const vector<string>& args) {
         }
       }
     } 
-    else if(Rules::basicRuleStrings().count(Global::toUpper(command)))  // Is Command a basic rule?
-    {
-      if(pieces.size() != 0) {
-        responseIsError = true;
-        response = "Expected zero arguments for BasicRule but got '" + Global::concat(pieces, " ") + "'";
-      } else {
-        Rules currentRules = engine->getCurrentRules();
-        Rules newRules;
-        bool parseSuccess = false;
-        try {
-          newRules = Rules::updateRules("basicrule", command, currentRules);
-          parseSuccess = true;
-        } catch(const StringError& err) {
-          responseIsError = true;
-          response = err.what();
-        }
-        if(parseSuccess) {
-          string error;
-          bool suc = engine->setRules(newRules, error);
-          if(!suc) {
-            responseIsError = true;
-            response = error;
-          }
-          logger.write("Changed rules to " + newRules.toString());
-          //if(!logger.isLoggingToStderr())
-          //  cerr << "Changed rules to " + newRules.toString() << endl;
-        }
-      }
-    } 
-    else if(Rules::VCNRuleStrings().count(Global::toUpper(command)))  // Is Command a VCN rule?
-    {
-      if(pieces.size() != 0) {
-        responseIsError = true;
-        response = "Expected zero arguments for VCNrule but got '" + Global::concat(pieces, " ") + "'";
-      } else {
-        Rules currentRules = engine->getCurrentRules();
-        Rules newRules;
-        bool parseSuccess = false;
-        try {
-          newRules = Rules::updateRules("vcnrule", command, currentRules);
-          parseSuccess = true;
-        } catch(const StringError& err) {
-          responseIsError = true;
-          response = err.what();
-        }
-        if(parseSuccess) {
-          string error;
-          bool suc = engine->setRules(newRules, error);
-          if(!suc) {
-            responseIsError = true;
-            response = error;
-          }
-          logger.write("Changed rules to " + newRules.toString());
-          //if(!logger.isLoggingToStderr())
-          //  cerr << "Changed rules to " + newRules.toString() << endl;
-        }
-      }
-    }
 
     else if(command == "ABOUT") {
       response =
@@ -2800,8 +2742,7 @@ int MainCmds::gomprotocol(const vector<string>& args) {
     }
 
     else if(command == "SWAP2BOARD") {
-      if(engine->getCurrentRules().basicRule != Rules::BASICRULE_STANDARD)
-        throw StringError("SWAP2 is only for STANDARD rule");
+      throw StringError("swap2 openings for caro are not prepared");
       engine->clearCache();
       engine->clearBoard();
 

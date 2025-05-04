@@ -126,7 +126,6 @@ int main(int argc, const char* const* argv) {
     return 0;
 #else
     // init
-    VCFsolver::init();
     return MainCmds::gomprotocol(args);
 #endif
     
