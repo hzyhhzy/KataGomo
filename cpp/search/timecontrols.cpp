@@ -278,12 +278,23 @@ void TimeControls::getTime(const Board& board, const BoardHistory& hist, double 
 
   double lagBufferToUse = lagBuffer;
 
+  int maxMoveUntilEnd = (boardArea - numStonesOnBoard) / 2;
+  double minTimePerMove = 0.07;
+#ifdef FORGOMOCUP
+
+  minTimePerMove = boardArea <= 225 ? 0.5 : 0.01;  // delay of piskvork. for big board fast game just ignore it
+#endif  // FORGOMOCUP
+
+
   //gomocup time handling
   if(increment == 0 && numPeriodsLeftIncludingCurrent == 0) {
     double tm = 1e10;
     double step = floor(hist.moveHistory.size() / 2);
-    if(mainTimeLeft > 0)
-      tm = 0.4 * mainTimeLeft / pow(step + 10, 0.7);
+    double t = mainTimeLeft - maxMoveUntilEnd * minTimePerMove;
+    if(t > 0)
+      tm = 0.4 * t / pow(step + 10, 0.7);
+    else
+      tm = 0;
 
     tm = std::min(tm, maxTimePerMove);
 
