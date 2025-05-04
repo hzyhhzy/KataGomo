@@ -723,6 +723,15 @@ void NNEvaluator::evaluate(
         isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
     }
 
+#ifdef FORGOMOCUP
+    // disallow pass when unnecessary
+    int allowPassUntilRemainLocs = history.rules.basicRule == Rules::BASICRULE_RENJU ? 10 : 0;
+    bool allowPass = history.rules.firstPassWin || history.rules.VCNRule != Rules::VCNRULE_NOVC ||
+                     board.numStonesOnBoard() + allowPassUntilRemainLocs >= board.x_size * board.y_size;
+    if(!allowPass)
+      isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = false;
+#endif
+
     for(int i = 0; i<policySize; i++) {
       float policyValue;
       if(isLegal[i]) {
