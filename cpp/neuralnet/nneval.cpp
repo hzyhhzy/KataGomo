@@ -725,8 +725,9 @@ void NNEvaluator::evaluate(
 
 #ifdef FORGOMOCUP
     // disallow pass when unnecessary
+    int allowPassUntilRemainLocs = 0;
     bool allowPass = history.rules.firstPassWin || history.rules.VCNRule != Rules::VCNRULE_NOVC ||
-                     board.numStonesOnBoard() + 15 >= board.x_size * board.y_size;
+                     board.numStonesOnBoard() + allowPassUntilRemainLocs >= board.x_size * board.y_size;
     if(!allowPass)
       isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = false;
 #endif
