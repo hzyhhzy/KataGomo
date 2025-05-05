@@ -1,0 +1,1 @@
+engine\katago writebook -html-dir html -book-file results/book -config results/book.cfg -html-dev-mode
