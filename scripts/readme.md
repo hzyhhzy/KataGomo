@@ -18,9 +18,9 @@ Example: `bash train.sh ../data b18c384n b18c384nbt-fson-mish-rvglr-bnh 128 main
  Defined in `./train/modelconfigs.py` .You can add new model sizes if needed.   
 Recommend sizes:   
 `b6c96` or `b10c128` for fast debug.    
-`b10c256nbt` for short runs (1~5 RTX4090 Days, ~ 1M selfplay games).   
-`b10c384nbt` for medium runs (5~20 RTX4090 Days, ~ 5M selfplay games).   
-`b18c384nbt` for long runs (20~180 RTX4090 Days)  
+`b10c256nbt` for short runs (1 ~ 5 RTX4090 Days, ~ 1M selfplay games).   
+`b10c384nbt` for medium runs (5 ~ 20 RTX4090 Days, ~ 5M selfplay games).   
+`b18c384nbt` for long runs (20 ~ 180 RTX4090 Days)  
 `b28c512nbt` for very long runs (>180 RTX4090 Days)   
 Recommend postfix: `-fson-mish-rvglr-bnh`   
 
@@ -53,7 +53,8 @@ Not required if windows
 Remove this or `CUDA_VISIBLE_DEVICES="0"` if only one GPU   
 
 ### Training(-samples-per-epoch) - Selfplay(-max-games-total) Rate
-If you are training a new game, recommended: `-samples-per-epoch 1000000` `-max-games-total 10000`. Play 10000 selfplay games and train 1000000 samples(step\*batchsize) every generation.   
+If you are training a new game, recommended: `-samples-per-epoch 1000000` `-max-games-total 10000`.    
+Play 10000 selfplay games and train 1000000 samples(step\*batchsize) every generation.   
 
 `samples-per-epoch / max-games-total` is proportional to how many times each sample will be trained.   
 Too high will cost overfitting.   
