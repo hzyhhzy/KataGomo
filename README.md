@@ -1,5 +1,6 @@
 # CaptureGo (2024.8)
-This branch is for Capture-Go   
+This branch is for Capture-Go  
+# Latest release https://github.com/hzyhhzy/KataGomo/releases/tag/CaptureGo_20250509 
 ## Rule
 Who firstly capture N stones wins. 1<=N<=5   
 Pass is not allowed. If no one has enough captures, just continue, then one player will fill the eyes and die. In this case, it is like area-ish scoring with group tax(还棋头).    
