@@ -683,6 +683,7 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
   }
 
   for(int h = 0; h < BOARD_LAYERS; h++) {
+    out << "layer " << h << "\n";
     for(int y = 0; y < board.y_size; y++) {
       if(showCoords) {
         char buf[16];
@@ -702,8 +703,8 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
           size_t start = hist->size() >= 3 ? hist->size() - 3 : 0;
           for(size_t i = 0; start + i < hist->size(); i++) {
             if((*hist)[start + i].loc == loc) {
-              out << (1 + i);
-              histMarked = true;
+              //out << (1 + i);
+              //histMarked = true;
               break;
             }
           }

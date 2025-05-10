@@ -11,12 +11,14 @@
 #include "../core/hash.h"
 #include "../external/nlohmann_json/json.hpp"
 
+#define CONNECT_LEN 4
+
 #ifdef COMPILE_MAX_BOARD_LEN
 static_assert(COMPILE_MAX_BOARD_LEN should not be defined);
 #endif
-#define COMPILE_MAX_BOARD_LEN 8
+#define COMPILE_MAX_BOARD_LEN CONNECT_LEN
 
-static const int BOARD_LAYERS = 8;//board height
+static const int BOARD_LAYERS = CONNECT_LEN;  // board height
 static_assert(COMPILE_MAX_BOARD_LEN == BOARD_LAYERS, "");
 
 static const bool ENABLE_ODDEVEN_NNINPUT = BOARD_LAYERS >= 7; 
