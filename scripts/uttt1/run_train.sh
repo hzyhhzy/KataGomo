@@ -9,6 +9,7 @@ do
     cd train
     bash shuffle.sh ../data ./ktmp 16 512
     CUDA_VISIBLE_DEVICES="0,1" bash train.sh ../data b10c384n b10c384nbt-mish 512 main
+    CUDA_VISIBLE_DEVICES="0,1" bash train.sh ../data b18c384n b18c384nbt-mish 512 trainonly
     
     CUDA_VISIBLE_DEVICES="0" bash export.sh uttt1 ../data 0
     python view_loss.py

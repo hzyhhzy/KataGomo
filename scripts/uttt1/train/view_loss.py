@@ -1,6 +1,6 @@
 baseDir="../data/train/"
 lossItems={"p0loss":(1.5,2),"vloss":(0,0),"loss":(0,0)} #name,ylim,  0 means default
-trainDirs=["b10c384n"];
+trainDirs=["b10c384n","b18c384n"];
 autoBias=True
 biases=[0,]
 scales=[1,]

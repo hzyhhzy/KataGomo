@@ -77,7 +77,7 @@ time python ./train.py \
     -lookahead-alpha 0.5 \
     -lookahead-k 6 \
     -swa-scale 4.0 \
-    -lr-scale 0.1 \
+    -lr-scale 0.3 \
     -use-fp16 \
      $EXTRAFLAG \
      "$@" \
