@@ -1,6 +1,58 @@
-# To make this repo easier to be found, I create this independent repo for KataGomo
-## Original repo for KataGomo: https://github.com/hzyhhzy/KataGo
-## Original KataGo: https://github.com/lightvector/KataGo
+# 2025.1 Create an independent repo for KataGomo
+### Original repo for KataGomo: https://github.com/hzyhhzy/KataGomo_fork
+### All release before 2025.1 https://github.com/hzyhhzy/KataGomo_fork/releases
+### Original KataGo: https://github.com/lightvector/KataGo
+
+# Introduction
+KataGo is an AlphaZero-like AI for Go https://katagotraining.org/   
+I modified KataGo to support various board games.  
+
+With KataGo's high efficient reinforcement learning, it can reach the top-level AIs with very low cost (**probably <50 dollars**) for almost all board games. (Probably thousands of ELO stronger than other AIs if the game is not very popular)
+
+Now this is probably the strongest AI for many games.    
+Example: [Gomoku](https://github.com/hzyhhzy/KataGomo/releases/tag/Gomoku_20250206), [Hex](https://github.com/hzyhhzy/KataGomo/releases/tag/Hex_20250131),[Connect6](https://github.com/hzyhhzy/KataGomo/releases/tag/ConnectSix_20250505)...   
+   
+If you modified the rule of a board game or created a new board game, training KataGo is also an efficient way to learn how to play it and check whether it is balanced.   
+Example: [Kill-all Go](https://github.com/hzyhhzy/KataGomo/tree/aliveWin),  [AntiGomoku (who first connect 5 loses)](https://github.com/hzyhhzy/KataGomo/tree/AntiGomoku)
+
+Some mathematical problems can be represented as a 2-players or 1-player board game. KataGo may be also helpful.   
+Example: [AngelProblem](https://github.com/hzyhhzy/KataGomo/tree/AngelProblem)
+
+# Games included (Updated 2025.5.12)
+Only 2-player 2D board games without randomness   
+
+Theoretically this algorithm is also suitable for games with randomness or 3D boards, but the modification of KataGo will be a massive work so I'm not planning to do it.     
+
+Here is another example of reinforcement learning on a 1-player game **with randomness** [UmaAI: Umamusume AI](https://github.com/hzyhhzy/UmaAi)
+
+## 1. Popular games
+| English | Chinese | Branch name| Latest major update | Latest release  | Notes       
+|-------|-------|-------|-------|-------|-----------|
+| Gomoku (Freestyle, Standard) | 五子棋（六胜/六不胜） | [Gom2024](https://github.com/hzyhhzy/KataGomo/tree/Gom2024) | 2025.2| [Gomoku_20250206](https://github.com/hzyhhzy/KataGomo/releases/tag/Gomoku_20250206)|
+| Renju  | 连珠（有禁手五子棋） | [Gom2024](https://github.com/hzyhhzy/KataGomo/tree/Gom2024) | 2025.2| [Gomoku_20250206](https://github.com/hzyhhzy/KataGomo/releases/tag/Gomoku_20250206)|
+| Animal Chess  |斗兽棋 |[AnimalChess2025](https://github.com/hzyhhzy/KataGomo/tree/AnimalChess2025)|2025.2|[Dandelion v2.4](https://github.com/lxsgx23/Dandelion-Chess/releases/tag/v2.4)
+| Tiaoqi (Chinese checkers)  |中国跳棋 |[tiaoqi](https://github.com/hzyhhzy/KataGomo/tree/tiaoqi)|2022.3|[20240406](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/20240406)
+| Reversi  | 翻转棋 | [Reversi2023](https://github.com/hzyhhzy/KataGomo/tree/Reversi2023) | 2023.3| No release | Weaker than traditional engines
+| Chinese Chess  | 中国象棋 | private | 2022 | No release | [PX0](https://github.com/official-pikafish/px0) is much better
+  
+## 2. Famous but less popular games
+
+| English | Chinese | Branch name| Latest major update | Latest release  | Notes       
+|-------|-------|-------|-------|-------|-----------|
+| Hex | 六角棋/海克斯 | [Hex2024](https://github.com/hzyhhzy/KataGomo/tree/Hex2024) | 2025.1| [Hex_20250131](https://github.com/hzyhhzy/KataGomo/releases/tag/Hex_20250131)|
+| Connect 6 | 六子棋/连六棋 | [ConnectSix2024](https://github.com/hzyhhzy/KataGomo/tree/ConnectSix2024) | 2024.12| [ConnectSix_20250505](https://github.com/hzyhhzy/KataGomo/releases/tag/ConnectSix_20250505)|
+| Connect Four | （重力）四子棋 | [ConnectFour2024](https://github.com/hzyhhzy/KataGomo/tree/ConnectFour2024) | 2024.10| [ConnectFour_20241019](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/ConnectFour_20241019)|
+| Nogo | 不围棋 | [Nogo2025](https://github.com/hzyhhzy/KataGomo/tree/Nogo2025) | 2025.2| [Nogo20250219](https://github.com/hzyhhzy/KataGomo/releases/tag/Nogo20250219)|
+| Ataxx | 同化棋 | [Ataxx2023](https://github.com/hzyhhzy/KataGomo/tree/Ataxx2023) | 2025.1| [Ataxx_20250131](https://github.com/hzyhhzy/KataGomo/releases/tag/Ataxx_20250131)|
+| Amazons | 亚马逊棋 | [Amazons](https://github.com/hzyhhzy/KataGomo/tree/Amazons) | 2022 | [20240406](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/20240406)|
+| Breakthrough | - | [breakthrough](https://github.com/hzyhhzy/KataGomo/tree/breakthrough) | 2022 | [20240406](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/20240406)|
+| Ultimate Tic-tac-toe | 终级井字棋 | [UltimateTictactoe2024](https://github.com/hzyhhzy/KataGomo/tree/UltimateTictactoe2024) | 2024.11 | [UltimateTictactoe_20241019](https://github.com/hzyhhzy/KataGomo_fork/releases/tag/UltimateTictactoe_20241019)|
+| TODO| 
+
+# Contact
+Email: 2658628026@qq.com   
+QQ: 2658628026 (reply fastest)   
+Discord: hzy_sigmoid
 
 
 
