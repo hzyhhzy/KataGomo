@@ -51,10 +51,10 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     throw IOError("scoringRules must have at least one value in " + cfg.getFileName());
 
 
-  allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
-  allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
-
-  allowRectangleProb = cfg.contains("allowRectangleProb") ? cfg.getDouble("allowRectangleProb",0.0,1.0) : 0.0;
+  allowedBSizesX = cfg.getInts("bSizesX", 2, Board::MAX_LEN);
+  allowedBSizeRelProbsX = cfg.getDoubles("bSizeRelProbsX", 0.0, 1e100);
+  allowedBSizesY = cfg.getInts("bSizesY", 2, Board::MAX_LEN);
+  allowedBSizeRelProbsY = cfg.getDoubles("bSizeRelProbsY", 0.0, 1e100);
 
   auto generateCumProbs = [](const vector<Sgf::PositionSample> poses, double lambda, double& effectiveSampleSize) {
     int minInitialTurnNumber = 0;
@@ -199,19 +199,26 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     }
   }
 
-  if(allowedBSizes.size() <= 0)
-    throw IOError("bSizes must have at least one value in " + cfg.getFileName());
-  if(allowedBSizes.size() != allowedBSizeRelProbs.size())
-    throw IOError("bSizes and bSizeRelProbs must have same number of values in " + cfg.getFileName());
+  if(allowedBSizesX.size() <= 0)
+    throw IOError("bSizesX must have at least one value in " + cfg.getFileName());
+  if(allowedBSizesX.size() != allowedBSizeRelProbsX.size())
+    throw IOError("bSizesX and bSizeRelProbsX must have same number of values in " + cfg.getFileName());
 
-  minBoardXSize = allowedBSizes[0];
-  minBoardYSize = allowedBSizes[0];
-  maxBoardXSize = allowedBSizes[0];
-  maxBoardYSize = allowedBSizes[0];
-  for(int bSize: allowedBSizes) {
+  if(allowedBSizesY.size() <= 0)
+    throw IOError("bSizesY must have at least one value in " + cfg.getFileName());
+  if(allowedBSizesY.size() != allowedBSizeRelProbsY.size())
+    throw IOError("bSizesY and bSizeRelProbsY must have same number of values in " + cfg.getFileName());
+
+  minBoardXSize = allowedBSizesX[0];
+  minBoardYSize = allowedBSizesY[0];
+  maxBoardXSize = allowedBSizesX[0];
+  maxBoardYSize = allowedBSizesY[0];
+  for(int bSize: allowedBSizesX) {
     minBoardXSize = std::min(minBoardXSize, bSize);
-    minBoardYSize = std::min(minBoardYSize, bSize);
     maxBoardXSize = std::max(maxBoardXSize, bSize);
+  }
+  for(int bSize: allowedBSizesY) {
+    minBoardYSize = std::min(minBoardYSize, bSize);
     maxBoardYSize = std::max(maxBoardYSize, bSize);
   }
   for(const Sgf::PositionSample& pos : hintPoses) {
@@ -271,17 +278,18 @@ Rules GameInitializer::randomizeScoringAndTaxRules(Rules rules, Rand& randToUse)
 }
 
 bool GameInitializer::isAllowedBSize(int xSize, int ySize) {
-  if(!contains(allowedBSizes,xSize))
+  if(!contains(allowedBSizesX,xSize))
     return false;
-  if(!contains(allowedBSizes,ySize))
-    return false;
-  if(allowRectangleProb <= 0.0 && xSize != ySize)
+  if(!contains(allowedBSizesY,ySize))
     return false;
   return true;
 }
 
-std::vector<int> GameInitializer::getAllowedBSizes() const {
-  return allowedBSizes;
+std::vector<int> GameInitializer::getAllowedBSizesX() const {
+  return allowedBSizesX;
+}
+std::vector<int> GameInitializer::getAllowedBSizesY() const {
+  return allowedBSizesY;
 }
 int GameInitializer::getMinBoardXSize() const {
   return minBoardXSize;
@@ -329,10 +337,8 @@ void GameInitializer::createGameSharedUnsynchronized(
   }
 
 
-  int xSizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
-  int ySizeIdx = xSizeIdx;
-  if(allowRectangleProb > 0 && rand.nextBool(allowRectangleProb))
-    ySizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
+  int xSizeIdx = rand.nextUInt(allowedBSizeRelProbsX.data(),allowedBSizeRelProbsX.size());
+  int ySizeIdx = rand.nextUInt(allowedBSizeRelProbsY.data(),allowedBSizeRelProbsY.size());
 
   Rules rules = createRulesUnsynchronized();
 
@@ -382,8 +388,8 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.hintPosHash = board.pos_hash;
   }
   else {
-    int xSize = allowedBSizes[xSizeIdx];
-    int ySize = allowedBSizes[ySizeIdx];
+    int xSize = allowedBSizesX[xSizeIdx];
+    int ySize = allowedBSizesY[ySizeIdx];
     board = Board(xSize,ySize);
     pla = P_BLACK;
     hist.clear(board,pla,rules);
