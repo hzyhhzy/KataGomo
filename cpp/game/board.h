@@ -20,7 +20,7 @@
 static const int STAGE_NUM_EACH_PLA = 2;
 
 //max moves num of a game
-static const int MAX_MOVE_NUM = 100 * COMPILE_MAX_BOARD_LEN * COMPILE_MAX_BOARD_LEN;
+static const int MAX_MOVE_NUM = 10 * COMPILE_MAX_BOARD_LEN * COMPILE_MAX_BOARD_LEN;
 
 
 //TYPES AND CONSTANTS-----------------------------------------------------------------

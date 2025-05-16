@@ -699,6 +699,8 @@ void NNEvaluator::evaluate(
     bool isLegal[NNPos::MAX_NN_POLICY_SIZE];
     int legalCount = 0;
 
+    int passPos = NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen);
+
     GameLogic::ResultsBeforeNN resultsBeforeNN = nnInputParamsWithResultsBeforeNN.resultsBeforeNN;
     if(resultsBeforeNN.myOnlyLoc == Board::NULL_LOC) {
       for(int i = 0; i < policySize; i++) {
@@ -712,8 +714,19 @@ void NNEvaluator::evaluate(
         isLegal[i] = false;
       }
       isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, xSize, nnXLen, nnYLen)] = true;
-      isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
+      isLegal[passPos] = true;
     }
+
+    bool hasLegalMoveExceptPass = false;
+    for(int i = 0; i < policySize; i++) {
+      if (i != passPos && isLegal[i])
+      {
+        hasLegalMoveExceptPass = true;
+        break;
+      }
+    }
+    if(hasLegalMoveExceptPass)
+      isLegal[passPos] = false;
 
     for(int i = 0; i<policySize; i++) {
       float policyValue;

@@ -532,40 +532,43 @@ void NNInputs::fillRowV7(
     }
   }
 
+  rowGlobal[0] = nextPlayer == C_WHITE ? 1.0 : 0.0;
   // mid state
   if(board.stage == 0)  // choose
   {
     // do nothing
   } else if(board.stage == 1)  // place
   {
-    rowGlobal[0] = 1.0f;
+    rowGlobal[1] = 1.0f;
     Loc chosenMove = board.midLocs[0];
     if(!board.isOnBoard(chosenMove)) {
       std::cout << "nninput: chosen move not on board ";
     } else {
       int pos = NNPos::locToPos(chosenMove, board.x_size, nnXLen, nnYLen);
-      setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
+      setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
     }
   } else
     ASSERT_UNREACHABLE;
 
   if(resultsBeforeNN.inited) {
-    rowGlobal[1] = 1.0;
-    rowGlobal[2] = resultsBeforeNN.winner == C_EMPTY;
-    rowGlobal[3] = resultsBeforeNN.winner == nextPlayer;
-    rowGlobal[4] = resultsBeforeNN.winner == getOpp(nextPlayer);
+    rowGlobal[2] = 1.0;
+    rowGlobal[3] = resultsBeforeNN.winner == C_EMPTY;
+    rowGlobal[4] = resultsBeforeNN.winner == nextPlayer;
+    rowGlobal[5] = resultsBeforeNN.winner == getOpp(nextPlayer);
     if(board.isOnBoard(resultsBeforeNN.myOnlyLoc))
       setRowBin(
         rowBin,
         NNPos::locToPos(resultsBeforeNN.myOnlyLoc, board.x_size, nnXLen, nnYLen),
-        4,
+        5,
         1.0f,
         posStride,
         featureStride);
     else if(resultsBeforeNN.myOnlyLoc == Board::PASS_LOC)
-      rowGlobal[5] = 1.0;
+      rowGlobal[6] = 1.0;
   }
 
+  rowGlobal[7] = board.x_size % 2 == 0 ? 0.0 : 1.0;
+  rowGlobal[8] = board.y_size % 2 == 0 ? 0.0 : 1.0;
 
   //Scoring
   if(hist.rules.scoringRule == Rules::SCORING_AREA) {}
@@ -579,6 +582,7 @@ void NNInputs::fillRowV7(
     rowGlobal[15] = 1.0;
     rowGlobal[16] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
   }
+
 
   // noResultUtilityForWhite
   rowGlobal[17] = pla == C_WHITE ? nnInputParams.noResultUtilityForWhite : -nnInputParams.noResultUtilityForWhite;
