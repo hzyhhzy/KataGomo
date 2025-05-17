@@ -532,7 +532,7 @@ void NNInputs::fillRowV7(
         setRowBin(rowBin, pos, 5, 1.0f, posStride, featureStride);
       else
       {
-        if(board.lastLocIdx == sub && board.lastLocIdx == -1)
+        if(board.lastLocIdx == sub && board.lastLocIdx != -1)
           setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
       }
 
