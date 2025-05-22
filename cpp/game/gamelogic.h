@@ -31,8 +31,8 @@ namespace GameLogic {
   MovePriority getMovePriority(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
 
   //C_EMPTY = draw, C_WALL = not finished 
-  Color checkWinnerAfterPlayed(const Board& board, const BoardHistory& hist, Player pla, Loc loc);
-
+  Color checkWinnerAfterPlayed(const Board& board, const BoardHistory& hist, Player pla, Loc loc, int oldStage);
+  Loc nearestJumpTarget(const Board& board, Loc lsrc, Loc ldst);
 
   //some results calculated before calculating NN
   //part of NN input, and then change policy/value according to this

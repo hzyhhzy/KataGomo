@@ -14,11 +14,11 @@
 #ifdef COMPILE_MAX_BOARD_LEN
 static_assert(COMPILE_MAX_BOARD_LEN should not be defined);
 #endif
-#define COMPILE_MAX_BOARD_LEN 8
+#define COMPILE_MAX_BOARD_LEN 15
 
 //how many stages in each move
 //eg: Chess has 2 stages: moving which piece, and where to place.
-static const int STAGE_NUM_EACH_PLA = 2;
+static const int STAGE_NUM_EACH_PLA = 3;
 
 //max moves num of a game
 static const int MAX_MOVE_NUM = 100 * COMPILE_MAX_BOARD_LEN * COMPILE_MAX_BOARD_LEN;
