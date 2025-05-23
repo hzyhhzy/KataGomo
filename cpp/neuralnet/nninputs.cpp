@@ -528,6 +528,18 @@ void NNInputs::fillRowV7(
       else if (stone == opp)
         setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
 
+      int lti1 = board.largeTowerInfo[pla - 1][loc];
+      if(lti1 == 1)
+        setRowBin(rowBin, pos, 7, 1.0f, posStride, featureStride);
+      else if(lti1 == 2)
+        setRowBin(rowBin, pos, 8, 1.0f, posStride, featureStride);
+
+      int lti2 = board.largeTowerInfo[opp - 1][loc];
+      if(lti2 == 1)
+        setRowBin(rowBin, pos, 9, 1.0f, posStride, featureStride);
+      else if(lti2 == 2)
+        setRowBin(rowBin, pos, 10, 1.0f, posStride, featureStride);
+
     }
   }
   
@@ -568,6 +580,16 @@ void NNInputs::fillRowV7(
   } 
   else
     ASSERT_UNREACHABLE;
+
+  
+  if(board.largeTowerProtect[pla - 1])
+    rowGlobal[4] = 1.0f;
+  if(board.largeTowerProtect[opp - 1])
+    rowGlobal[5] = 1.0f;
+  if(board.smallTowerCount[pla - 1] > 6)
+    rowGlobal[6] = 1.0f;
+  if(board.smallTowerCount[opp - 1] > 6)
+    rowGlobal[7] = 1.0f;
 
   // Precalculated results as nn input
   // Spatial Features 4 - the only location to play

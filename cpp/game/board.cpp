@@ -26,6 +26,7 @@ Hash128 Board::ZOBRIST_STAGELOC_HASH[MAX_ARR_SIZE][STAGE_NUM_EACH_PLA];
 Hash128 Board::ZOBRIST_NEXTPLA_HASH[4];
 Hash128 Board::ZOBRIST_MOVENUM_HASH[MAX_MOVE_NUM];
 Hash128 Board::ZOBRIST_PLAYER_HASH[4];
+Hash128 Board::ZOBRIST_LARGETOWERPROTECT_HASH[4];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
 
@@ -117,6 +118,16 @@ Board::Board(const Board& other)
   nextPla = other.nextPla;
   stage = other.stage;
   memcpy(midLocs, other.midLocs, sizeof(Loc) * STAGE_NUM_EACH_PLA);
+
+  largeTowerProtect[0] = other.largeTowerProtect[0];
+  largeTowerProtect[1] = other.largeTowerProtect[1];
+  connectedBlocks[0] = other.connectedBlocks[0];
+  connectedBlocks[1] = other.connectedBlocks[1];
+  smallTowerCount[0] = other.smallTowerCount[0];
+  smallTowerCount[1] = other.smallTowerCount[1];
+  memcpy(largeTowerInfo, other.largeTowerInfo, sizeof(int8_t) * 2 * MAX_ARR_SIZE);
+
+
 }
 
 void Board::init(int xS, int yS)
@@ -153,6 +164,10 @@ void Board::init(int xS, int yS)
 
   Location::getAdjacentOffsets(adj_offsets, x_size);
 
+  largeTowerProtect[0] = false;
+  largeTowerProtect[1] = false;
+  updateConnectedBlocks(C_BLACK);
+  updateConnectedBlocks(C_WHITE);
 
 }
 
@@ -170,6 +185,9 @@ void Board::initHash()
 
   for(int i = 0; i<4; i++)
     ZOBRIST_PLAYER_HASH[i] = nextHash();
+
+  for(int i = 0; i < 4; i++)
+    ZOBRIST_LARGETOWERPROTECT_HASH[4] = nextHash();
 
   //Do this second so that the player and encore hashes are not
   //afffected by the size of the board we compile with.
@@ -306,19 +324,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
   pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
 
   if(loc == PASS_LOC) {
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
-    stage = 0;
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
-
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-    nextPla = getOpp(nextPla);
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-
-    for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
-      pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
-      midLocs[i] = Board::NULL_LOC;
-    }
-
+    swapNextPlayer(false);
     return;
   }
 
@@ -332,57 +338,35 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     midLocs[0] = loc;
     pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][0];
     setStone(loc, pla);
+    updateConnectedBlocks(pla);
   } 
   else if(stage == 1)  //choose
   {
     Color c = colors[loc];
-    if(c == pla) {
+    if(c == pla || c == getOpp(pla)) {
       pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
       stage = 2;
       pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
       midLocs[1] = loc;
       pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][1];
-    } else if(c == getOpp(pla)) {
-      Loc dst = GameLogic::nearestJumpTarget(*this, loc, midLocs[0]);
-      setStone(loc, C_EMPTY);
-      setStone(dst, c);
-
-      pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
-      stage = 0;
-      pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
-
-      pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-      nextPla = getOpp(nextPla);
-      pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-
-      for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
-        pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
-        midLocs[i] = Board::NULL_LOC;
-      }
     } 
     else
       ASSERT_UNREACHABLE;
-
-
-
   } 
   else if (stage == 2)  // move
   {
-    setStone(loc, pla);
+    Color c = colors[midLocs[1]];
+    Color opp = getOpp(pla);
+    bool isAttackLargeTower = false;
+    // is attacking large tower?
+    if(smallTowerCount[opp - 1] <= 6 && isMoveAttackLargeTower(opp, midLocs[1], loc))
+      isAttackLargeTower = true;
+
+    setStone(loc, c);
     setStone(midLocs[1], C_EMPTY);
+    updateConnectedBlocks(c);
 
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
-    stage = 0;
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
-
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-    nextPla = getOpp(nextPla);
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-
-    for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
-      pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
-      midLocs[i] = Board::NULL_LOC;
-    }
+    swapNextPlayer(isAttackLargeTower);
 
   }
   else
@@ -461,12 +445,37 @@ void Board::checkConsistency() const {
     tmp_pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
   }
 
+  if(largeTowerProtect[C_BLACK - 1])
+    tmp_pos_hash ^= ZOBRIST_LARGETOWERPROTECT_HASH[C_BLACK];
+  if(largeTowerProtect[C_WHITE - 1])
+    tmp_pos_hash ^= ZOBRIST_LARGETOWERPROTECT_HASH[C_WHITE];
+
   if(pos_hash != tmp_pos_hash) {
     std::cout << "Stage=" << stage << ",NextPla=" << int(nextPla) << std::endl;
     throw StringError(errLabel + "Pos hash does not match expected");
   }
 
-
+  for (Color c = 1; c <= 2; c++)
+  {
+    auto& blockList = connectedBlocks[c - 1];
+    int totalStones = numPlaStonesOnBoard(c);
+    cout << totalStones << " " << blockList.size() << endl;
+    for(int t = 0; t < blockList.size(); t++) {
+      auto& b = blockList[t];
+      totalStones -= b.stoneNum();
+      cout << b.stoneNum() << endl;
+      auto sl = b.getLocalStoneCoordinates();
+      for(const auto& p: sl) {
+        int x = p.first + b.start_x;
+        int y = p.second + b.start_y;
+        Loc loc = Location::getLoc(x, y, x_size);
+        if(colors[loc] != c)
+          throw StringError(errLabel + "Stone position in connectedBlocks not match");
+      }
+    }
+    if(totalStones != 0)
+      throw StringError(errLabel + "Stone num in connectedBlocks not match");
+  }
 
   short tmpAdjOffsets[8];
   Location::getAdjacentOffsets(tmpAdjOffsets,x_size);
@@ -756,6 +765,76 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
       }
 
       if(x < board.x_size-1 && !histMarked)
+        out << ' ';
+    }
+    out << "\n";
+  }
+  out << "\n";
+
+  out << "Large tower map Black\n";
+  out << "Small tower count: " << board.smallTowerCount[C_BLACK - 1] << "\n";
+  out << "Protected: " << (board.largeTowerProtect[C_BLACK - 1] ? "True" : "False") << "\n";
+
+  if(showCoords) {
+    const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+    out << "  ";
+    for(int x = 0; x < board.x_size; x++) {
+      if(x <= 24) {
+        out << " ";
+        out << xChar[x];
+      } else {
+        out << "A" << xChar[x - 25];
+      }
+    }
+    out << "\n";
+  }
+
+  for(int y = 0; y < board.y_size; y++) {
+    if(showCoords) {
+      char buf[16];
+      sprintf(buf, "%2d", board.y_size - y);
+      out << buf << ' ';
+    }
+    for(int x = 0; x < board.x_size; x++) {
+      Loc loc = Location::getLoc(x, y, board.x_size);
+      char s = PlayerIO::colorToChar(board.colors[loc]);
+      out << int(board.largeTowerInfo[C_BLACK - 1][loc]);
+      if(x < board.x_size - 1 )
+        out << ' ';
+    }
+    out << "\n";
+  }
+  out << "\n";
+
+  out << "Large tower map White\n";
+  out << "Small tower count: " << board.smallTowerCount[C_WHITE - 1] << "\n";
+  out << "Protected: " << (board.largeTowerProtect[C_WHITE - 1] ? "True" : "False") << "\n";
+
+  if(showCoords) {
+    const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+    out << "  ";
+    for(int x = 0; x < board.x_size; x++) {
+      if(x <= 24) {
+        out << " ";
+        out << xChar[x];
+      } else {
+        out << "A" << xChar[x - 25];
+      }
+    }
+    out << "\n";
+  }
+
+  for(int y = 0; y < board.y_size; y++) {
+    if(showCoords) {
+      char buf[16];
+      sprintf(buf, "%2d", board.y_size - y);
+      out << buf << ' ';
+    }
+    for(int x = 0; x < board.x_size; x++) {
+      Loc loc = Location::getLoc(x, y, board.x_size);
+      char s = PlayerIO::colorToChar(board.colors[loc]);
+      out << int(board.largeTowerInfo[C_WHITE - 1][loc]);
+      if(x < board.x_size - 1)
         out << ' ';
     }
     out << "\n";

@@ -39,221 +39,268 @@ using namespace std;
 // }
 // --- End of assumed definitions ---
 
-namespace SymmetryLogic {
 
-  class ConnectedBlock {
-   public:
-    int local_xsize;             // Width of this block's bounding box
-    int local_ysize;             // Height of this block's bounding box
-    std::vector<bool> is_stone;  // Flattened grid: true if stone of the component is present
+ConnectedBlock::ConnectedBlock(int w, int h, int x, int y) : local_xsize(w), local_ysize(h), start_x(x), start_y(y) {
+  if(w < 0 || h < 0) {
+    local_xsize = 0;
+    local_ysize = 0;
+  }
+  is_stone.assign(local_xsize * local_ysize, false);
+}
 
-    ConnectedBlock(int w = 0, int h = 0) : local_xsize(w), local_ysize(h) {
-      if(w < 0 || h < 0) {
-        local_xsize = 0;
-        local_ysize = 0;
-      }
-      is_stone.assign(local_xsize * local_ysize, false);
+void ConnectedBlock::setStoneRelativeToOrigin(int local_x, int local_y) {
+  if(local_x >= 0 && local_x < local_xsize && local_y >= 0 && local_y < local_ysize) {
+    is_stone[local_y * local_xsize + local_x] = true;
+  } 
+  else
+    ASSERT_UNREACHABLE;
+}
+
+// "isStoneRelativeToOrigin没必要判断是否越界" - the current implementation does this correctly.
+// If local_x or local_y are out of bounds [0, size-1], it returns false.
+// This is desired because a reflection landing outside the bounding box means no symmetric partner *within the
+// block*.
+bool ConnectedBlock::isStoneRelativeToOrigin(int local_x, int local_y) const {
+  if(local_x >= 0 && local_x < local_xsize && local_y >= 0 && local_y < local_ysize) {
+    return is_stone[local_y * local_xsize + local_x];
+  } 
+  else
+    ASSERT_UNREACHABLE;
+  return false;
+}
+
+int ConnectedBlock::stoneNum() const {
+  int count = 0;
+  for(bool s: is_stone) {
+    if(s) {
+      count++;
     }
+  }
+  return count;
+}
 
-    void setStoneRelativeToOrigin(int local_x, int local_y) {
-      if(local_x >= 0 && local_x < local_xsize && local_y >= 0 && local_y < local_ysize) {
-        is_stone[local_y * local_xsize + local_x] = true;
+std::vector<std::pair<int, int>> ConnectedBlock::getLocalStoneCoordinates() const {
+  std::vector<std::pair<int, int>> coords;
+  coords.reserve(stoneNum());  // Optional optimization
+  for(int y = 0; y < local_ysize; ++y) {
+    for(int x = 0; x < local_xsize; ++x) {
+      if(isStoneRelativeToOrigin(x, y)) {  // Check internal vector directly
+        coords.push_back({x, y});
       }
     }
+  }
+  return coords;
+}
 
-    // "isStoneRelativeToOrigin没必要判断是否越界" - the current implementation does this correctly.
-    // If local_x or local_y are out of bounds [0, size-1], it returns false.
-    // This is desired because a reflection landing outside the bounding box means no symmetric partner *within the
-    // block*.
-    bool isStoneRelativeToOrigin(int local_x, int local_y) const {
-      if(local_x >= 0 && local_x < local_xsize && local_y >= 0 && local_y < local_ysize) {
-        return is_stone[local_y * local_xsize + local_x];
-      }
-      return false;
+bool ConnectedBlock::isSymmetric() const {
+  if(local_xsize == 0 || local_ysize == 0)
+    return true;
+
+  std::vector<std::pair<int, int>> stone_coords = getLocalStoneCoordinates();
+  if(stone_coords.empty()) {
+    ASSERT_UNREACHABLE;
+  } 
+  else if(stone_coords.size() <= 2) {
+    return true;
+  }
+
+  // Check 1: Symmetry about the central vertical line: x_reflected = local_xsize - 1 - x
+  bool vertical_symmetry = true;
+  for(const auto& p: stone_coords) {
+    if(!isStoneRelativeToOrigin(local_xsize - 1 - p.first, p.second)) {
+      vertical_symmetry = false;
+      break;
     }
+  }
+  if(vertical_symmetry)
+    return true;
 
-    int stoneNum() const {
-      int count = 0;
-      for(bool s: is_stone) {
-        if(s) {
-          count++;
-        }
-      }
-      return count;
+  // Check 2: Symmetry about the central horizontal line: y_reflected = local_ysize - 1 - y
+  bool horizontal_symmetry = true;
+  for(const auto& p: stone_coords) {
+    if(!isStoneRelativeToOrigin(p.first, local_ysize - 1 - p.second)) {
+      horizontal_symmetry = false;
+      break;
     }
+  }
+  if(horizontal_symmetry)
+    return true;
 
-   private:
-    // Helper to get all actual stone points in local coordinates for iteration
-    // This is still useful to avoid iterating over all cells in is_stone multiple times.
-    std::vector<std::pair<int, int>> getLocalStoneCoordinates() const {
-      std::vector<std::pair<int, int>> coords;
-      coords.reserve(stoneNum());  // Optional optimization
-      for(int y = 0; y < local_ysize; ++y) {
-        for(int x = 0; x < local_xsize; ++x) {
-          if(isStoneRelativeToOrigin(x, y)) {  // Check internal vector directly
-            coords.push_back({x, y});
+  // Diagonal symmetries only if the bounding box is square
+  if(local_xsize == local_ysize) {
+    int size = local_xsize;  // or local_ysize
+
+    // Check 3: Symmetry about the main diagonal (y=x): reflected = (y, x)
+    bool main_diagonal_symmetry = true;
+    for(const auto& p: stone_coords) {
+      if(!isStoneRelativeToOrigin(p.second, p.first)) {
+        main_diagonal_symmetry = false;
+        break;
+      }
+    }
+    if(main_diagonal_symmetry)
+      return true;
+
+    // Check 4: Symmetry about the anti-diagonal (y = -x + size-1): reflected = (size-1-y, size-1-x)
+    bool anti_diagonal_symmetry = true;
+    for(const auto& p: stone_coords) {
+      if(!isStoneRelativeToOrigin(size - 1 - p.second, size - 1 - p.first)) {
+        anti_diagonal_symmetry = false;
+        break;
+      }
+    }
+    if(anti_diagonal_symmetry)
+      return true;
+  }
+
+  return false;  // No symmetry found among the four canonical axes
+}
+
+// The getConnectedBlocks function from the previous response remains largely the same,
+// as its job is to find components and map them into the ConnectedBlock's bounding box representation.
+// For completeness, here it is again (assuming Board, Loc, Player, Color, Location namespace are defined):
+
+void Board::updateConnectedBlocks(Color pla) {
+  if(pla != C_BLACK && pla != C_WHITE)
+    ASSERT_UNREACHABLE;
+  //
+  // std::vector<ConnectedBlock> all_extracted_blocks;
+  // 
+  auto& all_extracted_blocks = connectedBlocks[pla - 1];
+  all_extracted_blocks.clear();
+  smallTowerCount[pla - 1] = 0;
+  for(int i = 0; i < MAX_ARR_SIZE; i++) {
+    largeTowerInfo[pla - 1][i] = 0;
+  }
+  // Ensure MAX_ARR_SIZE is appropriate for main_board's potential size
+  // If MAX_ARR_SIZE is defined in board.h, use Board::MAX_ARR_SIZE
+  std::vector<bool> visited_on_main_board(x_size * (y_size + 2) + x_size + 2, false);
+  // A more robust sizing for visited_on_main_board would be to use the actual max possible Loc value + 1,
+  // or Board::MAX_ARR_SIZE if that's what colors array uses. The formula above is an attempt if MAX_ARR_SIZE is not
+  // known. Better: Assuming Loc is an index into main_board.colors, and main_board.colors has Board::MAX_ARR_SIZE
+  // elements. std::vector<bool> visited_on_main_board(Board::MAX_ARR_SIZE, false);
+
+  for(int r_board = 0; r_board < y_size; ++r_board) {
+    for(int c_board = 0; c_board < x_size; ++c_board) {
+      Loc start_loc_on_main = Location::getLoc(c_board, r_board, x_size);
+
+      // Check start_loc_on_main validity before array access
+      bool loc_is_valid_for_visit_array =
+        (start_loc_on_main >= 0 && start_loc_on_main < visited_on_main_board.size());
+
+      if(
+        isOnBoard(start_loc_on_main) && colors[start_loc_on_main] == pla &&  // Ensure color matches player
+        loc_is_valid_for_visit_array && !visited_on_main_board[start_loc_on_main]) {
+        std::vector<std::pair<int, int>> component_coords_global;  // Global (x,y) coords
+
+        std::vector<Loc> q;  // Queue for BFS
+        q.push_back(start_loc_on_main);
+        if(loc_is_valid_for_visit_array)
+          visited_on_main_board[start_loc_on_main] = true;
+
+        int head = 0;
+        while(head < q.size()) {
+          Loc current_board_loc = q[head++];
+          component_coords_global.push_back(
+            {Location::getX(current_board_loc, x_size), Location::getY(current_board_loc, x_size)});
+
+          for(int i = 0; i < 8; ++i) {  // 8-way adjacency
+            Loc neighbor_loc_on_main = current_board_loc + adj_offsets[i];
+
+            bool neighbor_valid_for_visit_array =
+              (neighbor_loc_on_main >= 0 && neighbor_loc_on_main < visited_on_main_board.size());
+
+            if(
+              isOnBoard(neighbor_loc_on_main) && colors[neighbor_loc_on_main] == pla &&
+              neighbor_valid_for_visit_array && !visited_on_main_board[neighbor_loc_on_main]) {
+              visited_on_main_board[neighbor_loc_on_main] = true;
+              q.push_back(neighbor_loc_on_main);
+            }
           }
         }
-      }
-      return coords;
-    }
 
-   public:
-    bool isSymmetric() const {
-      if(local_xsize == 0 || local_ysize == 0)
-        return true;
+        if(!component_coords_global.empty()) {
+          bool isLargeTower = component_coords_global.size() >= 6;
+          if(!isLargeTower)
+            smallTowerCount[pla - 1] += 1;
 
-      std::vector<std::pair<int, int>> stone_coords = getLocalStoneCoordinates();
-      if(stone_coords.empty()) {
-        ASSERT_UNREACHABLE;
-      } 
-      else if(stone_coords.size() <= 2) {
-        return true;
-      }
+          int min_gx = component_coords_global[0].first;
+          int max_gx = component_coords_global[0].first;
+          int min_gy = component_coords_global[0].second;
+          int max_gy = component_coords_global[0].second;
 
-      // Check 1: Symmetry about the central vertical line: x_reflected = local_xsize - 1 - x
-      bool vertical_symmetry = true;
-      for(const auto& p: stone_coords) {
-        if(!isStoneRelativeToOrigin(local_xsize - 1 - p.first, p.second)) {
-          vertical_symmetry = false;
-          break;
-        }
-      }
-      if(vertical_symmetry)
-        return true;
-
-      // Check 2: Symmetry about the central horizontal line: y_reflected = local_ysize - 1 - y
-      bool horizontal_symmetry = true;
-      for(const auto& p: stone_coords) {
-        if(!isStoneRelativeToOrigin(p.first, local_ysize - 1 - p.second)) {
-          horizontal_symmetry = false;
-          break;
-        }
-      }
-      if(horizontal_symmetry)
-        return true;
-
-      // Diagonal symmetries only if the bounding box is square
-      if(local_xsize == local_ysize) {
-        int size = local_xsize;  // or local_ysize
-
-        // Check 3: Symmetry about the main diagonal (y=x): reflected = (y, x)
-        bool main_diagonal_symmetry = true;
-        for(const auto& p: stone_coords) {
-          if(!isStoneRelativeToOrigin(p.second, p.first)) {
-            main_diagonal_symmetry = false;
-            break;
+          for(size_t i = 1; i < component_coords_global.size(); ++i) {
+            min_gx = std::min(min_gx, component_coords_global[i].first);
+            max_gx = std::max(max_gx, component_coords_global[i].first);
+            min_gy = std::min(min_gy, component_coords_global[i].second);
+            max_gy = std::max(max_gy, component_coords_global[i].second);
           }
-        }
-        if(main_diagonal_symmetry)
-          return true;
 
-        // Check 4: Symmetry about the anti-diagonal (y = -x + size-1): reflected = (size-1-y, size-1-x)
-        bool anti_diagonal_symmetry = true;
-        for(const auto& p: stone_coords) {
-          if(!isStoneRelativeToOrigin(size - 1 - p.second, size - 1 - p.first)) {
-            anti_diagonal_symmetry = false;
-            break;
-          }
-        }
-        if(anti_diagonal_symmetry)
-          return true;
-      }
+          int block_width = max_gx - min_gx + 1;
+          int block_height = max_gy - min_gy + 1;
 
-      return false;  // No symmetry found among the four canonical axes
-    }
-  };
+          ConnectedBlock extracted_block(block_width, block_height, min_gx, min_gy);
 
-  // The getConnectedBlocks function from the previous response remains largely the same,
-  // as its job is to find components and map them into the ConnectedBlock's bounding box representation.
-  // For completeness, here it is again (assuming Board, Loc, Player, Color, Location namespace are defined):
-
-  std::vector<ConnectedBlock> getConnectedBlocks(const Board& main_board, Player pla) {
-    std::vector<ConnectedBlock> all_extracted_blocks;
-    // Ensure MAX_ARR_SIZE is appropriate for main_board's potential size
-    // If MAX_ARR_SIZE is defined in board.h, use Board::MAX_ARR_SIZE
-    std::vector<bool> visited_on_main_board(main_board.x_size * (main_board.y_size + 2) + main_board.x_size + 2, false);
-    // A more robust sizing for visited_on_main_board would be to use the actual max possible Loc value + 1,
-    // or Board::MAX_ARR_SIZE if that's what colors array uses. The formula above is an attempt if MAX_ARR_SIZE is not
-    // known. Better: Assuming Loc is an index into main_board.colors, and main_board.colors has Board::MAX_ARR_SIZE
-    // elements. std::vector<bool> visited_on_main_board(Board::MAX_ARR_SIZE, false);
-
-    short adjOffsets[8];
-    Location::getAdjacentOffsets(adjOffsets, main_board.x_size);
-
-    for(int r_board = 0; r_board < main_board.y_size; ++r_board) {
-      for(int c_board = 0; c_board < main_board.x_size; ++c_board) {
-        Loc start_loc_on_main = Location::getLoc(c_board, r_board, main_board.x_size);
-
-        // Check start_loc_on_main validity before array access
-        bool loc_is_valid_for_visit_array =
-          (start_loc_on_main >= 0 && start_loc_on_main < visited_on_main_board.size());
-
-        if(
-          main_board.isOnBoard(start_loc_on_main) &&
-          main_board.colors[start_loc_on_main] == pla &&  // Ensure color matches player
-          loc_is_valid_for_visit_array && !visited_on_main_board[start_loc_on_main]) {
-          std::vector<std::pair<int, int>> component_coords_global;  // Global (x,y) coords
-
-          std::vector<Loc> q;  // Queue for BFS
-          q.push_back(start_loc_on_main);
-          if(loc_is_valid_for_visit_array)
-            visited_on_main_board[start_loc_on_main] = true;
-
-          int head = 0;
-          while(head < q.size()) {
-            Loc current_board_loc = q[head++];
-            component_coords_global.push_back(
-              {Location::getX(current_board_loc, main_board.x_size),
-               Location::getY(current_board_loc, main_board.x_size)});
-
-            for(int i = 0; i < 8; ++i) {  // 8-way adjacency
-              Loc neighbor_loc_on_main = current_board_loc + adjOffsets[i];
-
-              bool neighbor_valid_for_visit_array =
-                (neighbor_loc_on_main >= 0 && neighbor_loc_on_main < visited_on_main_board.size());
-
-              if(
-                main_board.isOnBoard(neighbor_loc_on_main) && main_board.colors[neighbor_loc_on_main] == pla &&
-                neighbor_valid_for_visit_array && !visited_on_main_board[neighbor_loc_on_main]) {
-                visited_on_main_board[neighbor_loc_on_main] = true;
-                q.push_back(neighbor_loc_on_main);
+          for(const auto& global_coord: component_coords_global) {
+            int local_x = global_coord.first - min_gx;
+            int local_y = global_coord.second - min_gy;
+            extracted_block.setStoneRelativeToOrigin(local_x, local_y);
+            if(isLargeTower) {
+              Loc loc = Location::getLoc(global_coord.first, global_coord.second, x_size);
+              largeTowerInfo[pla - 1][loc] = 1;
+              for (int a = 0; a < 4; a++)
+              {
+                Loc l2 = loc + adj_offsets[a];
+                if(largeTowerInfo[pla - 1][l2] == 0)
+                  largeTowerInfo[pla - 1][l2] = 2;
               }
             }
           }
-
-          if(!component_coords_global.empty()) {
-            int min_gx = component_coords_global[0].first;
-            int max_gx = component_coords_global[0].first;
-            int min_gy = component_coords_global[0].second;
-            int max_gy = component_coords_global[0].second;
-
-            for(size_t i = 1; i < component_coords_global.size(); ++i) {
-              min_gx = std::min(min_gx, component_coords_global[i].first);
-              max_gx = std::max(max_gx, component_coords_global[i].first);
-              min_gy = std::min(min_gy, component_coords_global[i].second);
-              max_gy = std::max(max_gy, component_coords_global[i].second);
-            }
-
-            int block_width = max_gx - min_gx + 1;
-            int block_height = max_gy - min_gy + 1;
-
-            ConnectedBlock extracted_block(block_width, block_height);
-
-            for(const auto& global_coord: component_coords_global) {
-              int local_x = global_coord.first - min_gx;
-              int local_y = global_coord.second - min_gy;
-              extracted_block.setStoneRelativeToOrigin(local_x, local_y);
-            }
-            all_extracted_blocks.push_back(extracted_block);
-          }
+          all_extracted_blocks.push_back(extracted_block);
         }
       }
     }
-    return all_extracted_blocks;
+  }
+  
+}
+
+void Board::swapNextPlayer(bool attackLargeTower) {
+  Player opp = getOpp(nextPla);
+  if(largeTowerProtect[opp - 1])
+    pos_hash ^= ZOBRIST_LARGETOWERPROTECT_HASH[opp];
+  largeTowerProtect[opp - 1] = attackLargeTower;
+  if(attackLargeTower)
+    pos_hash ^= ZOBRIST_LARGETOWERPROTECT_HASH[opp];
+
+
+  pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
+  stage = 0;
+  pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
+
+  pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+  nextPla = getOpp(nextPla);
+  pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+
+  for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
+    pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
+    midLocs[i] = Board::NULL_LOC;
   }
 
-}  // namespace SymmetryLogic
+}
+
+bool Board::isMoveAttackLargeTower(Color opp, Loc src, Loc dst) const {
+  if(largeTowerInfo[opp - 1][src] == 1)
+    return true;
+  else if(largeTowerInfo[opp - 1][src] == 2)
+    ASSERT_UNREACHABLE;
+
+  if(largeTowerInfo[opp - 1][dst] == 2)
+    return true;
+  else if(largeTowerInfo[opp - 1][dst] == 1)
+    ASSERT_UNREACHABLE;
+  return false;
+}
+
 
 
 
@@ -333,7 +380,11 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
   }
   else if(board.stage == 2)  
   {
-    return isOnJumpPath(board,board.midLocs[0], board.midLocs[1], loc);
+    Color opp = getOpp(pla);
+    if(board.colors[board.midLocs[1]] != opp || board.smallTowerCount[opp - 1] > 6)
+      return isOnJumpPath(board, board.midLocs[0], board.midLocs[1], loc);
+    else
+      return loc == nearestJumpTarget(board, board.midLocs[1], board.midLocs[0]);
   }
   ASSERT_UNREACHABLE;
   return false;
@@ -357,28 +408,41 @@ GameLogic::MovePriority GameLogic::getMovePriority(const Board& board, const Boa
 
 
 
-Color GameLogic::checkWinnerAfterPlayed(
+Color GameLogic::checkWinnerBeforePlayed(
   const Board& board,
   const BoardHistory& hist,
   Player pla,
-  Loc loc,
-  int oldStage) {
-  if(loc == Board::PASS_LOC && oldStage != 1)
-    return getOpp(pla);  // pass is not allowed
+  Loc loc) {
+  Color opp = getOpp(pla);
+  if (loc == Board::PASS_LOC)
+  {
+    if(board.stage == 1)
+      return C_WALL;
+    else
+      return opp;
+  }
+  //check illegal move
+  if(board.stage == 2) {
+    if(board.largeTowerProtect[opp - 1] && board.colors[board.midLocs[1]] == opp)
+    {
+      if(board.isMoveAttackLargeTower(opp, board.midLocs[1], loc))
+        return opp;
+    }
+  }
+
+  return C_WALL;
+}
+
+Color GameLogic::checkWinnerAfterPlayed(const Board& board, const BoardHistory& hist, Player pla, Loc loc) {
+ 
   if(board.stage == 0) {
-    auto myConBlocks = SymmetryLogic::getConnectedBlocks(board, pla);
+    auto& myConBlocks = board.connectedBlocks[pla - 1];
     for(int i = 0; i < myConBlocks.size(); i++) {
       auto b = myConBlocks[i];
       if(!b.isSymmetric())
         return getOpp(pla);
     }
-    if (myConBlocks.size() >= 9) {
-      auto oppConBlocks = SymmetryLogic::getConnectedBlocks(board, getOpp(pla));
-      if(myConBlocks.size() > oppConBlocks.size())
-        return getOpp(pla);
-    }
   }
-
 
   return C_WALL;
 }

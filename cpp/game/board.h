@@ -97,6 +97,38 @@ STRUCT_NAMED_PAIR(Loc,loc,Player,pla,Move);
 //Simple ko rule only.
 //Does not enforce player turn order.
 
+class ConnectedBlock {
+  public:
+  int16_t local_xsize;             // Width of this block's bounding box
+  int16_t local_ysize;             // Height of this block's bounding box
+  int16_t start_x;             // bias on the original board
+  int16_t start_y;             // bias on the original board
+  std::vector<bool> is_stone;  // Flattened grid: true if stone of the component is present
+
+  ConnectedBlock(int w, int h, int x, int y);
+
+  void setStoneRelativeToOrigin(int local_x, int local_y);
+
+  // "isStoneRelativeToOrigin没必要判断是否越界" - the current implementation does this correctly.
+  // If local_x or local_y are out of bounds [0, size-1], it returns false.
+  // This is desired because a reflection landing outside the bounding box means no symmetric partner *within the
+  // block*.
+  bool isStoneRelativeToOrigin(int local_x, int local_y) const;
+
+  int stoneNum() const;
+
+  // Helper to get all actual stone points in local coordinates for iteration
+  // This is still useful to avoid iterating over all cells in is_stone multiple times.
+  std::vector<std::pair<int, int>> getLocalStoneCoordinates() const;
+
+  bool isSymmetric() const;
+};
+
+// The getConnectedBlocks function from the previous response remains largely the same,
+// as its job is to find components and map them into the ConnectedBlock's bounding box representation.
+// For completeness, here it is again (assuming Board, Loc, Player, Color, Location namespace are defined):
+
+
 struct Board
 {
   //Initialization------------------------------
@@ -126,6 +158,7 @@ struct Board
   static Hash128 ZOBRIST_NEXTPLA_HASH[4];
   static Hash128 ZOBRIST_MOVENUM_HASH[MAX_MOVE_NUM];
   static Hash128 ZOBRIST_PLAYER_HASH[4];
+  static Hash128 ZOBRIST_LARGETOWERPROTECT_HASH[4];
   static const Hash128 ZOBRIST_GAME_IS_OVER;
 
   //Structs---------------------------------------
@@ -167,6 +200,9 @@ struct Board
 
   // who plays the last move
   Player prevPla() const;
+
+  //is attacking opp's large tower?
+  bool isMoveAttackLargeTower(Color opp, Loc src, Loc dst) const;  // should be called before movement
 
 
   
@@ -210,12 +246,21 @@ struct Board
   //例如：象棋类midLoc[0]是选择的棋子，midLoc[1]是落点
   Loc midLocs[STAGE_NUM_EACH_PLA];
 
+  bool largeTowerProtect[2];  // 第一个index是color-1
+  //对称棋的棋块信息
+  std::vector<ConnectedBlock> connectedBlocks[2];
+  int16_t smallTowerCount[2];              // 第一个index是color-1
+  int8_t largeTowerInfo[2][MAX_ARR_SIZE];//0默认，1在大塔内，2在大塔周围一圈，第一个index是color-1
+
 
   private:
   void init(int xS, int yS);
 
+  void updateConnectedBlocks(Color pla);
+
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 
+  void swapNextPlayer(bool attackLargeTower);
 
   //static void monteCarloOwner(Player player, Board* board, int mc_counts[]);
 };
