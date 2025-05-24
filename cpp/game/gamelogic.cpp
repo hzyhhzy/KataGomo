@@ -160,7 +160,7 @@ bool ConnectedBlock::isSymmetric() const {
 // as its job is to find components and map them into the ConnectedBlock's bounding box representation.
 // For completeness, here it is again (assuming Board, Loc, Player, Color, Location namespace are defined):
 
-void Board::updateConnectedBlocks(Color pla) {
+void Board::updateConnectedBlocks(Color pla, int largeTowerThrehold) {
   if(pla != C_BLACK && pla != C_WHITE)
     ASSERT_UNREACHABLE;
   //
@@ -220,7 +220,7 @@ void Board::updateConnectedBlocks(Color pla) {
         }
 
         if(!component_coords_global.empty()) {
-          bool isLargeTower = component_coords_global.size() >= 6;
+          bool isLargeTower = component_coords_global.size() >= largeTowerThrehold;
           if(!isLargeTower)
             smallTowerCount[pla - 1] += 1;
 

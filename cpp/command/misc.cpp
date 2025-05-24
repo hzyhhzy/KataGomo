@@ -1575,7 +1575,7 @@ int MainCmds::dataminesgfs(const vector<string>& args) {
       //Just in case
       if(!board.isLegal(treeHist.moveHistory[i].loc,treeHist.moveHistory[i].pla))
         return;
-      board.playMoveAssumeLegal(treeHist.moveHistory[i].loc,treeHist.moveHistory[i].pla);
+      board.playMoveAssumeLegal(treeHist.moveHistory[i].loc, treeHist.moveHistory[i].pla, treeHist.rules);
     }
 
     Sgf::PositionSample sample;

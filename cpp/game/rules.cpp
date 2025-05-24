@@ -41,7 +41,7 @@ Rules Rules::getTrompTaylorish() {
 
 
 set<string> Rules::scoringRuleStrings() {
-  return {"R0", "R1"};
+  return {"R0", "R1", "R2", "R3"};
 }
 
 int Rules::parseScoringRule(const string& s) {
@@ -49,12 +49,18 @@ int Rules::parseScoringRule(const string& s) {
     return Rules::SCORING_R0;
   else if(s == "R1")
     return Rules::SCORING_R1;
+  else if(s == "R2")
+    return Rules::SCORING_R2;
+  else if(s == "R3")
+    return Rules::SCORING_R3;
   else throw IOError("Rules::parseScoringRule: Invalid scoring rule: " + s);
 }
 
 string Rules::writeScoringRule(int scoringRule) {
   if(scoringRule == Rules::SCORING_R0) return string("R0");
   else if(scoringRule == Rules::SCORING_R1) return string("R1");
+  else if(scoringRule == Rules::SCORING_R2) return string("R2");
+  else if(scoringRule == Rules::SCORING_R3) return string("R3");
   return string("UNKNOWN");
 }
 
@@ -148,12 +154,16 @@ static Rules parseRulesHelper(const string& sOrig) {
       if(startsWithAndStrip(s,"scoring")) {
         if(startsWithAndStrip(s,"R0")) rules.scoringRule = Rules::SCORING_R0;
         else if(startsWithAndStrip(s,"R1")) rules.scoringRule = Rules::SCORING_R1;
+        else if(startsWithAndStrip(s,"R2")) rules.scoringRule = Rules::SCORING_R2;
+        else if(startsWithAndStrip(s,"R3")) rules.scoringRule = Rules::SCORING_R3;
         else throw IOError("Could not parse rules: " + sOrig);
         continue;
       }
       if(startsWithAndStrip(s,"score")) {
         if(startsWithAndStrip(s,"R0")) rules.scoringRule = Rules::SCORING_R0;
         else if(startsWithAndStrip(s,"R1")) rules.scoringRule = Rules::SCORING_R1;
+        else if(startsWithAndStrip(s,"R2")) rules.scoringRule = Rules::SCORING_R2;
+        else if(startsWithAndStrip(s,"R3")) rules.scoringRule = Rules::SCORING_R3;
         else throw IOError("Could not parse rules: " + sOrig);
         continue;
       }
@@ -188,9 +198,11 @@ bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
 
 
 
-const Hash128 Rules::ZOBRIST_SCORING_RULE_HASH[2] = {
+const Hash128 Rules::ZOBRIST_SCORING_RULE_HASH[4] = {
   //Based on sha256 hash of Rules::SCORING_AREA, but also mixing none tax rule hash, to preserve legacy hashes
   Hash128(0x8b3ed7598f901494ULL ^ 0x72eeccc72c82a5e7ULL, 0x1dfd47ac77bce5f8ULL ^ 0x0d1265e413623e2bULL),
   //Based on sha256 hash of Rules::SCORING_TERRITORY, but also mixing seki tax rule hash, to preserve legacy hashes
   Hash128(0x381345dc357ec982ULL ^ 0x125bfe48a41042d5ULL, 0x03ba55c026026b56ULL ^ 0x061866b5f2b98a79ULL),
+  Hash128(0x4827641b70bc2559ULL, 0x3db4ebb5ea9ded1dULL),
+  Hash128(0xd3e9dbd41f5dbb80ULL, 0xf6544bc012ced602ULL)
 };

@@ -166,8 +166,8 @@ void Board::init(int xS, int yS)
 
   largeTowerProtect[0] = false;
   largeTowerProtect[1] = false;
-  updateConnectedBlocks(C_BLACK);
-  updateConnectedBlocks(C_WHITE);
+  updateConnectedBlocks(C_BLACK, 100);
+  updateConnectedBlocks(C_WHITE, 100);
 
 }
 
@@ -313,11 +313,12 @@ bool Board::setStones(std::vector<Move> placements) {
 }
 
 //Plays the specified move, assuming it is legal.
-void Board::playMoveAssumeLegal(Loc loc, Player pla)
-{
+void Board::playMoveAssumeLegal(Loc loc, Player pla, const Rules& rule) {
   if(pla != nextPla) {
     std::cout << "Error next player ";
   }
+  //better to record this in the Board
+  int largeBlockThrehold = rule.scoringRule == Rules::SCORING_R2 ? 4 : rule.scoringRule == Rules::SCORING_R3 ? 5 : 6;
 
   pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
   movenum++;
@@ -338,7 +339,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     midLocs[0] = loc;
     pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][0];
     setStone(loc, pla);
-    updateConnectedBlocks(pla);
+    updateConnectedBlocks(pla, largeBlockThrehold);
   } 
   else if(stage == 1)  //choose
   {
@@ -366,7 +367,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
 
     setStone(loc, c);
     setStone(midLocs[1], C_EMPTY);
-    updateConnectedBlocks(c);
+    updateConnectedBlocks(c, largeBlockThrehold);
 
     swapNextPlayer(isAttackLargeTower);
 

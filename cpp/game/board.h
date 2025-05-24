@@ -128,6 +128,7 @@ class ConnectedBlock {
 // as its job is to find components and map them into the ConnectedBlock's bounding box representation.
 // For completeness, here it is again (assuming Board, Loc, Player, Color, Location namespace are defined):
 
+class Rules;
 
 struct Board
 {
@@ -193,7 +194,7 @@ struct Board
   bool setStones(std::vector<Move> placements);
 
   //Plays the specified move, assuming it is legal.
-  void playMoveAssumeLegal(Loc loc, Player pla);
+  void playMoveAssumeLegal(Loc loc, Player pla, const Rules& rule);
 
   // who plays the next next move
   Player nextnextPla() const;
@@ -256,7 +257,7 @@ struct Board
   private:
   void init(int xS, int yS);
 
-  void updateConnectedBlocks(Color pla);
+  void updateConnectedBlocks(Color pla, int largeTowerThrehold);
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 

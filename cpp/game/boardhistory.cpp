@@ -218,7 +218,7 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   
   Color maybeWinner = GameLogic::checkWinnerBeforePlayed(board, *this, movePla, moveLoc);
 
-  board.playMoveAssumeLegal(moveLoc,movePla);
+  board.playMoveAssumeLegal(moveLoc,movePla,rules);
 
   
 
