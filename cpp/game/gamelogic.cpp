@@ -442,6 +442,11 @@ Color GameLogic::checkWinnerAfterPlayed(const Board& board, const BoardHistory& 
       if(!b.isSymmetric())
         return getOpp(pla);
     }
+    if (hist.rules.scoringRule == Rules::SCORING_R1)
+    {
+      if(board.smallTowerCount[pla - 1] > 6)
+        return getOpp(pla);
+    }
   }
 
   return C_WALL;

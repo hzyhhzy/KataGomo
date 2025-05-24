@@ -8,8 +8,9 @@
 
 struct Rules {
 
-
-  static const int SCORING_AREA = 0;
+  
+  static const int SCORING_R0 = 0;
+  static const int SCORING_R1 = 1;
   int scoringRule;
 
 

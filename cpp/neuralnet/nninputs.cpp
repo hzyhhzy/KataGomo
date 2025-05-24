@@ -615,7 +615,11 @@ void NNInputs::fillRowV7(
 
 
   //Scoring
-  if(hist.rules.scoringRule == Rules::SCORING_AREA) {}
+  if(hist.rules.scoringRule == Rules::SCORING_R0) {
+  }
+  else if(hist.rules.scoringRule == Rules::SCORING_R1) {
+    rowGlobal[2] = 1.0;
+  }
   else
     ASSERT_UNREACHABLE;
 

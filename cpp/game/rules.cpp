@@ -9,7 +9,7 @@ using json = nlohmann::json;
 
 Rules::Rules() {
   //Defaults if not set - closest match to TT rules
-  scoringRule = SCORING_AREA;
+  scoringRule = SCORING_R0;
 }
 
 Rules::Rules(
@@ -34,23 +34,27 @@ bool Rules::operator!=(const Rules& other) const {
 
 Rules Rules::getTrompTaylorish() {
   Rules rules;
-  rules.scoringRule = SCORING_AREA;
+  rules.scoringRule = SCORING_R0;
   return rules;
 }
 
 
 
 set<string> Rules::scoringRuleStrings() {
-  return {"AREA"};
+  return {"R0", "R1"};
 }
 
 int Rules::parseScoringRule(const string& s) {
-  if(s == "AREA") return Rules::SCORING_AREA;
+  if(s == "R0")
+    return Rules::SCORING_R0;
+  else if(s == "R1")
+    return Rules::SCORING_R1;
   else throw IOError("Rules::parseScoringRule: Invalid scoring rule: " + s);
 }
 
 string Rules::writeScoringRule(int scoringRule) {
-  if(scoringRule == Rules::SCORING_AREA) return string("AREA");
+  if(scoringRule == Rules::SCORING_R0) return string("R0");
+  else if(scoringRule == Rules::SCORING_R1) return string("R1");
   return string("UNKNOWN");
 }
 
@@ -94,7 +98,7 @@ static Rules parseRulesHelper(const string& sOrig) {
   string lowercased = Global::trim(Global::toLower(sOrig));
   
   if(lowercased == "tromp-taylor" || lowercased == "tromp_taylor" || lowercased == "tromp taylor" || lowercased == "tromptaylor") {
-    rules.scoringRule = Rules::SCORING_AREA;
+    rules.scoringRule = Rules::SCORING_R0;
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
     //Default if not specified
@@ -142,12 +146,14 @@ static Rules parseRulesHelper(const string& sOrig) {
         break;
 
       if(startsWithAndStrip(s,"scoring")) {
-        if(startsWithAndStrip(s,"AREA")) rules.scoringRule = Rules::SCORING_AREA;
+        if(startsWithAndStrip(s,"R0")) rules.scoringRule = Rules::SCORING_R0;
+        else if(startsWithAndStrip(s,"R1")) rules.scoringRule = Rules::SCORING_R1;
         else throw IOError("Could not parse rules: " + sOrig);
         continue;
       }
       if(startsWithAndStrip(s,"score")) {
-        if(startsWithAndStrip(s,"AREA")) rules.scoringRule = Rules::SCORING_AREA;
+        if(startsWithAndStrip(s,"R0")) rules.scoringRule = Rules::SCORING_R0;
+        else if(startsWithAndStrip(s,"R1")) rules.scoringRule = Rules::SCORING_R1;
         else throw IOError("Could not parse rules: " + sOrig);
         continue;
       }

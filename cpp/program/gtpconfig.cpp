@@ -465,7 +465,7 @@ string GTPConfig::makeConfig(
     assert(pos != string::npos);
     config.replace(pos, key.size(), replacement);
   };
-  if(rules.scoringRule == Rules::SCORING_AREA)            replace("$$SCORING_RULE", "scoringRule = AREA  # options: AREA, TERRITORY");
+  if(rules.scoringRule == Rules::SCORING_R0)            replace("$$SCORING_RULE", "scoringRule = R0  # options: R0, R1");
   else { ASSERT_UNREACHABLE; }
 
 
