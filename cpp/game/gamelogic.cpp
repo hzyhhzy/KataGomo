@@ -248,7 +248,7 @@ void Board::updateConnectedBlocks(Color pla) {
             if(isLargeTower) {
               Loc loc = Location::getLoc(global_coord.first, global_coord.second, x_size);
               largeTowerInfo[pla - 1][loc] = 1;
-              for (int a = 0; a < 4; a++)
+              for (int a = 0; a < 8; a++)
               {
                 Loc l2 = loc + adj_offsets[a];
                 if(largeTowerInfo[pla - 1][l2] == 0)
@@ -291,13 +291,13 @@ void Board::swapNextPlayer(bool attackLargeTower) {
 bool Board::isMoveAttackLargeTower(Color opp, Loc src, Loc dst) const {
   if(largeTowerInfo[opp - 1][src] == 1)
     return true;
-  else if(largeTowerInfo[opp - 1][src] == 2)
-    ASSERT_UNREACHABLE;
+  else if(largeTowerInfo[opp - 1][src] == 2) 
+    throw StringError("largeTowerInfo[opp - 1][src] == 2");
 
   if(largeTowerInfo[opp - 1][dst] == 2)
     return true;
   else if(largeTowerInfo[opp - 1][dst] == 1)
-    ASSERT_UNREACHABLE;
+    throw StringError("largeTowerInfo[opp - 1][dst] == 1");
   return false;
 }
 

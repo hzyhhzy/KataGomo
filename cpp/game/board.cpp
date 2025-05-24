@@ -359,7 +359,9 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     Color opp = getOpp(pla);
     bool isAttackLargeTower = false;
     // is attacking large tower?
-    if(smallTowerCount[opp - 1] <= 6 && isMoveAttackLargeTower(opp, midLocs[1], loc))
+    if(
+      smallTowerCount[opp - 1] <= 6 &&
+      colors[midLocs[1]] == opp && isMoveAttackLargeTower(opp, midLocs[1], loc))
       isAttackLargeTower = true;
 
     setStone(loc, c);
@@ -459,11 +461,11 @@ void Board::checkConsistency() const {
   {
     auto& blockList = connectedBlocks[c - 1];
     int totalStones = numPlaStonesOnBoard(c);
-    cout << totalStones << " " << blockList.size() << endl;
+    //cout << totalStones << " " << blockList.size() << endl;
     for(int t = 0; t < blockList.size(); t++) {
       auto& b = blockList[t];
       totalStones -= b.stoneNum();
-      cout << b.stoneNum() << endl;
+      //cout << b.stoneNum() << endl;
       auto sl = b.getLocalStoneCoordinates();
       for(const auto& p: sl) {
         int x = p.first + b.start_x;
