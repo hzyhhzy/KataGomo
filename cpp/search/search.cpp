@@ -239,7 +239,7 @@ bool Search::isLegalTolerant(Loc moveLoc, Player movePla) const {
   //clear the ko loc - the simple ko loc of a player should not prohibit the opponent playing there!
   if(movePla != rootPla) {
     Board copy = rootBoard;
-    return copy.isLegal(moveLoc,movePla);
+    return copy.isLegal(moveLoc,movePla,rootHistory.rules);
   }
   else {
     return rootHistory.isLegalTolerant(rootBoard,moveLoc,movePla);

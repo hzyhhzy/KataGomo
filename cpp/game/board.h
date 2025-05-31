@@ -173,7 +173,7 @@ struct Board
 
   //Functions------------------------------------
 
-  bool isLegal(Loc loc, Player pla) const;
+  bool isLegal(Loc loc, Player pla, const Rules& rules) const;
   //Check if this location is on the board
   bool isOnBoard(Loc loc) const;
   //Is this board empty?
@@ -228,6 +228,7 @@ struct Board
   int x_size;                  //Horizontal size of board
   int y_size;                  //Vertical size of board
   Color colors[MAX_ARR_SIZE];  //Color of each location on the board.
+  int16_t blockSize[MAX_ARR_SIZE];  // block size of each part.
   int movenum; //how many moves
 
   /* PointList empty_list; //List of all empty locations on board */

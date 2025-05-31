@@ -187,7 +187,7 @@ void BoardHistory::setWinner(Player pla) {
 }
 
 bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) const {
-  if(!board.isLegal(moveLoc,movePla))
+  if(!board.isLegal(moveLoc,movePla,rules))
     return false;
 
   return true;
@@ -197,10 +197,10 @@ bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) cons
 
 
 bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const {
-  return board.isLegal(moveLoc, movePla);
+  return board.isLegal(moveLoc, movePla, rules);
 }
 bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla) {
-  if(!board.isLegal(moveLoc,movePla))
+  if(!board.isLegal(moveLoc,movePla,rules))
     return false;
   makeBoardMoveAssumeLegal(board,moveLoc,movePla);
   return true;

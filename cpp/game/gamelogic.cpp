@@ -161,6 +161,9 @@ bool ConnectedBlock::isSymmetric() const {
 // For completeness, here it is again (assuming Board, Loc, Player, Color, Location namespace are defined):
 
 void Board::updateConnectedBlocks(Color pla, int largeTowerThrehold) {
+  for(int i = 0; i < MAX_ARR_SIZE; i++)
+    if(colors[i] != getOpp(pla))
+      blockSize[i] = 0;
   if(pla != C_BLACK && pla != C_WHITE)
     ASSERT_UNREACHABLE;
   //
@@ -245,8 +248,9 @@ void Board::updateConnectedBlocks(Color pla, int largeTowerThrehold) {
             int local_x = global_coord.first - min_gx;
             int local_y = global_coord.second - min_gy;
             extracted_block.setStoneRelativeToOrigin(local_x, local_y);
+            Loc loc = Location::getLoc(global_coord.first, global_coord.second, x_size);
+            blockSize[loc] = component_coords_global.size(); 
             if(isLargeTower) {
-              Loc loc = Location::getLoc(global_coord.first, global_coord.second, x_size);
               largeTowerInfo[pla - 1][loc] = 1;
               for (int a = 0; a < 8; a++)
               {
@@ -355,7 +359,7 @@ bool isOnJumpPath(const Board& board, Loc lsrc, Loc ldst, Loc lmid) {
 
 }
 
-bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
+bool GameLogic::isLegal(const Board& board, Player pla, Loc loc, const Rules& rules) {
   if(pla != board.nextPla) {
     std::cout << "Error next player ";
     return false;
@@ -376,15 +380,46 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     if(board.colors[loc] == C_EMPTY)
       return false;
     Loc chosenMove = board.midLocs[0];
-    return nearestJumpTarget(board, loc, chosenMove) != Board::NULL_LOC;
+    if(nearestJumpTarget(board, loc, chosenMove) == Board::NULL_LOC)
+      return false;
+    if (rules.scoringRule == Rules::SCORING_R5)
+    {
+      if (board.colors[loc] == getOpp(pla))
+      {
+        int c1 = board.blockSize[chosenMove];
+        int c2 = board.blockSize[loc];
+        if(c2 > c1 && c2 != 2 * c1 && c2 != 3 * c1)
+          return false;
+      }
+    }
+    return true;
   }
   else if(board.stage == 2)  
   {
     Color opp = getOpp(pla);
-    if(board.colors[board.midLocs[1]] != opp || board.smallTowerCount[opp - 1] > 6)
-      return isOnJumpPath(board, board.midLocs[0], board.midLocs[1], loc);
-    else
-      return loc == nearestJumpTarget(board, board.midLocs[1], board.midLocs[0]);
+    if(
+      rules.scoringRule == Rules::SCORING_R0 || rules.scoringRule == Rules::SCORING_R1 ||
+      rules.scoringRule == Rules::SCORING_R2 || rules.scoringRule == Rules::SCORING_R3) 
+    {
+      if(board.colors[board.midLocs[1]] != opp || board.smallTowerCount[opp - 1] > 6)
+        return isOnJumpPath(board, board.midLocs[0], board.midLocs[1], loc);
+      else
+        return loc == nearestJumpTarget(board, board.midLocs[1], board.midLocs[0]);
+    }
+    else if (rules.scoringRule == Rules::SCORING_R4) 
+    {
+      if(board.smallTowerCount[pla - 1] <= 6)
+        return isOnJumpPath(board, board.midLocs[0], board.midLocs[1], loc);
+      else
+        return loc == nearestJumpTarget(board, board.midLocs[1], board.midLocs[0]);
+    }
+    else if (rules.scoringRule == Rules::SCORING_R5) 
+    {
+      if(board.colors[board.midLocs[1]] != opp)
+        return isOnJumpPath(board, board.midLocs[0], board.midLocs[1], loc);
+      else
+        return loc == nearestJumpTarget(board, board.midLocs[1], board.midLocs[0]);
+    }
   }
   ASSERT_UNREACHABLE;
   return false;
@@ -399,7 +434,7 @@ GameLogic::MovePriority GameLogic::getMovePriorityAssumeLegal(const Board& board
 GameLogic::MovePriority GameLogic::getMovePriority(const Board& board, const BoardHistory& hist, Player pla, Loc loc) {
   if(loc == Board::PASS_LOC)
     return MP_NORMAL;
-  if(!board.isLegal(loc, pla))
+  if(!board.isLegal(loc, pla, hist.rules))
     return MP_ILLEGAL;
   MovePriority MP = getMovePriorityAssumeLegal(board, hist, pla, loc);
   return MP;

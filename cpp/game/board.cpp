@@ -108,7 +108,8 @@ Board::Board(const Board& other)
   x_size = other.x_size;
   y_size = other.y_size;
 
-  memcpy(colors, other.colors, sizeof(Color)*MAX_ARR_SIZE);
+  memcpy(colors, other.colors, sizeof(Color) * MAX_ARR_SIZE);
+  memcpy(blockSize, other.blockSize, sizeof(int16_t) * MAX_ARR_SIZE);
 
   movenum = other.movenum;
   pos_hash = other.pos_hash;
@@ -161,6 +162,7 @@ void Board::init(int xS, int yS)
 
   pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size] ^ ZOBRIST_NEXTPLA_HASH[nextPla] ^
              ZOBRIST_STAGENUM_HASH[stage];
+
 
   Location::getAdjacentOffsets(adj_offsets, x_size);
 
@@ -236,9 +238,9 @@ bool Board::isOnBoard(Loc loc) const {
 }
 
 //Check if moving here is illegal.
-bool Board::isLegal(Loc loc, Player pla) const
+bool Board::isLegal(Loc loc, Player pla, const Rules& rules) const
 {
-  return GameLogic::isLegal(*this, pla, loc);
+  return GameLogic::isLegal(*this, pla, loc, rules);
 }
 
 bool Board::isEmpty() const {
@@ -318,7 +320,10 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla, const Rules& rule) {
     std::cout << "Error next player ";
   }
   //better to record this in the Board
-  int largeBlockThrehold = rule.scoringRule == Rules::SCORING_R2 ? 4 : rule.scoringRule == Rules::SCORING_R3 ? 5 : 6;
+  int largeBlockThrehold = rule.scoringRule == Rules::SCORING_R2   ? 4
+                           : rule.scoringRule == Rules::SCORING_R3 ? 5
+                           : rule.scoringRule == Rules::SCORING_R5 ? 1000000
+                                                                   : 6;
 
   pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
   movenum++;
@@ -457,6 +462,9 @@ void Board::checkConsistency() const {
     std::cout << "Stage=" << stage << ",NextPla=" << int(nextPla) << std::endl;
     throw StringError(errLabel + "Pos hash does not match expected");
   }
+  for(int i = 0; i < MAX_ARR_SIZE; i++)
+    if(colors[i] == C_EMPTY && blockSize[i] != 0)
+      throw StringError(errLabel + "blockSize!=0 on empty loc");
 
   for (Color c = 1; c <= 2; c++)
   {
@@ -474,6 +482,8 @@ void Board::checkConsistency() const {
         Loc loc = Location::getLoc(x, y, x_size);
         if(colors[loc] != c)
           throw StringError(errLabel + "Stone position in connectedBlocks not match");
+        if(blockSize[loc] != b.stoneNum())
+          throw StringError(errLabel + "Stone num in blockSize not match");
       }
     }
     if(totalStones != 0)

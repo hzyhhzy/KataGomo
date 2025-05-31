@@ -13,6 +13,10 @@ struct Rules {
   static const int SCORING_R1 = 1;
   static const int SCORING_R2 = 2;
   static const int SCORING_R3 = 3;
+  static const int SCORING_R4 = 4;
+  static const int SCORING_R5 = 5;
+  static const int SCORING_R6 = 6;
+  static const int SCORING_R7 = 7;
   int scoringRule;
 
 
@@ -48,7 +52,7 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
 
-  static const Hash128 ZOBRIST_SCORING_RULE_HASH[4];
+  static const Hash128 ZOBRIST_SCORING_RULE_HASH[24];
 
 };
 

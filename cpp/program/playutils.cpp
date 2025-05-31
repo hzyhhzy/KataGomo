@@ -400,7 +400,15 @@ void PlayUtils::printGenmoveLog(ostream& out, const AsyncBot* bot, const NNEvalu
 }
 
 Rules PlayUtils::genRandomRules(Rand& rand) {
-  vector<int> allowedScoringRules = {Rules::SCORING_R0, Rules::SCORING_R1, Rules::SCORING_R2, Rules::SCORING_R3};
+  vector<int> allowedScoringRules = {
+    Rules::SCORING_R0,
+    Rules::SCORING_R1,
+    Rules::SCORING_R2,
+    Rules::SCORING_R3,
+    Rules::SCORING_R4,
+    Rules::SCORING_R5,
+    Rules::SCORING_R6,
+    Rules::SCORING_R7};
 
   Rules rules;
   rules.scoringRule = allowedScoringRules[rand.nextUInt((uint32_t)allowedScoringRules.size())];
