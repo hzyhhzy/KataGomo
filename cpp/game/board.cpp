@@ -784,74 +784,15 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
   }
   out << "\n";
 
-  out << "Large tower map Black\n";
-  out << "Small tower count: " << board.smallTowerCount[C_BLACK - 1] << "\n";
-  out << "Protected: " << (board.largeTowerProtect[C_BLACK - 1] ? "True" : "False") << "\n";
+  //out << "Large tower map Black\n";
+  out << "Black small tower count: " << board.smallTowerCount[C_BLACK - 1] << "\n";
+  out << "Black large tower protected: " << (board.largeTowerProtect[C_BLACK - 1] ? "True" : "False") << "\n";
 
-  if(showCoords) {
-    const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
-    out << "  ";
-    for(int x = 0; x < board.x_size; x++) {
-      if(x <= 24) {
-        out << " ";
-        out << xChar[x];
-      } else {
-        out << "A" << xChar[x - 25];
-      }
-    }
-    out << "\n";
-  }
 
-  for(int y = 0; y < board.y_size; y++) {
-    if(showCoords) {
-      char buf[16];
-      sprintf(buf, "%2d", board.y_size - y);
-      out << buf << ' ';
-    }
-    for(int x = 0; x < board.x_size; x++) {
-      Loc loc = Location::getLoc(x, y, board.x_size);
-      char s = PlayerIO::colorToChar(board.colors[loc]);
-      out << int(board.largeTowerInfo[C_BLACK - 1][loc]);
-      if(x < board.x_size - 1 )
-        out << ' ';
-    }
-    out << "\n";
-  }
-  out << "\n";
+  //out << "Large tower map White\n";
+  out << "White small tower count: " << board.smallTowerCount[C_WHITE - 1] << "\n";
+  out << "White large tower protected: " << (board.largeTowerProtect[C_WHITE - 1] ? "True" : "False") << "\n";
 
-  out << "Large tower map White\n";
-  out << "Small tower count: " << board.smallTowerCount[C_WHITE - 1] << "\n";
-  out << "Protected: " << (board.largeTowerProtect[C_WHITE - 1] ? "True" : "False") << "\n";
-
-  if(showCoords) {
-    const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
-    out << "  ";
-    for(int x = 0; x < board.x_size; x++) {
-      if(x <= 24) {
-        out << " ";
-        out << xChar[x];
-      } else {
-        out << "A" << xChar[x - 25];
-      }
-    }
-    out << "\n";
-  }
-
-  for(int y = 0; y < board.y_size; y++) {
-    if(showCoords) {
-      char buf[16];
-      sprintf(buf, "%2d", board.y_size - y);
-      out << buf << ' ';
-    }
-    for(int x = 0; x < board.x_size; x++) {
-      Loc loc = Location::getLoc(x, y, board.x_size);
-      char s = PlayerIO::colorToChar(board.colors[loc]);
-      out << int(board.largeTowerInfo[C_WHITE - 1][loc]);
-      if(x < board.x_size - 1)
-        out << ' ';
-    }
-    out << "\n";
-  }
   out << "\n";
 }
 

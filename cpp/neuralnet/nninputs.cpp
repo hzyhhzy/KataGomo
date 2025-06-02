@@ -540,6 +540,10 @@ void NNInputs::fillRowV7(
       else if(lti2 == 2)
         setRowBin(rowBin, pos, 10, 1.0f, posStride, featureStride);
 
+      if(hist.rules.scoringRule == Rules::SCORING_R5 && board.stage == 1) {
+        if(board.isLegal(loc, nextPlayer, hist.rules))
+          setRowBin(rowBin, pos, 11, 1.0f, posStride, featureStride);
+      }
     }
   }
   
@@ -631,6 +635,7 @@ void NNInputs::fillRowV7(
   } 
   else if(hist.rules.scoringRule == Rules::SCORING_R5) {
     rowGlobal[10] = 1.0;
+    rowGlobal[11] = 1.0;
   }
   else
     ASSERT_UNREACHABLE;
