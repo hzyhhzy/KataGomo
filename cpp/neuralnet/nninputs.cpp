@@ -511,19 +511,11 @@ void NNInputs::fillRowV7(
 
       Color stone = board.colors[loc];
 
-#if DAWSONCHESS_RULE == 1
-      // Spatial Features 1,2 - pla,opp stone
-      if(stone == C_BLACK)
-        setRowBin(rowBin, pos, 1, 1.0f, posStride, featureStride);
-      else if(stone == C_WHITE)
-        throw StringError("Found white color in nninput, but this is a single color game");
-#else
       // Spatial Features 1,2 - pla,opp stone
       if(stone == pla)
         setRowBin(rowBin, pos, 1, 1.0f, posStride, featureStride);
       else if(stone == opp)
         setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
-#endif
 
     }
   }
@@ -562,6 +554,11 @@ void NNInputs::fillRowV7(
   
   // Parameter 0 noResultUtilityForWhite, when draw, white's win rate = 0.5*(noResultUtilityForWhite+1)
   rowGlobal[14] = pla == C_WHITE ? nnInputParams.noResultUtilityForWhite : -nnInputParams.noResultUtilityForWhite;
+
+  //who is the last player
+  if(board.numPlaStonesOnBoard(C_EMPTY) % 2 == 0)
+    rowGlobal[6] = 1.0;
+
 
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.

@@ -708,7 +708,16 @@ void NNEvaluator::evaluate(
       //isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
     }
 
-
+    
+    for(int i = 0; i < policySize; i++) {
+      if(isLegal[i]) {
+        legalCount += 1;
+      } 
+    }
+    if(legalCount == 0) {
+      isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
+      legalCount = 1;
+    }
 
     for(int i = 0; i<policySize; i++) {
       float policyValue;
@@ -723,6 +732,7 @@ void NNEvaluator::evaluate(
       if(policyValue > maxPolicy)
         maxPolicy = policyValue;
     }
+
 
     assert(legalCount > 0);
 

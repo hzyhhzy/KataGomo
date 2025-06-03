@@ -214,29 +214,6 @@ bool Board::isLegal(Loc loc, Player pla) const
   );
 }
 
-bool Board::isPruned(Loc loc, Player pla) const {
-  if(!isLegal(loc, pla))
-    return true;
-  if(loc == PASS_LOC)
-    return false;
-
-  
-  for(int i = 0; i < 8; i++) {
-#if DAWSONCHESS_RULE == 1
-    if(colors[loc + adj_offsets[i]] == C_BLACK)
-      return true;
-#elif DAWSONCHESS_RULE == 2
-    if(colors[loc + adj_offsets[i]] == pla)
-      return true;
-#elif DAWSONCHESS_RULE == 3
-    if(colors[loc + adj_offsets[i]] == getOpp(pla))
-      return true;
-#else
-    static_assert(false, "unknown rule");
-#endif
-  }
-  return false;
-}
 
 bool Board::isEmpty() const {
   for(int y = 0; y < y_size; y++) {

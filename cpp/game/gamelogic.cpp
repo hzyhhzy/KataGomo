@@ -16,6 +16,51 @@
 
 using namespace std;
 
+static int connectionLengthOneDirection(
+  const Board& board,
+  Player pla,
+  Loc loc,
+  short adj) {
+  Loc tmploc = loc;
+  int conNum = 0;
+  while(1) {
+    tmploc += adj;
+    if(!board.isOnBoard(tmploc))
+      break;
+    if(board.colors[tmploc] == pla)
+      conNum++;
+    else if(board.colors[tmploc] == C_EMPTY) {
+      break;
+    } else
+      break;
+  }
+  return conNum;
+}
+
+static bool isConnected(const Board& board, Player pla, Loc loc) {
+  int adjs[4] = {1, (board.x_size + 1), (board.x_size + 1) + 1, (board.x_size + 1) - 1};  // +x +y +x+y -x+y
+  for(int i = 0; i < 4; i++) {
+    int adj = adjs[i];
+    int myConNum =
+      connectionLengthOneDirection(board, pla, loc, adj) + connectionLengthOneDirection(board, pla, loc, -adj) + 1;
+    if(myConNum >= CON_LEN)
+      return true;
+  }
+
+  return false;
+}
+
+bool Board::isPruned(Loc loc, Player pla) const {
+  if(!isLegal(loc, pla))
+    return true;
+  if(loc == PASS_LOC)
+    return true;
+
+  if(isConnected(*this, pla, loc))
+    return true;
+
+  return false;
+}
 
 
 Color GameLogic::checkWinnerAfterPlayed(
@@ -27,25 +72,12 @@ Color GameLogic::checkWinnerAfterPlayed(
   if(loc == Board::PASS_LOC)
     return getOpp(pla);  //pass is not allowed
   
-  //write your own logic here
-  for (int i = 0; i < 8; i++)
-  {
-#if DAWSONCHESS_RULE == 1
-    if(board.colors[loc + board.adj_offsets[i]] == C_BLACK)
-      return getOpp(pla);
-#elif DAWSONCHESS_RULE == 2
-    if(board.colors[loc + board.adj_offsets[i]] == pla)
-      return getOpp(pla);
-#elif DAWSONCHESS_RULE == 3
-    if(board.colors[loc + board.adj_offsets[i]] == getOpp(pla))
-      return getOpp(pla);
-#else
-    static_assert(false,"unknown rule");
-#endif
-  }
+  if(isConnected(board, pla, loc))
+    return getOpp(pla);  //connected
 
 
-  if(board.movenum >= board.x_size * board.y_size)
+
+  if(board.stonenum >= board.x_size * board.y_size)
     return C_EMPTY;
 
   return C_WALL;

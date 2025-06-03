@@ -16,10 +16,7 @@ static_assert(COMPILE_MAX_BOARD_LEN should not be defined);
 #endif
 #define COMPILE_MAX_BOARD_LEN 15
 
-//1 single color
-//2 no nearby my stone
-//3 no nearby opp stone
-#define DAWSONCHESS_RULE 3
+static const int CON_LEN = 4;
 
 
 
