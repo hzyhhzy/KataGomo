@@ -34,6 +34,12 @@ In `./train/train.sh `
 `-lr-scale 2.0` Learning rate scale. Recommend `2.0` at the beginning. Drop to `1.0` after trained ~1M selfplay games   
 `-multi-gpus 0,1` GPU indexs used in this training. `-multi-gpus 0` or remove this if you have only one GPU.
 
+In `./train/shuffle.sh `   
+
+`-keep-target-rows 1100000`  Keep how many rows when shuffling. Should better slightly larger than `-samples-per-epoch`   
+
+
+
 ### Selfplay settings
 In `./run_train.sh `   
 `-max-games-total 20000` Run how many selfplay games at once.
@@ -59,7 +65,7 @@ Play 10000 selfplay games and train 1000000 samples(step\*batchsize) every gener
 `samples-per-epoch / max-games-total` is proportional to how many times each sample will be trained.   
 Too high will cost overfitting.   
 Too low will waste selfplay games which is the major cost.   
-
+Remember to change `-keep-target-rows` when you change `-samples-per-epoch`   
 
 Value loss `vloss` is the mostly like to be overfitted because one full game rather than one move is just one data sample.    
 Make sure `vloss_val - vloss_train < 0.05`, or you should increase `-max-games-total` or reduce `-samples-per-epoch`
