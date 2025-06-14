@@ -7,12 +7,12 @@
 #include "../external/nlohmann_json/json.hpp"
 
 struct Rules {
-  static const int SIXWINRULE_ALWAYS = 0; //six or longer is always win
-  static const int SIXWINRULE_NEVER = 1;  // six or longer is never win
-  static const int SIXWINRULE_CARO = 2;   // oxxxxxx. is win, oxxxxxxo is not win
-  int sixWinRule;
+  static const int PENTERULE_CLASSIC = 0; //classic Pente
+  static const int PENTERULE_KERYO = 1;  // Keryo-Pente
+  int penteRule;
 
-  bool wallBlock;// whether regard wall as opp stone (if true, oxxxxx# is not win)
+  int blackTargetCap;  // if black capture these many white stones, black wins
+  int whiteTargetCap;  // if white capture these many black stones, white wins
 
   static const int VCNRULE_NOVC = 0;
   static const int VCNRULE_VC1_B = 1;
@@ -31,19 +31,19 @@ struct Rules {
 
 
   Rules();
-  Rules(int sixWinRule, bool wallBlock, int VCNRule, bool firstPassWin, int maxMoves);
+  Rules(int penteRule, int blackTargetCap, int whiteTargetCap, int VCNRule, bool firstPassWin, int maxMoves);
   ~Rules();
 
   bool operator==(const Rules& other) const;
   bool operator!=(const Rules& other) const;
 
-  static std::set<std::string> SixWinRuleStrings();
+  static std::set<std::string> PenteRuleStrings();
   static std::set<std::string> VCNRuleStrings();
 
   static Rules getTrompTaylorish();
 
-  static int parseSixWinRule(std::string s);
-  static std::string writeSixWinRule(int sixWinRule);
+  static int parsePenteRule(std::string s);
+  static std::string writePenteRule(int sixWinRule);
 
   static int parseVCNRule(std::string s);
   static std::string writeVCNRule(int VCNRule);
@@ -63,13 +63,12 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
   
-  static const Hash128 ZOBRIST_SIXWIN_RULE_HASH[3];
-  static const Hash128 ZOBRIST_WALLBLOCK_HASH;
+  static const Hash128 ZOBRIST_PENTE_RULE_HASH[3];
+  static const Hash128 ZOBRIST_BLACK_CAP_RULE_HASH_BASE;
+  static const Hash128 ZOBRIST_WHITE_CAP_RULE_HASH_BASE;
   static const Hash128 ZOBRIST_VCNRULE_HASH_BASE;
   static const Hash128 ZOBRIST_FIRSTPASSWIN_HASH;
   static const Hash128 ZOBRIST_MAXMOVES_HASH_BASE;
-  static const Hash128 ZOBRIST_PASSNUM_B_HASH_BASE;
-  static const Hash128 ZOBRIST_PASSNUM_W_HASH_BASE;
 };
 
 #endif  // GAME_RULES_H_

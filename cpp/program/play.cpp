@@ -42,16 +42,15 @@ GameInitializer::GameInitializer(ConfigParser& cfg, Logger& logger, const string
 }
 
 void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
-  allowedSixWinRuleStrs = cfg.getStrings("sixWinRules", Rules::SixWinRuleStrings());
-  wallBlockRuleProb = cfg.contains("wallBlockRuleProb") ? cfg.getDouble("wallBlockRuleProb", 0.0, 1.0)
-                      : cfg.contains("wallBlockRule")   ? (cfg.getBool("wallBlockRule") ? 1.0 : 0.0)
-                                                        : 0.0;
+  allowedPenteRuleStrs = cfg.getStrings("PenteRules", Rules::PenteRuleStrings());
+  nonStandardTargetCapRuleProb = cfg.contains("nonStandardTargetCapRuleProb") ? cfg.getDouble("nonStandardTargetCapRuleProb", 0.0, 1.0)
+                      : 0.0;
 
-  for(size_t i = 0; i < allowedSixWinRuleStrs.size(); i++)
-    allowedSixWinRules.push_back(Rules::parseSixWinRule(allowedSixWinRuleStrs[i]));
+  for(size_t i = 0; i < allowedPenteRuleStrs.size(); i++)
+    allowedPenteRules.push_back(Rules::parsePenteRule(allowedPenteRuleStrs[i]));
 
-  if(allowedSixWinRules.size() <= 0)
-    throw IOError("SixWinRules must have at least one value in " + cfg.getFileName());
+  if(allowedPenteRules.size() <= 0)
+    throw IOError("PenteRules must have at least one value in " + cfg.getFileName());
 
   allowedVCNRuleStrs = cfg.getStrings("VCNRules", Rules::VCNRuleStrings());
 
@@ -313,8 +312,39 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
-  rules.sixWinRule = allowedSixWinRules[rand.nextUInt(allowedSixWinRules.size())];
-  rules.wallBlock = rand.nextBool(wallBlockRuleProb);
+  rules.penteRule = allowedPenteRules[rand.nextUInt(allowedPenteRules.size())];
+  if(rand.nextBool(nonStandardTargetCapRuleProb)) {
+    if(rules.penteRule == Rules::PENTERULE_CLASSIC) {
+      rules.blackTargetCap = 2 + rand.nextGamma(3) * 2.66;
+      rules.whiteTargetCap = 2 + rand.nextGamma(3) * 2.66;
+    } else if(rules.penteRule == Rules::PENTERULE_KERYO) {
+      rules.blackTargetCap = 2 + rand.nextGamma(3) * 4.33;
+      rules.whiteTargetCap = 2 + rand.nextGamma(3) * 4.33;
+    } else
+      throw StringError("Unknown pente rule");
+    if(rand.nextBool(0.7))
+      rules.whiteTargetCap = rules.blackTargetCap;
+    if(rules.blackTargetCap < 2)
+      rules.blackTargetCap = 2;
+    if(rules.blackTargetCap > 100)
+      rules.blackTargetCap = 100;
+    if(rules.whiteTargetCap < 2)
+      rules.whiteTargetCap = 2;
+    if(rules.whiteTargetCap > 100)
+      rules.whiteTargetCap = 100;
+  }
+  else
+  {
+    if(rules.penteRule == Rules::PENTERULE_CLASSIC) {
+      rules.blackTargetCap = 10;
+      rules.whiteTargetCap = 10;
+    } else if(rules.penteRule == Rules::PENTERULE_KERYO) {
+      rules.blackTargetCap = 15;
+      rules.whiteTargetCap = 15;
+    } 
+    else
+      throw StringError("Unknown pente rule");
+  }
   rules.VCNRule = allowedVCNRules[rand.nextUInt(allowedVCNRules.size())];
   if(rules.VCNRule == Rules::VCNRULE_NOVC)
     rules.firstPassWin = allowedFirstPassWinRules[rand.nextUInt(allowedFirstPassWinRules.size())];

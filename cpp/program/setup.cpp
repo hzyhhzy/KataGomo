@@ -689,19 +689,22 @@ Rules Setup::loadSingleRules(
   Rules rules;
 
   
-  if(cfg.contains("sixWinRule")) {
-    string sixWinRule = cfg.getString("sixWinRule", Rules::SixWinRuleStrings());
-    rules.sixWinRule = Rules::parseSixWinRule(sixWinRule);
+  if(cfg.contains("penteRule")) {
+    string penteRule = cfg.getString("penteRule", Rules::PenteRuleStrings());
+    rules.penteRule = Rules::parsePenteRule(penteRule);
   } else {
-    rules.sixWinRule = Rules::SIXWINRULE_ALWAYS;
+    rules.penteRule = Rules::PENTERULE_CLASSIC;
   }
-  if(cfg.contains("wallBlockRule")) {
-    rules.wallBlock = cfg.getBool("wallBlockRule");
-  } else {
-    rules.wallBlock = false;
+  if(rules.penteRule == Rules::PENTERULE_CLASSIC) {
+    rules.blackTargetCap = 10;
+    rules.whiteTargetCap = 10;
   }
-  
-
+  else if (rules.penteRule == Rules::PENTERULE_KERYO) {
+    rules.blackTargetCap = 15;
+    rules.whiteTargetCap = 15;
+  } 
+  else
+    throw StringError("Unknown pente rule");
 
   return rules;
 }

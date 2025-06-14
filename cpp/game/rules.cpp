@@ -8,20 +8,27 @@ using namespace std;
 using json = nlohmann::json;
 
 Rules::Rules() {
-  sixWinRule = SIXWINRULE_ALWAYS;
-  wallBlock = false;
+  penteRule = PENTERULE_CLASSIC;
+  blackTargetCap = 10;
+  whiteTargetCap = 10;
   VCNRule = VCNRULE_NOVC;
   firstPassWin = false;
   maxMoves = 0;
 }
 
-Rules::Rules(int sixWinRule, bool wallBlock, int VCNRule, bool firstPassWin, int maxMoves)
-  : sixWinRule(sixWinRule), wallBlock(wallBlock), VCNRule(VCNRule), firstPassWin(firstPassWin), maxMoves(maxMoves) {}
+Rules::Rules(int penteRule, int blackTargetCap, int whiteTargetCap, int VCNRule, bool firstPassWin, int maxMoves)
+  : penteRule(penteRule),
+    blackTargetCap(blackTargetCap),
+    whiteTargetCap(whiteTargetCap),
+    VCNRule(VCNRule),
+    firstPassWin(firstPassWin),
+    maxMoves(maxMoves) {}
 
 Rules::~Rules() {}
 
 bool Rules::operator==(const Rules& other) const {
-  return sixWinRule == other.sixWinRule && wallBlock == other.wallBlock && VCNRule == other.VCNRule &&
+  return penteRule == other.penteRule && blackTargetCap == other.blackTargetCap &&
+         whiteTargetCap == other.whiteTargetCap && VCNRule == other.VCNRule &&
          firstPassWin == other.firstPassWin && maxMoves == other.maxMoves;
 }
 
@@ -34,32 +41,28 @@ Rules Rules::getTrompTaylorish() {
   return rules;
 }
 
-set<string> Rules::SixWinRuleStrings() {
-  return {"SIXWINRULE_ALWAYS", "SIXWINRULE_NEVER", "SIXWINRULE_CARO"};
+set<string> Rules::PenteRuleStrings() {
+  return {"PENTERULE_CLASSIC", "PENTERULE_KERYO"};
 }
 set<string> Rules::VCNRuleStrings() {
   return {"NOVC", "VC1B", "VC2B", "VC3B", "VC4B", "VCTB", "VCFB", "VC1W", "VC2W", "VC3W", "VC4W", "VCTW", "VCFW"};
 }
 
-int Rules::parseSixWinRule(string s) {
+int Rules::parsePenteRule(string s) {
   s = Global::toUpper(s);
-  if(s == "SIXWINRULE_ALWAYS")
-    return Rules::SIXWINRULE_ALWAYS;
-  else if(s == "SIXWINRULE_NEVER")
-    return Rules::SIXWINRULE_NEVER;
-  else if(s == "SIXWINRULE_CARO")
-    return Rules::SIXWINRULE_CARO;
+  if(s == "PENTERULE_CLASSIC")
+    return Rules::PENTERULE_CLASSIC;
+  else if(s == "PENTERULE_KERYO")
+    return Rules::PENTERULE_KERYO;
   else
-    throw IOError("Rules::parseSixWinRule: Invalid six win rule: " + s);
+    throw IOError("Rules::parsePenteRule: Invalid pente rule: " + s);
 }
 
-string Rules::writeSixWinRule(int sixWinRule) {
-  if(sixWinRule == Rules::SIXWINRULE_ALWAYS)
-    return string("SIXWINRULE_ALWAYS");
-  if(sixWinRule == Rules::SIXWINRULE_NEVER)
-    return string("SIXWINRULE_NEVER");
-  if(sixWinRule == Rules::SIXWINRULE_CARO)
-    return string("SIXWINRULE_CARO");
+string Rules::writePenteRule(int r) {
+  if(r == Rules::PENTERULE_CLASSIC)
+    return string("PENTERULE_CLASSIC");
+  if(r == Rules::PENTERULE_KERYO)
+    return string("PENTERULE_KERYO");
   return string("UNKNOWN");
 }
 
@@ -132,8 +135,9 @@ int Rules::vcLevel() const {
 }
 
 ostream& operator<<(ostream& out, const Rules& rules) {
-  out << "sixwinrule" << Rules::writeSixWinRule(rules.sixWinRule);
-  out << "wallblock" << rules.wallBlock;
+  out << "penterule" << Rules::writePenteRule(rules.penteRule);
+  out << "blackTargetCap" << rules.blackTargetCap;
+  out << "whiteTargetCap" << rules.whiteTargetCap;
   out << "vcnrule" << Rules::writeVCNRule(rules.VCNRule);
   out << "firstpasswin" << rules.firstPassWin;
   out << "maxmoves" << rules.maxMoves;
@@ -149,7 +153,9 @@ string Rules::toString() const {
 
 json Rules::toJson() const {
   json ret;
-  ret["sixwinrule"] = writeSixWinRule(sixWinRule);
+  ret["penterule"] = writePenteRule(penteRule);
+  ret["blackTargetCap"] = blackTargetCap;
+  ret["whiteTargetCap"] = whiteTargetCap;
   ret["vcnrule"] = writeVCNRule(VCNRule);
   ret["firstpasswin"] = firstPassWin;
   ret["maxmoves"] = maxMoves;
@@ -167,10 +173,13 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   Rules rules = oldRules;
   string key = Global::toLower(Global::trim(k));
   string value = Global::trim(Global::toUpper(v));
-  if(key == "sixwinrule")
-    rules.sixWinRule = Rules::parseSixWinRule(value);
-  else if(key == "wallblock") {
-    rules.wallBlock = Global::stringToBool(value);
+  if(key == "penterule")
+    rules.penteRule = Rules::parsePenteRule(value);
+  else if(key == "blackTargetCap") {
+    rules.blackTargetCap = Global::stringToInt(value);
+  } 
+  else if(key == "whiteTargetCap") {
+    rules.whiteTargetCap = Global::stringToInt(value);
   }
   else if(key == "vcnrule") {
     rules.firstPassWin = false;
@@ -236,12 +245,15 @@ string Rules::toStringMaybeNice() const {
   return toString();
 }
 
-const Hash128 Rules::ZOBRIST_SIXWIN_RULE_HASH[3] = {
+const Hash128 Rules::ZOBRIST_PENTE_RULE_HASH[3] = {
   Hash128(0x72eeccc72c82a5e7ULL, 0x0d1265e413623e2bULL),  // Based on sha256 hash of Rules::TAX_NONE
   Hash128(0x125bfe48a41042d5ULL, 0x061866b5f2b98a79ULL),  // Based on sha256 hash of Rules::TAX_SEKI
   Hash128(0xa384ece9d8ee713cULL, 0xfdc9f3b5d1f3732bULL),  // Based on sha256 hash of Rules::TAX_ALL
 };
-const Hash128 Rules::ZOBRIST_WALLBLOCK_HASH = Hash128(0x37b8f9b3011b420bULL, 0x706d097a80e19a64ULL);
+
+const Hash128 Rules::ZOBRIST_BLACK_CAP_RULE_HASH_BASE = Hash128(0x5a881a894f189de8ULL, 0x80adfc5ab8789990ULL);
+
+const Hash128 Rules::ZOBRIST_WHITE_CAP_RULE_HASH_BASE = Hash128(0x0d9c957db399f5b2ULL, 0xbf7a532d567346b6ULL);
 
 const Hash128 Rules::ZOBRIST_FIRSTPASSWIN_HASH = Hash128(0x082b14fef06c9716ULL, 0x98f5e636a9351303ULL);
 
@@ -249,6 +261,3 @@ const Hash128 Rules::ZOBRIST_VCNRULE_HASH_BASE = Hash128(0x0dbdfa4e0ec7459cULL, 
 
 const Hash128 Rules::ZOBRIST_MAXMOVES_HASH_BASE = Hash128(0x8aba00580c378fe8ULL, 0x7f6c1210e74fb440ULL);
 
-const Hash128 Rules::ZOBRIST_PASSNUM_B_HASH_BASE = Hash128(0x5a881a894f189de8ULL, 0x80adfc5ab8789990ULL);
-
-const Hash128 Rules::ZOBRIST_PASSNUM_W_HASH_BASE = Hash128(0x0d9c957db399f5b2ULL, 0xbf7a532d567346b6ULL);

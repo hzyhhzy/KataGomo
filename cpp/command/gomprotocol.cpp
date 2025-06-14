@@ -479,7 +479,7 @@ struct GomEngine {
       auto mv = initialStones[i];
       if(!board.isLegal(mv.loc, mv.pla))
         return false;
-      board.playMoveAssumeLegal(mv.loc, mv.pla);
+      board.playMoveAssumeLegal(mv.loc, mv.pla, bot->getRootHist().rules);
     }
 
     //Sanity check

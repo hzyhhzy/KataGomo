@@ -25,6 +25,8 @@ Hash128 Board::ZOBRIST_PLAYER_HASH[4];
 Hash128 Board::ZOBRIST_MOVENUM_HASH[MAX_ARR_SIZE];
 Hash128 Board::ZOBRIST_BPASSNUM_HASH[MAX_ARR_SIZE];
 Hash128 Board::ZOBRIST_WPASSNUM_HASH[MAX_ARR_SIZE];
+Hash128 Board::ZOBRIST_BCAPNUM_HASH[MAX_ARR_SIZE * 10 + 100];
+Hash128 Board::ZOBRIST_WCAPNUM_HASH[MAX_ARR_SIZE * 10 + 100];
 Hash128 Board::ZOBRIST_BOARD_HASH2[MAX_ARR_SIZE][4];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
@@ -113,6 +115,8 @@ Board::Board(const Board& other)
   stonenum = other.stonenum;
   blackPassNum = other.blackPassNum;
   whitePassNum = other.whitePassNum;
+  blackCapNum = other.blackCapNum;
+  whiteCapNum = other.whiteCapNum;
   pos_hash = other.pos_hash;
 
   memcpy(adj_offsets, other.adj_offsets, sizeof(short)*8);
@@ -134,6 +138,8 @@ void Board::init(int xS, int yS)
   stonenum = 0;
   blackPassNum = 0;
   whitePassNum = 0;
+  blackCapNum = 0;
+  whiteCapNum = 0;
   for(int y = 0; y < y_size; y++)
   {
     for(int x = 0; x < x_size; x++)
@@ -184,6 +190,15 @@ void Board::initHash()
   ZOBRIST_MOVENUM_HASH[0] = Hash128();
   ZOBRIST_BPASSNUM_HASH[0] = Hash128();
   ZOBRIST_WPASSNUM_HASH[0] = Hash128();
+
+  
+  for(int i = 0; i < MAX_ARR_SIZE * 10 + 100; i++) {
+    ZOBRIST_BCAPNUM_HASH[i] = nextHash();
+    ZOBRIST_WCAPNUM_HASH[i] = nextHash();
+  }
+  ZOBRIST_BCAPNUM_HASH[0] = Hash128();
+  ZOBRIST_WCAPNUM_HASH[0] = Hash128();
+
 
   //Reseed the random number generator so that these size hashes are also
   //not affected by the size of the board we compile with
@@ -258,6 +273,30 @@ int Board::numPlaStonesOnBoard(Player pla) const {
   return num;
 }
 
+int Board::captureNumAfterMoveOneDirection(const Rules& rules, Player pla, Loc loc, int adj) const {
+  Loc loc0 = loc;
+  loc0 += adj;
+  Color opp = getOpp(pla);
+  if(!isOnBoard(loc0) || colors[loc0] != opp)
+    return 0;
+  loc0 += adj;
+  if(!isOnBoard(loc0) || colors[loc0] != opp)
+    return 0;
+  loc0 += adj;
+  if(!isOnBoard(loc0) || colors[loc0] == C_EMPTY)
+    return 0;
+  if(colors[loc0] == pla) {
+    return 2;
+  } else if(colors[loc0] == opp) {
+    if(rules.penteRule != Rules::PENTERULE_KERYO)
+      return 0;
+    loc0 += adj;
+    if(isOnBoard(loc0) && colors[loc0] == pla)
+      return 3;
+  }
+  return 0;
+}
+
 bool Board::setStone(Loc loc, Color color)
 {
   if(loc < 0 || loc >= MAX_ARR_SIZE || colors[loc] == C_WALL)
@@ -301,8 +340,7 @@ bool Board::setStones(std::vector<Move> placements) {
 }
 
 //Plays the specified move, assuming it is legal.
-void Board::playMoveAssumeLegal(Loc loc, Player pla)
-{
+void Board::playMoveAssumeLegal(Loc loc, Player pla, const Rules& rules) {
   pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
   movenum++;
   pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
@@ -324,6 +362,32 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     return;
   }
   setStone(loc, pla);
+
+
+  //maybe capture
+  int totalCap = 0;
+  for(int i = 0; i < 8; i++) {
+    int adj = adj_offsets[i];
+    int cap = captureNumAfterMoveOneDirection(rules, pla, loc, adj);
+    if(cap == 0)
+      continue;
+    totalCap += cap;
+    for (int j = 0; j < cap; j++)
+    {
+      setStone(loc + (j + 1) * adj, C_EMPTY);
+    }
+  }
+  if(totalCap > 0) {
+    if(pla == C_BLACK) {
+      pos_hash ^= ZOBRIST_BCAPNUM_HASH[blackCapNum];
+      blackCapNum += totalCap;
+      pos_hash ^= ZOBRIST_BCAPNUM_HASH[blackCapNum];
+    } else {
+      pos_hash ^= ZOBRIST_WCAPNUM_HASH[whiteCapNum];
+      whiteCapNum += totalCap;
+      pos_hash ^= ZOBRIST_WCAPNUM_HASH[whiteCapNum];
+    }
+  }
 
 }
 
@@ -378,6 +442,8 @@ void Board::checkConsistency() const {
   tmp_pos_hash ^= ZOBRIST_MOVENUM_HASH[movenum];
   tmp_pos_hash ^= ZOBRIST_BPASSNUM_HASH[blackPassNum];
   tmp_pos_hash ^= ZOBRIST_WPASSNUM_HASH[whitePassNum];
+  tmp_pos_hash ^= ZOBRIST_BCAPNUM_HASH[blackCapNum];
+  tmp_pos_hash ^= ZOBRIST_WCAPNUM_HASH[whiteCapNum];
 
   if(pos_hash != tmp_pos_hash)
     throw StringError(errLabel + "Pos hash does not match expected");
@@ -628,7 +694,12 @@ vector<Loc> Location::parseSequence(const string& str, const Board& board) {
 void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vector<Move>* hist) {
   if(hist != NULL)
     out << "MoveNum: " << hist->size() << " ";
+  out << "Board MoveNum: " << board.movenum << " ";
   out << "HASH: " << board.pos_hash << "\n";
+  out << "BlackCap: " << board.blackCapNum << "\n";
+  out << "WhiteCap: " << board.whiteCapNum << "\n";
+  out << "BlackPass: " << board.blackPassNum << "\n";
+  out << "WhitePass: " << board.whitePassNum << "\n";
   bool showCoords = board.x_size <= 50 && board.y_size <= 50;
   if(showCoords) {
     const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";

@@ -384,7 +384,7 @@ struct GTPEngine {
       auto mv = initialStones[i];
       if(!board.isLegal(mv.loc, mv.pla))
         return false;
-      board.playMoveAssumeLegal(mv.loc, mv.pla);
+      board.playMoveAssumeLegal(mv.loc, mv.pla, bot->getRootHist().rules);
     }
 
     //Sanity check
@@ -2430,17 +2430,17 @@ int MainCmds::gtp(const vector<string>& args) {
         }
       }
     } 
-    else if(Rules::SixWinRuleStrings().count(Global::toUpper(command)))  // Is Command a sixWin rule?
+    else if(Rules::PenteRuleStrings().count(Global::toUpper(command)))  // Is Command a pente rule?
     {
       if(pieces.size() != 0) {
         responseIsError = true;
-        response = "Expected zero arguments for SixWinRule but got '" + Global::concat(pieces, " ") + "'";
+        response = "Expected zero arguments for PenteRule but got '" + Global::concat(pieces, " ") + "'";
       } else {
         Rules currentRules = engine->getCurrentRules();
         Rules newRules;
         bool parseSuccess = false;
         try {
-          newRules = Rules::updateRules("sixwinrule", command, currentRules);
+          newRules = Rules::updateRules("penterule", command, currentRules);
           parseSuccess = true;
         } catch(const StringError& err) {
           responseIsError = true;

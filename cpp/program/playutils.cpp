@@ -399,10 +399,18 @@ void PlayUtils::printGenmoveLog(ostream& out, const AsyncBot* bot, const NNEvalu
 }
 
 Rules PlayUtils::genRandomRules(Rand& rand) {
-  vector<int> allowedSixWinRules = {Rules::SIXWINRULE_ALWAYS, Rules::SIXWINRULE_NEVER, Rules::SIXWINRULE_CARO};
+  vector<int> allowedPenteRules = {Rules::PENTERULE_CLASSIC, Rules::PENTERULE_KERYO};
 
   Rules rules;
-  rules.sixWinRule = allowedSixWinRules[rand.nextUInt(allowedSixWinRules.size())];
+  rules.penteRule = allowedPenteRules[rand.nextUInt(allowedPenteRules.size())];
+  if(rules.penteRule == Rules::PENTERULE_CLASSIC) {
+    rules.blackTargetCap = 10;
+    rules.whiteTargetCap = 10;
+  } else if(rules.penteRule == Rules::PENTERULE_KERYO) {
+    rules.blackTargetCap = 15;
+    rules.whiteTargetCap = 15;
+  } else
+    throw StringError("Unknown pente rule");
   return rules;
 }
 

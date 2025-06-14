@@ -215,7 +215,7 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   isNoResult = false;
   isResignation = false;
 
-  board.playMoveAssumeLegal(moveLoc,movePla);
+  board.playMoveAssumeLegal(moveLoc, movePla, rules);
 
   
 
@@ -251,9 +251,9 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
 Hash128 BoardHistory::getRulesHash() const
 {
   Hash128 hash=Hash128();
-  hash ^= Rules::ZOBRIST_SIXWIN_RULE_HASH[rules.sixWinRule];
-  if(rules.wallBlock)
-    hash ^= Rules::ZOBRIST_WALLBLOCK_HASH;
+  hash ^= Rules::ZOBRIST_PENTE_RULE_HASH[rules.penteRule];
+  hash ^= Hash128::mixInt(Rules::ZOBRIST_BLACK_CAP_RULE_HASH_BASE, rules.blackTargetCap);
+  hash ^= Hash128::mixInt(Rules::ZOBRIST_WHITE_CAP_RULE_HASH_BASE, rules.whiteTargetCap);
   hash ^= Hash128::mixInt(Rules::ZOBRIST_VCNRULE_HASH_BASE,rules.VCNRule);
   hash ^= Hash128::mixInt(Rules::ZOBRIST_MAXMOVES_HASH_BASE,rules.maxMoves);
   if(rules.firstPassWin)

@@ -479,6 +479,9 @@ void NNInputs::fillRowV7(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
 ) {
+
+  //throw StringError("not implemented");
+
   assert(nnXLen <= NNPos::MAX_BOARD_LEN);
   assert(nnYLen <= NNPos::MAX_BOARD_LEN);
   assert(board.x_size <= nnXLen);
@@ -545,14 +548,6 @@ void NNInputs::fillRowV7(
 
     }
   }
-
-  if(hist.rules.sixWinRule == Rules::SIXWINRULE_NEVER)
-    rowGlobal[3] = 1.0;
-  else if(hist.rules.sixWinRule == Rules::SIXWINRULE_CARO)
-    rowGlobal[4] = 1.0;
-
-  if(hist.rules.wallBlock)
-    rowGlobal[5] = 1.0;
 
   rowGlobal[13] =
     nextPlayer == P_BLACK ? -nnInputParams.noResultUtilityForWhite : nnInputParams.noResultUtilityForWhite;
@@ -651,7 +646,6 @@ void NNInputs::fillRowV101(
   //  36  exp(-(maxmoves-moves)/1.5)
   //  37 2*((maxmoves-moves)%2)-1
 
-
   for(int y = 0; y < ySize; y++) {
     for(int x = 0; x < xSize; x++) {
       int pos = NNPos::xyToPos(x, y, nnXLen);
@@ -667,18 +661,22 @@ void NNInputs::fillRowV101(
         setRowBin(rowBin, pos, 1, 1.0f, posStride, featureStride);
       else if(stone == opp)
         setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
-
     }
   }
 
-  if(hist.rules.sixWinRule == Rules::SIXWINRULE_NEVER)
+  if(hist.rules.penteRule == Rules::PENTERULE_CLASSIC) {
+  } else if(hist.rules.penteRule == Rules::PENTERULE_KERYO)
     rowGlobal[3] = 1.0;
-  else if(hist.rules.sixWinRule == Rules::SIXWINRULE_CARO)
-    rowGlobal[4] = 1.0;
 
-  if(hist.rules.wallBlock)
-    rowGlobal[5] = 1.0;
+  double myRemainCap =
+    pla == C_BLACK ? hist.rules.blackTargetCap - board.blackCapNum : hist.rules.whiteTargetCap - board.whiteCapNum;
+  double oppRemainCap =
+    opp == C_BLACK ? hist.rules.blackTargetCap - board.blackCapNum : hist.rules.whiteTargetCap - board.whiteCapNum;
 
+  rowGlobal[8] = exp(-myRemainCap / 4.0);
+  rowGlobal[9] = exp(-myRemainCap / 12.0);
+  rowGlobal[10] = exp(-oppRemainCap / 4.0);
+  rowGlobal[11] = exp(-oppRemainCap / 12.0);
 
   int myPassNum = nextPlayer == C_BLACK ? board.blackPassNum : board.whitePassNum;
   int oppPassNum = nextPlayer == C_WHITE ? board.blackPassNum : board.whitePassNum;

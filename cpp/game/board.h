@@ -104,6 +104,8 @@ struct Board
   static Hash128 ZOBRIST_MOVENUM_HASH[MAX_ARR_SIZE];
   static Hash128 ZOBRIST_BPASSNUM_HASH[MAX_ARR_SIZE];
   static Hash128 ZOBRIST_WPASSNUM_HASH[MAX_ARR_SIZE];
+  static Hash128 ZOBRIST_BCAPNUM_HASH[MAX_ARR_SIZE * 10 + 100];
+  static Hash128 ZOBRIST_WCAPNUM_HASH[MAX_ARR_SIZE * 10 + 100];
   static Hash128 ZOBRIST_BOARD_HASH2[MAX_ARR_SIZE][4];
   static Hash128 ZOBRIST_PLAYER_HASH[4];
   static const Hash128 ZOBRIST_GAME_IS_OVER;
@@ -127,6 +129,7 @@ struct Board
   //Count the number of stones on the board
   int numStonesOnBoard() const;
   int numPlaStonesOnBoard(Player pla) const;
+  int captureNumAfterMoveOneDirection(const Rules& rules, Player pla, Loc loc, int adj) const;
 
   //Sets the specified stone if possible, including overwriting existing stones.
   //Resolves any captures and/or suicides that result from setting that stone, including deletions of the stone itself.
@@ -139,7 +142,7 @@ struct Board
   bool setStones(std::vector<Move> placements);
 
   //Plays the specified move, assuming it is legal.
-  void playMoveAssumeLegal(Loc loc, Player pla);
+  void playMoveAssumeLegal(Loc loc, Player pla, const Rules& rules);
 
   
   Hash128 getSitHash(Player pla) const;
@@ -168,6 +171,9 @@ struct Board
 
   int blackPassNum; //pass count of black/white, used for VCT/VC2
   int whitePassNum;
+
+  int blackCapNum;  // How many white stones have black captured
+  int whiteCapNum;
 
   /* PointList empty_list; //List of all empty locations on board */
 
