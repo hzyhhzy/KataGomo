@@ -322,7 +322,7 @@ Rules GameInitializer::createRulesUnsynchronized() {
       rules.whiteTargetCap = 2 + rand.nextGamma(3) * 4.33;
     } else
       throw StringError("Unknown pente rule");
-    if(rand.nextBool(0.7))
+    if(rand.nextBool(0.9))
       rules.whiteTargetCap = rules.blackTargetCap;
     if(rules.blackTargetCap < 2)
       rules.blackTargetCap = 2;

@@ -50,9 +50,9 @@ set<string> Rules::VCNRuleStrings() {
 
 int Rules::parsePenteRule(string s) {
   s = Global::toUpper(s);
-  if(s == "PENTERULE_CLASSIC")
+  if(s == "PENTERULE_CLASSIC" || s == "CLASSIC" || s == "0")
     return Rules::PENTERULE_CLASSIC;
-  else if(s == "PENTERULE_KERYO")
+  else if(s == "PENTERULE_KERYO" || s == "KERYO" || s == "1")
     return Rules::PENTERULE_KERYO;
   else
     throw IOError("Rules::parsePenteRule: Invalid pente rule: " + s);
@@ -173,12 +173,21 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   Rules rules = oldRules;
   string key = Global::toLower(Global::trim(k));
   string value = Global::trim(Global::toUpper(v));
-  if(key == "penterule")
+  if(key == "penterule" || key == "rule") {
     rules.penteRule = Rules::parsePenteRule(value);
-  else if(key == "blackTargetCap") {
+    if(rules.penteRule == Rules::PENTERULE_CLASSIC) {
+      rules.blackTargetCap = 10;
+      rules.whiteTargetCap = 10;
+    } else if(rules.penteRule == Rules::PENTERULE_KERYO) {
+      rules.blackTargetCap = 15;
+      rules.whiteTargetCap = 15;
+    } else
+      throw StringError("Unknown pente rule");
+  }
+  else if(key == "blacktargetcap" || key == "bc") {
     rules.blackTargetCap = Global::stringToInt(value);
   } 
-  else if(key == "whiteTargetCap") {
+  else if(key == "whitetargetcap" || key == "wc") {
     rules.whiteTargetCap = Global::stringToInt(value);
   }
   else if(key == "vcnrule") {
