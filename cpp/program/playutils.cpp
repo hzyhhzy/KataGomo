@@ -103,18 +103,46 @@ Loc PlayUtils::getGameInitializationMove(
     playSelectionValues.push_back(pow(policyProb,1.0/temperature));
   }
 
-  //In practice, this should never happen, but in theory, a very badly-behaved net that rounds
-  //all legal moves to zero could result in this. We still go ahead and fail, since this more likely some sort of bug.
+  // In practice, this should never happen, but in theory, a very badly-behaved net that rounds
+  // all legal moves to zero could result in this. We still go ahead and fail, since this more likely some sort of bug.
   if(playSelectionValues.size() <= 0)
     throw StringError("getGameInitializationMove: playSelectionValues.size() <= 0");
+
+
+
+  std::vector<size_t> indices(playSelectionValues.size());
+  for(size_t i = 0; i < indices.size(); ++i) {
+    indices[i] = i;
+  }
+  std::sort(indices.begin(), indices.end(), [&](size_t a, size_t b) {
+    return playSelectionValues[a] > playSelectionValues[b];
+  });
+
+  std::vector<Loc> sortedLocs;
+  std::vector<double> sortedPlaySelectionValues;
+  for(size_t i: indices) {
+    sortedLocs.push_back(locs[i]);
+    sortedPlaySelectionValues.push_back(playSelectionValues[i]);
+  }
+
+
+
+
+
+
 
   //With a tiny probability, choose a uniformly random move instead of a policy move, to also
   //add a bit more outlierish variety
   uint32_t idxChosen;
-  if(gameRand.nextBool(0.0002))
+  if(gameRand.nextBool(0.0001))
     idxChosen = gameRand.nextUInt((uint32_t)playSelectionValues.size());
-  else
-    idxChosen = gameRand.nextUInt(playSelectionValues.data(),playSelectionValues.size());
+  else {
+    for(size_t i = 0; i < sortedPlaySelectionValues.size(); ++i) {
+      double factor = pow(30.0 / (30.0 + i), 4);
+      sortedPlaySelectionValues[i] *= factor;
+    }
+    idxChosen = gameRand.nextUInt(playSelectionValues.data(), playSelectionValues.size());
+  }
   Loc loc = locs[idxChosen];
   return loc;
 }
@@ -126,11 +154,12 @@ void PlayUtils::initializeGameUsingPolicy(
   Search* botB, Search* botW, Board& board, BoardHistory& hist, Player& pla,
   Rand& gameRand, 
   double avgPolicyInitMoveNum,
-  double temperature) {
+  double temperature,
+  bool isOpeningLib) {
   NNResultBuf buf;
 
 
-  const double randomInitMovenumEquToPolicyInit = 2.0;
+  double randomInitMovenumEquToPolicyInit = isOpeningLib ? 0.0 : 1.5;
   int numInitialMovesToPlay =
     (int)floor(gameRand.nextExponential() * avgPolicyInitMoveNum - randomInitMovenumEquToPolicyInit * board.movenum);
   if(numInitialMovesToPlay < 0)

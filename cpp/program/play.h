@@ -30,6 +30,7 @@ struct OtherGameProperties {
   bool isSgfPos = false;
   bool isHintPos = false;
   bool allowPolicyInit = true;
+  bool isOpeningPos = false; //some fixed openings
 
   int hintTurn = -1;
   Hash128 hintPosHash;

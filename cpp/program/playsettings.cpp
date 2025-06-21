@@ -2,7 +2,7 @@
 
 PlaySettings::PlaySettings()
   : initGamesWithPolicy(false),
-    initGamesWithOpeningLib(false),
+    initGamesWithOpeningLibProb(0.0),
     initGamesWithRandomBalancedProb(0.0),
     policyInitAvgMoveNum(0.0),
     startPosesPolicyInitAvgMoveNum(0.0),
@@ -32,7 +32,7 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
   playSettings.resignThreshold = cfg.getDouble("resignThreshold",-1.0,0.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns", 1, 100);
   playSettings.initGamesWithPolicy = cfg.contains("initGamesWithPolicy") ? cfg.getBool("initGamesWithPolicy") : false;
-  playSettings.initGamesWithOpeningLib = cfg.contains("initGamesWithOpeningLib") ? cfg.getBool("initGamesWithOpeningLib") : false;
+  playSettings.initGamesWithOpeningLibProb = cfg.contains("initGamesWithOpeningLibProb") ? cfg.getDouble("initGamesWithOpeningLibProb") : 0.0;
   playSettings.initGamesWithRandomBalancedProb = cfg.getDouble("initGamesWithRandomBalancedProb");
   if(playSettings.initGamesWithPolicy) {
     playSettings.policyInitAvgMoveNum = cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0);
@@ -63,7 +63,7 @@ PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
 PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
   PlaySettings playSettings;
   playSettings.initGamesWithPolicy = cfg.getBool("initGamesWithPolicy");
-  playSettings.initGamesWithOpeningLib = cfg.getBool("initGamesWithOpeningLib");
+  playSettings.initGamesWithOpeningLibProb = cfg.getDouble("initGamesWithOpeningLibProb");
   playSettings.initGamesWithRandomBalancedProb = cfg.getDouble("initGamesWithRandomBalancedProb");
   playSettings.policyInitAvgMoveNum =
     cfg.contains("policyInitAvgMoveNum") ? cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0) : 12.0;

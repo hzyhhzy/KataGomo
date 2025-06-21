@@ -267,13 +267,11 @@ void GameInitializer::createGame(
   lock_guard<std::mutex> lock(createGameMutex);
   createGameSharedUnsynchronized(board,pla,hist,initialPosition,playSettings,otherGameProps,startPosSample);
 
-  if(noResultRandRadius > 1e-30) {
-    if(playSettings.initGamesWithOpeningLib) {  // tend to use positive noResultUtilityForWhite
-      double factor = pow(rand.nextDouble(), 3);
-      params.noResultUtilityForWhite = 1.0 - 2.0 * factor;
-    } 
-    else {
-    
+  if(otherGameProps.isOpeningPos) {  // fixed openings, tend to use positive noResultUtilityForWhite
+    double factor = pow(rand.nextDouble(), 3);
+    params.noResultUtilityForWhite = 1.0 - 2.0 * factor;
+  } 
+  else if(noResultRandRadius > 1e-30) {
     double mean = params.noResultUtilityForWhite;
     if(mean < -1.0 || mean > 1.0)
       throw StringError(
@@ -281,7 +279,6 @@ void GameInitializer::createGame(
     params.noResultUtilityForWhite = mean + noResultRandRadius * (rand.nextDouble() * 2 - 1);
     while(params.noResultUtilityForWhite < -1.0 || params.noResultUtilityForWhite > 1.0)
       params.noResultUtilityForWhite = mean + noResultRandRadius * (rand.nextDouble() * 2 - 1);
-  }
   }
 }
 
@@ -343,6 +340,7 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.isSgfPos = false;
     otherGameProps.isHintPos = false;
     otherGameProps.allowPolicyInit = false; //On fork positions, don't play extra moves at start
+    otherGameProps.isOpeningPos = false;
     otherGameProps.hintLoc = Board::NULL_LOC;
     otherGameProps.hintTurn = -1;
     return;
@@ -397,6 +395,7 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.isSgfPos = hintLoc == Board::NULL_LOC;
     otherGameProps.isHintPos = hintLoc != Board::NULL_LOC;
     otherGameProps.allowPolicyInit = hintLoc == Board::NULL_LOC; //On sgf positions, do allow extra moves at start
+    otherGameProps.isOpeningPos = false;
     otherGameProps.hintLoc = hintLoc;
     otherGameProps.hintTurn = (int)hist.moveHistory.size();
     otherGameProps.hintPosHash = board.pos_hash;
@@ -415,6 +414,10 @@ void GameInitializer::createGameSharedUnsynchronized(
     board = Board(xSize,ySize);
     pla = P_BLACK;
     hist.clear(board,pla,rules);
+    if(rand.nextBool(playSettings.initGamesWithOpeningLibProb)) {
+      RandomOpening::initializeSpecialOpening(board, hist, rules, pla, otherGameProps, rand);
+      //otherGameProps.isOpeningPos = true;
+    }
 
     otherGameProps.isSgfPos = false;
     otherGameProps.isHintPos = false;
@@ -1254,12 +1257,15 @@ FinishedGameData* Play::runGame(
   };
 
   //some fixed openings
-  if (playSettings.initGamesWithOpeningLib)
-  {
-    RandomOpening::initializeSpecialOpening(board, hist, pla, gameRand);
-  }
-  else if (gameRand.nextBool(playSettings.initGamesWithRandomBalancedProb))
-  {
+  //if (playSettings.initGamesWithOpeningLib)
+  //{
+  //  RandomOpening::initializeSpecialOpening(board, hist, pla, gameRand);
+  //}
+  //else 
+  if(!otherGameProps.isOpeningPos && 
+    gameRand.nextBool(playSettings.initGamesWithRandomBalancedProb)) {
+    if(board.numStonesOnBoard() != 0)
+      throw StringError("Board should be empty before calling RandomOpening::initializeBalancedRandomOpening");
     RandomOpening::initializeBalancedRandomOpening(botB, botW, board, hist, pla, gameRand, playSettings.forSelfPlay);
   }
 
@@ -1272,7 +1278,7 @@ FinishedGameData* Play::runGame(
       {
         double temperature = playSettings.policyInitAreaTemperature;
         assert(temperature > 0.0 && temperature < 10.0);
-        PlayUtils::initializeGameUsingPolicy(botB, botW, board, hist, pla, gameRand, avgPolicyInitMoveNum, temperature);
+        PlayUtils::initializeGameUsingPolicy(botB, botW, board, hist, pla, gameRand, avgPolicyInitMoveNum, temperature, otherGameProps.isOpeningPos);
       }
     }
   }
