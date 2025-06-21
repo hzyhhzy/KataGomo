@@ -125,7 +125,11 @@ Loc PlayUtils::getGameInitializationMove(
     sortedPlaySelectionValues.push_back(playSelectionValues[i]);
   }
 
-
+  
+  for(size_t i = 0; i < sortedPlaySelectionValues.size(); ++i) {
+    double factor = pow(30.0 / (30.0 + i), 4);
+    sortedPlaySelectionValues[i] *= factor;
+  }
 
 
 
@@ -135,15 +139,11 @@ Loc PlayUtils::getGameInitializationMove(
   //add a bit more outlierish variety
   uint32_t idxChosen;
   if(gameRand.nextBool(0.0001))
-    idxChosen = gameRand.nextUInt((uint32_t)playSelectionValues.size());
+    idxChosen = gameRand.nextUInt((uint32_t)sortedPlaySelectionValues.size());
   else {
-    for(size_t i = 0; i < sortedPlaySelectionValues.size(); ++i) {
-      double factor = pow(30.0 / (30.0 + i), 4);
-      sortedPlaySelectionValues[i] *= factor;
-    }
-    idxChosen = gameRand.nextUInt(playSelectionValues.data(), playSelectionValues.size());
+    idxChosen = gameRand.nextUInt(sortedPlaySelectionValues.data(), sortedPlaySelectionValues.size());
   }
-  Loc loc = locs[idxChosen];
+  Loc loc = sortedLocs[idxChosen];
   return loc;
 }
 
