@@ -704,6 +704,10 @@ void NNEvaluator::evaluate(
             isLegal[i] = false;
         }
       }
+
+      //disallow useless pass
+      if(!history.rules.firstPassWin && history.rules.VCNRule==Rules::VCNRULE_NOVC && board.numStonesOnBoard() < 0.2*board.x_size*board.y_size)
+        isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = false;
     } 
     else  // assume all other moves are illegal
     {
@@ -711,7 +715,11 @@ void NNEvaluator::evaluate(
         isLegal[i] = false;
       }
       isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, xSize, nnXLen, nnYLen)] = true;
-      isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
+      if(
+        resultsBeforeNN.winner != nextPlayer &&
+        (resultsBeforeNN.myOnlyLoc == Board::PASS_LOC || history.rules.firstPassWin ||
+         history.rules.VCNRule != Rules::VCNRULE_NOVC))
+        isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
     }
 
     for(int i = 0; i<policySize; i++) {
@@ -737,16 +745,16 @@ void NNEvaluator::evaluate(
     }
 
     if(!isfinite(policySum)) {
-      cout << "Got nonfinite for policy sum" << endl;
+      logger->write("Got nonfinite for policy sum");
       history.printDebugInfo(cout,board);
-      throw StringError("Got nonfinite for policy sum");
+      //throw StringError("Got nonfinite for policy sum");
     }
 
     //Somehow all legal moves rounded to 0 probability
-    if(policySum <= 0.0) {
+    if(policySum <= 0.0 || (!isfinite(policySum) || maxPolicy > 10000 || maxPolicy < -10000)) {
       if(!buf.errorLogLockout && logger != NULL) {
         buf.errorLogLockout = true;
-        logger->write("Warning: all legal moves rounded to 0 probability for " + string(modelFileName));
+        logger->write("Warning: all legal moves rounded to 0 probability or nonfinite for policy sum for " + string(modelFileName));
       }
       float uniform = 1.0f / legalCount;
       for(int i = 0; i<policySize; i++) {
@@ -826,12 +834,18 @@ void NNEvaluator::evaluate(
           !isfinite(varTimeLeft) ||
           !isfinite(shorttermWinlossError) 
         ) {
-          cout << "Got nonfinite for nneval value" << endl;
+          logger->write( "Got nonfinite for nneval value" );
           cout << winLogits << " " << lossLogits << " " << noResultLogits
                << " " << varTimeLeft
                << " " << shorttermWinlossError 
                << endl;
-          throw StringError("Got nonfinite for nneval value");
+          //set the current player's winrate to 100%, to make sure the search be wide
+          winProb = nextPlayer == P_WHITE ? 1.0 : 0.0;
+          lossProb = nextPlayer == P_WHITE ? 0.0 : 1.0;
+          noResultProb = 0.0;
+          varTimeLeft = 0.5 * board.x_size * board.y_size;
+          shorttermWinlossError = 1.0f;
+          //throw StringError("Got nonfinite for nneval value");
         }
       }
 
