@@ -752,14 +752,20 @@ void NNEvaluator::evaluate(
     }
 
     if(!isfinite(policySum)) {
-      logger->write("Got nonfinite for policy sum");
-      history.printDebugInfo(cout,board);
+      if(board.numStonesOnBoard() > 0) {
+        logger->write("Got nonfinite for policy sum");
+        history.printDebugInfo(cout, board);
+      }
+      else {
+        //more frequently
+        logger->write("Got nonfinite for policy sum for empty board");
+      }
       //throw StringError("Got nonfinite for policy sum");
     }
 
     //Somehow all legal moves rounded to 0 probability
     if(policySum <= 0.0 || (!isfinite(policySum) || maxPolicy > 10000 || maxPolicy < -10000)) {
-      if(!buf.errorLogLockout && logger != NULL) {
+      if(!buf.errorLogLockout && logger != NULL && board.numStonesOnBoard() > 0) {
         buf.errorLogLockout = true;
         history.printDebugInfo(cout, board);
         logger->write(
@@ -844,11 +850,11 @@ void NNEvaluator::evaluate(
           !isfinite(varTimeLeft) ||
           !isfinite(shorttermWinlossError) 
         ) {
-          logger->write( "Got nonfinite for nneval value" );
-          cout << winLogits << " " << lossLogits << " " << noResultLogits
-               << " " << varTimeLeft
-               << " " << shorttermWinlossError 
-               << endl;
+          logger->write("Got nonfinite for nneval value");
+          if(board.numStonesOnBoard() > 0) {
+            cout << winLogits << " " << lossLogits << " " << noResultLogits << " " << varTimeLeft << " "
+                 << shorttermWinlossError << endl;
+          }
           //set the current player's winrate to 100%, to make sure the search be wide
           winProb = nextPlayer == P_WHITE ? 1.0 : 0.0;
           lossProb = nextPlayer == P_WHITE ? 0.0 : 1.0;
