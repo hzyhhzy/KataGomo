@@ -735,7 +735,14 @@ void NNEvaluator::evaluate(
       if(policyValue > maxPolicy)
         maxPolicy = policyValue;
     }
-
+    if (legalCount == 0)
+    {
+      //maybe the last move is A1, so all on board moves are pruned
+      isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
+      policy[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = 0.0;
+      maxPolicy = 0.0;
+      legalCount = 1;
+    }
     assert(legalCount > 0);
 
     float policySum = 0.0f;
@@ -754,7 +761,10 @@ void NNEvaluator::evaluate(
     if(policySum <= 0.0 || (!isfinite(policySum) || maxPolicy > 10000 || maxPolicy < -10000)) {
       if(!buf.errorLogLockout && logger != NULL) {
         buf.errorLogLockout = true;
-        logger->write("Warning: all legal moves rounded to 0 probability or nonfinite for policy sum for " + string(modelFileName));
+        history.printDebugInfo(cout, board);
+        logger->write(
+          "Warning: all legal moves rounded to 0 probability or nonfinite for policy sum for " + string(modelFileName) +
+          "maxPolicy="+Global::floatToString(maxPolicy));
       }
       float uniform = 1.0f / legalCount;
       for(int i = 0; i<policySize; i++) {
