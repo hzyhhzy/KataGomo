@@ -1262,8 +1262,13 @@ FinishedGameData* Play::runGame(
   //  RandomOpening::initializeSpecialOpening(board, hist, pla, gameRand);
   //}
   //else 
-  if(!otherGameProps.isOpeningPos && 
-    gameRand.nextBool(playSettings.initGamesWithRandomBalancedProb)) {
+  bool useBalancedRandomOpening = gameRand.nextBool(playSettings.initGamesWithRandomBalancedProb);
+  if(hist.rules.VCNRule != Rules::VCNRULE_NOVC)
+    useBalancedRandomOpening = true;
+  if(otherGameProps.isOpeningPos)
+    useBalancedRandomOpening = false;
+
+  if(useBalancedRandomOpening) {
     if(board.numStonesOnBoard() != 0)
       throw StringError("Board should be empty before calling RandomOpening::initializeBalancedRandomOpening");
     RandomOpening::initializeBalancedRandomOpening(botB, botW, board, hist, pla, gameRand, playSettings.forSelfPlay);
