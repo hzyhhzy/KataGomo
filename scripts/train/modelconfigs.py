@@ -163,7 +163,7 @@ b6c96 = {
 }
 
 b10c128 = {
-    "version":103,
+    "version":11,
     "norm_kind":"fixup",
     "bnorm_epsilon": 1e-4,
     "bnorm_running_avg_momentum": 0.001,
