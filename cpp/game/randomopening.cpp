@@ -270,8 +270,14 @@ void RandomOpening::initializeSpecialOpening(
     return;
   rules = Rules();
   otherGameProps.isOpeningPos = true;
+
+  if(gameRand.nextBool(0.8)) {
+    int t = (109 - 1) / 4 + int(2.0 * gameRand.nextGaussianTruncated(6) + 0.5);
+    rules.maxMoves = t * 4 + 1;  // mostly 105,109 and 113
+  }
+
   int r = gameRand.nextUInt(100);
-  if(r < 30)  // main branch of J10 K11 J8
+  if(r < 8)  // main branch of J10 K11 J8
   {
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 9, board.x_size), board.nextPla);
 
@@ -292,14 +298,9 @@ void RandomOpening::initializeSpecialOpening(
 
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 6, board.x_size), board.nextPla);
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 6, board.x_size), board.nextPla);
-    nextPlayer = board.nextPla;
-
-    if(gameRand.nextBool(0.8)) {
-      int t = (109 - 1) / 4 + int(gameRand.nextGaussianTruncated(6) + 1.0);
-      rules.maxMoves = t * 4 + 1;//mostly 109 and 113
-    }
+    
   }
-  else if(r < 50)  // main branch of J10 K11 J8 (shorter)
+  else if(r < 23)  // main branch of J10 K11 J8 (shorter)
   {
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 9, board.x_size), board.nextPla);
 
@@ -315,14 +316,8 @@ void RandomOpening::initializeSpecialOpening(
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 9, board.x_size), board.nextPla);
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(7, 10, board.x_size), board.nextPla);
 
-    nextPlayer = board.nextPla;
-
-    if(gameRand.nextBool(0.8)) {
-      int t = (109 - 1) / 4 + int(gameRand.nextGaussianTruncated(6) + 1.0);
-      rules.maxMoves = t * 4 + 1;  // mostly 109 and 113
-    }
   } 
-  else if(r < 80)  // main branch of J10 K11 I11
+  else if(r < 31)  // main branch of J10 K11 I11
   {
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 9, board.x_size), board.nextPla);
 
@@ -350,21 +345,75 @@ void RandomOpening::initializeSpecialOpening(
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(7, 10, board.x_size), board.nextPla);
     hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 8, board.x_size), board.nextPla);
 
-    nextPlayer = board.nextPla;
+  } 
+  else if(r < 33)  // a blind spot branch of J10 K11 I11 
+  {
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 9, board.x_size), board.nextPla);
 
-    if(gameRand.nextBool(0.8)) {
-      int t = (109 - 1) / 4 + int(gameRand.nextGaussianTruncated(6) + 1.0);
-      rules.maxMoves = t * 4 + 1;  // mostly 109 and 113
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 10, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 10, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 10, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 12, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 12, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 8, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 14, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 14, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 13, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 13, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 14, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(7, 14, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(11, 14, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(5, 14, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 13, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 9, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(11, 12, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(12, 9, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(7, 12, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(7, 13, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(6, 12, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(7, 15, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 16, board.x_size), board.nextPla);
+    if(gameRand.nextBool(0.5)) {
+      hist.makeBoardMoveAssumeLegal(board, Location::getLoc(11, 8, board.x_size), board.nextPla);
+
+      hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 12, board.x_size), board.nextPla);
+      hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 11, board.x_size), board.nextPla);
+
+      hist.makeBoardMoveAssumeLegal(board, Location::getLoc(11, 13, board.x_size), board.nextPla);
+      if(gameRand.nextBool(0.5)) {
+        hist.makeBoardMoveAssumeLegal(board, Location::getLoc(11, 7, board.x_size), board.nextPla);
+      }
     }
+
+
+
+  } 
+  else if(r < 50)  // J10 K11 I11 J11 I13
+  {
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 9, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(10, 10, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 10, board.x_size), board.nextPla);
+
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(9, 10, board.x_size), board.nextPla);
+    hist.makeBoardMoveAssumeLegal(board, Location::getLoc(8, 12, board.x_size), board.nextPla);
+
   } 
   else   // Only first move on J10
   {
     hist.makeBoardMoveAssumeLegal(board,Location::getLoc(9, 9, board.x_size), board.nextPla);
-    nextPlayer = board.nextPla;
-    if(gameRand.nextBool(0.8)) {
-      int t = (109 - 1) / 4 + int(gameRand.nextGaussianTruncated(6) + 1.0);
-      rules.maxMoves = t * 4 + 1;  // mostly 109 and 113
-    }
-  } 
+  }
+  nextPlayer = board.nextPla;
   hist.clear(board, nextPlayer, rules);
 }
