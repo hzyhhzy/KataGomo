@@ -1,0 +1,1 @@
+python migrate_n2n.py -target ../data/train/b12c64n2n/checkpoint.ckpt -source ../data/train/b6c64sgd8/checkpoint.ckpt -output ../data/train/b12c64n2n/checkpoint1.ckpt
