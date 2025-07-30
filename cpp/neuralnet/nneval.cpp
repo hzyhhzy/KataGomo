@@ -648,8 +648,10 @@ void NNEvaluator::evaluate(
     }
 
 
-    static_assert(NNModelVersion::latestInputsVersionImplemented == 7, "");
+    static_assert(NNModelVersion::latestInputsVersionImplemented == 201, "");
     if(inputsVersion == 7)
+      NNInputs::fillRowV7(board, history, nextPlayer, nnInputParamsWithResultsBeforeNN, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatial, buf.rowGlobal);
+    else if(inputsVersion == 201)
       NNInputs::fillRowV7(board, history, nextPlayer, nnInputParamsWithResultsBeforeNN, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatial, buf.rowGlobal);
     else
       ASSERT_UNREACHABLE;
@@ -772,8 +774,8 @@ void NNEvaluator::evaluate(
 
     //Fix up the value as well. Note that the neural net gives us back the value from the perspective
     //of the player so we need to negate that to make it the white value.
-    static_assert(NNModelVersion::latestModelVersionImplemented == 11, "");
-    if(modelVersion >= 4 && modelVersion <= 11) {
+    static_assert(NNModelVersion::latestModelVersionImplemented == 201, "");
+    if((modelVersion >= 4 && modelVersion <= 11) || modelVersion == 201) {
       double winProb;
       double lossProb;
       double noResultProb;

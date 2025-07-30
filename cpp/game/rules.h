@@ -22,13 +22,18 @@ struct Rules {
   static const int DRAWJUDGE_WEIGHT = 2;  // when draw, the 8 type of pieces have different weights: 3 1 1 1 1 2 4 5:
   int drawJudgeRule;
 
+  static const int LOOPRULE_SEVENTHREE = 0;
+  static const int LOOPRULE_NONE = 1;
+  static const int LOOPRULE_REPEATEND = 2;
+  int loopRule;
+
   int maxmoves;//draw if these many moves
   int maxmovesNoCapture;//draw if these many moves without capture
 
 
 
   Rules();
-  Rules(int scoringRule, int drawJudgeRule
+  Rules(int scoringRule, int drawJudgeRule, int loopRule
   );
   ~Rules();
 
@@ -43,10 +48,15 @@ struct Rules {
 
   static std::set<std::string> scoringRuleStrings();
   static std::set<std::string> drawJudgeRuleStrings();
+  static std::set<std::string> loopRuleStrings();
+
+
   static int parseScoringRule(const std::string& s);
   static std::string writeScoringRule(int scoringRule);
   static int parseDrawJudgeRule(const std::string& s);
   static std::string writeDrawJudgeRule(int s);
+  static int parseLoopRule(const std::string& s);
+  static std::string writeLoopRule(int s);
 
 
   static Rules parseRules(const std::string& str);
@@ -62,6 +72,8 @@ struct Rules {
 
   static const Hash128 ZOBRIST_SCORING_RULE_HASH[5];
   static const Hash128 ZOBRIST_DRAWJUDGE_RULE_HASH[3];
+  static const Hash128 ZOBRIST_LOOP_RULE_HASH[3];
+  
 
 };
 

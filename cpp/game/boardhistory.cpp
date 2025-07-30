@@ -374,6 +374,7 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
   //Fold in the ko, scoring, and suicide rules
   hash ^= Rules::ZOBRIST_SCORING_RULE_HASH[hist.rules.scoringRule];
   hash ^= Rules::ZOBRIST_DRAWJUDGE_RULE_HASH[hist.rules.drawJudgeRule];
+  hash ^= Rules::ZOBRIST_LOOP_RULE_HASH[hist.rules.loopRule];
   hash ^= Board::ZOBRIST_MM_RULE_HASH[hist.rules.maxmoves];
   hash ^= Board::ZOBRIST_MC_RULE_HASH[hist.rules.maxmovesNoCapture];
 

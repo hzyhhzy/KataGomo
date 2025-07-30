@@ -48,6 +48,10 @@ namespace NNInputs {
   const int NUM_FEATURES_SPATIAL_V7 = 40;
   const int NUM_FEATURES_GLOBAL_V7 = 28;
 
+  
+  const int NUM_FEATURES_SPATIAL_V201 = 48;
+  const int NUM_FEATURES_GLOBAL_V201 = 64;
+
   Hash128 getHash(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams
@@ -57,7 +61,11 @@ namespace NNInputs {
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
     const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
   );
-
+  
+  void fillRowV201(
+    const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
+  );
 }
 
 struct NNOutput {

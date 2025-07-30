@@ -630,6 +630,20 @@ void NNInputs::fillRowV7(
     rowGlobal[27] = 1.0;
   }
 
+
+  //loop rule
+  if(hist.rules.loopRule == Rules::LOOPRULE_SEVENTHREE) {
+  }
+  else if(hist.rules.loopRule == Rules::LOOPRULE_NONE) {
+    //rowGlobal[28] = 1.0;
+  }
+  else if(hist.rules.loopRule == Rules::LOOPRULE_REPEATEND) {
+    //rowGlobal[29] = 1.0;
+  }
+  else {
+    ASSERT_UNREACHABLE;
+  }
+
   if(hist.rules.maxmoves != 0) {
     rowGlobal[8] = 1.0;
     double boardArea = board.x_size * board.y_size;
@@ -675,4 +689,206 @@ void NNInputs::fillRowV7(
 
 
 
+}
+
+//===========================================================================================
+// INPUTSVERSION 201
+//===========================================================================================
+
+void NNInputs::fillRowV201(
+  const Board& board,
+  const BoardHistory& hist,
+  Player nextPlayer,
+  const MiscNNInputParams& nnInputParams,
+  int nnXLen,
+  int nnYLen,
+  bool useNHWC,
+  float* rowBin,
+  float* rowGlobal) {
+  assert(nnXLen <= NNPos::MAX_BOARD_LEN);
+  assert(nnYLen <= NNPos::MAX_BOARD_LEN);
+  assert(board.x_size <= nnXLen);
+  assert(board.y_size <= nnYLen);
+  std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V7 * nnXLen * nnYLen, false);
+  std::fill(rowGlobal, rowGlobal + NUM_FEATURES_GLOBAL_V7, 0.0f);
+
+  Player pla = nextPlayer;
+  Player opp = getOpp(pla);
+  int xSize = board.x_size;
+  int ySize = board.y_size;
+
+  int featureStride;
+  int posStride;
+  if(useNHWC) {
+    featureStride = 1;
+    posStride = NNInputs::NUM_FEATURES_SPATIAL_V7;
+  } else {
+    featureStride = nnXLen * nnYLen;
+    posStride = 1;
+  }
+
+  GameLogic::ResultsBeforeNN resultsBeforeNN = nnInputParams.resultsBeforeNN;
+  if(!resultsBeforeNN.inited) {
+    resultsBeforeNN.init(board, hist, nextPlayer);
+  }
+
+  for(int y = 0; y < ySize; y++) {
+    for(int x = 0; x < xSize; x++) {
+      int pos = NNPos::xyToPos(x, y, nnXLen);
+      Loc loc = Location::getLoc(x, y, xSize);
+
+      // Feature 0 - on board
+      setRowBin(rowBin, pos, 0, 1.0f, posStride, featureStride);
+
+      Color stone = board.colors[loc];
+      if(stone != C_EMPTY) {
+        Color stonePla = getPiecePla(stone);
+        Color stoneType = getPieceType(stone);
+        assert(stoneType >= 1 && stoneType <= 8);
+        int idx = 1 + (stoneType - 1) + (stonePla == nextPlayer ? 0 : 8);
+
+        // Features 1~16 stones
+        setRowBin(rowBin, pos, idx, 1.0f, posStride, featureStride);
+      }
+
+      // 17~21 home,trap,river
+      if(loc == GameLogic::getHomeLoc(nextPlayer))
+        setRowBin(rowBin, pos, 17, 1.0f, posStride, featureStride);
+      if(loc == GameLogic::getHomeLoc(getOpp(nextPlayer)))
+        setRowBin(rowBin, pos, 18, 1.0f, posStride, featureStride);
+      if(GameLogic::isInTrap(loc, nextPlayer))
+        setRowBin(rowBin, pos, 19, 1.0f, posStride, featureStride);
+      if(GameLogic::isInTrap(loc, getOpp(nextPlayer)))
+        setRowBin(rowBin, pos, 20, 1.0f, posStride, featureStride);
+      if(GameLogic::isInRiver(loc))
+        setRowBin(rowBin, pos, 21, 1.0f, posStride, featureStride);
+    }
+  }
+  // 22~35  "7-3 rule" history
+  {
+    auto h = hist.get73ruleHistory(board, nextPlayer);
+    assert(h.size() <= 7);
+    for(int i = 0; i < h.size(); i++) {
+      Loc loc = h[i];
+      assert(board.isOnBoard(loc));
+      int pos = NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen);
+      setRowBin(rowBin, pos, 22 + i, 1.0f, posStride, featureStride);
+    }
+  }
+  {
+    auto h = hist.get73ruleHistory(board, getOpp(nextPlayer));
+    assert(h.size() <= 7);
+    for(int i = 0; i < h.size(); i++) {
+      Loc loc = h[i];
+      assert(board.isOnBoard(loc));
+      int pos = NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen);
+      setRowBin(rowBin, pos, 29 + i, 1.0f, posStride, featureStride);
+    }
+  }
+
+  // mid state
+  if(board.stage == 0)  // choose
+  {
+    // do nothing
+  } else if(board.stage == 1)  // place
+  {
+    rowGlobal[0] = 1.0f;
+    Loc chosenMove = board.midLocs[0];
+    if(!board.isOnBoard(chosenMove)) {
+      std::cout << "nninput: chosen move not on board ";
+    } else {
+      int pos = NNPos::locToPos(chosenMove, board.x_size, nnXLen, nnYLen);
+      setRowBin(rowBin, pos, 38, 1.0f, posStride, featureStride);
+    }
+  } else
+    ASSERT_UNREACHABLE;
+
+  if(resultsBeforeNN.inited) {
+    rowGlobal[1] = 1.0;
+    rowGlobal[2] = resultsBeforeNN.winner == C_EMPTY;
+    rowGlobal[3] = resultsBeforeNN.winner == nextPlayer;
+    rowGlobal[4] = resultsBeforeNN.winner == getOpp(nextPlayer);
+    if(board.isOnBoard(resultsBeforeNN.myOnlyLoc))
+      setRowBin(
+        rowBin,
+        NNPos::locToPos(resultsBeforeNN.myOnlyLoc, board.x_size, nnXLen, nnYLen),
+        39,
+        1.0f,
+        posStride,
+        featureStride);
+    else if(resultsBeforeNN.myOnlyLoc == Board::PASS_LOC)
+      rowGlobal[5] = 1.0;
+  }
+
+  // Scoring
+  if(hist.rules.scoringRule == Rules::SCORING_0) {
+  } else if(hist.rules.scoringRule == Rules::SCORING_1) {
+    rowGlobal[6] = 1.0;
+  } else if(hist.rules.scoringRule == Rules::SCORING_2) {
+    rowGlobal[7] = 1.0;
+  } else if(hist.rules.scoringRule == Rules::SCORING_3) {
+    rowGlobal[6] = 1.0;
+    rowGlobal[7] = 1.0;
+  } else
+    ASSERT_UNREACHABLE;
+
+  // drawJudge rule
+  if(hist.rules.drawJudgeRule == Rules::DRAWJUDGE_DRAW) {
+  } else if(hist.rules.drawJudgeRule == Rules::DRAWJUDGE_COUNT) {
+    rowGlobal[26] = 1.0;
+  } else if(hist.rules.drawJudgeRule == Rules::DRAWJUDGE_WEIGHT) {
+    rowGlobal[27] = 1.0;
+  }
+
+  // loop rule
+  if(hist.rules.loopRule == Rules::LOOPRULE_SEVENTHREE) {
+  } else if(hist.rules.loopRule == Rules::LOOPRULE_NONE) {
+    rowGlobal[28] = 1.0;
+  } else if(hist.rules.loopRule == Rules::LOOPRULE_REPEATEND) {
+    rowGlobal[29] = 1.0;
+  } else {
+    ASSERT_UNREACHABLE;
+  }
+
+  if(hist.rules.maxmoves != 0) {
+    rowGlobal[8] = 1.0;
+    double boardArea = board.x_size * board.y_size;
+    double movenum = board.movenum;
+    double maxmoves = hist.rules.maxmoves;
+    double dif = maxmoves - movenum;
+    if(dif < 0)
+      dif = 0;
+    rowGlobal[9] = exp(-dif / 150.0);
+    rowGlobal[10] = exp(-dif / 50.0);
+    rowGlobal[11] = exp(-dif / 15.0);
+    rowGlobal[12] = exp(-dif / 5.0);
+    rowGlobal[13] = exp(-dif / 1.5);
+    rowGlobal[14] = 2 * ((int(dif)) % 2) - 1;
+  }
+
+  if(hist.rules.maxmovesNoCapture != 0) {
+    rowGlobal[15] = 1.0;
+    double boardArea = board.x_size * board.y_size;
+    double movenum = board.movenumslc;
+    double maxmoves = hist.rules.maxmovesNoCapture;
+    double dif = maxmoves - movenum;
+    if(dif < 0)
+      dif = 0;
+    rowGlobal[16] = exp(-dif / 150.0);
+    rowGlobal[17] = exp(-dif / 50.0);
+    rowGlobal[18] = exp(-dif / 15.0);
+    rowGlobal[19] = exp(-dif / 5.0);
+    rowGlobal[20] = exp(-dif / 1.5);
+    rowGlobal[21] = 2 * ((int(dif)) % 2) - 1;
+  }
+
+  // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
+  // nonzero, no matter how slightly.
+  if(nnInputParams.playoutDoublingAdvantage != 0) {
+    rowGlobal[23] = 1.0;
+    rowGlobal[24] = (float)(0.5 * nnInputParams.playoutDoublingAdvantage);
+  }
+
+  // noResultUtilityForWhite
+  rowGlobal[25] = pla == C_WHITE ? nnInputParams.noResultUtilityForWhite : -nnInputParams.noResultUtilityForWhite;
 }

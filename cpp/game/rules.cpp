@@ -11,15 +11,16 @@ Rules::Rules() {
   //Defaults if not set - closest match to TT rules
   scoringRule = SCORING_0;
   drawJudgeRule = DRAWJUDGE_DRAW;
+  loopRule = LOOPRULE_SEVENTHREE;  // 默认初始化循环规则
   maxmoves = 0;
   maxmovesNoCapture = 200;//100 turns no capture
 }
 
 Rules::Rules(
   int sRule,
-  int dRule
-)
-  :scoringRule(sRule), drawJudgeRule(dRule) 
+  int dRule,
+  int lRule
+) :scoringRule(sRule), drawJudgeRule(dRule), loopRule(lRule)  
 {}
 
 Rules::~Rules() {
@@ -29,6 +30,7 @@ bool Rules::operator==(const Rules& other) const {
   return
     scoringRule == other.scoringRule &&
     drawJudgeRule == other.drawJudgeRule &&
+    loopRule == other.loopRule &&  // 添加loopRule比较
     maxmoves==other.maxmoves&&
     maxmovesNoCapture==other.maxmovesNoCapture;
 }
@@ -58,6 +60,9 @@ set<string> Rules::scoringRuleStrings() {
 set<string> Rules::drawJudgeRuleStrings() {
   return {"DRAW", "COUNT", "WEIGHT"};
 }
+set<string> Rules::loopRuleStrings() {
+  return {"SEVENTHREE", "NONE", "REPEATEND"};
+}
 
 int Rules::parseScoringRule(const string& s) {
   if(s == "0") return Rules::SCORING_0;
@@ -77,6 +82,16 @@ int Rules::parseDrawJudgeRule(const string& s) {
   else
     throw IOError("Rules::parseScoringRule: Invalid scoring rule: " + s);
 }
+int Rules::parseLoopRule(const string& s) {
+  if(s == "SEVENTHREE")
+    return Rules::LOOPRULE_SEVENTHREE;
+  else if(s == "NONE")
+    return Rules::LOOPRULE_NONE;
+  else if(s == "REPEATEND")
+    return Rules::LOOPRULE_REPEATEND;
+  else
+    throw IOError("Rules::parseLoopRule: Invalid loop rule: " + s);
+}
 
 string Rules::writeScoringRule(int scoringRule) {
   if(scoringRule == Rules::SCORING_0) return string("0");
@@ -94,10 +109,20 @@ string Rules::writeDrawJudgeRule(int s) {
     return string("WEIGHT");
   return string("UNKNOWN");
 }
+string Rules::writeLoopRule(int s) {
+  if(s == Rules::LOOPRULE_SEVENTHREE)
+    return string("SEVENTHREE");
+  else if(s == Rules::LOOPRULE_NONE)
+    return string("NONE");
+  else if(s == Rules::LOOPRULE_REPEATEND)
+    return string("REPEATEND");
+  return string("UNKNOWN");
+}
 
 ostream& operator<<(ostream& out, const Rules& rules) {
   out << "score" << Rules::writeScoringRule(rules.scoringRule);
   out << "drawjudge" << Rules::writeDrawJudgeRule(rules.drawJudgeRule);
+  out << "looprule" << Rules::writeLoopRule(rules.loopRule);  // 添加loopRule输出
   out << "mm" << rules.maxmoves;
   out << "mc" << rules.maxmovesNoCapture;
   return out;
@@ -120,6 +145,7 @@ json Rules::toJson() const {
   json ret;
   ret["scoring"] = writeScoringRule(scoringRule);
   ret["drawjudge"] = writeDrawJudgeRule(drawJudgeRule);
+  ret["looprule"] = loopRule;  // 添加loopRule到JSON
   ret["mm"] = maxmoves;
   ret["mc"] = maxmovesNoCapture;
   return ret;
@@ -133,6 +159,7 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   if(key == "score") rules.scoringRule = Rules::parseScoringRule(value);
   else if(key == "scoring") rules.scoringRule = Rules::parseScoringRule(value);
   else if(key == "drawjudge") rules.drawJudgeRule = Rules::parseDrawJudgeRule(value);
+  else if(key == "looprule") rules.loopRule = Rules::parseLoopRule(value);  // 添加loopRule解析
   else if(key == "mm" || key == "maxmoves" ) rules.maxmoves = Global::stringToInt(v);
   else if(key == "mc" || key == "maxmovesnocapture" ) rules.maxmovesNoCapture = Global::stringToInt(v);
   else throw IOError("Unknown rules option: " + key);
@@ -160,6 +187,8 @@ static Rules parseRulesHelper(const string& sOrig) {
           rules.scoringRule = Rules::parseScoringRule(iter.value().get<string>());
         else if(key == "drawjudge")
           rules.drawJudgeRule = Rules::parseDrawJudgeRule(iter.value().get<string>());
+        else if(key == "looprule")
+          rules.loopRule = Rules::parseLoopRule(iter.value().get<string>());  // 添加loopRule解析
         else if(key == "mm" || key == "maxmoves")
           rules.maxmoves = iter.value().get<int>();
         else if(key == "mc" || key == "maxmovesnocapture")
@@ -214,4 +243,9 @@ const Hash128 Rules::ZOBRIST_DRAWJUDGE_RULE_HASH[3] = {
   Hash128(0xce4045e964e21dd4ULL, 0x911c4ea3eb546d81ULL),
   Hash128(0x42538d2b7a724859ULL, 0xac9dce2669396872ULL),
   Hash128(0x257b357c21b7c14fULL, 0xdbccc53a2414774eULL),
+};
+const Hash128 Rules::ZOBRIST_LOOP_RULE_HASH[3] = {
+  Hash128(0xddd9e1c6b4eecad0ULL, 0x49911f32fde2515cULL),
+  Hash128(0x917216937019380fULL, 0x4328256c63c38009ULL),
+  Hash128(0x8eeba425912578c6ULL, 0x5f90ed484bbed9f6ULL)
 };

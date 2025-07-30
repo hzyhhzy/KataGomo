@@ -236,6 +236,15 @@ string GTPConfig::makeConfig(
   else if(rules.scoringRule == Rules::SCORING_3)            replace("$$SCORING_RULE", "scoringRule = 3  # options: 0,1,2,3");
   else { ASSERT_UNREACHABLE; }
 
+  if(rules.drawJudgeRule == Rules::DRAWJUDGE_DRAW)            replace("$$DRAWJUDGE_RULE", "drawJudgeRule = DRAW");
+  else if(rules.drawJudgeRule == Rules::DRAWJUDGE_COUNT)            replace("$$DRAWJUDGE_RULE", "drawJudgeRule = COUNT");
+  else if(rules.drawJudgeRule == Rules::DRAWJUDGE_WEIGHT)            replace("$$DRAWJUDGE_RULE", "drawJudgeRule = WEIGHT");
+  else { ASSERT_UNREACHABLE; }
+
+  if(rules.loopRule == Rules::LOOPRULE_SEVENTHREE)            replace("$$LOOPRULE_RULE", "loopRule = SEVENTHREE");
+  else if(rules.loopRule == Rules::LOOPRULE_NONE)            replace("$$LOOPRULE_RULE", "loopRule = NONE");
+  else if(rules.loopRule == Rules::LOOPRULE_REPEATEND)            replace("$$LOOPRULE_RULE", "loopRule = REPEATEND");
+  else { ASSERT_UNREACHABLE; }
 
 
   if(maxVisits < ((int64_t)1 << 50)) replace("$$MAX_VISITS", "maxVisits = " + Global::int64ToString(maxVisits));

@@ -104,6 +104,8 @@ class GameInitializer {
   std::vector<int> allowedScoringRules;
   std::vector<std::string> allowedDrawJudgeRuleStrs;
   std::vector<int> allowedDrawJudgeRules;
+  std::vector<std::string> allowedLoopRuleStrs;
+  std::vector<int> allowedLoopRules;
   //std::vector<int> allowedBSizes;
   //std::vector<double> allowedBSizeRelProbs;
 

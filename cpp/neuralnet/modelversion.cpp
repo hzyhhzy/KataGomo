@@ -23,12 +23,14 @@ static void fail(int modelVersion) {
 
 static_assert(NNModelVersion::oldestModelVersionImplemented == 8, "");
 static_assert(NNModelVersion::oldestInputsVersionImplemented == 7, "");
-static_assert(NNModelVersion::latestModelVersionImplemented == 11, "");
-static_assert(NNModelVersion::latestInputsVersionImplemented == 7, "");
+static_assert(NNModelVersion::latestModelVersionImplemented == 201, "");
+static_assert(NNModelVersion::latestInputsVersionImplemented == 201, "");
 
 int NNModelVersion::getInputsVersion(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return 7;
+  if(modelVersion == 201)
+    return 201;
 
   fail(modelVersion);
   return -1;
@@ -37,6 +39,8 @@ int NNModelVersion::getInputsVersion(int modelVersion) {
 int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return NNInputs::NUM_FEATURES_SPATIAL_V7;
+  if(modelVersion == 201)
+    return NNInputs::NUM_FEATURES_SPATIAL_V201;
 
   fail(modelVersion);
   return -1;
@@ -45,6 +49,8 @@ int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
 int NNModelVersion::getNumGlobalFeatures(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return NNInputs::NUM_FEATURES_GLOBAL_V7;
+  if(modelVersion == 201)
+    return NNInputs::NUM_FEATURES_GLOBAL_V201;
 
   fail(modelVersion);
   return -1;

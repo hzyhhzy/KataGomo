@@ -681,6 +681,8 @@ Rules Setup::loadSingleRules(
     rules.scoringRule = Rules::parseScoringRule(scoringRule);
     string drawJudgeRule = cfg.getString("drawJudgeRule", Rules::drawJudgeRuleStrings());
     rules.drawJudgeRule = Rules::parseDrawJudgeRule(drawJudgeRule);
+    string loopRule = cfg.getString("loopRule", Rules::loopRuleStrings());
+    rules.loopRule = Rules::parseLoopRule(loopRule);
 
 
   }

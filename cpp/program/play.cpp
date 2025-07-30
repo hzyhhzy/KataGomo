@@ -57,6 +57,12 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     allowedDrawJudgeRules.push_back(Rules::parseDrawJudgeRule(allowedDrawJudgeRuleStrs[i]));
   if(allowedDrawJudgeRules.size() <= 0)
     throw IOError("drawJudgeRules must have at least one value in " + cfg.getFileName());
+  
+  allowedLoopRuleStrs = cfg.getStrings("loopRules", Rules::loopRuleStrings());
+  for(size_t i = 0; i < allowedLoopRuleStrs.size(); i++)
+    allowedLoopRules.push_back(Rules::parseLoopRule(allowedLoopRuleStrs[i]));
+  if(allowedLoopRules.size() <= 0)
+    throw IOError("loopRules must have at least one value in " + cfg.getFileName());
 
   //allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
   //allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
@@ -261,6 +267,7 @@ void GameInitializer::createGame(
 Rules GameInitializer::randomizeScoringAndTaxRules(Rules rules, Rand& randToUse) const {
   rules.scoringRule = allowedScoringRules[randToUse.nextUInt((uint32_t)allowedScoringRules.size())];
   rules.drawJudgeRule = allowedDrawJudgeRules[randToUse.nextUInt((uint32_t)allowedDrawJudgeRules.size())];
+  rules.loopRule = allowedLoopRules[randToUse.nextUInt((uint32_t)allowedLoopRules.size())];
 
 
   return rules;
@@ -297,6 +304,7 @@ Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
   rules.scoringRule = allowedScoringRules[rand.nextUInt((uint32_t)allowedScoringRules.size())];
   rules.drawJudgeRule = allowedDrawJudgeRules[rand.nextUInt((uint32_t)allowedDrawJudgeRules.size())];
+  rules.loopRule = allowedLoopRules[rand.nextUInt((uint32_t)allowedLoopRules.size())];
 
   return rules;
 }
