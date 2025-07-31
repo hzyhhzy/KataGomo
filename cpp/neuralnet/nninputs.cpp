@@ -640,6 +640,9 @@ void NNInputs::fillRowV7(
   else if(hist.rules.loopRule == Rules::LOOPRULE_REPEATEND) {
     //rowGlobal[29] = 1.0;
   }
+  else if(hist.rules.loopRule == Rules::LOOPRULE_TWOONE) {
+    //rowGlobal[30] = 1.0;
+  }
   else {
     ASSERT_UNREACHABLE;
   }
@@ -846,6 +849,8 @@ void NNInputs::fillRowV201(
     rowGlobal[28] = 1.0;
   } else if(hist.rules.loopRule == Rules::LOOPRULE_REPEATEND) {
     rowGlobal[29] = 1.0;
+  } else if(hist.rules.loopRule == Rules::LOOPRULE_TWOONE) {
+    rowGlobal[30] = 1.0;
   } else {
     ASSERT_UNREACHABLE;
   }
