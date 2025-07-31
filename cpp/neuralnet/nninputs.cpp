@@ -545,9 +545,9 @@ void NNInputs::fillRowV7(
 
     }
   }
-  //22~35  "7-3 rule" history
+  //22~35  "loop rule" history
   { 
-    auto h = hist.get73ruleHistory(board, nextPlayer);
+    auto h = hist.getLoopRuleHistory(board, nextPlayer);
     assert(h.size() <= 7);
     for(int i = 0; i < h.size(); i++) {
       Loc loc = h[i];
@@ -557,7 +557,7 @@ void NNInputs::fillRowV7(
     }
   }
   {
-    auto h = hist.get73ruleHistory(board, getOpp(nextPlayer));
+    auto h = hist.getLoopRuleHistory(board, getOpp(nextPlayer));
     assert(h.size() <= 7);
     for(int i = 0; i < h.size(); i++) {
       Loc loc = h[i];

@@ -155,13 +155,13 @@ void BoardHistory::printBasicInfo(ostream& out, const Board& board) const {
   Board::printBoard(out, board, Board::NULL_LOC, &moveHistory);
   out << "Next player: " << PlayerIO::playerToString(presumedNextMovePla) << endl;
   out << "Rules: " << rules.toJsonString() << endl;
-  out << "White 7-3 rule history: ";
-  auto w73 = get73ruleHistory(board, P_WHITE);
+  out << "White loop rule history: ";
+  auto w73 = getLoopRuleHistory(board, P_WHITE);
   for(int i = 0; i < w73.size(); i++)
     out << Location::toString(w73[i], board) << " ";
   out << endl;
-  out << "Black 7-3 rule history: ";
-  auto b73 = get73ruleHistory(board, P_BLACK);
+  out << "Black loop rule history: ";
+  auto b73 = getLoopRuleHistory(board, P_BLACK);
   for(int i = 0; i < b73.size(); i++)
     out << Location::toString(b73[i], board) << " ";
   out << endl;
@@ -180,7 +180,7 @@ void BoardHistory::printDebugInfo(ostream& out, const Board& board) const {
   out << endl;
 }
 
-std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla, int maxLen) const {
+std::vector<Loc> BoardHistory::get73RuleHistory(const Board& board, Player pla, int maxLen) const {
   std::vector<Loc> h;
   int t = moveHistory.size() - 1;  // which move is pla's last move
   if(pla == board.nextPla && board.stage == 1) {
@@ -223,9 +223,98 @@ std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla, 
   return h;
 }
 
-std::vector<Loc> BoardHistory::get73ruleHistory(const Board& board, Player pla) const {
-  const int maxLen = 7;
-  return get73ruleHistory(board, pla, maxLen);
+std::vector<Loc> BoardHistory::getLoopRuleHistory(const Board& board, Player pla) const {
+  if(rules.loopRule == rules.LOOPRULE_SEVENTHREE)
+    return get73RuleHistory(board, pla, 7);
+  else if(rules.loopRule == rules.LOOPRULE_TWOONE)
+    return get73RuleHistory(board, pla, 2);
+  else if(rules.loopRule == rules.LOOPRULE_NONE)
+    return std::vector<Loc>();
+  else if(rules.loopRule == rules.LOOPRULE_REPEATEND)
+  {
+    //last 
+
+  }
+  else
+    ASSERT_UNREACHABLE;
+}
+
+std::vector<Loc> BoardHistory::getLastPieceMoveHistory(const Board& board, int maxTurn) const {
+  std::vector<Loc> h;
+  if(moveHistory.size()<4)
+    return h;
+  Loc myPickedPiece=Board::NULL_LOC;
+  Loc oppPickedPiece=Board::NULL_LOC;
+
+  int t = moveHistory.size() - 1;  // which move is pla's last move
+  if(board.stage==1)//my side only have half move
+  {
+    myPickedPiece=moveHistory[t].loc;
+    t-=1;
+    oppPickedPiece=moveHistory[t].loc;
+    h.push_back(oppPickedPiece);
+    t-=1;
+    oppPickedPiece=moveHistory[t].loc;
+    t-=1;//now movehistory[t] is the my last full move
+  }
+  else
+  {
+    myPickedPiece=moveHistory[t].loc;
+    h.push_back(myPickedPiece);
+    t-=1;
+    myPickedPiece=moveHistory[t].loc;
+    t-=1;
+
+    oppPickedPiece=moveHistory[t].loc;
+    h.push_back(oppPickedPiece);
+    t-=1;
+    oppPickedPiece=moveHistory[t].loc;
+    t-=1;//now movehistory[t] is the my last full move
+
+  }
+  TODO
+
+
+
+
+  if(pla == board.nextPla && board.stage == 1) {
+    t = moveHistory.size() - 4;
+    if(t < 0)
+      return h;
+    assert(moveHistory[t].pla == pla);
+    if(moveHistory[t].loc != board.midLocs[0])
+      return h;//chosen a different stone, ignore the history
+  }
+  else if(pla != board.nextPla && board.stage == 0)
+    t = moveHistory.size() - 1;
+  else if(pla != board.nextPla && board.stage == 1)
+    t = moveHistory.size() - 2;
+  else if(pla == board.nextPla && board.stage == 0)
+    t = moveHistory.size() - 3;
+
+  if(t < 0)
+    return h;
+
+  Loc nowloc = moveHistory[t].loc;
+
+  while (h.size() < maxLen && t >= 0) {
+    if(!board.isOnBoard(nowloc))
+      return h;
+    if(GameLogic::isInTrap(nowloc, pla))
+      return h;
+    assert(moveHistory[t].pla == pla);
+    assert(t - 1 >= 0 && moveHistory[t - 1].pla == pla);
+    if(nowloc == moveHistory[t].loc) {
+      h.push_back(moveHistory[t].loc);
+      nowloc = moveHistory[t - 1].loc;
+    } else
+      break;
+    t -= 4;
+  }
+
+  
+
+  return h;
 }
 
 double BoardHistory::calculateScoreBlackWhenDraw(const Board& board) const {
@@ -378,8 +467,8 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
   hash ^= Board::ZOBRIST_MM_RULE_HASH[hist.rules.maxmoves];
   hash ^= Board::ZOBRIST_MC_RULE_HASH[hist.rules.maxmovesNoCapture];
 
-  auto h1 = hist.get73ruleHistory(board, C_BLACK);
-  auto h2 = hist.get73ruleHistory(board, C_WHITE);
+  auto h1 = hist.getLoopRuleHistory(board, C_BLACK);
+  auto h2 = hist.getLoopRuleHistory(board, C_WHITE);
   for (int i = 0; i < h1.size(); i++)
   {
     hash ^= Board::ZOBRIST_73RULE_HISTORY_HASH[h1[i]][i][C_BLACK];

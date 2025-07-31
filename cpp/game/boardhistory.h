@@ -87,8 +87,9 @@ struct BoardHistory {
   void printBasicInfo(std::ostream& out, const Board& board) const;
   void printDebugInfo(std::ostream& out, const Board& board) const;
 
-  std::vector<Loc> get73ruleHistory(const Board& board, Player pla, int maxLen) const;
-  std::vector<Loc> get73ruleHistory(const Board& board, Player pla) const; //maxLen=7
+  std::vector<Loc> getLoopRuleHistory(const Board& board, Player pla) const;
+  std::vector<Loc> get73RuleHistory(const Board& board, Player pla, int maxLen) const;
+  std::vector<Loc> getLastPieceMoveHistory(const Board& board, int maxTurn) const;
 
   double calculateScoreBlackWhenDraw(const Board& board) const;//calculate draw score
 

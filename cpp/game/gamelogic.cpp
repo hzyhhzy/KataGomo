@@ -237,10 +237,10 @@ Color GameLogic::checkWinnerAfterPlayed(
   if(getPiecePla(board.colors[getHomeLoc(getOpp(pla))]) == pla)
     return pla;
 
-  //check 7-3 rule
+  //check loop rule
   if(board.stage == 0) {
     const int max73historyLen = 8;  // include the last move, so it is 7+1
-    auto movehist = hist.get73ruleHistory(board, pla, max73historyLen);
+    auto movehist = hist.getLoopRuleHistory(board, pla, max73historyLen);
     if(movehist.size() > 0) {
       assert(movehist[0] == loc);
       int count = 0;
