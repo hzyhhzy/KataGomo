@@ -9,6 +9,7 @@ using namespace std;
 BoardHistory::BoardHistory()
   :rules(),
    moveHistory(),
+   hashHistory(),
    initialBoard(),
    initialPla(P_BLACK),
    initialTurnNumber(0),
@@ -28,6 +29,7 @@ BoardHistory::~BoardHistory()
 BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
   :rules(r),
    moveHistory(),
+   hashHistory(),
    initialBoard(),
    initialPla(),
    initialTurnNumber(0),
@@ -46,6 +48,7 @@ BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
 BoardHistory::BoardHistory(const BoardHistory& other)
   :rules(other.rules),
    moveHistory(other.moveHistory),
+   hashHistory(other.hashHistory),
    initialBoard(other.initialBoard),
    initialPla(other.initialPla),
    initialTurnNumber(other.initialTurnNumber),
@@ -65,6 +68,7 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
     return *this;
   rules = other.rules;
   moveHistory = other.moveHistory;
+  hashHistory = other.hashHistory;
   initialBoard = other.initialBoard;
   initialPla = other.initialPla;
   initialTurnNumber = other.initialTurnNumber;
@@ -83,6 +87,7 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
 BoardHistory::BoardHistory(BoardHistory&& other) noexcept
  :rules(other.rules),
   moveHistory(std::move(other.moveHistory)),
+  hashHistory(std::move(other.hashHistory)),
   initialBoard(other.initialBoard),
   initialPla(other.initialPla),
   initialTurnNumber(other.initialTurnNumber),
@@ -101,10 +106,12 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
 {
   rules = other.rules;
   moveHistory = std::move(other.moveHistory);
+  hashHistory = std::move(other.hashHistory);
   initialBoard = other.initialBoard;
   initialPla = other.initialPla;
   initialTurnNumber = other.initialTurnNumber;
   std::copy(other.recentBoards, other.recentBoards+NUM_RECENT_BOARDS, recentBoards);
+
   currentRecentBoardIdx = other.currentRecentBoardIdx;
   presumedNextMovePla = other.presumedNextMovePla;
   isGameFinished = other.isGameFinished;
@@ -119,6 +126,8 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
 void BoardHistory::clear(const Board& board, Player pla, const Rules& r) {
   rules = r;
   moveHistory.clear();
+  hashHistory.clear();
+
 
   initialBoard = board;
   initialPla = pla;
@@ -177,10 +186,15 @@ void BoardHistory::printDebugInfo(ostream& out, const Board& board) const {
   out << "Last moves ";
   for(int i = 0; i<moveHistory.size(); i++)
     out << Location::toString(moveHistory[i].loc,board) << " ";
+  out << "Hash history ";
+  for(int i = 0; i<hashHistory.size(); i++)
+    out << hashHistory[i] << " ";
   out << endl;
 }
 
 std::vector<Loc> BoardHistory::get73RuleHistory(const Board& board, Player pla, int maxLen) const {
+  if(maxLen==0)
+    return std::vector<Loc>();
   std::vector<Loc> h;
   int t = moveHistory.size() - 1;  // which move is pla's last move
   if(pla == board.nextPla && board.stage == 1) {
@@ -232,14 +246,26 @@ std::vector<Loc> BoardHistory::getLoopRuleHistory(const Board& board, Player pla
     return std::vector<Loc>();
   else if(rules.loopRule == rules.LOOPRULE_REPEATEND)
   {
-    //last 
+    //last 20 pla's locs of movehistory
+    std::vector<Loc> h;
+    for(int i=moveHistory.size()-1;i>=0;i-=1)
+    {
+      if(moveHistory[i].pla!=pla)
+        continue;
+      h.push_back(moveHistory[i].loc);
+      if(h.size()>=20)
+        break;
+    }
+    return h;
 
   }
   else
     ASSERT_UNREACHABLE;
 }
-
+/*
 std::vector<Loc> BoardHistory::getLastPieceMoveHistory(const Board& board, int maxTurn) const {
+  if(maxTurn<2)
+    assert(false);
   std::vector<Loc> h;
   if(moveHistory.size()<4)
     return h;
@@ -256,6 +282,8 @@ std::vector<Loc> BoardHistory::getLastPieceMoveHistory(const Board& board, int m
     t-=1;
     oppPickedPiece=moveHistory[t].loc;
     t-=1;//now movehistory[t] is the my last full move
+    h.push_back(myPickedPiece);
+    h.push_back(oppPickedPiece);
   }
   else
   {
@@ -270,53 +298,39 @@ std::vector<Loc> BoardHistory::getLastPieceMoveHistory(const Board& board, int m
     t-=1;
     oppPickedPiece=moveHistory[t].loc;
     t-=1;//now movehistory[t] is the my last full move
+    h.push_back(myPickedPiece);
+    h.push_back(oppPickedPiece);
 
   }
-  TODO
-
-
-
-
-  if(pla == board.nextPla && board.stage == 1) {
-    t = moveHistory.size() - 4;
-    if(t < 0)
-      return h;
-    assert(moveHistory[t].pla == pla);
-    if(moveHistory[t].loc != board.midLocs[0])
-      return h;//chosen a different stone, ignore the history
-  }
-  else if(pla != board.nextPla && board.stage == 0)
-    t = moveHistory.size() - 1;
-  else if(pla != board.nextPla && board.stage == 1)
-    t = moveHistory.size() - 2;
-  else if(pla == board.nextPla && board.stage == 0)
-    t = moveHistory.size() - 3;
-
-  if(t < 0)
-    return h;
-
-  Loc nowloc = moveHistory[t].loc;
-
-  while (h.size() < maxLen && t >= 0) {
-    if(!board.isOnBoard(nowloc))
-      return h;
-    if(GameLogic::isInTrap(nowloc, pla))
-      return h;
-    assert(moveHistory[t].pla == pla);
-    assert(t - 1 >= 0 && moveHistory[t - 1].pla == pla);
-    if(nowloc == moveHistory[t].loc) {
-      h.push_back(moveHistory[t].loc);
-      nowloc = moveHistory[t - 1].loc;
-    } else
-      break;
-    t -= 4;
-  }
-
+  maxTurn-=2;
   
+  while(maxTurn>0 && t>=3)
+  {
+    maxTurn-=1;
+    assert(moveHistory[t].pla == pla);
+    if(myPickedPiece!=moveHistory[t].loc)//changed piece
+      break;
+    t-=1;
+    assert(moveHistory[t].pla == pla);
+    myPickedPiece=moveHistory[t].loc;
+    h.push_back(myPickedPiece);
+    t-=1;
+
+    assert(moveHistory[t].pla == opp);
+    if(oppPickedPiece!=moveHistory[t].loc)//changed piece
+      break;
+    t-=1;
+    assert(moveHistory[t].pla == opp);
+    oppPickedPiece=moveHistory[t].loc;
+    h.push_back(oppPickedPiece);
+    t-=1;//now movehistory[t] is the my last full move
+  }
+
+
 
   return h;
 }
-
+*/
 double BoardHistory::calculateScoreBlackWhenDraw(const Board& board) const {
   if(rules.drawJudgeRule == rules.DRAWJUDGE_DRAW)
     return 0;
@@ -439,6 +453,8 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   recentBoards[currentRecentBoardIdx] = board;
 
   moveHistory.push_back(Move(moveLoc,movePla));
+  if(board.stage == 0)
+    hashHistory.push_back(board.getSitHashNoStage(board.nextPla));
   presumedNextMovePla = board.nextPla;
   Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc);
   if(maybeWinner!=C_WALL) { //game finished
@@ -480,5 +496,68 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
 
   return hash;
 }
+//check past 16 turns whether repeats
+//if repeat:
+//  I have been in traps: I win
+//  opp have been in traps: opp win
+//  both: draw
+//  neither:  if move-t1 repeat move-t2
+//      if(moveHistory[t1-1].loc == moveHistory[t2-1].loc) //target location of the last move
+//        return board.nextPla;//who made the game repeats lose
+//      else
+//        return getOpp(board.nextPla);//who made the game repeats win
 
+Color BoardHistory::checkRepeatEndWinner(const Board& board) const {
+  assert(board.stage==0);
+  assert(board.getSitHashNoStage(board.nextPla) == hashHistory[hashHistory.size()-1]);
+
+  Hash128 lastHash = hashHistory[hashHistory.size()-1];
+  int repeatLength = 0;
+  for(int turn=hashHistory.size()-3; turn>=0; turn-=2) {
+    if(hashHistory.size() - turn - 1 > 2 * 9) // 9 turns
+      break;
+    if(hashHistory[turn] == lastHash)
+    {
+      repeatLength = hashHistory.size() - turn - 1;
+      break;
+    }
+  }
+  if(repeatLength == 0)
+    return C_WALL;
+  assert(repeatLength % 2 == 0);
+  int repeatTurn = repeatLength / 2;
+
+  bool hasBeenInTrapMe = false;
+  bool hasBeenInTrapOpp = false;
+  for(int turn=0; turn<repeatTurn; turn++) {
+    int moveHistIdx0=moveHistory.size()-1-4*turn;
+    assert(moveHistIdx0 >= 3);
+    assert(moveHistory[moveHistIdx0].pla == getOpp(board.nextPla));
+    assert(moveHistory[moveHistIdx0-1].pla == getOpp(board.nextPla));
+    assert(moveHistory[moveHistIdx0-2].pla == board.nextPla);
+    assert(moveHistory[moveHistIdx0-3].pla == board.nextPla);
+    if(GameLogic::isInTrap(moveHistory[moveHistIdx0].loc,getOpp(board.nextPla)))
+      hasBeenInTrapOpp = true;
+    if(GameLogic::isInTrap(moveHistory[moveHistIdx0-2].loc,board.nextPla))
+      hasBeenInTrapMe = true;
+  }
+  if(hasBeenInTrapMe && hasBeenInTrapOpp)
+    return C_EMPTY;
+  else if(hasBeenInTrapMe)
+    return board.nextPla;
+  else if(hasBeenInTrapOpp)
+    return getOpp(board.nextPla);
+  else 
+  {
+    int moveHistIdx0=moveHistory.size()-1;
+    int moveHistIdx1=moveHistory.size()-1-4*repeatTurn;
+    assert(moveHistIdx1>=0);
+    assert(moveHistory[moveHistIdx0].pla == getOpp(board.nextPla));
+    if(moveHistory[moveHistIdx0].loc == moveHistory[moveHistIdx1].loc)
+      return board.nextPla;
+    else
+      return getOpp(board.nextPla);
+  }
+  ASSERT_UNREACHABLE;
+}
 

@@ -545,9 +545,14 @@ void NNInputs::fillRowV7(
 
     }
   }
-  //22~35  "loop rule" history
-  { 
-    auto h = hist.getLoopRuleHistory(board, nextPlayer);
+  // 22~35  "7-3 rule" history
+  int rule73length=hist.rules.loopRule==Rules::LOOPRULE_SEVENTHREE?7:
+    hist.rules.loopRule==Rules::LOOPRULE_NONE?0:
+    hist.rules.loopRule==Rules::LOOPRULE_REPEATEND?7:
+    hist.rules.loopRule==Rules::LOOPRULE_TWOONE?2:
+    0;
+  {
+    auto h = hist.get73RuleHistory(board, nextPlayer, rule73length);
     assert(h.size() <= 7);
     for(int i = 0; i < h.size(); i++) {
       Loc loc = h[i];
@@ -557,7 +562,7 @@ void NNInputs::fillRowV7(
     }
   }
   {
-    auto h = hist.getLoopRuleHistory(board, getOpp(nextPlayer));
+    auto h = hist.get73RuleHistory(board, getOpp(nextPlayer), rule73length);
     assert(h.size() <= 7);
     for(int i = 0; i < h.size(); i++) {
       Loc loc = h[i];
@@ -566,7 +571,6 @@ void NNInputs::fillRowV7(
       setRowBin(rowBin, pos, 29 + i, 1.0f, posStride, featureStride);
     }
   }
-
 
   // mid state
   if(board.stage == 0)  // choose
@@ -768,8 +772,13 @@ void NNInputs::fillRowV201(
     }
   }
   // 22~35  "7-3 rule" history
+  int rule73length=hist.rules.loopRule==Rules::LOOPRULE_SEVENTHREE?7:
+    hist.rules.loopRule==Rules::LOOPRULE_NONE?0:
+    hist.rules.loopRule==Rules::LOOPRULE_REPEATEND?7:
+    hist.rules.loopRule==Rules::LOOPRULE_TWOONE?2:
+    0;
   {
-    auto h = hist.get73ruleHistory(board, nextPlayer);
+    auto h = hist.get73RuleHistory(board, nextPlayer, rule73length);
     assert(h.size() <= 7);
     for(int i = 0; i < h.size(); i++) {
       Loc loc = h[i];
@@ -779,7 +788,7 @@ void NNInputs::fillRowV201(
     }
   }
   {
-    auto h = hist.get73ruleHistory(board, getOpp(nextPlayer));
+    auto h = hist.get73RuleHistory(board, getOpp(nextPlayer), rule73length);
     assert(h.size() <= 7);
     for(int i = 0; i < h.size(); i++) {
       Loc loc = h[i];

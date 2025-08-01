@@ -171,7 +171,7 @@ struct Board
   static Hash128 ZOBRIST_MC_RULE_HASH[MAX_MOVE_NUM];
 
   static Hash128 ZOBRIST_73RULE_LOC_HASH[MAX_ARR_SIZE][4];
-  static Hash128 ZOBRIST_73RULE_HISTORY_HASH[MAX_ARR_SIZE][7][4];
+  static Hash128 ZOBRIST_73RULE_HISTORY_HASH[MAX_ARR_SIZE][50][4];
 
   static const Hash128 ZOBRIST_GAME_IS_OVER;
 
@@ -220,6 +220,7 @@ struct Board
 
   
   Hash128 getSitHash(Player pla) const;
+  Hash128 getSitHashNoStage(Player pla) const;
   
 
   //Run some basic sanity checks on the board state, throws an exception if not consistent, for testing/debugging
@@ -260,8 +261,8 @@ struct Board
   //who plays the next move
   Color nextPla;
 
-  //Ò»²½ÄÚÃ¿Ò»½×¶ÎµÄÑ¡µã
-  //ÀýÈç£ºÏóÆåÀàmidLoc[0]ÊÇÑ¡ÔñµÄÆå×Ó£¬midLoc[1]ÊÇÂäµã
+  //Ò»ï¿½ï¿½ï¿½ï¿½Ã¿Ò»ï¿½×¶Îµï¿½Ñ¡ï¿½ï¿½
+  //ï¿½ï¿½ï¿½ç£ºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½midLoc[0]ï¿½ï¿½Ñ¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½midLoc[1]ï¿½ï¿½ï¿½ï¿½ï¿½
   Loc midLocs[STAGE_NUM_EACH_PLA];
 
 

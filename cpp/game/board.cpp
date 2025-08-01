@@ -31,7 +31,7 @@ Hash128 Board::ZOBRIST_PLAYER_HASH[4];
 Hash128 Board::ZOBRIST_MM_RULE_HASH[MAX_MOVE_NUM];
 Hash128 Board::ZOBRIST_MC_RULE_HASH[MAX_MOVE_NUM];
 Hash128 Board::ZOBRIST_73RULE_LOC_HASH[MAX_ARR_SIZE][4];
-Hash128 Board::ZOBRIST_73RULE_HISTORY_HASH[MAX_ARR_SIZE][7][4];
+Hash128 Board::ZOBRIST_73RULE_HISTORY_HASH[MAX_ARR_SIZE][50][4];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
 
@@ -212,7 +212,7 @@ void Board::initHash()
     }
     for(Color j = 0; j < 4; j++)
       ZOBRIST_73RULE_LOC_HASH[i][j] = nextHash();
-    for(Color j = 0; j < 7; j++)
+    for(Color j = 0; j < 50; j++)
       for(Color k = 0; k < 4; k++)
         ZOBRIST_73RULE_HISTORY_HASH[i][j][k] = nextHash();
   }
@@ -409,6 +409,24 @@ Player Board::prevPla() const {
 Hash128 Board::getSitHash(Player pla) const {
   Hash128 h = pos_hash;
   h ^= Board::ZOBRIST_PLAYER_HASH[pla];
+  return h;
+}
+Hash128 Board::getSitHashNoStage(Player pla) const {
+  Hash128 h = pos_hash;
+  h ^= Board::ZOBRIST_PLAYER_HASH[pla];
+
+
+
+  
+  h ^= ZOBRIST_MOVENUM_HASH[movenum];
+  h ^= ZOBRIST_MOVENUMSLC_HASH[movenumslc];
+
+  h ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+  h ^= ZOBRIST_STAGENUM_HASH[stage];
+  for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
+    // std::cout << ZOBRIST_STAGELOC_HASH[midLocs[i]][i]<<" ";
+    h ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
+  }
   return h;
 }
 

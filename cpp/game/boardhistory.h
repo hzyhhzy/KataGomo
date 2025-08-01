@@ -14,6 +14,7 @@ struct BoardHistory {
 
   //Chronological history of moves
   std::vector<Move> moveHistory;
+  std::vector<Hash128> hashHistory;
 
   //The board and player to move as of the very start, before moveHistory.
   Board initialBoard;
@@ -24,6 +25,8 @@ struct BoardHistory {
 
   static const int NUM_RECENT_BOARDS = 6;
   Board recentBoards[NUM_RECENT_BOARDS];
+
+
   int currentRecentBoardIdx;
   Player presumedNextMovePla;
 
@@ -89,7 +92,8 @@ struct BoardHistory {
 
   std::vector<Loc> getLoopRuleHistory(const Board& board, Player pla) const;
   std::vector<Loc> get73RuleHistory(const Board& board, Player pla, int maxLen) const;
-  std::vector<Loc> getLastPieceMoveHistory(const Board& board, int maxTurn) const;
+  //std::vector<Loc> getLastPieceMoveHistory(const Board& board, int maxTurn) const;
+  Color checkRepeatEndWinner(const Board& board) const;
 
   double calculateScoreBlackWhenDraw(const Board& board) const;//calculate draw score
 

@@ -239,19 +239,45 @@ Color GameLogic::checkWinnerAfterPlayed(
 
   //check loop rule
   if(board.stage == 0) {
-    const int max73historyLen = 8;  // include the last move, so it is 7+1
-    auto movehist = hist.getLoopRuleHistory(board, pla, max73historyLen);
-    if(movehist.size() > 0) {
-      assert(movehist[0] == loc);
-      int count = 0;
-      for(int i = 0; i < movehist.size(); i++) {
-        if(movehist[i] == loc)
-          count += 1;
+    if(hist.rules.loopRule == Rules::LOOPRULE_SEVENTHREE)
+    {
+      const int max73historyLen = 8;  // include the last move, so it is 7+1
+      auto movehist = hist.get73RuleHistory(board, pla, max73historyLen);
+      if(movehist.size() > 0) {
+        assert(movehist[0] == loc);
+        int count = 0;
+        for(int i = 0; i < movehist.size(); i++) {
+          if(movehist[i] == loc)
+            count += 1;
+        }
+        if(count >= 4)  // move into a location which has been played >= 3 times in the last 8 turns
+        {
+          return getOpp(pla);
+        }
       }
-      if(count >= 4)  // move into a location which has been played >= 3 times in the last 7 turns
-      {
-        return getOpp(pla);
+    }
+    else if(hist.rules.loopRule == Rules::LOOPRULE_TWOONE)
+    {
+      const int max73historyLen = 3;  // include the last move, so it is 2+1
+      auto movehist = hist.get73RuleHistory(board, pla, max73historyLen);
+      if(movehist.size() > 0) {
+        assert(movehist[0] == loc);
+        int count = 0;
+        for(int i = 0; i < movehist.size(); i++) {
+          if(movehist[i] == loc)
+            count += 1;
+        }
+        if(count >= 2)  // move into a location which has been played >= 2 times in the last 3 turns
+        {
+          return getOpp(pla);
+        }
       }
+    }
+    else if(hist.rules.loopRule == Rules::LOOPRULE_REPEATEND)
+    {
+      Color r=hist.checkRepeatEndWinner(board);
+      if(r!=C_WALL)
+        return r;
     }
   }
 
