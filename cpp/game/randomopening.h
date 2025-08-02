@@ -5,5 +5,11 @@ class Search;
 
 namespace RandomOpening {
   //disabled
+  void initializeRandomOpening(
+    Board& board,
+    BoardHistory& hist,
+    Player& nextPlayer,
+    Rand& gameRand,
+    bool forSelfplay);
 
 }

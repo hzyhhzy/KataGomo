@@ -1251,7 +1251,7 @@ FinishedGameData* Play::runGame(
       }
     }
   };
-
+  
   
   if(gameRand.nextBool(playSettings.randomInitPieceProb)) {
     double changeProb = playSettings.randomInitPieceDensity * gameRand.nextExponential();
