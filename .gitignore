@@ -8,6 +8,7 @@ LinuxCompile*/
 
 cpp/build
 cpp/build_trt
+cpp/build_old
 cpp/build_cuda
 cpp/build_opencl
 cpp/build_eigen
