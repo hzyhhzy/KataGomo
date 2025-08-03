@@ -716,8 +716,8 @@ void NNInputs::fillRowV201(
   assert(nnYLen <= NNPos::MAX_BOARD_LEN);
   assert(board.x_size <= nnXLen);
   assert(board.y_size <= nnYLen);
-  std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V7 * nnXLen * nnYLen, false);
-  std::fill(rowGlobal, rowGlobal + NUM_FEATURES_GLOBAL_V7, 0.0f);
+  std::fill(rowBin, rowBin + NUM_FEATURES_SPATIAL_V201 * nnXLen * nnYLen, false);
+  std::fill(rowGlobal, rowGlobal + NUM_FEATURES_GLOBAL_V201, 0.0f);
 
   Player pla = nextPlayer;
   Player opp = getOpp(pla);
@@ -728,7 +728,7 @@ void NNInputs::fillRowV201(
   int posStride;
   if(useNHWC) {
     featureStride = 1;
-    posStride = NNInputs::NUM_FEATURES_SPATIAL_V7;
+    posStride = NNInputs::NUM_FEATURES_SPATIAL_V201;
   } else {
     featureStride = nnXLen * nnYLen;
     posStride = 1;

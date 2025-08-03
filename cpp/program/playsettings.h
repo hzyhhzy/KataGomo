@@ -16,7 +16,7 @@ struct PlaySettings {
 
   double randomInitPieceProb;
   double randomInitPieceDensity;
-
+  double randomMovePieceRate;
 
   //With this probability, use only this many visits for a move, and record it with only this weight
   double cheapSearchProb;

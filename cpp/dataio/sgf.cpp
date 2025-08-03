@@ -1456,6 +1456,8 @@ void WriteSgf::writeSgf(
   out << "RU[" << (tryNicerRulesString ? rules.toStringMaybeNice() : rules.toString()) << "]";
   printGameResult(out,endHist);
 
+  out << "OP[" << initialBoard.getFEN() << "]";
+
   bool hasAB = false;
   for(int y = 0; y<ySize; y++) {
     for(int x = 0; x<xSize; x++) {

@@ -384,12 +384,12 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     //randomize maxmove rules
     {
-      int maxmoves = rand.nextExponential() * 80 + 200 - rand.nextExponential() * 30; //mean 250
+      int maxmoves = rand.nextExponential() * 50 + 150 - rand.nextExponential() * 15; //mean 185
       if(maxmoves > 700)
         maxmoves = 700;
       if(maxmoves < 10)
         maxmoves = 10;
-      int maxmovesnc = rand.nextExponential() * 40 + 120 - rand.nextExponential() * 20; //mean 140
+      int maxmovesnc = rand.nextExponential() * 30 + 80 - rand.nextExponential() * 10; //mean 100
       if(maxmovesnc > 400)
         maxmovesnc = 400;
       if(maxmovesnc < 10)
@@ -1252,33 +1252,7 @@ FinishedGameData* Play::runGame(
     }
   };
   
-  
-  if(gameRand.nextBool(playSettings.randomInitPieceProb)) {
-    double changeProb = playSettings.randomInitPieceDensity * gameRand.nextExponential();
-    double pieceDensity = pow(gameRand.nextDouble(), 4) * 0.5;
-    for(int x = 0; x < board.x_size; x++)
-      for(int y = 0; y < board.y_size; y++) {
-        if(gameRand.nextDouble() > changeProb)
-          continue;
-        Loc loc = Location::getLoc(x, y, board.x_size);
-        if(loc == GameLogic::getHomeLoc(C_BLACK) || loc == GameLogic::getHomeLoc(C_WHITE) || GameLogic::isInRiver(loc))
-          continue;
-
-        Color c = C_EMPTY;
-
-        // will set a random piece
-        if (gameRand.nextBool(pieceDensity))
-        {
-          double blackProb = ((tanh(double(2 * y + 1 - board.y_size) / double(board.y_size)) / tanh(1)) + 1)/2;
-          Player side = gameRand.nextBool(blackProb) ? C_BLACK : C_WHITE;  // the more near the home, the higher prob is my piece
-          c = getPiece(side, 1 + gameRand.nextUInt(8));
-        }
-
-        board.setStone(loc, c);
-
-      }
-  }
-
+  RandomOpening::initializeRandomOpening(board, hist, pla, gameRand, playSettings);
 
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double avgPolicyInitMoveNum =

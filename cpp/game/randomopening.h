@@ -1,5 +1,6 @@
 #pragma once
 #include "../search/asyncbot.h"
+#include "../program/playsettings.h"
 
 class Search;
 
@@ -10,6 +11,6 @@ namespace RandomOpening {
     BoardHistory& hist,
     Player& nextPlayer,
     Rand& gameRand,
-    bool forSelfplay);
+    const PlaySettings& playSettings);
 
 }

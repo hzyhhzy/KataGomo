@@ -8,6 +8,7 @@ PlaySettings::PlaySettings()
    policyInitAreaTemperature(1.0),
     randomInitPieceProb(0.0),
     randomInitPieceDensity(0.02),
+    randomMovePieceRate(0.5),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
    reduceVisits(false),reduceVisitsThreshold(100.0),reduceVisitsThresholdLookback(1),reducedVisitsMin(0),reducedVisitsWeight(1.0f),
    policySurpriseDataWeight(0.0),valueSurpriseDataWeight(0.0),scaleDataWeight(1.0),
@@ -31,6 +32,7 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
 
   playSettings.randomInitPieceProb = cfg.getDouble("randomInitPieceProb", 0.0, 1.0);
   playSettings.randomInitPieceDensity = cfg.getDouble("randomInitPieceDensity", 0.0, 1.0);
+  playSettings.randomMovePieceRate = cfg.getDouble("randomMovePieceRate", 0.0, 5.0);
 
   if(playSettings.initGamesWithPolicy) {
     playSettings.policyInitAvgMoveNum = cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0);
@@ -66,6 +68,7 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
 
   playSettings.randomInitPieceProb = cfg.getDouble("randomInitPieceProb", 0.0, 1.0);
   playSettings.randomInitPieceDensity = cfg.getDouble("randomInitPieceDensity", 0.0, 1.0);
+  playSettings.randomMovePieceRate = cfg.getDouble("randomMovePieceRate", 0.0, 5.0);
 
   playSettings.cheapSearchProb = cfg.getDouble("cheapSearchProb",0.0,1.0);
   playSettings.cheapSearchVisits = cfg.getInt("cheapSearchVisits",1,10000000);
