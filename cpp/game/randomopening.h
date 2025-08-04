@@ -7,6 +7,8 @@ class Search;
 namespace RandomOpening {
   //disabled
   void initializeRandomOpening(
+    Search* botB,
+    Search* botW,
     Board& board,
     BoardHistory& hist,
     Player& nextPlayer,

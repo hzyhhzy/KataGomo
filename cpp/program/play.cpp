@@ -1251,12 +1251,24 @@ FinishedGameData* Play::runGame(
       }
     }
   };
-  
-  RandomOpening::initializeRandomOpening(board, hist, pla, gameRand, playSettings);
+  if(gameRand.nextBool(playSettings.randomInitPieceProb))
+    RandomOpening::initializeRandomOpening(botB,botW, board, hist, pla, gameRand, playSettings);
 
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double avgPolicyInitMoveNum =
       otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAvgMoveNum : playSettings.policyInitAvgMoveNum;
+
+    Board board0(board.x_size,board.y_size);
+    //count how many locations are different
+    int diffCount=0;
+    for(int x = 0; x < board.x_size; x++)
+      for(int y = 0; y < board.y_size; y++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        if(board.colors[loc] != board0.colors[loc])
+          diffCount++;
+      }
+    avgPolicyInitMoveNum *= (2.0 / (2.0 + double(diffCount)));  // more different, less moves needed
+
     if(avgPolicyInitMoveNum > 0) {
       //Perform the initialization using a different noised komi, to get a bit of opening policy mixing across komi
       {
