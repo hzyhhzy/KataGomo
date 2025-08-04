@@ -259,7 +259,10 @@ Color GameLogic::checkWinnerAfterPlayed(
     else if(hist.rules.loopRule == Rules::LOOPRULE_TWOONE)
     {
       const int max73historyLen = 3;  // include the last move, so it is 2+1
-      auto movehist = hist.get73RuleHistory(board, pla, max73historyLen);
+
+      int noCaptureTurn = board.movenumslc / 2;
+
+      auto movehist = hist.get73RuleHistory(board, pla, std::min(noCaptureTurn, max73historyLen));
       if(movehist.size() > 0) {
         assert(movehist[0] == loc);
         int count = 0;
