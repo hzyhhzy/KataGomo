@@ -26,6 +26,7 @@ struct Rules {
   static const int LOOPRULE_NONE = 1; //允许无限循环（不推荐）
   static const int LOOPRULE_REPEATEND = 2; //检查8回合内的重复，若某一步甲方走完之后（局面A）与先前某回合（局面B）一致，则检查B的前一步甲方走的棋子是否与A的前一步甲方的棋子相同。若相同则乙胜，否则甲胜。
   static const int LOOPRULE_TWOONE = 3; //7-3违例改成2-1违例
+  static const int LOOPRULE_FIVETWO = 4; //5-2违例
   int loopRule;
 
   int maxmoves;//draw if these many moves
@@ -73,7 +74,7 @@ struct Rules {
 
   static const Hash128 ZOBRIST_SCORING_RULE_HASH[5];
   static const Hash128 ZOBRIST_DRAWJUDGE_RULE_HASH[3];
-  static const Hash128 ZOBRIST_LOOP_RULE_HASH[4];
+  static const Hash128 ZOBRIST_LOOP_RULE_HASH[5];
   
 
 };

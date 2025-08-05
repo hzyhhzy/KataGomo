@@ -61,7 +61,7 @@ set<string> Rules::drawJudgeRuleStrings() {
   return {"DRAW", "COUNT", "WEIGHT"};
 }
 set<string> Rules::loopRuleStrings() {
-  return {"SEVENTHREE", "NONE", "REPEATEND", "TWOONE"};
+  return {"SEVENTHREE", "NONE", "REPEATEND", "TWOONE", "FIVETWO"};
 }
 
 int Rules::parseScoringRule(const string& s) {
@@ -91,6 +91,8 @@ int Rules::parseLoopRule(const string& s) {
     return Rules::LOOPRULE_REPEATEND;
   else if(s == "TWOONE")
     return Rules::LOOPRULE_TWOONE;
+  else if(s == "FIVETWO")
+    return Rules::LOOPRULE_FIVETWO;
   else
     throw IOError("Rules::parseLoopRule: Invalid loop rule: " + s);
 }
@@ -120,6 +122,8 @@ string Rules::writeLoopRule(int s) {
     return string("REPEATEND");
   else if(s == Rules::LOOPRULE_TWOONE)
     return string("TWOONE");
+  else if(s == Rules::LOOPRULE_FIVETWO)
+    return string("FIVETWO");
   return string("UNKNOWN");
 }
 
@@ -248,9 +252,10 @@ const Hash128 Rules::ZOBRIST_DRAWJUDGE_RULE_HASH[3] = {
   Hash128(0x42538d2b7a724859ULL, 0xac9dce2669396872ULL),
   Hash128(0x257b357c21b7c14fULL, 0xdbccc53a2414774eULL),
 };
-const Hash128 Rules::ZOBRIST_LOOP_RULE_HASH[4] = {
+const Hash128 Rules::ZOBRIST_LOOP_RULE_HASH[5] = {
   Hash128(0xddd9e1c6b4eecad0ULL, 0x49911f32fde2515cULL),
   Hash128(0x917216937019380fULL, 0x4328256c63c38009ULL),
   Hash128(0x8eeba425912578c6ULL, 0x5f90ed484bbed9f6ULL),
-  Hash128(0x36b3181e2c80827aULL, 0x9dea39dd07f2e3a4ULL)
+  Hash128(0x36b3181e2c80827aULL, 0x9dea39dd07f2e3a4ULL),
+  Hash128(0x6f5760cc1821d9c7ULL, 0xfb526960cbdaa6c1ULL)
 };

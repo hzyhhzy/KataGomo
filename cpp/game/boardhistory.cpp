@@ -242,6 +242,8 @@ std::vector<Loc> BoardHistory::getLoopRuleHistory(const Board& board, Player pla
     return get73RuleHistory(board, pla, 7);
   else if(rules.loopRule == rules.LOOPRULE_TWOONE)
     return get73RuleHistory(board, pla, 2);
+  else if(rules.loopRule == rules.LOOPRULE_FIVETWO)
+    return get73RuleHistory(board, pla, 5);
   else if(rules.loopRule == rules.LOOPRULE_NONE)
     return std::vector<Loc>();
   else if(rules.loopRule == rules.LOOPRULE_REPEATEND)
@@ -527,6 +529,13 @@ Color BoardHistory::checkRepeatEndWinner(const Board& board) const {
   assert(repeatLength % 2 == 0);
   int repeatTurn = repeatLength / 2;
 
+  //检查是否有pass
+  for(int i=0; i<repeatTurn*4; i++) {
+    assert(moveHistory.size()-1-i >= 0);
+    if(!board.isOnBoard(moveHistory[moveHistory.size()-1-i].loc))
+      return C_WALL;
+  }
+
   bool hasBeenInTrapMe = false;
   bool hasBeenInTrapOpp = false;
   for(int turn=0; turn<repeatTurn; turn++) {
@@ -549,6 +558,19 @@ Color BoardHistory::checkRepeatEndWinner(const Board& board) const {
     return getOpp(board.nextPla);
   else 
   {
+    //检查是否一方为老鼠，另一方为狮虎。允许阻渡
+    Color colorOpp=board.colors[moveHistory[moveHistory.size()-1].loc];
+    Color colorMe=board.colors[moveHistory[moveHistory.size()-3].loc];
+    assert(getPiecePla(colorOpp) == getOpp(board.nextPla));
+    assert(getPiecePla(colorMe) == board.nextPla);
+    colorOpp=getPieceType(colorOpp);
+    colorMe=getPieceType(colorMe);
+    if(colorOpp==C_RAT&&(colorMe==C_TIGER||colorMe==C_LION))
+      return getOpp(board.nextPla);
+    else if(colorMe==C_RAT&&(colorOpp==C_TIGER||colorOpp==C_LION))
+      return board.nextPla;
+
+    //重复局面的上一步是否为同一个棋子，判定长捉
     int moveHistIdx0=moveHistory.size()-1;
     int moveHistIdx1=moveHistory.size()-1-4*repeatTurn;
     assert(moveHistIdx1>=0);
@@ -557,6 +579,7 @@ Color BoardHistory::checkRepeatEndWinner(const Board& board) const {
       return board.nextPla;
     else
       return getOpp(board.nextPla);
+    
   }
   ASSERT_UNREACHABLE;
 }

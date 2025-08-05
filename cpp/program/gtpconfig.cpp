@@ -245,6 +245,7 @@ string GTPConfig::makeConfig(
   else if(rules.loopRule == Rules::LOOPRULE_NONE)            replace("$$LOOPRULE_RULE", "loopRule = NONE");
   else if(rules.loopRule == Rules::LOOPRULE_REPEATEND)            replace("$$LOOPRULE_RULE", "loopRule = REPEATEND");
   else if(rules.loopRule == Rules::LOOPRULE_TWOONE)            replace("$$LOOPRULE_RULE", "loopRule = TWOONE");
+  else if(rules.loopRule == Rules::LOOPRULE_FIVETWO)            replace("$$LOOPRULE_RULE", "loopRule = FIVETWO");
   else { ASSERT_UNREACHABLE; }
 
 

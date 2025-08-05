@@ -276,6 +276,25 @@ Color GameLogic::checkWinnerAfterPlayed(
         }
       }
     }
+    else if(hist.rules.loopRule == Rules::LOOPRULE_FIVETWO)
+    {
+      const int max73historyLen = 6;  // include the last move, so it is 5+1
+      int noCaptureTurn = board.movenumslc / 2;
+
+      auto movehist = hist.get73RuleHistory(board, pla, std::min(noCaptureTurn, max73historyLen));
+      if(movehist.size() > 0) {
+        assert(movehist[0] == loc);
+        int count = 0;
+        for(int i = 0; i < movehist.size(); i++) {
+          if(movehist[i] == loc)
+            count += 1;
+        }
+        if(count >= 3)  // move into a location which has been played >= 2 times in the last 6 turns
+        {
+          return getOpp(pla);
+        }
+      }
+    }
     else if(hist.rules.loopRule == Rules::LOOPRULE_REPEATEND)
     {
       Color r=hist.checkRepeatEndWinner(board);

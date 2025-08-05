@@ -550,6 +550,7 @@ void NNInputs::fillRowV7(
     hist.rules.loopRule==Rules::LOOPRULE_NONE?0:
     hist.rules.loopRule==Rules::LOOPRULE_REPEATEND?7:
     hist.rules.loopRule==Rules::LOOPRULE_TWOONE?2:
+    hist.rules.loopRule==Rules::LOOPRULE_FIVETWO?5:
     0;
   {
     auto h = hist.get73RuleHistory(board, nextPlayer, rule73length);
@@ -646,6 +647,9 @@ void NNInputs::fillRowV7(
   }
   else if(hist.rules.loopRule == Rules::LOOPRULE_TWOONE) {
     //rowGlobal[30] = 1.0;
+  }
+  else if(hist.rules.loopRule == Rules::LOOPRULE_FIVETWO) {
+    //rowGlobal[31] = 1.0;
   }
   else {
     ASSERT_UNREACHABLE;
@@ -776,6 +780,7 @@ void NNInputs::fillRowV201(
     hist.rules.loopRule==Rules::LOOPRULE_NONE?0:
     hist.rules.loopRule==Rules::LOOPRULE_REPEATEND?7:
     hist.rules.loopRule==Rules::LOOPRULE_TWOONE?2:
+    hist.rules.loopRule==Rules::LOOPRULE_FIVETWO?5:
     0;
   {
     auto h = hist.get73RuleHistory(board, nextPlayer, rule73length);
@@ -860,6 +865,8 @@ void NNInputs::fillRowV201(
     rowGlobal[29] = 1.0;
   } else if(hist.rules.loopRule == Rules::LOOPRULE_TWOONE) {
     rowGlobal[30] = 1.0;
+  } else if(hist.rules.loopRule == Rules::LOOPRULE_FIVETWO) {
+    rowGlobal[31] = 1.0;
   } else {
     ASSERT_UNREACHABLE;
   }
