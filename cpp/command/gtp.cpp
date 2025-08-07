@@ -2014,6 +2014,9 @@ int MainCmds::gtp(const vector<string>& args) {
       response = Global::trim(filterDoubleNewlines(sout.str()));
     }
 
+    else if(command == "getpos") {
+      response = engine->bot->getRootHist().moveHistoryToString();
+    }
 
     else if(command == "loadsgf") {
       if(pieces.size() != 1 && pieces.size() != 2) {

@@ -93,6 +93,11 @@ struct BoardHistory {
 
   Hash128 getRulesHash() const;
 
+  // Convert moveHistory to string format (inverse of Location::parseSequenceGom)
+  // Format: letter(s) for x-coordinate (starting from 'a'), number for y-coordinate (board.y_size - y, starting from 1)
+  // Example: (0,0),(1,2),(3,4) with board.y_size=19 -> "a19b17d15"
+  std::string moveHistoryToString() const;
+
  private:
 };
 

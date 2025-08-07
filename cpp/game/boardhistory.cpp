@@ -257,3 +257,43 @@ Hash128 BoardHistory::getRulesHash() const {
 }
 
 
+
+std::string BoardHistory::moveHistoryToString() const {
+  std::string result;
+
+  for(const Move& move: moveHistory) {
+    Loc loc = move.loc;
+
+    // Handle special locations
+    if(loc == Board::PASS_LOC) {
+      result += "pass";
+      continue;
+    }
+    if(loc == Board::NULL_LOC) {
+      result += "null";
+      continue;
+    }
+
+    // Get x and y coordinates
+    int x = Location::getX(loc, initialBoard.x_size);
+    int y = Location::getY(loc, initialBoard.x_size);
+
+    // Convert x to letter(s)
+    if(x < 26) {
+      // Single letter
+      result += static_cast<char>('a' + x);
+    } else {
+      // Two letters for x >= 26
+      // This should match the parsing logic: x = (first_letter - 'a') * 26 + (second_letter - 'a')
+      // So: first_letter = x / 26, second_letter = x % 26
+      result += static_cast<char>('a' + x / 26);
+      result += static_cast<char>('a' + x % 26);
+    }
+
+    // Convert y to number (board.y_size - y, starting from 1)
+    int displayY = initialBoard.y_size - y;
+    result += std::to_string(displayY);
+  }
+
+  return result;
+}
