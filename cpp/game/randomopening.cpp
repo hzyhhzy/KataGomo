@@ -121,7 +121,7 @@ static bool tryInitializeRandomOpening(
     board.setStone(loc_from, C_EMPTY);
   }
       
-  hist.clear(board,nextPlayer,hist.rules);
+  hist.clear(board,nextPlayer,hist0.rules);
 
   //check winrate
   BoardValue value = getBoardValue(botB, board, hist, nextPlayer);
@@ -136,6 +136,35 @@ static bool tryInitializeRandomOpening(
   return true;
 }
 
+static bool tryInitializeRandomOpeningForMatch(
+  Search* botB,
+  Search* botW,
+  Board& board0,
+  BoardHistory& hist0,
+  Player& nextPlayer0,
+  Rand& gameRand,
+  const PlaySettings& playSettings) {
+
+  Board board(board0);
+  BoardHistory hist(hist0);
+  Player nextPlayer(nextPlayer0);
+
+  if (gameRand.nextBool(0.5)) {
+    board.setStone(Location::getLoc(0, 8, board.x_size), C_EMPTY);//remove a tiger
+  }
+  else {
+    board.setStone(Location::getLoc(5, 7, board.x_size), C_EMPTY);//remove a dog,cat,and wolf
+    board.setStone(Location::getLoc(1, 7, board.x_size), C_EMPTY);
+    board.setStone(Location::getLoc(2, 6, board.x_size), C_EMPTY);
+  }
+
+
+  hist.clear(board, nextPlayer, hist0.rules);
+  board0 = board;
+  nextPlayer0 = board.nextPla;
+  hist0 = hist;
+  return true;
+}
 
 void RandomOpening::initializeRandomOpening(
     Search* botB,
@@ -149,7 +178,11 @@ void RandomOpening::initializeRandomOpening(
   triedCount++;
   succeedCount++;
   int count=0;
-  while(!tryInitializeRandomOpening(botB,botW,board,hist,nextPlayer,gameRand,playSettings)) {
+  while(
+    playSettings.forSelfPlay?
+    (!tryInitializeRandomOpening(botB,botW,board,hist,nextPlayer,gameRand,playSettings)):
+    (!tryInitializeRandomOpeningForMatch(botB,botW,board,hist,nextPlayer,gameRand,playSettings))
+    ) {
     triedCount++;
     count++;
     if(count>500) //exp(-500*0.03)

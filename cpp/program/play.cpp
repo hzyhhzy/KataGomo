@@ -384,12 +384,12 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     //randomize maxmove rules
     {
-      int maxmoves = rand.nextExponential() * 50 + 150 - rand.nextExponential() * 15; //mean 185
+      int maxmoves = rand.nextExponential() * 80 + 180 - rand.nextExponential() * 30; //mean 230
       if(maxmoves > 700)
         maxmoves = 700;
       if(maxmoves < 10)
         maxmoves = 10;
-      int maxmovesnc = rand.nextExponential() * 30 + 80 - rand.nextExponential() * 10; //mean 100
+      int maxmovesnc = rand.nextExponential() * 50 + 110 - rand.nextExponential() * 20; //mean 140
       if(maxmovesnc > 400)
         maxmovesnc = 400;
       if(maxmovesnc < 10)
