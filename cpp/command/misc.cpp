@@ -2239,6 +2239,7 @@ int MainCmds::sampleinitializations(const vector<string>& args) {
       botSpec,
       botSpec,
       NULL,
+      NULL,
       logger,
       nullptr,
       nullptr,

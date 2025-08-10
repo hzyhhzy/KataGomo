@@ -37,6 +37,11 @@ struct PlaySettings {
   //Scale frequency weights for writing data by this
   double scaleDataWeight;
 
+  double vcfForkGameProb;
+  double vcfForkPosProb0;
+  double vcfForkPosProb1;
+  double vcfForkPosProb2;
+
   //Record positions from within the search tree that had at least this many visits, recording only with this weight.
   bool recordTreePositions;
   int recordTreeThreshold;

@@ -819,8 +819,11 @@ vector<Loc> Location::parseSequenceGom(string str, const Board& b) {
 
 void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vector<Move>* hist) {
   if(hist != NULL)
-    out << "MoveNum: " << hist->size() << " ";
+    out << "HistMoveNum: " << hist->size() << " ";
   out << "HASH: " << board.pos_hash << "\n";
+  out << "Stage: " << board.stage << "\n";
+  out << "Movenum: " << board.movenum << "\n";
+  out << "Black pass: " << board.blackPassNum << "    White pass: " << board.whitePassNum << "\n";
   bool showCoords = board.x_size <= 50 && board.y_size <= 50;
   if(showCoords) {
     const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -829,25 +832,25 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
       if(x <= 24) {
         out << " ";
         out << xChar[x];
-      }
-      else {
-        out << "A" << xChar[x-25];
+      } else {
+        out << "A" << xChar[x - 25];
       }
     }
     out << "\n";
   }
 
-  for(int y = 0; y < board.y_size; y++)
-  {
+  for(int y = 0; y < board.y_size; y++) {
     if(showCoords) {
       char buf[16];
-      sprintf(buf,"%2d",board.y_size-y);
+      sprintf(buf, "%2d", board.y_size - y);
       out << buf << ' ';
     }
-    for(int x = 0; x < board.x_size; x++)
-    {
-      Loc loc = Location::getLoc(x,y,board.x_size);
-      char s = PlayerIO::colorToChar(board.colors[loc]);
+    for(int x = 0; x < board.x_size; x++) {
+      Loc loc = Location::getLoc(x, y, board.x_size);
+      Color c = board.colors[loc];
+      if(loc == board.firstLoc)
+        c = board.nextPla;
+      char s = PlayerIO::colorToChar(c);
       if(board.colors[loc] == C_EMPTY && markLoc == loc)
         out << '@';
       else
@@ -855,17 +858,21 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
 
       bool histMarked = false;
       if(hist != NULL) {
-        size_t start = hist->size() >= 3 ? hist->size()-3 : 0;
-        for(size_t i = 0; start+i < hist->size(); i++) {
-          if((*hist)[start+i].loc == loc) {
-            out << (1+i);
+        size_t start = hist->size() >= 3 ? hist->size() - 3 : 0;
+        for(size_t i = 0; start + i < hist->size(); i++) {
+          if((*hist)[start + i].loc == loc) {
+            out << (1 + i);
             histMarked = true;
             break;
           }
         }
       }
+      if(!histMarked && loc == board.firstLoc) {
+        out << 1;
+        histMarked = true;
+      }
 
-      if(x < board.x_size-1 && !histMarked)
+      if(x < board.x_size - 1 && !histMarked)
         out << ' ';
     }
     out << "\n";

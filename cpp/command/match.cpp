@@ -226,7 +226,7 @@ int MainCmds::match(const vector<string>& args) {
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
         
         gameData = gameRunner->runGame(
-          seed, botSpecB, botSpecW, NULL, logger,
+          seed, botSpecB, botSpecW, NULL, NULL, logger,
           shouldStopFunc, shouldPause, nullptr, nullptr, nullptr
         );
       }

@@ -9,6 +9,7 @@ PlaySettings::PlaySettings()
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
+  vcfForkGameProb(0.0),    vcfForkPosProb0(0.10),    vcfForkPosProb1(0.05),    vcfForkPosProb2(0.05),
    reduceVisits(false),reduceVisitsThreshold(100.0),reduceVisitsThresholdLookback(1),reducedVisitsMin(0),reducedVisitsWeight(1.0f),
    policySurpriseDataWeight(0.0),valueSurpriseDataWeight(0.0),scaleDataWeight(1.0),
    recordTreePositions(false),recordTreeThreshold(0),recordTreeTargetWeight(0.0f),
@@ -80,6 +81,14 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
   playSettings.cheapSearchProb = cfg.getDouble("cheapSearchProb",0.0,1.0);
   playSettings.cheapSearchVisits = cfg.getInt("cheapSearchVisits",1,10000000);
   playSettings.cheapSearchTargetWeight = cfg.getFloat("cheapSearchTargetWeight",0.0f,1.0f);
+
+  playSettings.vcfForkGameProb = cfg.getDouble("vcfForkGameProb",0.0,1.0);
+  if(playSettings.vcfForkGameProb > 0.0) {
+    playSettings.vcfForkPosProb0 = cfg.contains("vcfForkPosProb0") ? cfg.getDouble("vcfForkPosProb0",0.0,1.0) : 0.10;
+    playSettings.vcfForkPosProb1 = cfg.contains("vcfForkPosProb1") ? cfg.getDouble("vcfForkPosProb1",0.0,1.0) : 0.05;
+    playSettings.vcfForkPosProb2 = cfg.contains("vcfForkPosProb2") ? cfg.getDouble("vcfForkPosProb2",0.0,1.0) : 0.05;
+  }
+
   playSettings.reduceVisits = cfg.getBool("reduceVisits");
   playSettings.reduceVisitsThreshold = cfg.getDouble("reduceVisitsThreshold",0.0,0.999999);
   playSettings.reduceVisitsThresholdLookback = cfg.getInt("reduceVisitsThresholdLookback",0,1000);

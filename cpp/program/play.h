@@ -25,12 +25,37 @@ struct InitialPosition {
   ~InitialPosition();
 };
 
+// Holds various initial positions that we may start from rather than a whole new game
+struct ForkData {
+  std::mutex mutex;
+  static const int FORK_NONE = -1;
+  static const int FORK_NORMAL = 0;
+  static const int FORK_VCF = 1;
+  static const int FORK_VCF_R1 = 2;
+  static const int FORK_VCF_R2 = 3;
+  std::vector<InitialPosition> forks[4];     // normal forks, vcf forks, vcf_r1 forks, vcf_r2 forks
+  //normal forks: no VCN mode
+  //vcf forks: pla==defendpla, stage=0
+  //vcf_r1 forks: pla==defendpla, stage=1, randomly play a stone then start vcf
+  //vcf_r2 forks: pla==defendpla, stage=2, randomly play a stone then start vcf
+
+  ~ForkData();
+
+  void add(const InitialPosition& pos, int type);
+  InitialPosition get(Rand& rand, int type);
+  InitialPosition getVCFPos(Rand& rand, int& type);
+  bool isEmpty();
+
+};
+
 
 struct OtherGameProperties {
   bool isSgfPos = false;
   bool isHintPos = false;
   bool allowPolicyInit = true;
   bool isOpeningPos = false; //some fixed openings
+  bool isFork = false;
+  int forkType = ForkData::FORK_NONE;
 
   int hintTurn = -1;
   Hash128 hintPosHash;
@@ -233,6 +258,12 @@ namespace Play {
     std::function<void(const Board&, const BoardHistory&, Player, Loc, const std::vector<double>&, const std::vector<double>&, const Search*)> onEachMove
   );
 
+  void maybeVCFForkGame(
+    const FinishedGameData* finishedGameData,
+    ForkData* forkData,
+    const PlaySettings& playSettings,
+    Rand& gameRand,
+    Search* bot);
 }
 
 
@@ -258,6 +289,7 @@ public:
     const std::string& seed,
     const MatchPairer::BotSpec& botSpecB,
     const MatchPairer::BotSpec& botSpecW,
+    ForkData* forkData,
     const Sgf::PositionSample* startPosSample,
     Logger& logger,
     const std::function<bool()>& shouldStop,

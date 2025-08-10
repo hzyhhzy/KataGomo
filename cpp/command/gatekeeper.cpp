@@ -466,7 +466,7 @@ int MainCmds::gatekeeper(const vector<string>& args) {
       if(netAndStuff->matchPairer->getMatchup(botSpecB, botSpecW, logger)) {
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
         gameData = gameRunner->runGame(
-          seed, botSpecB, botSpecW,  NULL, logger,
+          seed, botSpecB, botSpecW,  NULL, NULL, logger,
           shouldStopFunc, shouldPause, nullptr, nullptr, nullptr
         );
       }

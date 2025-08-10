@@ -751,21 +751,29 @@ void NNEvaluator::evaluate(
       policySum += policy[i];
     }
 
-    if(!isfinite(policySum)) {
-      if(board.numStonesOnBoard() > 0) {
-        logger->write("Got nonfinite for policy sum");
-        history.printDebugInfo(cout, board);
-      }
-      else {
-        //more frequently
-        logger->write("Got nonfinite for policy sum for empty board");
-      }
+    bool ignoreNANPrint = false;
+
+    if(history.rules.VCNRule!=Rules::VCNRULE_NOVC)
+    {
+      Color VCside = history.rules.vcSide();
+      int VClevel = history.rules.vcLevel();
+      int realVClevel = VClevel + board.whitePassNum + board.blackPassNum;
+      if(realVClevel >= 5)
+        ignoreNANPrint = true;
+    }
+
+    if(board.numStonesOnBoard() == 0)
+      ignoreNANPrint = true;
+
+    if(!isfinite(policySum) && !ignoreNANPrint) {
+      logger->write("Got nonfinite for policy sum");
+      history.printDebugInfo(cout, board);
       //throw StringError("Got nonfinite for policy sum");
     }
 
     //Somehow all legal moves rounded to 0 probability
     if(policySum <= 0.0 || (!isfinite(policySum) || maxPolicy > 10000 || maxPolicy < -10000)) {
-      if(!buf.errorLogLockout && logger != NULL && board.numStonesOnBoard() > 0) {
+      if(!ignoreNANPrint && !buf.errorLogLockout && logger != NULL) {
         buf.errorLogLockout = true;
         history.printDebugInfo(cout, board);
         logger->write(
@@ -850,8 +858,8 @@ void NNEvaluator::evaluate(
           !isfinite(varTimeLeft) ||
           !isfinite(shorttermWinlossError) 
         ) {
-          logger->write("Got nonfinite for nneval value");
-          if(board.numStonesOnBoard() > 0) {
+          if(!ignoreNANPrint) {
+            logger->write("Got nonfinite for nneval value");
             cout << winLogits << " " << lossLogits << " " << noResultLogits << " " << varTimeLeft << " "
                  << shorttermWinlossError << endl;
           }

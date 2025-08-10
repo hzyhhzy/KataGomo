@@ -26,6 +26,174 @@ InitialPosition::~InitialPosition()
 {}
 
 
+ForkData::~ForkData() {
+}
+
+void ForkData::add(const InitialPosition& pos, int type) {
+  std::lock_guard<std::mutex> lock(mutex);
+  if(type < 0 || type >= 4)
+  {
+    ASSERT_UNREACHABLE;
+    return;
+  }
+
+  forks[type].push_back(pos);
+}
+
+bool ForkData::isEmpty() {
+  std::lock_guard<std::mutex> lock(mutex);
+  for(int type = 0; type < 4; type++) {
+    if(forks[type].size() > 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+
+InitialPosition ForkData::get(Rand& rand, int type) {
+  std::lock_guard<std::mutex> lock(mutex);
+  if(type < 0 || type >= 4)
+  {
+    ASSERT_UNREACHABLE;
+    return InitialPosition();
+  }
+
+  if(forks[type].size() <= 0)
+    return InitialPosition();
+  testAssert(forks[type].size() < 0x1FFFffff);
+  uint32_t r = rand.nextUInt((uint32_t)forks[type].size());
+  size_t last = forks[type].size() - 1;
+  InitialPosition pos = forks[type][r];
+  forks[type][r] = forks[type][last];
+  forks[type].resize(forks[type].size() - 1);
+  return pos;
+}
+
+InitialPosition ForkData::getVCFPos(Rand& rand,int& type) {
+  std::lock_guard<std::mutex> lock(mutex);
+  
+  // Collect all non-empty forks[1,2,3]
+  std::vector<int> availableTypes;
+  for(int t = 1; t <= 3; t++) {
+    if(forks[t].size() > 0) {
+      availableTypes.push_back(t);
+    }
+  }
+  
+  if(availableTypes.empty()) {
+    return InitialPosition();
+  }
+  
+  // Randomly select a type
+  int selectedTypeIndex = rand.nextUInt((uint32_t)availableTypes.size());
+  int selectedType = availableTypes[selectedTypeIndex];
+  type = selectedType;
+  
+  // Randomly get a position from the selected type
+  testAssert(forks[selectedType].size() < 0x1FFFffff);
+  uint32_t r = rand.nextUInt((uint32_t)forks[selectedType].size());
+  size_t last = forks[selectedType].size() - 1;
+  InitialPosition pos = forks[selectedType][r];
+  forks[selectedType][r] = forks[selectedType][last];
+  forks[selectedType].resize(forks[selectedType].size() - 1);
+  
+  // Execute corresponding operations based on the selected type
+  if(selectedType == FORK_VCF) {
+
+    // If extracted type 1, change hist.rules.VCNRule to vcf and return
+   }
+  else if(selectedType == FORK_VCF_R1) {
+     // If extracted type 2, randomly place one stone
+     Board& board = pos.board;
+     BoardHistory& hist = pos.hist;
+     Player& pla = pos.pla;
+     
+     // Find legal move positions
+    std::vector<Loc> legalMoves;
+    for(int x = 0; x < board.x_size; x++) {
+      for(int y = 0; y < board.y_size; y++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        if(board.isLegal(loc, pla)) {
+          legalMoves.push_back(loc);
+        }
+      }
+    }
+    
+    if(!legalMoves.empty()) {
+      Loc randomLoc = legalMoves[rand.nextUInt((uint32_t)legalMoves.size())];
+      hist.makeBoardMoveAssumeLegal(board, randomLoc, pla);
+      pla = board.nextPla;
+    }
+    else {
+      type = FORK_NONE;
+      return InitialPosition();
+    }
+
+  }
+  else if(selectedType == FORK_VCF_R2) {
+     // If extracted type 3, randomly place two stones
+     Board& board = pos.board;
+     BoardHistory& hist = pos.hist;
+     Player& pla = pos.pla;
+     
+     // First random move
+    std::vector<Loc> legalMoves;
+    for(int x = 0; x < board.x_size; x++) {
+      for(int y = 0; y < board.y_size; y++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        if(board.isLegal(loc, pla)) {
+          legalMoves.push_back(loc);
+        }
+      }
+    }
+    
+    if(!legalMoves.empty()) {
+      Loc randomLoc1 = legalMoves[rand.nextUInt((uint32_t)legalMoves.size())];
+      hist.makeBoardMoveAssumeLegal(board, randomLoc1, pla);
+      pla = board.nextPla;
+      
+      // Second random move
+      legalMoves.clear();
+      for(int x = 0; x < board.x_size; x++) {
+        for(int y = 0; y < board.y_size; y++) {
+          Loc loc = Location::getLoc(x, y, board.x_size);
+          if(board.isLegal(loc, pla)) {
+            legalMoves.push_back(loc);
+          }
+        }
+      }
+      
+      if(!legalMoves.empty()) {
+        Loc randomLoc2 = legalMoves[rand.nextUInt((uint32_t)legalMoves.size())];
+        hist.makeBoardMoveAssumeLegal(board, randomLoc2, pla);
+        pla = board.nextPla;
+      }
+      else {
+        type = FORK_NONE;
+        return InitialPosition();
+      }
+    }
+    else {
+      type = FORK_NONE;
+      return InitialPosition();
+
+    }
+  }
+  
+  // Set VCNRule to VC4_B for VCF positions
+  assert(pos.board.stage==0);
+  if(pos.board.nextPla == C_BLACK) {
+    pos.hist.rules.VCNRule = Rules::VCNRULE_VC4_B;
+  } else {
+    pos.hist.rules.VCNRule = Rules::VCNRULE_VC4_W;
+  }
+  pos.hist.rules.firstPassWin = false;
+  pos.hist.rules.maxMoves = 0;
+  
+  return pos;
+}
+
 
 //------------------------------------------------------------------------------------------------
 
@@ -279,6 +447,11 @@ void GameInitializer::createGame(
     params.noResultUtilityForWhite = mean + noResultRandRadius * (rand.nextDouble() * 2 - 1);
     while(params.noResultUtilityForWhite < -1.0 || params.noResultUtilityForWhite > 1.0)
       params.noResultUtilityForWhite = mean + noResultRandRadius * (rand.nextDouble() * 2 - 1);
+  }
+
+  if (hist.rules.VCNRule != Rules::VCNRULE_NOVC || hist.rules.firstPassWin)//impossible to draw
+  {
+    params.noResultUtilityForWhite = 0.0;
   }
 }
 
@@ -1225,8 +1398,12 @@ FinishedGameData* Play::runGame(
 
   //Might get overwritten next as we also play sgfposes and such with asym mode!
   //So this is just a best efforts to make it more prominent for most of the asymmetric games.
-  if(gameData->playoutDoublingAdvantage != 0)
+  if(gameData->playoutDoublingAdvantage != 0) {
+    assert(
+      !(otherGameProps.forkType == ForkData::FORK_VCF || otherGameProps.forkType == ForkData::FORK_VCF_R1 ||
+        otherGameProps.forkType == ForkData::FORK_VCF_R2));
     gameData->mode = FinishedGameData::MODE_ASYM;
+  }
 
   if(otherGameProps.isSgfPos)
     gameData->mode = FinishedGameData::MODE_SGFPOS;
@@ -1262,30 +1439,44 @@ FinishedGameData* Play::runGame(
   //  RandomOpening::initializeSpecialOpening(board, hist, pla, gameRand);
   //}
   //else 
-  bool useBalancedRandomOpening = gameRand.nextBool(playSettings.initGamesWithRandomBalancedProb);
-  if(hist.rules.VCNRule != Rules::VCNRULE_NOVC)
-    useBalancedRandomOpening = true;
-  if(otherGameProps.isOpeningPos)
-    useBalancedRandomOpening = false;
+  if(!otherGameProps.isFork) {
+    bool useBalancedRandomOpening = gameRand.nextBool(playSettings.initGamesWithRandomBalancedProb);
+    if(hist.rules.VCNRule != Rules::VCNRULE_NOVC)
+      useBalancedRandomOpening = true;
+    if(otherGameProps.isOpeningPos)
+      useBalancedRandomOpening = false;
 
-  if(useBalancedRandomOpening) {
-    if(board.numStonesOnBoard() != 0)
-      throw StringError("Board should be empty before calling RandomOpening::initializeBalancedRandomOpening");
-    RandomOpening::initializeBalancedRandomOpening(botB, botW, board, hist, pla, gameRand, playSettings.forSelfPlay);
-  }
+    if(useBalancedRandomOpening) {
+      if(board.numStonesOnBoard() != 0)
+        throw StringError("Board should be empty before calling RandomOpening::initializeBalancedRandomOpening");
+      RandomOpening::initializeBalancedRandomOpening(botB, botW, board, hist, pla, gameRand, playSettings.forSelfPlay);
+    }
 
-
-  if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
-    double avgPolicyInitMoveNum =
-      otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAvgMoveNum : playSettings.policyInitAvgMoveNum;
-    if(avgPolicyInitMoveNum > 0) {
-      //Perform the initialization using a different noised komi, to get a bit of opening policy mixing across komi
-      {
-        double temperature = playSettings.policyInitAreaTemperature;
-        assert(temperature > 0.0 && temperature < 10.0);
-        PlayUtils::initializeGameUsingPolicy(botB, botW, board, hist, pla, gameRand, avgPolicyInitMoveNum, temperature, otherGameProps.isOpeningPos);
+    if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
+      double avgPolicyInitMoveNum =
+        otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAvgMoveNum : playSettings.policyInitAvgMoveNum;
+      if(avgPolicyInitMoveNum > 0) {
+        // Perform the initialization using a different noised komi, to get a bit of opening policy mixing across komi
+        {
+          double temperature = playSettings.policyInitAreaTemperature;
+          assert(temperature > 0.0 && temperature < 10.0);
+          PlayUtils::initializeGameUsingPolicy(
+            botB, botW, board, hist, pla, gameRand, avgPolicyInitMoveNum, temperature, otherGameProps.isOpeningPos);
+        }
       }
     }
+  }
+  else
+  {
+    assert(playSettings.forSelfPlay);
+    assert(
+      otherGameProps.forkType != ForkData::FORK_VCF || otherGameProps.forkType != ForkData::FORK_VCF_R1 ||
+      otherGameProps.forkType != ForkData::FORK_VCF_R2);
+    assert(gameData->noResultUtilityForWhite == 0);
+    assert(board.stage == 0);
+    assert(
+      (hist.rules.VCNRule == Rules::VCNRULE_VC4_B && board.nextPla == C_BLACK) ||
+      (hist.rules.VCNRule == Rules::VCNRULE_VC4_W && board.nextPla == C_WHITE));
   }
 
 
@@ -1490,6 +1681,7 @@ FinishedGameData* Play::runGame(
   }
 
   gameData->endHist = hist;
+  assert(gameData->endHist.initialBoard.pos_hash == gameData->startHist.initialBoard.pos_hash);
   if(hist.isGameFinished)
     gameData->hitTurnLimit = false;
   else
@@ -1836,6 +2028,7 @@ FinishedGameData* GameRunner::runGame(
   const string& seed,
   const MatchPairer::BotSpec& bSpecB,
   const MatchPairer::BotSpec& bSpecW,
+  ForkData* forkData,
   const Sgf::PositionSample* startPosSample,
   Logger& logger,
   const std::function<bool()>& shouldStop,
@@ -1850,11 +2043,23 @@ FinishedGameData* GameRunner::runGame(
   Rand gameRand(seed + ":" + "forGameRand");
 
   const InitialPosition* initialPosition = NULL;
+  InitialPosition forkPos;
+  int forkType = ForkData::FORK_NONE;
 
+  if(playSettings.forSelfPlay && forkData != NULL && gameRand.nextBool(playSettings.vcfForkGameProb)) {
+    forkPos = forkData->getVCFPos(gameRand, forkType);
+
+    if(forkType != ForkData::FORK_NONE) {
+      initialPosition = &forkPos;
+    }
+  }
   Board board;
   Player pla;
   BoardHistory hist;
   OtherGameProperties otherGameProps;
+  otherGameProps.isFork = forkType != ForkData::FORK_NONE;
+  otherGameProps.forkType = forkType;
+
   if(playSettings.forSelfPlay) {
     assert(botSpecB.botIdx == botSpecW.botIdx);
     SearchParams params = botSpecB.baseParams;
@@ -1934,12 +2139,113 @@ FinishedGameData* GameRunner::runGame(
 
   assert(finishedGameData != NULL);
 
+  Play::maybeVCFForkGame(finishedGameData, forkData, playSettings, gameRand, botB);
+
   if(botW != botB)
     delete botW;
   delete botB;
 
-  if(initialPosition != NULL)
-    delete initialPosition;
 
   return finishedGameData;
+}
+
+void Play::maybeVCFForkGame(
+  const FinishedGameData* finishedGameData,
+  ForkData* forkData,
+  const PlaySettings& playSettings,
+  Rand& gameRand,
+  Search* bot) {
+  if(forkData == NULL || playSettings.vcfForkGameProb <= 0)
+    return;
+  assert(finishedGameData->startHist.initialBoard.pos_hash == finishedGameData->endHist.initialBoard.pos_hash);
+  assert(finishedGameData->startHist.initialPla == finishedGameData->endHist.initialPla);
+
+  Rules rules = finishedGameData->startHist.rules;
+  if(rules.firstPassWin || rules.VCNRule != Rules::VCNRULE_NOVC)
+    return;
+
+  int numMoves = (int)(finishedGameData->endHist.moveHistory.size() - finishedGameData->startHist.moveHistory.size());
+  assert(finishedGameData->targetWeightByTurn.size() == numMoves);
+
+  if(numMoves <= 6)
+    return;
+
+
+  Board board;
+  Player pla;
+  BoardHistory hist;
+
+  
+  board = finishedGameData->startHist.initialBoard;
+  assert(board.pos_hash == finishedGameData->endHist.initialBoard.pos_hash);
+  pla = finishedGameData->startHist.initialPla;
+
+  hist.clear(board, pla, rules);
+  // Make sure it's prior to the last move
+
+  // Replay all those moves
+  for(int i = 0; i < finishedGameData->endHist.moveHistory.size(); i++) {
+    assert(board.nextPla = pla);
+    int moveUntilEnd = finishedGameData->endHist.moveHistory.size() - i;
+    if(moveUntilEnd < 7)  // sudden win, useless
+      break;
+    Loc loc = finishedGameData->endHist.moveHistory[i].loc;
+    if(!hist.isLegal(board, loc, pla)) {
+      // We have a bug of some sort if we got an illegal move on replay, unless
+      // we are in encore phase (pass for ko may change) or the rules are different
+      cout << board << endl;
+      cout << PlayerIO::colorToChar(pla) << endl;
+      cout << Location::toString(loc, board) << endl;
+      hist.printDebugInfo(cout, board);
+      cout << endl;
+      throw StringError("Illegal move when replaying to fork game?");
+      // Just break out due to the illegal move and stop the replay here
+      return;
+    }
+    assert(finishedGameData->endHist.moveHistory[i].pla == pla);
+    hist.makeBoardMoveAssumeLegal(board, loc, pla);
+    pla = board.nextPla;
+    if(board.blackPassNum > 0 || board.whitePassNum > 0)
+      break;
+    else {
+      assert(board.movenum == board.numStonesOnBoard() + board.stage);
+    }
+
+
+
+    if(hist.isGameFinished)
+      return;
+
+    if(i < finishedGameData->startHist.moveHistory.size())
+      continue;
+
+    if (pla == finishedGameData->endHist.winner && board.stage == 0) //maybe VCF fork
+    {
+      double forkProb = playSettings.vcfForkGameProb * playSettings.vcfForkPosProb0;
+      forkProb *= 16.0 / (16.0 + moveUntilEnd);
+      if (gameRand.nextBool(forkProb)) {
+        forkData->add(InitialPosition(board, hist, pla),ForkData::FORK_VCF);
+      }
+    }
+
+    if(board.numStonesOnBoard() >= 5) {
+      if(board.stage == 1)  // maybe VCF_R1 fork
+      {
+        double forkProb = playSettings.vcfForkGameProb * playSettings.vcfForkPosProb1;
+        if(gameRand.nextBool(forkProb)) {
+          forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF_R1);
+        }
+      }
+      else
+      {
+        double forkProb = playSettings.vcfForkGameProb * playSettings.vcfForkPosProb2;
+        if(gameRand.nextBool(forkProb)) {
+          forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF_R2);
+        }
+      }
+    }
+
+  }
+  
+
 }

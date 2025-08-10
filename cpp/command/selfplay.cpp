@@ -238,7 +238,8 @@ int MainCmds::selfplay(const vector<string>& args) {
   }
 
   //Check for unused config keys
-  cfg.warnUnusedKeys(cerr,&logger);
+  cfg.warnUnusedKeys(cerr, &logger);
+  ForkData* forkData = new ForkData();
 
   //Shared across all game loop threads
   std::atomic<int64_t> numGamesStarted(0);
@@ -246,6 +247,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     &gameRunner,
     &manager,
     &logger,
+    &forkData,
     switchNetsMidGame,
     &numGamesStarted,
     maxGamesTotal,
@@ -302,7 +304,7 @@ int MainCmds::selfplay(const vector<string>& args) {
 
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
         gameData = gameRunner->runGame(
-          seed, botSpecB, botSpecW, NULL, logger,
+          seed, botSpecB, botSpecW, forkData, NULL, logger,
           shouldStopFunc,
           shouldPause,
           (switchNetsMidGame ? checkForNewNNEval : nullptr),
@@ -387,6 +389,7 @@ int MainCmds::selfplay(const vector<string>& args) {
   //Delete and clean up everything else
   NeuralNet::globalCleanup();
   delete gameRunner;
+  delete forkData;
 
   if(sigReceived.load())
     logger.write("Exited cleanly after signal");

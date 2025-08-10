@@ -27,12 +27,12 @@ static Loc getRandomNearbyMove(Board& board, Rand& gameRand, double avgDist) {
   for(int x1 = 0; x1 < xsize; x1++)
     for(int y1 = 0; y1 < ysize; y1++) {
       Loc loc = Location::getLoc(x1, y1, xsize);
-      if(board.colors[loc] == C_EMPTY)
+      if(board.colors[loc] == C_EMPTY && loc != board.firstLoc)
         continue;
       for(int x2 = 0; x2 < xsize; x2++)
         for(int y2 = 0; y2 < ysize; y2++) {
           Loc loc2 = Location::getLoc(x2, y2, xsize);
-          if(board.colors[loc2] != C_EMPTY)
+          if(board.colors[loc2] != C_EMPTY || loc2 == board.firstLoc)
             continue;
           double middleBonusFactor = 1.5;
           double halfBoardLen = std::max(0.5 * (xsize - 1), 0.5 * (ysize - 1));
@@ -213,6 +213,7 @@ static bool tryInitializeBalancedRandomOpening(
   double avgDist = gameRand.nextExponential() * avgRandomDistFactor;
   for(int i = 0; i < randomMoveNum; i++) {
     Loc randomLoc = getRandomNearbyMove(boardCopy, gameRand, avgDist);
+    assert(boardCopy.isLegal(randomLoc, nextPlayerCopy));
     histCopy.makeBoardMoveAssumeLegal(boardCopy, randomLoc, nextPlayerCopy);
     if(histCopy.isGameFinished)
       return false;
