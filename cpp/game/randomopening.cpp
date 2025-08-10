@@ -125,9 +125,11 @@ static bool tryInitializeRandomOpening(
 
   //check winrate
   BoardValue value = getBoardValue(botB, board, hist, nextPlayer);
-  double extremeValue = std::max(value.win, std::max(value.loss, value.draw));
-  double rejectRate=pow(extremeValue,4)*0.97;
-  if(gameRand.nextBool(rejectRate))
+ // double extremeValue = std::max(value.win, std::max(value.loss, value.draw));
+  //double rejectRate = pow(extremeValue, 4) * 0.97;
+  double rejectRate = std::max(pow(value.win,2), std::max(pow(value.loss,2), pow(value.draw,3)));
+  rejectRate = ((rejectRate - 0.3) / 0.7) * 0.99;
+  if(rejectRate > 0 && gameRand.nextBool(rejectRate))
     return false;
     
   board0=board;
@@ -185,7 +187,7 @@ void RandomOpening::initializeRandomOpening(
     ) {
     triedCount++;
     count++;
-    if(count>500) //exp(-500*0.03)
+    if(count>1500) //exp(-500*0.03)
     {
       succeedCount -= 1;
       std::cout<<"RandomOpening failed"<<std::endl;
