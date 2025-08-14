@@ -2213,6 +2213,24 @@ int64_t Book::exportToHtmlDir(
       dataVarsStr += "-1,-1,";
     }
     dataVarsStr += "];\n";
+    
+    // Pre-calculate restricted positions for stage 1
+    dataVarsStr += "const restrictedPositions = [";
+    if(board.stage == 1) {
+      for(int y = 0; y < board.y_size; y++) {
+        for(int x = 0; x < board.x_size; x++) {
+          Loc loc = Location::getLoc(x, y, board.x_size);
+          // Only check empty positions
+          if(board.colors[loc] == C_EMPTY) {
+            double priority = board.getLocationPriority(x, y);
+            if(priority + Board::PRIOR_EPS < board.firstLocPriority) {
+              dataVarsStr += "[" + Global::intToString(x) + "," + Global::intToString(y) + "],";
+            }
+          }
+        }
+      }
+    }
+    dataVarsStr += "];\n";
 
     dataVarsStr += "const board = [";
     for(int y = 0; y<board.y_size; y++) {

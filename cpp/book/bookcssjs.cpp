@@ -415,6 +415,35 @@ let svgNS = "http://www.w3.org/2000/svg";
 
   }
 
+  // Draw red X marks for pre-calculated restricted positions
+   if(typeof restrictedPositions !== 'undefined' && restrictedPositions.length > 0) {
+     for(let i = 0; i < restrictedPositions.length; i++) {
+       let x = restrictedPositions[i][0];
+       let y = restrictedPositions[i][1];
+       let pos = y * bSizeX + x;
+       let symPos = getSymPos(pos);
+       let symX = symPos % bSizeX;
+       let symY = Math.floor(symPos / bSizeX);
+       
+       // Draw red X mark
+       let xMark = document.createElementNS(svgNS, "g");
+       let line1 = document.createElementNS(svgNS, "path");
+       let line2 = document.createElementNS(svgNS, "path");
+       
+       line1.setAttribute("stroke", "red");
+       line1.setAttribute("stroke-width", "0.1");
+       line1.setAttribute("d", "M" + (symX - 0.2) + "," + (symY - 0.2) + "L" + (symX + 0.2) + "," + (symY + 0.2));
+       
+       line2.setAttribute("stroke", "red");
+       line2.setAttribute("stroke-width", "0.1");
+       line2.setAttribute("d", "M" + (symX - 0.2) + "," + (symY + 0.2) + "L" + (symX + 0.2) + "," + (symY - 0.2));
+       
+       xMark.appendChild(line1);
+       xMark.appendChild(line2);
+       boardSvg.appendChild(xMark);
+     }
+   }
+
   // Draw move labels on board
   for(let i = 0; i<moves.length; i++) {
     let moveData = moves[i];
