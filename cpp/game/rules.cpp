@@ -171,7 +171,7 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
     rules.VCNRule = Rules::parseVCNRule(value);
     if(rules.VCNRule!=VCNRULE_NOVC) {
       rules.firstPassWin = false;
-      rules.maxMoves = 0;
+      //rules.maxMoves = 0;
     }
   } else if(key == "firstpasswin") {
     rules.firstPassWin = Global::stringToBool(value);
@@ -184,7 +184,7 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
     rules.maxMoves = Global::stringToInt(value);
     if(rules.maxMoves > 0) {
       rules.firstPassWin = false;
-      rules.VCNRule = VCNRULE_NOVC;
+      //rules.VCNRule = VCNRULE_NOVC;
     }
   } else
     throw IOError("Unknown rules option: " + key);

@@ -52,7 +52,7 @@ bool ForkData::isEmpty() {
 
 
 InitialPosition ForkData::get(Rand& rand, int type) {
-  std::lock_guard<std::mutex> lock(mutex);
+  std::lock_guard<std::mutex> lock(mutex); 
   if(type < 0 || type >= 4)
   {
     ASSERT_UNREACHABLE;
@@ -190,6 +190,15 @@ InitialPosition ForkData::getVCFPos(Rand& rand,int& type) {
   }
   pos.hist.rules.firstPassWin = false;
   pos.hist.rules.maxMoves = 0;
+  if (rand.nextBool(0.7))
+  {
+    int maxMoveFromNow = 6 + 4 * int(rand.nextExponential() * 5);
+
+    int maxMove = pos.board.movenum + maxMoveFromNow;
+    if(maxMove > pos.board.x_size * pos.board.y_size - 20)
+      maxMove = 0;
+    pos.hist.rules.maxMoves = maxMove;
+  }
   
   return pos;
 }
@@ -2224,7 +2233,7 @@ void Play::maybeVCFForkGame(
       double forkProb = playSettings.vcfForkGameProb * playSettings.vcfForkPosProb0;
       forkProb *= 16.0 / (16.0 + moveUntilEnd);
       if (gameRand.nextBool(forkProb)) {
-        forkData->add(InitialPosition(board, hist, pla),ForkData::FORK_VCF);
+        forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF);
       }
     }
 
@@ -2233,14 +2242,18 @@ void Play::maybeVCFForkGame(
       {
         double forkProb = playSettings.vcfForkGameProb * playSettings.vcfForkPosProb1;
         if(gameRand.nextBool(forkProb)) {
-          forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF_R1);
+          Loc loc1, loc2;
+          if(board.findFour(getOpp(pla), loc1, loc2) < 4)
+            forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF_R1);
         }
       }
       else
       {
         double forkProb = playSettings.vcfForkGameProb * playSettings.vcfForkPosProb2;
         if(gameRand.nextBool(forkProb)) {
-          forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF_R2);
+          Loc loc1, loc2;
+          if(board.findFour(getOpp(pla), loc1, loc2) < 4)
+            forkData->add(InitialPosition(board, hist, pla), ForkData::FORK_VCF_R2);
         }
       }
     }
