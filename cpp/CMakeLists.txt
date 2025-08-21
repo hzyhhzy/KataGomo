@@ -243,6 +243,15 @@ add_executable(katago
   command/sandbox.cpp
   command/selfplay.cpp
   command/tune.cpp
+  tests/testnnue.cpp
+  nnue/Eva_nnuev2.cpp
+  nnue/NNUEglobal.cpp
+  nnue/NNUEBoardHistory.cpp
+  nnue/NNUE_VCF_ABSearch.cpp
+  nnue_search/NNUE_VCF_MCTSsearch.cpp
+  nnue_search/VCFLogic.cpp
+  nnue_search/VCFCalculator.cpp
+
   main.cpp
   )
 

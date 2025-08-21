@@ -1,6 +1,7 @@
 #include "core/global.h"
 
 namespace MainCmds {
+  int testnnue();
   int analysis(const std::vector<std::string>& args);
   int benchmark(const std::vector<std::string>& args);
   int contribute(const std::vector<std::string>& args);

@@ -18,7 +18,8 @@ namespace PlayUtils {
     double temperature,
     Rand& gameRand
   ); 
-
+  
+  void playMoveLocSequence(Board& board, Player& nextPlayer, std::vector<Loc> locs); 
   Loc chooseRandomLegalMove(const Board& board, const BoardHistory& hist, Player pla, Rand& gameRand, Loc banMove);
   int chooseRandomLegalMoves(const Board& board, const BoardHistory& hist, Player pla, Rand& gameRand, Loc* buf, int len);
 
