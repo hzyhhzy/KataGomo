@@ -14,6 +14,9 @@
 #include "../program/playutils.h"
 #include "../program/play.h"
 #include "../command/commandline.h"
+#include "../nnue/Eva_nnuev2.h"
+#include "../nnue_search/VCFCalculator.h"
+#include "../nnue_search/NNUE_VCF_MCTSsearch.h"
 #include "../main.h"
 
 #include <chrono>
@@ -181,6 +184,7 @@ int MainCmds::genbook(const vector<string>& args) {
   string traceSgfFile;
   string logFile;
   string bonusFile;
+  string nnuePath;
   int numIterations;
   int saveEveryIterations;
   double traceBookMinVisits;
@@ -200,6 +204,7 @@ int MainCmds::genbook(const vector<string>& args) {
     TCLAP::ValueArg<string> traceSgfFileArg("","trace-sgf-file","Other sgf file we should copy all the lines from",false,string(),"FILE");
     TCLAP::ValueArg<string> logFileArg("","log-file","Log file to write to",true,string(),"DIR");
     TCLAP::ValueArg<string> bonusFileArg("","bonus-file","SGF of bonuses marked",false,string(),"DIR");
+    TCLAP::ValueArg<string> nnuePathArg("","nnue-path","Path to NNUE weight file",false,string(),"FILE");
     TCLAP::ValueArg<int> numIterationsArg("","num-iters","Number of iterations to expand book",true,0,"N");
     TCLAP::ValueArg<int> saveEveryIterationsArg("","save-every","Number of iterations per save to book file",true,0,"N");
     TCLAP::ValueArg<double> traceBookMinVisitsArg("","trace-book-min-visits","Require >= this many visits for copying from traceBookFile",false,0.0,"N");
@@ -213,6 +218,7 @@ int MainCmds::genbook(const vector<string>& args) {
     cmd.add(traceSgfFileArg);
     cmd.add(logFileArg);
     cmd.add(bonusFileArg);
+    cmd.add(nnuePathArg);
     cmd.add(numIterationsArg);
     cmd.add(saveEveryIterationsArg);
     cmd.add(traceBookMinVisitsArg);
@@ -231,6 +237,7 @@ int MainCmds::genbook(const vector<string>& args) {
     traceSgfFile = traceSgfFileArg.getValue();
     logFile = logFileArg.getValue();
     bonusFile = bonusFileArg.getValue();
+    nnuePath = nnuePathArg.getValue();
     numIterations = numIterationsArg.getValue();
     saveEveryIterations = saveEveryIterationsArg.getValue();
     traceBookMinVisits = traceBookMinVisitsArg.getValue();
@@ -262,6 +269,27 @@ int MainCmds::genbook(const vector<string>& args) {
   const double bonusFileScale = cfg.contains("bonusFileScale") ? cfg.getDouble("bonusFileScale",0.0,1000000.0) : 1.0;
 
   const double randomizeParamsStdev = cfg.contains("randomizeParamsStdev") ? cfg.getDouble("randomizeParamsStdev",0.0,2.0) : 0.0;
+
+  // Initialize NNUE weight if path is provided
+  NNUEV2::ModelWeight* nnueWeight = nullptr;
+  NNUE_VCF_MCTSsearch::MCTS_CacheTable* nnueCache = nullptr;
+  if(!nnuePath.empty()) {
+    logger.write("Loading NNUE weight from: " + nnuePath);
+    nnueWeight = new NNUEV2::ModelWeight();
+    bool suc=nnueWeight->loadParam(nnuePath);
+    if(suc)
+       logger.write("NNUE weight loaded successfully");
+    else
+    {
+      logger.write("Bad NNUE file: " + nnuePath);
+      return 1;
+    }
+
+    int nnueCacheSizePowerOfTwo = cfg.contains("nnueCacheSizePowerOfTwo") ? cfg.getInt("nnueCacheSizePowerOfTwo", -1, 48) : 26;
+    int nnueMutexPoolSizePowerOfTwo = cfg.contains("nnueMutexPoolSizePowerOfTwo") ? cfg.getInt("nnueMutexPoolSizePowerOfTwo", -1, 24) : 17;
+    if(nnueCacheSizePowerOfTwo > 0)
+      nnueCache = new NNUE_VCF_MCTSsearch::MCTS_CacheTable(nnueCacheSizePowerOfTwo, nnueMutexPoolSizePowerOfTwo);
+  }
 
   const bool logSearchInfo = cfg.getBool("logSearchInfo");
   const string rulesLabel = cfg.getString("rulesLabel");
@@ -329,6 +357,15 @@ int MainCmds::genbook(const vector<string>& args) {
   for(int i = 0; i<numGameThreads; i++) {
     string searchRandSeed = Global::uint64ToString(rand.nextUInt64());
     searches.push_back(new Search(params, nnEval, &logger, searchRandSeed));
+  }
+
+  // Create VCF calculators
+  vector<VCFCalculator*> vcfCalculators;
+  if(nnueWeight != nullptr) {
+    for(int i = 0; i<numGameThreads; i++) {
+      vcfCalculators.push_back(new VCFCalculator(nnueCache, nnueWeight));
+    }
+    logger.write("Created " + Global::intToString(numGameThreads) + " VCF calculators");
   }
 
   // Check for unused config keys
@@ -595,7 +632,7 @@ int MainCmds::genbook(const vector<string>& args) {
 
 
   // Perform a short search and update thisValuesNotInBook for a node
-  auto searchAndUpdateNodeThisValues = [&](Search* search, SymBookNode node) {
+  auto searchAndUpdateNodeThisValues = [&](Search* search, VCFCalculator* vcfcalc, SymBookNode node) {
     ConstSymBookNode constNode(node);
     BoardHistory hist;
     std::vector<int> symmetries;
@@ -618,11 +655,42 @@ int MainCmds::genbook(const vector<string>& args) {
     search->setRootSymmetryPruningOnly(symmetries);
 
     // Directly set the values for a terminal position
-    //TODO check vcf
     if(hist.isGameFinished) {
       setNodeThisValuesTerminal(node,hist);
       return;
     }
+
+    //check vcf
+    if(nnueWeight!=nullptr) {
+
+      double myVCFSearchLimit = pla == C_BLACK ? cfgParams.blackVCFSearchLimit : cfgParams.whiteVCFSearchLimit;
+      double oppVCFSearchLimit = pla == C_WHITE ? cfgParams.blackVCFSearchLimit : cfgParams.whiteVCFSearchLimit;
+      //should search attack?
+      if(myVCFSearchLimit>0)
+      {
+        if(board.stage==0) {
+          double searchFactor = cfgParams.vcfAttackFactor * myVCFSearchLimit;
+          if(searchFactor>0 && searchFactor>node.getVCFAttackCalculatedFactor()+0.01) {
+            todo;
+          }
+        }
+      }
+
+      //should search defense?
+      if(oppVCFSearchLimit>0)
+      {
+        double searchFactor = board.stage == 0 ? cfgParams.vcfDefenseFactorStage0 * oppVCFSearchLimit
+                                               : cfgParams.vcfDefenseFactorStage1 * oppVCFSearchLimit;
+       
+        if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() + 0.01) {
+          todo;
+        }
+        
+      }
+
+    }
+
+
 
     std::vector<int> avoidMoveUntilByLoc;
     bool foundNewMoves;
@@ -1006,7 +1074,13 @@ int MainCmds::genbook(const vector<string>& args) {
       return;
     }
 
+    //todo: calculate VCF
+    {
+
+    }
+
     Search* search = searches[gameThreadIdx];
+    VCFCalculator* vcfcalc = vcfCalculators[gameThreadIdx];
     Player pla = hist.presumedNextMovePla;
     Board board = hist.getRecentBoard(0);
     search->setPosition(pla,board,hist);
@@ -1104,7 +1178,7 @@ int MainCmds::genbook(const vector<string>& args) {
 
       // cout << "Doing searches to update " << timer.getSeconds() << endl;
       for(SymBookNode nodeToSearch: nodesToSearch) {
-        searchAndUpdateNodeThisValues(search,nodeToSearch);
+        searchAndUpdateNodeThisValues(search,vcfcalc,nodeToSearch);
       }
       // cout << "Done searches to update " << timer.getSeconds() << endl;
     }
@@ -1204,7 +1278,8 @@ int MainCmds::genbook(const vector<string>& args) {
             assert(!node.isNull());
           }
           Search* search = searches[gameThreadIdx];
-          searchAndUpdateNodeThisValues(search, node);
+          VCFCalculator* vcfcalc = vcfCalculators[gameThreadIdx];
+          searchAndUpdateNodeThisValues(search, vcfcalc, node);
           int64_t currentHashesUpdated = hashesUpdated.fetch_add(1) + 1;
           if(currentHashesUpdated % 100 == 0) {
             logger.write(
@@ -1324,6 +1399,17 @@ int MainCmds::genbook(const vector<string>& args) {
   for(int i = 0; i<numGameThreads; i++)
     delete searches[i];
   delete nnEval;
+  
+  // Clean up VCF calculators
+  for(int i = 0; i<(int)vcfCalculators.size(); i++)
+    delete vcfCalculators[i];
+  
+  if(nnueWeight != nullptr) {
+    delete nnueWeight;
+  }
+  if(nnueCache != nullptr) {
+    delete nnueCache;
+  }
   delete book;
   delete traceBook;
   logger.write("DONE");

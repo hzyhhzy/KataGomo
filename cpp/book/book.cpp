@@ -721,6 +721,59 @@ bool ConstSymBookNode::getBoardHistoryReachingHere(BoardHistory& ret, vector<Loc
   return true;
 }
 
+// VCF related functions implementation
+void SymBookNode::setVCFAttackResults(float vcfAttackCalculatedFactor, Loc winLeafMove, int16_t winLeafMoveNum) {
+  assert(node != nullptr);
+  node->vcfAttackCalculatedFactor = vcfAttackCalculatedFactor;
+  // Convert winLeafMove from SymBookNode space to BookNode space
+  node->winLeafMove = SymmetryHelpers::getSymLoc(winLeafMove, node->book->initialBoard, invSymmetryOfNode);
+  node->winLeafMoveNum = winLeafMoveNum;
+}
+
+void SymBookNode::setVCFDefenseResults(float vcfDefenseCalculatedFactor, const std::map<Loc,int16_t>& loseLeafMoves) {
+  assert(node != nullptr);
+  node->vcfDefenseCalculatedFactor = vcfDefenseCalculatedFactor;
+  
+  // Convert loseLeafMoves from SymBookNode space to BookNode space
+  node->loseLeafMoves.clear();
+  for(const auto& kv : loseLeafMoves) {
+    Loc symLoc = SymmetryHelpers::getSymLoc(kv.first, node->book->initialBoard, invSymmetryOfNode);
+    node->loseLeafMoves[symLoc] = kv.second;
+  }
+}
+
+float SymBookNode::getVCFDefenseCalculatedFactor() const {
+  assert(node != nullptr);
+  return node->vcfDefenseCalculatedFactor;
+}
+
+std::map<Loc,int16_t> SymBookNode::getLoseLeafMoves() const {
+  assert(node != nullptr);
+  std::map<Loc,int16_t> result;
+  // Convert loseLeafMoves from BookNode space to SymBookNode space
+  for(const auto& kv : node->loseLeafMoves) {
+    Loc symLoc = SymmetryHelpers::getSymLoc(kv.first, node->book->initialBoard, symmetryOfNode);
+    result[symLoc] = kv.second;
+  }
+  return result;
+}
+
+float SymBookNode::getVCFAttackCalculatedFactor() const {
+  assert(node != nullptr);
+  return node->vcfAttackCalculatedFactor;
+}
+
+Loc SymBookNode::getWinLeafMove() const {
+  assert(node != nullptr);
+  // Convert winLeafMove from BookNode space to SymBookNode space
+  return SymmetryHelpers::getSymLoc(node->winLeafMove, node->book->initialBoard, symmetryOfNode);
+}
+
+int16_t SymBookNode::getWinLeafMoveNum() const {
+  assert(node != nullptr);
+  return node->winLeafMoveNum;
+}
+
 static double invSigmoid(double proportion) {
   if(proportion <= 0.0)
     return -std::numeric_limits<double>::infinity();
@@ -766,6 +819,12 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.maxVisitsForReExpansion = cfg.contains("maxVisitsForReExpansion") ? cfg.getDouble("maxVisitsForReExpansion",0.0,1e50) : 0.0;
   cfgParams.visitsScale = cfg.contains("visitsScale") ? cfg.getDouble("visitsScale") : (maxVisits + 1) / 2;
   cfgParams.noResultUtilityForWhiteInBook = cfg.contains("noResultUtilityForWhiteInBook") ? cfg.getDouble("noResultUtilityForWhiteInBook") : 0;
+  cfgParams.blackVCFSearchLimit = cfg.contains("blackVCFSearchLimit") ? cfg.getDouble("blackVCFSearchLimit", 0.0, 1e50) : 0;
+  cfgParams.whiteVCFSearchLimit = cfg.contains("whiteVCFSearchLimit") ? cfg.getDouble("whiteVCFSearchLimit", 0.0, 1e50) : 0;
+  cfgParams.vcfAttackFactor = cfg.contains("vcfAttackFactor") ? cfg.getDouble("vcfAttackFactor", 0.0, 1e50) : 10.0;
+  cfgParams.vcfDefenseFactorStage0 = cfg.contains("vcfDefenseFactorStage0") ? cfg.getDouble("vcfDefenseFactorStage0", 0.0, 1e50) : 0.3;
+  cfgParams.vcfDefenseFactorStage1 = cfg.contains("vcfDefenseFactorStage1") ? cfg.getDouble("vcfDefenseFactorStage1", 0.0, 1e50) : 1.0;
+  cfgParams.costPenaltyForDeterminedWinner = cfg.contains("costPenaltyForDeterminedWinner") ? cfg.getDouble("costPenaltyForDeterminedWinner", 0.0, 1e50) : 1000.0;
   return cfgParams;
 }
 
@@ -788,6 +847,14 @@ void BookParams::randomizeParams(Rand& rand, double stdev) {
   bonusForBiggestWLCost *= sigmoid(invSigmoid(bonusForBiggestWLCost) + 0.5*stdev*rand.nextGaussianTruncated(3.0));
   earlyBookCostReductionFactor *= sigmoid(invSigmoid(earlyBookCostReductionFactor) + 0.5*stdev*rand.nextGaussianTruncated(3.0));
   earlyBookCostReductionLambda *= sigmoid(invSigmoid(earlyBookCostReductionLambda) + 0.5*stdev*rand.nextGaussianTruncated(3.0));
+  
+  // VCF parameters randomization
+  blackVCFSearchLimit *= exp(10+0.5 * stdev * rand.nextGaussianTruncated(3.0));
+  whiteVCFSearchLimit *= exp(10+0.5 * stdev * rand.nextGaussianTruncated(3.0));
+  vcfAttackFactor *= exp(0.5 * stdev * rand.nextGaussianTruncated(3.0));
+  vcfDefenseFactorStage0 *= exp(0.5 * stdev * rand.nextGaussianTruncated(3.0));
+  vcfDefenseFactorStage1 *= exp(0.5 * stdev * rand.nextGaussianTruncated(3.0));
+  costPenaltyForDeterminedWinner *= exp(0.5 * stdev * rand.nextGaussianTruncated(3.0));
   noResultUtilityForWhiteInBook = 2 * rand.nextDouble() - 1;
 }
 
@@ -1340,6 +1407,8 @@ void Book::recomputeNodeValues(BookNode* node) {
   double visits = 0.0;
 
   double bestValueConsiderWin=-1e30;//65536-movenum if win,-65536+movenum if loss, [-1, 1] if not sure
+  if(node->winLeafMove!=Board::NULL_LOC)//can win by VCF
+    bestValueConsiderWin = 65536 - node->winLeafMoveNum;
   bool isSureDraw=true;
   bool haveDraw=false;
   {
@@ -2140,6 +2209,11 @@ void Book::recomputeNodeCost(BookNode* node) {
         }
       }
     }
+  }
+
+  // Add cost penalty for nodes with determined winner (not C_WALL)
+  if(node->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
+    node->thisNodeExpansionCost += params.costPenaltyForDeterminedWinner;
   }
 
   // cout << "Setting cost " << node->hash << " " << node->minCostFromRoot << " " << node->thisNodeExpansionCost << endl;

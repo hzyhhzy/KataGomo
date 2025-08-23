@@ -208,6 +208,16 @@ class SymBookNode {
   bool getBoardHistoryReachingHere(BoardHistory& ret, std::vector<Loc>& moveHistoryRet);
   bool getBoardHistoryReachingHere(BoardHistory& ret, std::vector<Loc>& moveHistoryRet, std::vector<double>& winlossRet);
   
+  // VCF related functions
+  void setVCFAttackResults(float vcfAttackCalculatedFactor, Loc winLeafMove, int16_t winLeafMoveNum);
+  void setVCFDefenseResults(float vcfDefenseCalculatedFactor, const std::map<Loc,int16_t>& loseLeafMoves);
+  
+  float getVCFDefenseCalculatedFactor() const;
+  std::map<Loc,int16_t> getLoseLeafMoves() const;
+  float getVCFAttackCalculatedFactor() const;
+  Loc getWinLeafMove() const;
+  int16_t getWinLeafMoveNum() const;
+  
   friend class ConstSymBookNode;
   friend class Book;
 };
@@ -309,6 +319,20 @@ struct BookParams {
   double visitsScale = 1000.0;
   // Draw winloss value for white
   double noResultUtilityForWhiteInBook = 0.0;
+  // black vcf search limit, 0 to disable, 1e6 is recommended
+  double blackVCFSearchLimit = 0;
+  // white vcf search limit, 0 to disable
+  double whiteVCFSearchLimit = 0;
+  // factor of VCF attack, 0 to disable
+  double vcfAttackFactor = 10.0;
+  // factor of VCF defense, 0 to disable
+  double vcfDefenseFactorStage0 = 0.3;
+  double vcfDefenseFactorStage1 = 1.0;
+  // Cost penalty for nodes with determined winner (not C_WALL)
+  double costPenaltyForDeterminedWinner = 1000.0;
+
+
+
 
   BookParams() = default;
   ~BookParams() = default;
