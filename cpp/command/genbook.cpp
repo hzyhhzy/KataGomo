@@ -186,6 +186,7 @@ int MainCmds::genbook(const vector<string>& args) {
   double traceBookMinVisits;
   bool allowChangingBookParams;
   bool htmlDevMode;
+  bool htmlWinrate;
   double htmlMinVisits;
   try {
     KataGoCommandLine cmd("Generate opening book");
@@ -204,6 +205,7 @@ int MainCmds::genbook(const vector<string>& args) {
     TCLAP::ValueArg<double> traceBookMinVisitsArg("","trace-book-min-visits","Require >= this many visits for copying from traceBookFile",false,0.0,"N");
     TCLAP::SwitchArg allowChangingBookParamsArg("","allow-changing-book-params","Allow changing book params");
     TCLAP::SwitchArg htmlDevModeArg("","html-dev-mode","Denser debug output for html");
+    TCLAP::SwitchArg htmlWinrateArg("","writebook-winrate","Show winrate or result on each move in HTML export");
     TCLAP::ValueArg<double> htmlMinVisitsArg("","html-min-visits","Require >= this many visits to export a position to html",false,0.0,"N");
     cmd.add(htmlDirArg);
     cmd.add(bookFileArg);
@@ -216,6 +218,7 @@ int MainCmds::genbook(const vector<string>& args) {
     cmd.add(traceBookMinVisitsArg);
     cmd.add(allowChangingBookParamsArg);
     cmd.add(htmlDevModeArg);
+    cmd.add(htmlWinrateArg);
     cmd.add(htmlMinVisitsArg);
 
     cmd.parseArgs(args);
@@ -233,6 +236,7 @@ int MainCmds::genbook(const vector<string>& args) {
     traceBookMinVisits = traceBookMinVisitsArg.getValue();
     allowChangingBookParams = allowChangingBookParamsArg.getValue();
     htmlDevMode = htmlDevModeArg.getValue();
+    htmlWinrate = htmlWinrateArg.getValue();
     htmlMinVisits = htmlMinVisitsArg.getValue();
   }
   catch (TCLAP::ArgException &e) {
@@ -502,7 +506,7 @@ int MainCmds::genbook(const vector<string>& args) {
     std::lock_guard<std::mutex> lock(bookMutex);
     BookValues& nodeValues = node.thisValuesNotInBook();
     if(hist.isNoResult) {
-      nodeValues.winLossValue = 0.0;
+      nodeValues.winLossValue = params.noResultUtilityForWhite;
     }
     else {
       if(hist.winner == P_WHITE) {
@@ -515,6 +519,8 @@ int MainCmds::genbook(const vector<string>& args) {
         nodeValues.winLossValue = 0.0;
       }
     }
+    nodeValues.winner = hist.winner;
+    nodeValues.winMoveNum = hist.getRecentBoard(0).movenum;
 
     nodeValues.winLossError = 0.0;
     nodeValues.maxPolicy = 1.0;
@@ -612,6 +618,7 @@ int MainCmds::genbook(const vector<string>& args) {
     search->setRootSymmetryPruningOnly(symmetries);
 
     // Directly set the values for a terminal position
+    //TODO check vcf
     if(hist.isGameFinished) {
       setNodeThisValuesTerminal(node,hist);
       return;
@@ -1310,7 +1317,7 @@ int MainCmds::genbook(const vector<string>& args) {
 
   if(htmlDir != "") {
     logger.write("EXPORTING HTML TO " + htmlDir);
-    int64_t numFilesWritten = book->exportToHtmlDir(htmlDir,rulesLabel,rulesLink,htmlDevMode,htmlMinVisits,logger);
+    int64_t numFilesWritten = book->exportToHtmlDir(htmlDir,rulesLabel,rulesLink,htmlDevMode,htmlWinrate,htmlMinVisits,logger);
     logger.write("Done exporting, exported " + Global::int64ToString(numFilesWritten) + " files");
   }
 
@@ -1331,6 +1338,7 @@ int MainCmds::writebook(const vector<string>& args) {
   string bookFile;
   string bonusFile;
   bool htmlDevMode;
+  bool htmlWinrate;
   double htmlMinVisits;
   try {
     KataGoCommandLine cmd("Generate opening book");
@@ -1341,11 +1349,13 @@ int MainCmds::writebook(const vector<string>& args) {
     TCLAP::ValueArg<string> bookFileArg("","book-file","Book file to write to or continue expanding",true,string(),"FILE");
     TCLAP::ValueArg<string> bonusFileArg("","bonus-file","SGF of bonuses marked",false,string(),"DIR");
     TCLAP::SwitchArg htmlDevModeArg("","html-dev-mode","Denser debug output for html");
+    TCLAP::SwitchArg htmlWinrateArg("","writebook-winrate","Show winrate or result on each move in HTML export");
     TCLAP::ValueArg<double> htmlMinVisitsArg("","html-min-visits","Require >= this many visits to export a position to html",false,0.0,"N");
     cmd.add(htmlDirArg);
     cmd.add(bookFileArg);
     cmd.add(bonusFileArg);
     cmd.add(htmlDevModeArg);
+    cmd.add(htmlWinrateArg);
     cmd.add(htmlMinVisitsArg);
 
     cmd.parseArgs(args);
@@ -1355,6 +1365,7 @@ int MainCmds::writebook(const vector<string>& args) {
     bookFile = bookFileArg.getValue();
     bonusFile = bonusFileArg.getValue();
     htmlDevMode = htmlDevModeArg.getValue();
+    htmlWinrate = htmlWinrateArg.getValue();
     htmlMinVisits = htmlMinVisitsArg.getValue();
   }
   catch (TCLAP::ArgException &e) {
@@ -1398,7 +1409,7 @@ int MainCmds::writebook(const vector<string>& args) {
   book->recomputeEverything();
 
   logger.write("EXPORTING HTML TO " + htmlDir);
-  int64_t numFilesWritten = book->exportToHtmlDir(htmlDir,rulesLabel,rulesLink,htmlDevMode,htmlMinVisits,logger);
+  int64_t numFilesWritten = book->exportToHtmlDir(htmlDir,rulesLabel,rulesLink,htmlDevMode,htmlWinrate,htmlMinVisits,logger);
   logger.write("Done exporting, exported " + Global::int64ToString(numFilesWritten) + " files");
 
   delete book;

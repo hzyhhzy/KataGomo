@@ -273,7 +273,12 @@ BookNode::BookNode(BookHash h, Book* b, Player p, const vector<int>& syms)
    thisNodeExpansionCost(0),
    minCostFromRootWLPV(0),
    expansionIsWLPV(false),
-   biggestWLCostFromRoot(0)
+   biggestWLCostFromRoot(0),
+   vcfDefenseCalculatedFactor(0.0f),
+   loseLeafMoves(),
+   vcfAttackCalculatedFactor(0.0f),
+   winLeafMove(Board::NULL_LOC),
+   winLeafMoveNum(0)
 {}
 
 BookNode::~BookNode() {
@@ -760,6 +765,7 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.adjustedVisitsWLScale = cfg.contains("adjustedVisitsWLScale") ? cfg.getDouble("adjustedVisitsWLScale",0.0,1000000.0) : 0.05;
   cfgParams.maxVisitsForReExpansion = cfg.contains("maxVisitsForReExpansion") ? cfg.getDouble("maxVisitsForReExpansion",0.0,1e50) : 0.0;
   cfgParams.visitsScale = cfg.contains("visitsScale") ? cfg.getDouble("visitsScale") : (maxVisits + 1) / 2;
+  cfgParams.noResultUtilityForWhiteInBook = cfg.contains("noResultUtilityForWhiteInBook") ? cfg.getDouble("noResultUtilityForWhiteInBook") : 0;
   return cfgParams;
 }
 
@@ -782,6 +788,7 @@ void BookParams::randomizeParams(Rand& rand, double stdev) {
   bonusForBiggestWLCost *= sigmoid(invSigmoid(bonusForBiggestWLCost) + 0.5*stdev*rand.nextGaussianTruncated(3.0));
   earlyBookCostReductionFactor *= sigmoid(invSigmoid(earlyBookCostReductionFactor) + 0.5*stdev*rand.nextGaussianTruncated(3.0));
   earlyBookCostReductionLambda *= sigmoid(invSigmoid(earlyBookCostReductionLambda) + 0.5*stdev*rand.nextGaussianTruncated(3.0));
+  noResultUtilityForWhiteInBook = 2 * rand.nextDouble() - 1;
 }
 
 
@@ -1332,6 +1339,9 @@ void Book::recomputeNodeValues(BookNode* node) {
   double weight = 0.0;
   double visits = 0.0;
 
+  double bestValueConsiderWin=-1e30;//65536-movenum if win,-65536+movenum if loss, [-1, 1] if not sure
+  bool isSureDraw=true;
+  bool haveDraw=false;
   {
     if (!node->canExpand)
     {
@@ -1352,12 +1362,38 @@ void Book::recomputeNodeValues(BookNode* node) {
         node->recursiveValues.winLossValue = node->thisValuesNotInBook.winLossValue;
         node->recursiveValues.winLossUCB = node->thisValuesNotInBook.winLossValue;
         node->recursiveValues.winLossLCB = node->thisValuesNotInBook.winLossValue;
+        node->recursiveValues.winner = node->thisValuesNotInBook.winner;
+        node->recursiveValues.winMoveNum = node->thisValuesNotInBook.winMoveNum;
+
         //cout << node->recursiveValues.visits << node->recursiveValues.adjustedVisits;
         return; //terminal
       }
     } 
     else {
       BookValues& values = node->thisValuesNotInBook;
+      
+      double childValueConsiderWin=values.winLossValue;
+      if(values.winner == node->pla) {
+        assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+        isSureDraw=false;
+        childValueConsiderWin = 65536 - values.winMoveNum;
+      }
+      else if(values.winner == getOpp(node->pla)) {
+        assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+        childValueConsiderWin = -65536 + values.winMoveNum;
+      }
+      else if(values.winner == C_EMPTY){
+        assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+        haveDraw=true;
+        childValueConsiderWin =
+          node->pla == P_WHITE ? params.noResultUtilityForWhiteInBook : -params.noResultUtilityForWhiteInBook;
+      }
+      else{
+        isSureDraw=false;
+        childValueConsiderWin=node->pla == P_WHITE?values.winLossValue:-values.winLossValue;
+      }
+      bestValueConsiderWin=std::max(bestValueConsiderWin,childValueConsiderWin);
+
       double winLossError = values.getAdjustedWinLossError(node->book->initialRules);
       winLossValue = values.winLossValue;
       winLossLCB = values.winLossValue - params.errorFactor * winLossError;
@@ -1376,10 +1412,37 @@ void Book::recomputeNodeValues(BookNode* node) {
     winLossValue
   );
 
+
   for(auto iter = node->moves.begin(); iter != node->moves.end(); ++iter) {
     const BookNode* child = get(iter->second.hash);
     // cout << "pulling values from child " << child << " hash " << child->hash << endl;
     const RecursiveBookValues& values = child->recursiveValues;
+
+    double childValueConsiderWin=values.winLossValue;
+    if(values.winner == node->pla) {
+      assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+      isSureDraw=false;
+      childValueConsiderWin = 65536 - values.winMoveNum;
+    }
+    else if(values.winner == getOpp(node->pla)) {
+      assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+      childValueConsiderWin=-65536+values.winMoveNum;
+    }
+    else if(values.winner == C_EMPTY){
+      assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+      haveDraw=true;
+      childValueConsiderWin =
+        node->pla == P_WHITE ? params.noResultUtilityForWhiteInBook : -params.noResultUtilityForWhiteInBook;
+    }
+    else{
+      isSureDraw=false;
+      childValueConsiderWin=node->pla == P_WHITE?values.winLossValue:-values.winLossValue;
+    }
+    bestValueConsiderWin=std::max(bestValueConsiderWin,childValueConsiderWin);
+
+
+
+
     if(node->pla == P_WHITE) {
       winLossValue = std::max(winLossValue, values.winLossValue);
       winLossLCB = std::max(winLossLCB, values.winLossLCB);
@@ -1397,11 +1460,41 @@ void Book::recomputeNodeValues(BookNode* node) {
   }
 
   RecursiveBookValues& values = node->recursiveValues;
-  values.winLossValue = winLossValue;
-  values.winLossLCB = winLossLCB;
-  values.winLossUCB = winLossUCB;
   values.weight = weight;
   values.visits = visits;
+
+  Color winner=bestValueConsiderWin>1?node->pla:bestValueConsiderWin<-1?getOpp(node->pla):C_WALL;
+  if(winner==C_BLACK || winner==C_WHITE)
+  {
+    values.winner = winner;
+    int winMoveNum=winner==node->pla?65536-bestValueConsiderWin:65536+bestValueConsiderWin;
+    values.winMoveNum = winMoveNum;
+
+    values.winLossValue = winner==C_WHITE?1:-1;
+
+    values.winLossLCB = values.winLossValue;
+    values.winLossUCB = values.winLossValue;
+  }
+  else{
+    if(haveDraw && isSureDraw)
+    {
+      winner=C_EMPTY;
+      values.winner = C_EMPTY;
+      values.winMoveNum = 0;
+      
+      values.winLossValue = params.noResultUtilityForWhiteInBook;
+      values.winLossLCB = values.winLossValue;
+      values.winLossUCB = values.winLossValue;
+    }
+    else{//result not sure
+      
+      values.winLossValue = winLossValue;
+      values.winLossLCB = winLossLCB;
+      values.winLossUCB = winLossUCB;
+    }
+
+  }
+
 
   // cout << "Setting " << node->hash << " values" << endl;
   // cout << "Values " << values.winLossLCB << " " << values.winLossValue << " " << values.winLossUCB << endl;
@@ -2084,6 +2177,7 @@ int64_t Book::exportToHtmlDir(
   const string& rulesLabel,
   const string& rulesLink,
   bool devMode,
+  bool showWinrate,
   double htmlMinVisits,
   Logger& logger
 ) {
@@ -2190,6 +2284,12 @@ int64_t Book::exportToHtmlDir(
       throw StringError("rulesLink cannot contain quotes or newlines");
     string dataVarsStr;
     dataVarsStr += "const nextPla = " + Global::intToString(node->pla) + ";\n";
+    
+    // Add current position winner information
+    dataVarsStr += "const currentWinner = " + Global::intToString((int)node->recursiveValues.winner) + ";\n";
+    dataVarsStr += "const currentWinMoveNum = " + Global::intToString(node->recursiveValues.winMoveNum) + ";\n";
+    dataVarsStr += "const currentMoveCount = " + Global::intToString((int)board.movenum) + ";\n";
+    dataVarsStr += "const showWinrate = " + (showWinrate ? string("true") : string("false")) + ";\n";
     {
       SymBookNode parent = symNode.canonicalParent();
       if(parent.isNull()) {
@@ -2355,6 +2455,11 @@ int64_t Book::exportToHtmlDir(
         dataVarsStr += "'v':" + doubleToStringZeroDigits(uniqueChildValues[idx].visits) + ",";
         dataVarsStr += "'av':" + doubleToStringZeroDigits(uniqueChildValues[idx].adjustedVisits) + ",";
       }
+      
+      // Add winner and winMoveNum from recursiveValues
+      dataVarsStr += "'winner':" + Global::intToString((int)uniqueChildValues[idx].winner) + ",";
+      dataVarsStr += "'winMoveNum':" + Global::intToString(uniqueChildValues[idx].winMoveNum) + ",";
+      
       dataVarsStr += "},";
     }
     {
@@ -2391,6 +2496,11 @@ int64_t Book::exportToHtmlDir(
           dataVarsStr += "'v':" + doubleToStringZeroDigits(values.visits) + ",";
           dataVarsStr += "'av':" + doubleToStringZeroDigits(values.visits) + ",";
         }
+        
+        // Add winner and winMoveNum from thisValuesNotInBook
+        dataVarsStr += "'winner':" + Global::intToString((int)values.winner) + ",";
+        dataVarsStr += "'winMoveNum':" + Global::intToString(values.winMoveNum) + ",";
+        
         dataVarsStr += "},";
       }
     }
@@ -2483,6 +2593,23 @@ void Book::saveToFile(const string& fileName) const {
       nodeData["w"] = roundDouble(node->thisValuesNotInBook.weight, 1000);
       nodeData["v"] = node->thisValuesNotInBook.visits;
       nodeData["cEx"] = node->canExpand;
+
+      nodeData["win"] = node->thisValuesNotInBook.winner;
+      nodeData["wMN"] = node->thisValuesNotInBook.winMoveNum;
+      nodeData["vcfACF"] = node->vcfAttackCalculatedFactor;
+      nodeData["vcfDCF"] = node->vcfDefenseCalculatedFactor;
+      nodeData["winLM"] = Location::toString(node->winLeafMove, initialBoard);
+      nodeData["winLMN"] = node->winLeafMoveNum;
+      
+      // Save loseLeafMoves map
+      nodeData["loseLM"] = json::object();
+      for(const auto& pair : node->loseLeafMoves) {
+        nodeData["loseLM"][Location::toString(pair.first, initialBoard)] = pair.second;
+      }
+
+  
+
+
       // Don't record reexpansion prohibition, since this can change with the user's multi-ply search settings
       // nodeData["cRx"] = node->canReExpand;
     }
@@ -2686,6 +2813,31 @@ Book* Book::loadFromFile(const std::string& fileName) {
         node->thisValuesNotInBook.visits = nodeData["visits"].get<double>();
       }
 
+      // Load VCF related fields with default values if not present
+      if(nodeData.contains("win")) {
+        node->thisValuesNotInBook.winner = (Color)nodeData["win"].get<int>();
+        node->thisValuesNotInBook.winMoveNum = nodeData["wMN"].get<int>();
+        node->vcfAttackCalculatedFactor = nodeData["vcfACF"].get<float>();
+        node->vcfDefenseCalculatedFactor = nodeData["vcfDCF"].get<float>();
+        node->winLeafMove = Location::ofStringAllowNull(nodeData["winLM"].get<string>(), book->initialBoard);
+        node->winLeafMoveNum = nodeData["winLMN"].get<int16_t>();
+        
+        // Load loseLeafMoves map
+        node->loseLeafMoves.clear();
+        for(auto& [locStr, moveNum] : nodeData["loseLM"].items()) {
+          Loc loc = Location::ofString(locStr, book->initialBoard);
+          node->loseLeafMoves[loc] = moveNum.get<int16_t>();
+        }
+      } else {
+        // Set default values if VCF fields are not present
+        node->thisValuesNotInBook.winner = C_WALL;
+        node->thisValuesNotInBook.winMoveNum = 0;
+        node->vcfAttackCalculatedFactor = 0.0f;
+        node->vcfDefenseCalculatedFactor = 0.0f;
+        node->winLeafMove = Board::NULL_LOC;
+        node->winLeafMoveNum = 0;
+        node->loseLeafMoves.clear();
+      }
       // Older versions had some buggy conditions under which they would set this incorrectly, and nodes would be stuck not expanding.
       // So force it true on old versions.
       // Parameter changes can alter whether a node is expandable or not (e.g. whether it's considered done given all its visits)
@@ -2720,6 +2872,26 @@ Book* Book::loadFromFile(const std::string& fileName) {
           move.rawPolicy = moveData["rawPolicy"].get<double>();
           node->moves[move.move] = move;
         }
+      }
+
+      //maybe convert old version
+      if(!node->canExpand && node->thisValuesNotInBook.winner == C_WALL)
+      {
+        if(node->moves.size() == 0)//game ends, but the winner is unknown
+        {
+          cout << "Warning: No legal moves, but the winner is unknown, hash=" + node->hash.toString() << endl;
+
+          node->canExpand = true;
+        }
+        else{//all other moves are illegal
+          assert((node->thisValuesNotInBook.winLossValue<-9.99e19 && pla==C_WHITE)||(node->thisValuesNotInBook.winLossValue>9.99e19 && pla==C_BLACK));
+          node->thisValuesNotInBook.winner = getOpp(pla);
+          node->thisValuesNotInBook.winMoveNum = 0;
+          node->thisValuesNotInBook.winLossValue = (node->thisValuesNotInBook.winner == C_WHITE) ? 1.0 : -1.0;
+          node->thisValuesNotInBook.winLossError = 0.0;
+
+        }
+
       }
 
       if(book->bookVersion >= 2) {

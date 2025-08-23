@@ -74,6 +74,11 @@ struct BookValues {
   double weight = 0.0;
   double visits = 0.0;
 
+  
+  // record the winner and the movenum when the result is known
+  Color winner = C_WALL;  // C_WALL if unknown, C_EMPTY if draw, C_BLACK/C_WHITE if one side wins
+  int winMoveNum = 0;
+
   // Computed, not saved
   double posteriorPolicy = 0.0;
 
@@ -93,6 +98,11 @@ struct RecursiveBookValues {
   // such as when an unimportant bad move happens to transpose to a variation
   // with a lot more visits
   double adjustedVisits = 0.0;
+
+  // record the winner and the movenum when the result is known
+  Color winner = C_WALL;// C_WALL if unknown, C_EMPTY if draw, C_BLACK/C_WHITE if one side wins
+  int winMoveNum = 0;
+
 };
 
 class SymBookNode;
@@ -126,6 +136,17 @@ class BookNode {
   double minCostFromRootWLPV;  // minCostFromRoot of the cheapest node that this node is the winLoss pv of.
   bool expansionIsWLPV; // True if the winloss PV for this node is to expand it, rather than an existing child.
   double biggestWLCostFromRoot; // Largest single cost due to winloss during path from root
+
+
+  float vcfDefenseCalculatedFactor;//0 if not calculate, >0 (normally 1e6) is the factor of VCF solver
+  std::map<Loc,int16_t> loseLeafMoves; //all losing moves, the value is the movenum
+
+  float vcfAttackCalculatedFactor;//0 if not calculate, >0 (normally 1e6) is the factor of VCF solver
+  Loc winLeafMove;//the winning move
+  int16_t winLeafMoveNum;//the movenum of the winning move
+  
+
+
 
   BookNode(BookHash hash, Book* book, Player pla, const std::vector<int>& symmetries);
   ~BookNode();
@@ -286,6 +307,8 @@ struct BookParams {
   double maxVisitsForReExpansion = 1000.0;
   // How many visits such that below this many is considered not many? Used to scale some visit-based cost heuristics.
   double visitsScale = 1000.0;
+  // Draw winloss value for white
+  double noResultUtilityForWhiteInBook = 0.0;
 
   BookParams() = default;
   ~BookParams() = default;
@@ -391,6 +414,7 @@ class Book {
     const std::string& rulesLabel,
     const std::string& rulesLink,
     bool devMode,
+    bool showWinrate,
     double htmlMinVisits,
     Logger& logger
   );

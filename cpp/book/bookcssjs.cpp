@@ -505,13 +505,39 @@ let svgNS = "http://www.w3.org/2000/svg";
 
       // Text for marker, centered.
       let marker = document.createElementNS(svgNS, "text");
-      marker.textContent = ""+(i+1);
+      
+      if(showWinrate) {
+        // Show winrate or result instead of move number
+        let moveData = moves[i];
+        let markerText = "";
+        
+        if(moveData["winner"] !== undefined && moveData["winner"] != 3) { // 3 is C_WALL
+           let movesFromNow = moveData["winMoveNum"] - currentMoveCount;
+           if(moveData["winner"] == 0) { // C_EMPTY - Draw
+             markerText = "D";
+           } else if(moveData["winner"] == nextPla) { // Current player wins
+             markerText = "W" + movesFromNow;
+           } else { // Current player loses
+             markerText = "L" + movesFromNow;
+           }
+         } else {
+          // Show winrate for current player: 100*(value+1)/2
+          let winrate = (100.0 * (0.5*(1.0+moveData["wl"]))).toFixed(1);
+          markerText = winrate + "%";
+        }
+        
+        marker.textContent = markerText;
+        marker.setAttribute("font-size", markerFontSize * 0.6); // Smaller font for more text
+      } else {
+        marker.textContent = ""+(i+1);
+        marker.setAttribute("font-size", markerFontSize);
+      }
+      
       marker.setAttribute("x",symX);
       marker.setAttribute("y",symY);
-      marker.setAttribute("font-size",markerFontSize);
       marker.setAttribute("dominant-baseline","central");
       marker.setAttribute("text-anchor","middle");
-      marker.setAttribute("fill",nextPla == 1 ? "black" : "white");
+      marker.setAttribute("fill", showWinrate ? "black" : (nextPla == 1 ? "black" : "white"));
       boardSvg.appendChild(marker);
 
       let linkForPos = getLinkForPos(pos);
@@ -625,6 +651,38 @@ const std::string Book::BOOK_JS3 = R"%%(
   body.appendChild(whoToPlay);
 }
 
+{
+  let gameResult = document.createElement("div");
+  gameResult.style.padding = "10px";
+  gameResult.style.fontWeight = "bold";
+  
+  // Check if current position has a known result
+    let resultText = "";
+    if(typeof currentWinner !== 'undefined' && currentWinner != 3) { // 3 is C_WALL
+      let movesFromNow = currentWinMoveNum - currentMoveCount;
+      if(currentWinner == 0) { // C_EMPTY - Draw
+        resultText = "Result: Draw";
+        gameResult.style.color = "#666";
+      } else if(currentWinner == 1) { // C_BLACK
+        resultText = "Result: Black wins in " + currentWinMoveNum + " moves (" + movesFromNow + " moves from now)";
+        gameResult.style.color = "#000";
+      } else if(currentWinner == 2) { // C_WHITE
+        resultText = "Result: White wins in " + currentWinMoveNum + " moves (" + movesFromNow + " moves from now)";
+        gameResult.style.color = "#666";
+      }
+    } else if(moves.length > 0) {
+    // Show win rate from best move
+    let bestMoveWinRate = (100.0 * (0.5*(1.0-moves[0]["wl"]))).toFixed(1);
+    resultText = "Black win rate: " + bestMoveWinRate + "%";
+    gameResult.style.color = "#333";
+  }
+  
+  if(resultText) {
+    gameResult.appendChild(document.createTextNode(resultText));
+    body.appendChild(gameResult);
+  }
+}
+
 function textCell(text) {
   let cell = document.createElement("div");
   cell.classList.add("moveTableCell");
@@ -642,6 +700,7 @@ function textCell(text) {
   headerRow.classList.add("moveTableHeader");
   headerRow.appendChild(textCell("Index"));
   headerRow.appendChild(textCell("Move"));
+  headerRow.appendChild(textCell("Result"));
   headerRow.appendChild(textCell("BWin%"));
   if(devMode) {
     headerRow.appendChild(textCell("BRawScore"));
@@ -729,6 +788,19 @@ function textCell(text) {
     }
     else
       dataRow.appendChild(textCell(""));
+
+    // Add Result column
+    let resultText = "----";
+    if(moveData["winner"] !== undefined && moveData["winner"] != 3) { // 3 is C_WALL
+      if(moveData["winner"] == 0) { // C_EMPTY - Draw
+        resultText = "Draw";
+      } else if(moveData["winner"] == 1) { // C_BLACK
+        resultText = "B+" + moveData["winMoveNum"];
+      } else if(moveData["winner"] == 2) { // C_WHITE
+        resultText = "W+" + moveData["winMoveNum"];
+      }
+    }
+    dataRow.appendChild(textCell(resultText));
 
     dataRow.appendChild(textCell((100.0 * (0.5*(1.0-moveData["wl"]))).toFixed(1)+"%"));
     if(devMode) {
