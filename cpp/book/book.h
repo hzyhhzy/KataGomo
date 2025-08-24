@@ -217,6 +217,8 @@ class SymBookNode {
   float getVCFAttackCalculatedFactor() const;
   Loc getWinLeafMove() const;
   int16_t getWinLeafMoveNum() const;
+
+  bool isMoveLosingLeaf(Loc move) const;
   
   friend class ConstSymBookNode;
   friend class Book;
@@ -267,6 +269,14 @@ class ConstSymBookNode {
   // This should only happen if a book was loaded from disk that is corrupted, or else only astronomically rarely on hash collisions.
   bool getBoardHistoryReachingHere(BoardHistory& ret, std::vector<Loc>& moveHistoryRet);
   bool getBoardHistoryReachingHere(BoardHistory& ret, std::vector<Loc>& moveHistoryRet, std::vector<double>& winlossRet);
+
+  float getVCFDefenseCalculatedFactor() const;
+  std::map<Loc, int16_t> getLoseLeafMoves() const;
+  float getVCFAttackCalculatedFactor() const;
+  Loc getWinLeafMove() const;
+  int16_t getWinLeafMoveNum() const;
+
+  bool isMoveLosingLeaf(Loc move) const;
 
   friend class Book;
 };
@@ -353,6 +363,7 @@ class Book {
   static const std::string BOOK_JS1;
   static const std::string BOOK_JS2;
   static const std::string BOOK_JS3;
+  static const std::string BOOK_JS4;
   static const std::string BOOK_CSS;
 
  public:

@@ -84,12 +84,12 @@ int MainCmds::testnnue() {
   //testABSearch(nnueWeight);
   
   // Test MCTS search with same initial position
-  //testMCTSSearch2(nnueWeight);
+  //testMCTSSearch3(nnueWeight);
   //
 
-  //testVCFPrune1(nnueWeight);
+  testVCFPrune1(nnueWeight);
 
-  testVCFPrune2(nnueWeight);
+  //testVCFPrune2(nnueWeight);
 
   delete nnueWeight;
   return 0;
@@ -577,9 +577,9 @@ void testMCTSSearch3(const ModelWeight* weights) {
 
 
   auto startTime = chrono::high_resolution_clock::now();
-
+  Loc winloc;
   std::vector<int8_t> dependMap;
-  int vcfmovenum = vcfCalculator.calculateShortestVCFAndDependMap(board, board.nextPla, 109, 0, 0, searchFactor, dependMap, false);
+  int vcfmovenum = vcfCalculator.calculateShortestVCFAndDependMap(board, board.nextPla, 109, 0, 0, searchFactor, dependMap, winloc, false);
 
 
   auto endTime = chrono::high_resolution_clock::now();
@@ -591,6 +591,7 @@ void testMCTSSearch3(const ModelWeight* weights) {
   VCFLogic::printBoardWithDependencyMap(board,dependMap);
   cout<<"vcfmove:"<<vcfmovenum<<endl;
 
+  cout << Location::toString(winloc, board) << endl;
 }
 
 void testVCFPrune1(const ModelWeight* weights) {
@@ -627,7 +628,7 @@ void testVCFPrune1(const ModelWeight* weights) {
   int maxMove = 109;
   double searchFactor = 1e5;
   
-  std::vector<VCFPrunedInfo> pruneResults = vcfCalculator.CalculateAllVCFDefendResults(
+  auto pruneResults = vcfCalculator.CalculateAllVCFDefendResults(
     board, attackPlayer, maxMove, searchFactor);
   
   auto endTime = chrono::high_resolution_clock::now();
@@ -643,15 +644,9 @@ void testVCFPrune1(const ModelWeight* weights) {
   // Print detailed prune information
   cout << "Detailed prune information:" << endl;
   for (const auto& info : pruneResults) {
-    string locStr = Location::toString(info.loc, board);
+    string locStr = Location::toString(info.first, board);
     cout << "  " << locStr << ": ";
-    if (info.isPruned) {
-      cout << "PRUNED (opponent wins in " << info.moveNum << " moves)";
-    } else if (info.notPruned) {
-      cout << "SAFE (opponent cannot VCF)";
-    } else {
-      cout << "UNKNOWN";
-    }
+    cout << "PRUNED (opponent wins in " << info.second << " moves)";
     cout << endl;
   }
   
@@ -704,7 +699,7 @@ void testVCFPrune2(const ModelWeight* weights) {
     int maxMove = 109;
     double searchFactor = 1e6;
 
-    std::vector<VCFPrunedInfo> pruneResults = vcfCalculator.CalculateAllVCFDefendResultsV2(
+    auto pruneResults = vcfCalculator.CalculateAllVCFDefendResultsV2(
         board, attackPlayer, maxMove, searchFactor);
 
     auto endTime = chrono::high_resolution_clock::now();

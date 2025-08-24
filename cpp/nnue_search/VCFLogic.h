@@ -3,9 +3,6 @@
 #include "../game/board.h"
 #include <vector>
 
-// Forward declaration
-struct VCFPrunedInfo;
-
 namespace VCFLogic {
   //Check if player has two four-in-a-row threats
   int checkTwoFourThreats(const Board& board, Player pla);
@@ -37,5 +34,5 @@ namespace VCFLogic {
 
 
   void printBoardWithDependencyMap(const Board& board, const std::vector<int8_t>& dependMap);
-  void printBoardWithPruneInfo(const Board& board, const std::vector<VCFPrunedInfo>& pruneInfo);
+  void printBoardWithPruneInfo(const Board& board, const std::map<Loc,int16_t>& pruneInfo);
 }

@@ -389,6 +389,28 @@ bool ConstSymBookNode::isMoveInBook(Loc move) {
   return false;
 }
 
+bool SymBookNode::isMoveLosingLeaf(Loc move) const {
+  return ConstSymBookNode(*this).isMoveLosingLeaf(move);
+}
+  
+bool ConstSymBookNode::isMoveLosingLeaf(Loc move) const {
+  assert(node != nullptr);
+  if(node->loseLeafMoves.size() == 0)
+    return false;
+  for(int symmetry: node->symmetries) {
+    // invSymmetryOfNode is the map (symbooknodespace -> nodespace)
+    // symmetry is the map nodespace -> nodespace that we should look for alternative versions of a move.
+    // There is only one way to compose them, which is to left-compose invSymmetryOfNode, so we left-compose it (and not
+    // right-compose it).
+    symmetry = SymmetryHelpers::compose(invSymmetryOfNode, symmetry);
+    Loc symLoc = SymmetryHelpers::getSymLoc(move, node->book->initialBoard, symmetry);
+    if(contains(node->loseLeafMoves,symLoc))
+      return true;
+  }
+  return false;
+}
+
+
 int SymBookNode::numUniqueMovesInBook() {
   return ConstSymBookNode(*this).numUniqueMovesInBook();
 }
@@ -774,6 +796,38 @@ int16_t SymBookNode::getWinLeafMoveNum() const {
   return node->winLeafMoveNum;
 }
 
+float ConstSymBookNode::getVCFDefenseCalculatedFactor() const {
+  assert(node != nullptr);
+  return node->vcfDefenseCalculatedFactor;
+}
+
+std::map<Loc, int16_t> ConstSymBookNode::getLoseLeafMoves() const {
+  assert(node != nullptr);
+  std::map<Loc, int16_t> result;
+  // Convert loseLeafMoves from BookNode space to SymBookNode space
+  for(const auto& kv: node->loseLeafMoves) {
+    Loc symLoc = SymmetryHelpers::getSymLoc(kv.first, node->book->initialBoard, symmetryOfNode);
+    result[symLoc] = kv.second;
+  }
+  return result;
+}
+
+float ConstSymBookNode::getVCFAttackCalculatedFactor() const {
+  assert(node != nullptr);
+  return node->vcfAttackCalculatedFactor;
+}
+
+Loc ConstSymBookNode::getWinLeafMove() const {
+  assert(node != nullptr);
+  // Convert winLeafMove from BookNode space to SymBookNode space
+  return SymmetryHelpers::getSymLoc(node->winLeafMove, node->book->initialBoard, symmetryOfNode);
+}
+
+int16_t ConstSymBookNode::getWinLeafMoveNum() const {
+  assert(node != nullptr);
+  return node->winLeafMoveNum;
+}
+
 static double invSigmoid(double proportion) {
   if(proportion <= 0.0)
     return -std::numeric_limits<double>::infinity();
@@ -824,7 +878,7 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.vcfAttackFactor = cfg.contains("vcfAttackFactor") ? cfg.getDouble("vcfAttackFactor", 0.0, 1e50) : 10.0;
   cfgParams.vcfDefenseFactorStage0 = cfg.contains("vcfDefenseFactorStage0") ? cfg.getDouble("vcfDefenseFactorStage0", 0.0, 1e50) : 0.3;
   cfgParams.vcfDefenseFactorStage1 = cfg.contains("vcfDefenseFactorStage1") ? cfg.getDouble("vcfDefenseFactorStage1", 0.0, 1e50) : 1.0;
-  cfgParams.costPenaltyForDeterminedWinner = cfg.contains("costPenaltyForDeterminedWinner") ? cfg.getDouble("costPenaltyForDeterminedWinner", 0.0, 1e50) : 1000.0;
+  cfgParams.costPenaltyForDeterminedWinner = cfg.contains("costPenaltyForDeterminedWinner") ? cfg.getDouble("costPenaltyForDeterminedWinner", 0.0, 1e50) : 10000.0;
   return cfgParams;
 }
 
@@ -1435,6 +1489,25 @@ void Book::recomputeNodeValues(BookNode* node) {
         node->recursiveValues.winMoveNum = node->thisValuesNotInBook.winMoveNum;
 
         //cout << node->recursiveValues.visits << node->recursiveValues.adjustedVisits;
+        
+        //pruned losing leaf should be considered
+        assert(node->recursiveValues.winner != C_WALL);
+        if(node->thisValuesNotInBook.winner == getOpp(node->pla)) {
+          // Check if there are VCF defense losing leaf moves that could provide a better result
+          if(!node->loseLeafMoves.empty()) {
+            double value = node->pla == C_BLACK ? 1.0 : -1.0;
+            node->recursiveValues.winLossValue = value;
+            node->recursiveValues.winLossUCB = value;
+            node->recursiveValues.winLossLCB = value;
+            int16_t longestLose = node->recursiveValues.winMoveNum;
+            for(const auto& loseMove: node->loseLeafMoves) {
+              longestLose = std::max(loseMove.second, longestLose);
+            }
+            node->recursiveValues.winMoveNum = longestLose;
+          }
+        }
+        
+        
         return; //terminal
       }
     } 
@@ -1533,6 +1606,23 @@ void Book::recomputeNodeValues(BookNode* node) {
   values.visits = visits;
 
   Color winner=bestValueConsiderWin>1?node->pla:bestValueConsiderWin<-1?getOpp(node->pla):C_WALL;
+  
+  //pruned losing leaf should also be considered
+  if (winner == getOpp(node->pla))
+  {
+    // Check if there are VCF defense losing leaf moves that could provide a better result
+    if (!node->loseLeafMoves.empty()) {
+      for (const auto& loseMove : node->loseLeafMoves) {
+        double prunedLoseValue = -65536 + loseMove.second;
+        // Update bestValueConsiderWin if the pruned losing moves provide a better (longer) defense
+        bestValueConsiderWin = std::max(bestValueConsiderWin, prunedLoseValue);
+      }
+      
+    }
+  }
+  
+  
+  
   if(winner==C_BLACK || winner==C_WHITE)
   {
     values.winner = winner;
@@ -1673,6 +1763,10 @@ void Book::recomputeNodeCost(BookNode* node) {
     node->minCostFromRootWLPV = 1e100;
     //node->biggestWLCostFromRoot = 1e100;
     return;
+  }
+  // Add cost penalty for nodes with determined winner (not C_WALL)
+  if(node->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
+    node->minCostFromRoot += params.costPenaltyForDeterminedWinner;
   }
   // cout << "-----------------------------------------------------------------------" << endl;
   // cout << "Initial min cost from root " << node->minCostFromRoot << endl;
@@ -2211,10 +2305,6 @@ void Book::recomputeNodeCost(BookNode* node) {
     }
   }
 
-  // Add cost penalty for nodes with determined winner (not C_WALL)
-  if(node->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
-    node->thisNodeExpansionCost += params.costPenaltyForDeterminedWinner;
-  }
 
   // cout << "Setting cost " << node->hash << " " << node->minCostFromRoot << " " << node->thisNodeExpansionCost << endl;
   // cout << "TOTAL THIS NODE COST " << node->minCostFromRoot + node->thisNodeExpansionCost << endl;
@@ -2274,6 +2364,7 @@ int64_t Book::exportToHtmlDir(
     out << Book::BOOK_JS1;
     out << Book::BOOK_JS2;
     out << Book::BOOK_JS3;
+    out << Book::BOOK_JS4;
     out.close();
   }
   {
@@ -2364,6 +2455,47 @@ int64_t Book::exportToHtmlDir(
     dataVarsStr += "const currentWinMoveNum = " + Global::intToString(node->recursiveValues.winMoveNum) + ";\n";
     dataVarsStr += "const currentMoveCount = " + Global::intToString((int)board.movenum) + ";\n";
     dataVarsStr += "const showWinrate = " + (showWinrate ? string("true") : string("false")) + ";\n";
+    
+    // Add VCF data
+    ConstSymBookNode constSymNode(symNode);
+    Loc winLeafMove = constSymNode.getWinLeafMove();
+    std::map<Loc,int16_t> loseLeafMoves = constSymNode.getLoseLeafMoves();
+    
+    if(winLeafMove != Board::NULL_LOC) {
+      if(winLeafMove == Board::PASS_LOC) {
+        // Pass is represented as a special coordinate
+        dataVarsStr += "const winLeafMove = [" + Global::intToString(board.x_size) + "," + Global::intToString(board.y_size) + "];\n";
+      } else if(board.isOnBoard(winLeafMove)) {
+        int x = Location::getX(winLeafMove, board.x_size);
+        int y = Location::getY(winLeafMove, board.x_size);
+        dataVarsStr += "const winLeafMove = [" + Global::intToString(x) + "," + Global::intToString(y) + "];\n";
+      } else {
+        dataVarsStr += "const winLeafMove = null;\n";
+      }
+    } else {
+      dataVarsStr += "const winLeafMove = null;\n";
+    }
+    
+    dataVarsStr += "const loseLeafMoves = {";
+    for(const auto& pair : loseLeafMoves) {
+      if(pair.first != Board::NULL_LOC) {
+        int pos;
+        if(pair.first == Board::PASS_LOC) {
+          // Pass is mapped to xsize * ysize
+          pos = board.x_size * board.y_size;
+        } else if(board.isOnBoard(pair.first)) {
+          int x = Location::getX(pair.first, board.x_size);
+          int y = Location::getY(pair.first, board.x_size);
+          pos = y * board.x_size + x;
+        } else {
+          continue; // Skip invalid locations
+        }
+        dataVarsStr += Global::intToString(pos) + ":" + Global::intToString(pair.second) + ",";
+      }
+      else
+        assert(false);
+    }
+    dataVarsStr += "};\n";
     {
       SymBookNode parent = symNode.canonicalParent();
       if(parent.isNull()) {

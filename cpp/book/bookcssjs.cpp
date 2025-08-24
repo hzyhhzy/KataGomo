@@ -368,6 +368,86 @@ let svgNS = "http://www.w3.org/2000/svg";
         boardSvg.appendChild(stoneBorder);
         boardSvg.appendChild(stone);
       }
+      
+      // Add VCF markers for all positions (including empty ones)
+      if(board[invSymPos] == 0) { // Only on empty positions
+        // Check if this position is a win leaf move
+        // Apply symmetry transformation to winLeafMove coordinates for comparison
+        let isWinLeaf = false;
+        if(winLeafMove) {
+          let winPos = winLeafMove[1] * bSizeX + winLeafMove[0];
+          let symWinPos = getSymPos(winPos);
+          let symWinX = symWinPos % bSizeX;
+          let symWinY = Math.floor(symWinPos / bSizeX);
+          isWinLeaf = (symWinX == x && symWinY == y);
+        }
+        if(isWinLeaf) {
+          // Create background rectangle
+          let winBackground = document.createElementNS(svgNS, "rect");
+          winBackground.setAttribute("x", x - 0.25);
+          winBackground.setAttribute("y", y - 0.25);
+          winBackground.setAttribute("width", 0.5);
+          winBackground.setAttribute("height", 0.5);
+          winBackground.setAttribute("fill", "rgba(255, 255, 255, 0.8)");
+          winBackground.setAttribute("stroke", "none");
+          winBackground.setAttribute("rx", 0.1);
+          boardSvg.appendChild(winBackground);
+          
+          // Create text marker
+          let winMarker = document.createElementNS(svgNS, "text");
+          winMarker.textContent = "W";
+          winMarker.setAttribute("x", x);
+          winMarker.setAttribute("y", y);
+          winMarker.setAttribute("font-size", markerFontSize * 0.5);
+          winMarker.setAttribute("dominant-baseline", "central");
+          winMarker.setAttribute("text-anchor", "middle");
+          winMarker.setAttribute("fill", "red");
+          winMarker.setAttribute("font-weight", "bold");
+          boardSvg.appendChild(winMarker);
+        }
+        
+        // Check if this position is a lose leaf move
+        // Use invSymPos to match the original position indexing in loseLeafMoves
+        if(invSymPos in loseLeafMoves) {
+          // Calculate remaining moves instead of total moves
+          let remainingMoves = loseLeafMoves[invSymPos] - currentMoveCount;
+          
+          // Create background rectangle with different sizes and transparency based on remaining moves
+          let loseBackground = document.createElementNS(svgNS, "rect");
+          if(remainingMoves <= 4) {
+            // Small, low transparency square for urgent situations (<=4 moves)
+            loseBackground.setAttribute("x", x - 0.2);
+            loseBackground.setAttribute("y", y - 0.2);
+            loseBackground.setAttribute("width", 0.4);
+            loseBackground.setAttribute("height", 0.4);
+            loseBackground.setAttribute("fill", "rgba(255, 255, 255, 0.8)");
+          } else {
+            // Large, high transparency rectangle for non-urgent situations (>4 moves)
+            loseBackground.setAttribute("x", x - 0.4);
+            loseBackground.setAttribute("y", y - 0.4);
+            loseBackground.setAttribute("width", 0.8);
+            loseBackground.setAttribute("height", 0.8);
+            loseBackground.setAttribute("fill", "rgba(255, 255, 255, 0.4)");
+          }
+          loseBackground.setAttribute("stroke", "none");
+          loseBackground.setAttribute("rx", 0.1);
+          boardSvg.appendChild(loseBackground);
+          
+          // Create text marker only if remaining moves > 4
+          if(remainingMoves > 4) {
+            let loseMarker = document.createElementNS(svgNS, "text");
+            loseMarker.textContent = "L" + remainingMoves;
+            loseMarker.setAttribute("x", x);
+            loseMarker.setAttribute("y", y);
+            loseMarker.setAttribute("font-size", markerFontSize * 0.5);
+            loseMarker.setAttribute("dominant-baseline", "central");
+            loseMarker.setAttribute("text-anchor", "middle");
+            loseMarker.setAttribute("fill", "blue");
+            loseMarker.setAttribute("font-weight", "bold");
+            boardSvg.appendChild(loseMarker);
+          }
+        }
+      }
     }
   }
 
@@ -522,7 +602,7 @@ let svgNS = "http://www.w3.org/2000/svg";
            }
          } else {
           // Show winrate for current player: 100*(value+1)/2
-          let winrate = (100.0 * (0.5*(1.0+moveData["wl"]))).toFixed(1);
+          let winrate = (100.0 * (0.5*(1.0+((nextPla==1)?-moveData["wl"]:moveData["wl"])))).toFixed(1);
           markerText = winrate + "%";
         }
         
@@ -541,6 +621,10 @@ let svgNS = "http://www.w3.org/2000/svg";
       boardSvg.appendChild(marker);
 
       let linkForPos = getLinkForPos(pos);
+
+
+)%%";
+const std::string Book::BOOK_JS3 = R"%%(
 
       // Group for hover shadow
       let shadowGroup = document.createElementNS(svgNS, "g");
@@ -640,9 +724,6 @@ let svgNS = "http://www.w3.org/2000/svg";
 
   body.appendChild(boardSvg);
 }
-
-)%%";
-const std::string Book::BOOK_JS3 = R"%%(
 
 {
   let whoToPlay = document.createElement("div");
@@ -756,6 +837,9 @@ function textCell(text) {
       dataRow = document.createElement("span");
       dataRow.classList.add("moveTableRowLinked");
     }
+
+)%%";
+const std::string Book::BOOK_JS4 = R"%%(
 
     dataRow.classList.add("moveTableRow");
     dataRow.setAttribute("role","row");

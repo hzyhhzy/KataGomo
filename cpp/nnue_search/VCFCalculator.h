@@ -5,22 +5,7 @@
 #include "../nnue/Eva_nnuev2.h"
 #include "../game/board.h"
 #include <vector>
-
-
-
-// Forward declaration - VCFresults definition to be provided by user
-struct VCFPrunedInfo{
-    Loc loc;
-    bool isPruned; //if pruned, if play here, the opponent will win by VCF
-    int16_t moveNum; //opponent will win by VCF in moveNum moves
-
-    bool notPruned; //if not pruned, the opponent will surely not win by VCF
-    float calculateFactor; //how many visits have VCF calculated
-    float value; //the value of VCF side
-
-    VCFPrunedInfo();
-    VCFPrunedInfo(Loc loc, bool isPruned, int16_t moveNum, bool notPruned, float calculateFactor, float value);
-};
+#include <map>
 
 class VCFCalculator {
 public:
@@ -31,7 +16,7 @@ public:
     ~VCFCalculator();
     
     // Calculate all VCF defend results
-    std::vector<VCFPrunedInfo> CalculateAllVCFDefendResults(
+    std::map<Loc,int16_t> CalculateAllVCFDefendResults(
         const Board& board, 
         Color attackPlayer, 
         int maxMove, 
@@ -40,7 +25,7 @@ public:
 
     // Calculate all VCF defend results
     // Version 2: Prune locations during calculating other defenses
-    std::vector<VCFPrunedInfo> CalculateAllVCFDefendResultsV2(
+    std::map<Loc,int16_t> CalculateAllVCFDefendResultsV2(
         const Board& board,
         Color attackPlayer,
         int maxMove,
@@ -56,7 +41,16 @@ public:
         int recommendedMaxMove,
         double searchFactor,
         std::vector<int8_t>& dependMap,
+        Loc& winLoc,
         bool noOptimize //if true, return immediately when find a vcf, not optimize the VCF steps
+    );
+    // Calculate shortest VCF steps
+    int calculateShortestVCF(
+        const Board& board,
+        Loc& winLoc,
+        Color attackPlayer,
+        int initialMaxMove,
+        double searchFactor
     );
     
 private:
@@ -66,7 +60,7 @@ private:
     NNUEBoardHistory nnueHistory1;
     
     // Calculate all VCF defend results
-    std::vector<VCFPrunedInfo> CalculateAllVCFDefendResults_stage0(
+    std::map<Loc,int16_t> CalculateAllVCFDefendResults_stage0(
         const Board& board, 
         Color attackPlayer, 
         int maxMove, 
@@ -74,14 +68,14 @@ private:
     );
     
     // Calculate all VCF defend results
-    std::vector<VCFPrunedInfo> CalculateAllVCFDefendResults_stage1(
+    std::map<Loc,int16_t> CalculateAllVCFDefendResults_stage1(
         const Board& board, 
         Color attackPlayer, 
         int maxMove, 
         double searchFactor
     );
     // Calculate all VCF defend results
-    std::vector<VCFPrunedInfo> CalculateAllVCFDefendResultsV2_stage0(
+    std::map<Loc,int16_t> CalculateAllVCFDefendResultsV2_stage0(
         const Board& board,
         Color attackPlayer,
         int maxMove,
@@ -89,7 +83,7 @@ private:
     );
 
     // Calculate all VCF defend results
-    std::vector<VCFPrunedInfo> CalculateAllVCFDefendResultsV2_stage1(
+    std::map<Loc,int16_t> CalculateAllVCFDefendResultsV2_stage1(
         const Board& board,
         Color attackPlayer,
         int maxMove,

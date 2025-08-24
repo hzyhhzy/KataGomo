@@ -501,7 +501,7 @@ int MainCmds::genbook(const vector<string>& args) {
     bool hasAtLeastOneLegalNewMove = false;
     for(Loc moveLoc = 0; moveLoc < Board::MAX_ARR_SIZE; moveLoc++) {
       if(hist.isLegal(board,moveLoc,pla)) {
-        if(!isReExpansion && constNode.isMoveInBook(moveLoc))
+        if((!isReExpansion && constNode.isMoveInBook(moveLoc))||constNode.isMoveLosingLeaf(moveLoc))
           avoidMoveUntilByLoc[moveLoc] = 1;
         else
           hasAtLeastOneLegalNewMove = true;
@@ -526,8 +526,11 @@ int MainCmds::genbook(const vector<string>& args) {
     }
     nodeValues.winLossError = 0.0;
     nodeValues.maxPolicy = 0.0;
-    nodeValues.weight = 0.0;
-    nodeValues.visits = 0.0;
+    double visits = maxVisitsForLeaves;
+    nodeValues.weight = visits;
+    nodeValues.visits = visits;
+    nodeValues.winner = getOpp(node.pla());
+    nodeValues.winMoveNum = 0;
 
     node.canExpand() = false;
   };
@@ -671,7 +674,19 @@ int MainCmds::genbook(const vector<string>& args) {
         if(board.stage==0) {
           double searchFactor = cfgParams.vcfAttackFactor * myVCFSearchLimit;
           if(searchFactor>0 && searchFactor>node.getVCFAttackCalculatedFactor()+0.01) {
-            todo;
+            // Perform VCF attack search
+            Loc winLoc = Board::NULL_LOC;
+            int winMoveNum = vcfcalc->calculateShortestVCF(board, winLoc, pla, hist.rules.maxMoves, searchFactor);
+            if(winMoveNum > 0 && winLoc != Board::NULL_LOC) {
+              // Found a winning VCF sequence
+              node.setVCFAttackResults(searchFactor, winLoc, winMoveNum);
+
+              //node.canExpand() = false;
+              return;
+            } else {
+              // No VCF found, but mark as calculated
+              node.setVCFAttackResults(searchFactor, Board::NULL_LOC, 0);
+            }
           }
         }
       }
@@ -683,7 +698,11 @@ int MainCmds::genbook(const vector<string>& args) {
                                                : cfgParams.vcfDefenseFactorStage1 * oppVCFSearchLimit;
        
         if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() + 0.01) {
-          todo;
+          // Perform VCF defense search
+          std::map<Loc,int16_t> loseLeafMoves;
+          loseLeafMoves = vcfcalc->CalculateAllVCFDefendResultsV2(board, getOpp(pla), hist.rules.maxMoves, searchFactor);
+          // Set the VCF defense results
+          node.setVCFDefenseResults(searchFactor, loseLeafMoves);
         }
         
       }

@@ -1326,14 +1326,10 @@ void VCFLogic::printBoardWithDependencyMap(const Board& board, const std::vector
   cout << endl;
 }
 
-void VCFLogic::printBoardWithPruneInfo(const Board& board, const std::vector<VCFPrunedInfo>& pruneInfo) {
+void VCFLogic::printBoardWithPruneInfo(const Board& board, const std::map<Loc,int16_t>& pruneInfo) {
     cout << "VCF Prune Information (board format):" << endl;
 
-    // Create a map for quick lookup of prune info by location
-    std::map<Loc, const VCFPrunedInfo*> pruneMap;
-    for (const auto& info : pruneInfo) {
-        pruneMap[info.loc] = &info;
-    }
+    // pruneInfo is already a map, no need to create another one
 
     // Print board with prune info (4 characters per cell)
     bool showCoords = board.x_size <= 50 && board.y_size <= 50;
@@ -1368,20 +1364,15 @@ void VCFLogic::printBoardWithPruneInfo(const Board& board, const std::vector<VCF
             }
             else {
                 // Check if this location has prune info
-                auto it = pruneMap.find(loc);
-                if (it != pruneMap.end()) {
-                    const VCFPrunedInfo* info = it->second;
-                    if (info->isPruned) {
-                        if (info->moveNum < 10)
-                            cout << " L" << info->moveNum << " ";
-                        else if (info->moveNum < 100)
-                            cout << "L" << info->moveNum << " ";
-                        else
-                            cout << "L" << info->moveNum;
-                    }
-                    else {
-                        cout << " .  ";
-                    }
+                auto it = pruneInfo.find(loc);
+                if (it != pruneInfo.end()) {
+                    int16_t moveNum = it->second;
+                    if (moveNum < 10)
+                        cout << " L" << moveNum << " ";
+                    else if (moveNum < 100)
+                        cout << "L" << moveNum << " ";
+                    else
+                        cout << "L" << moveNum;
                 }
                 else {
                     // Check if position is illegal due to move priority
