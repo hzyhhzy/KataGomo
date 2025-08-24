@@ -603,11 +603,13 @@ let svgNS = "http://www.w3.org/2000/svg";
          } else {
           // Show winrate for current player: 100*(value+1)/2
           let winrate = (100.0 * (0.5*(1.0+((nextPla==1)?-moveData["wl"]:moveData["wl"])))).toFixed(1);
-          markerText = winrate + "%";
+          //markerText = winrate + "%";
+          markerText = winrate + "";
         }
         
         marker.textContent = markerText;
         marker.setAttribute("font-size", markerFontSize * 0.6); // Smaller font for more text
+        marker.setAttribute("font-weight", "bold"); // Bold font for winrate text
       } else {
         marker.textContent = ""+(i+1);
         marker.setAttribute("font-size", markerFontSize);

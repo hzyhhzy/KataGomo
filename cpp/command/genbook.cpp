@@ -710,7 +710,6 @@ int MainCmds::genbook(const vector<string>& args) {
 
     // Directly set the values for a terminal position
     if(hist.isGameFinished) {
-      std::lock_guard<std::mutex> lock(bookMutex);
       setNodeThisValuesTerminal(node,hist);
       return;
     }
@@ -791,7 +790,7 @@ int MainCmds::genbook(const vector<string>& args) {
       // Make sure we don't walk off the edge under this ruleset.
       if(hist.isGameFinished) {
         logger.write("Skipping trace variation at this book hash " + node.hash().toString() + " since game over");
-        node.canExpand() = false;
+        setNodeThisValuesTerminal(node, hist);
         break;
       }
 
@@ -1099,8 +1098,7 @@ int MainCmds::genbook(const vector<string>& args) {
     // We ALLOW walking past the main phase of the game under this ruleset, to give the book the ability to
     // solve tactics in the cleanup phase of japanese rules if needed. So we only check isGameFinished instead of isPastNormalPhaseEnd.
     if(hist.isGameFinished) {
-      std::lock_guard<std::mutex> lock(bookMutex);
-      node.canExpand() = false;
+      setNodeThisValuesTerminal(node, hist);
       return;
     }
 

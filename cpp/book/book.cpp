@@ -1491,7 +1491,17 @@ void Book::recomputeNodeValues(BookNode* node) {
         //cout << node->recursiveValues.visits << node->recursiveValues.adjustedVisits;
         
         //pruned losing leaf should be considered
-        assert(node->recursiveValues.winner != C_WALL);
+        if (node->recursiveValues.winner == C_WALL)
+        {
+          cout << "Warning: No-child node while node->recursiveValues.winner == C_WALL" << endl;
+          cout << "Hash: " << node->hash << endl;
+          cout << "thisValuesNotInBook.winLossValue: " << node->thisValuesNotInBook.winLossValue << endl;
+          double value = node->thisValuesNotInBook.winLossValue;
+          if(node->pla == C_BLACK)
+            value = -value;
+          assert(value <= -1.0); //losing leaf for old version
+          assert(false);//todo
+        }
         if(node->thisValuesNotInBook.winner == getOpp(node->pla)) {
           // Check if there are VCF defense losing leaf moves that could provide a better result
           if(!node->loseLeafMoves.empty()) {
@@ -3093,8 +3103,8 @@ Book* Book::loadFromFile(const std::string& fileName) {
           assert((node->thisValuesNotInBook.winLossValue<-9.99e19 && pla==C_WHITE)||(node->thisValuesNotInBook.winLossValue>9.99e19 && pla==C_BLACK));
           node->thisValuesNotInBook.winner = getOpp(pla);
           node->thisValuesNotInBook.winMoveNum = 0;
-          node->thisValuesNotInBook.winLossValue = (node->thisValuesNotInBook.winner == C_WHITE) ? 1.0 : -1.0;
-          node->thisValuesNotInBook.winLossError = 0.0;
+          //node->thisValuesNotInBook.winLossValue = (node->thisValuesNotInBook.winner == C_WHITE) ? 1.0 : -1.0;
+          //node->thisValuesNotInBook.winLossError = 0.0;
 
         }
 
