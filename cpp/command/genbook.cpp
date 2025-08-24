@@ -633,6 +633,57 @@ int MainCmds::genbook(const vector<string>& args) {
       setNodeThisValuesNoMovesNoLock(node);
   };
 
+  auto checkVcfAttackAndDefense =
+    [&](VCFCalculator* vcfcalc, SymBookNode& node, const Board& board, const BoardHistory& hist) 
+      {
+      Player pla = hist.presumedNextMovePla;
+      assert(pla == node.pla());
+      // check vcf
+      if(nnueWeight != nullptr) {
+        double myVCFSearchLimit = pla == C_BLACK ? cfgParams.blackVCFSearchLimit : cfgParams.whiteVCFSearchLimit;
+        double oppVCFSearchLimit = pla == C_WHITE ? cfgParams.blackVCFSearchLimit : cfgParams.whiteVCFSearchLimit;
+        // should search attack?
+        if(myVCFSearchLimit > 0) {
+          if(board.stage == 0) {
+            double searchFactor = cfgParams.vcfAttackFactor * myVCFSearchLimit;
+            if(searchFactor > 0 && searchFactor > node.getVCFAttackCalculatedFactor() + 0.01) {
+              // Perform VCF attack search
+              Loc winLoc = Board::NULL_LOC;
+              int winMoveNum = vcfcalc->calculateShortestVCF(board, winLoc, pla, hist.rules.maxMoves, searchFactor);
+              if(winMoveNum > 0 && winLoc != Board::NULL_LOC) {
+                // Found a winning VCF sequence
+                std::lock_guard<std::mutex> lock(bookMutex);
+                node.setVCFAttackResults(searchFactor, winLoc, winMoveNum);
+                // node.canExpand() = false;
+                return;
+              } else {
+                // No VCF found, but mark as calculated
+                std::lock_guard<std::mutex> lock(bookMutex);
+                node.setVCFAttackResults(searchFactor, Board::NULL_LOC, 0);
+              }
+            }
+          }
+        }
+
+        // should search defense?
+        if(oppVCFSearchLimit > 0) {
+          double searchFactor = board.stage == 0 ? cfgParams.vcfDefenseFactorStage0 * oppVCFSearchLimit
+                                                 : cfgParams.vcfDefenseFactorStage1 * oppVCFSearchLimit;
+
+          if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() + 0.01) {
+            // Perform VCF defense search
+            std::map<Loc, int16_t> loseLeafMoves;
+            loseLeafMoves =
+              vcfcalc->CalculateAllVCFDefendResultsV2(board, getOpp(pla), hist.rules.maxMoves, searchFactor);
+            // Set the VCF defense results
+            {
+              std::lock_guard<std::mutex> lock(bookMutex);
+              node.setVCFDefenseResults(searchFactor, loseLeafMoves);
+            }
+          }
+        }
+      }
+    };
 
   // Perform a short search and update thisValuesNotInBook for a node
   auto searchAndUpdateNodeThisValues = [&](Search* search, VCFCalculator* vcfcalc, SymBookNode node) {
@@ -659,65 +710,25 @@ int MainCmds::genbook(const vector<string>& args) {
 
     // Directly set the values for a terminal position
     if(hist.isGameFinished) {
+      std::lock_guard<std::mutex> lock(bookMutex);
       setNodeThisValuesTerminal(node,hist);
       return;
     }
 
-    //check vcf
-    if(nnueWeight!=nullptr) {
 
-      double myVCFSearchLimit = pla == C_BLACK ? cfgParams.blackVCFSearchLimit : cfgParams.whiteVCFSearchLimit;
-      double oppVCFSearchLimit = pla == C_WHITE ? cfgParams.blackVCFSearchLimit : cfgParams.whiteVCFSearchLimit;
-      //should search attack?
-      if(myVCFSearchLimit>0)
-      {
-        if(board.stage==0) {
-          double searchFactor = cfgParams.vcfAttackFactor * myVCFSearchLimit;
-          if(searchFactor>0 && searchFactor>node.getVCFAttackCalculatedFactor()+0.01) {
-            // Perform VCF attack search
-            Loc winLoc = Board::NULL_LOC;
-            int winMoveNum = vcfcalc->calculateShortestVCF(board, winLoc, pla, hist.rules.maxMoves, searchFactor);
-            if(winMoveNum > 0 && winLoc != Board::NULL_LOC) {
-              // Found a winning VCF sequence
-              node.setVCFAttackResults(searchFactor, winLoc, winMoveNum);
-
-              //node.canExpand() = false;
-              return;
-            } else {
-              // No VCF found, but mark as calculated
-              node.setVCFAttackResults(searchFactor, Board::NULL_LOC, 0);
-            }
-          }
-        }
-      }
-
-      //should search defense?
-      if(oppVCFSearchLimit>0)
-      {
-        double searchFactor = board.stage == 0 ? cfgParams.vcfDefenseFactorStage0 * oppVCFSearchLimit
-                                               : cfgParams.vcfDefenseFactorStage1 * oppVCFSearchLimit;
-       
-        if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() + 0.01) {
-          // Perform VCF defense search
-          std::map<Loc,int16_t> loseLeafMoves;
-          loseLeafMoves = vcfcalc->CalculateAllVCFDefendResultsV2(board, getOpp(pla), hist.rules.maxMoves, searchFactor);
-          // Set the VCF defense results
-          node.setVCFDefenseResults(searchFactor, loseLeafMoves);
-        }
-        
-      }
-
-    }
-
-
+    checkVcfAttackAndDefense(vcfcalc, node, board, hist);
+    if(node.getWinLeafMove() != Board::NULL_LOC)
+      return;
 
     std::vector<int> avoidMoveUntilByLoc;
     bool foundNewMoves;
     {
       const bool allowReExpansion = false;
       bool isReExpansion;
-      std::lock_guard<std::mutex> lock(bookMutex);
-      foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion);
+      {
+          std::lock_guard<std::mutex> lock(bookMutex);
+          foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion);
+      }
     }
 
     if(!foundNewMoves) {
@@ -1093,15 +1104,14 @@ int MainCmds::genbook(const vector<string>& args) {
       return;
     }
 
-    //todo: calculate VCF
-    {
-
-    }
+    VCFCalculator* vcfcalc = vcfCalculators.size() == 0 ? nullptr : vcfCalculators[gameThreadIdx];
+    Board board = hist.getRecentBoard(0);
+    checkVcfAttackAndDefense(vcfcalc, node, board, hist);
+    if(node.getWinLeafMove() != Board::NULL_LOC)
+      return;
 
     Search* search = searches[gameThreadIdx];
-    VCFCalculator* vcfcalc = vcfCalculators[gameThreadIdx];
     Player pla = hist.presumedNextMovePla;
-    Board board = hist.getRecentBoard(0);
     search->setPosition(pla,board,hist);
     search->setRootSymmetryPruningOnly(symmetries);
 

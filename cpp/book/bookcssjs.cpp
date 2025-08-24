@@ -420,14 +420,14 @@ let svgNS = "http://www.w3.org/2000/svg";
             loseBackground.setAttribute("y", y - 0.2);
             loseBackground.setAttribute("width", 0.4);
             loseBackground.setAttribute("height", 0.4);
-            loseBackground.setAttribute("fill", "rgba(255, 255, 255, 0.8)");
+            loseBackground.setAttribute("fill", "rgba(255, 255, 255, 0.5)");
           } else {
             // Large, high transparency rectangle for non-urgent situations (>4 moves)
             loseBackground.setAttribute("x", x - 0.4);
             loseBackground.setAttribute("y", y - 0.4);
             loseBackground.setAttribute("width", 0.8);
             loseBackground.setAttribute("height", 0.8);
-            loseBackground.setAttribute("fill", "rgba(255, 255, 255, 0.4)");
+            loseBackground.setAttribute("fill", "rgba(255, 255, 255, 0.5)");
           }
           loseBackground.setAttribute("stroke", "none");
           loseBackground.setAttribute("rx", 0.1);
