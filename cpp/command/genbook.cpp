@@ -754,11 +754,11 @@ int MainCmds::genbook(const vector<string>& args) {
       // check whether it has new legal moves
       if(search->getRootVisits() == 0 || search->getChosenMoveLoc() == Board::NULL_LOC) {
         std::lock_guard<std::mutex> lock(bookMutex);
-        logger.write("searchAndUpdateNodeThisValues search->getRootVisits() == 0");
-        logger.write("BookHash of node unable to expand: " + constNode.hash().toString() + ", maybe four attack");
-        ostringstream debugOut;
-        hist.printDebugInfo(debugOut, board);
-        logger.write(debugOut.str());
+        //logger.write("searchAndUpdateNodeThisValues search->getRootVisits() == 0");
+        //logger.write("BookHash of node unable to expand: " + constNode.hash().toString() + ", maybe four attack");
+        //ostringstream debugOut;
+        //hist.printDebugInfo(debugOut, board);
+        //logger.write(debugOut.str());
         setNodeThisValuesNoMovesNoLock(node);
       }
       // Stick all the new values into the book node
@@ -1136,8 +1136,9 @@ int MainCmds::genbook(const vector<string>& args) {
       foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion);
     }
     if(!foundNewMoves) {
-      std::lock_guard<std::mutex> lock(bookMutex);
-      node.canExpand() = false;
+      setNodeThisValuesNoMoves(node);
+      //std::lock_guard<std::mutex> lock(bookMutex);
+      //node.canExpand() = false;
       return;
     }
 
@@ -1156,7 +1157,9 @@ int MainCmds::genbook(const vector<string>& args) {
       ostringstream debugOut;
       hist.printDebugInfo(debugOut,board);
       logger.write(debugOut.str());
-      node.canExpand() = false;
+
+      setNodeThisValuesNoMovesNoLock(node);
+      //node.canExpand() = false;
       return;
     }
 
@@ -1220,8 +1223,11 @@ int MainCmds::genbook(const vector<string>& args) {
     }
 
     // Only nodes that have never been expanded on their own (were added from another node's search) are allowed for reexpansion.
-    node.canReExpand() = false;
-    newAndChangedNodes.push_back(node);
+    {
+      std::lock_guard<std::mutex> lock(bookMutex);
+      node.canReExpand() = false;
+      newAndChangedNodes.push_back(node);
+    }
 
     // Make sure to process the nodes to search and updates so the book is in a consistent state, before we do any quitting out.
     // On non-reexpansions, we expect to always add at least one new move to the book for this node.
@@ -1367,8 +1373,8 @@ int MainCmds::genbook(const vector<string>& args) {
         book->recomputeEverything();
         logger.write("Randomized params and recomputed costs");
       }
-
-      std::vector<SymBookNode> nodesToExpand = book->getNextNToExpand(std::min(1+iteration,numToExpandPerIteration));
+      int numNodesToExpandThisIteration = int(std::min(1 + sqrt(double(book->size())), double(numToExpandPerIteration)));
+      std::vector<SymBookNode> nodesToExpand = book->getNextNToExpand(numNodesToExpandThisIteration);
       // Try to make all of the expanded nodes be consistent in symmetry so that they can share cache, in case
       // many of them are for related board positions.
       optimizeSymmetriesInplace(nodesToExpand, &rand, logger);

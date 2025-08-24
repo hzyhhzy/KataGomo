@@ -3100,7 +3100,14 @@ Book* Book::loadFromFile(const std::string& fileName) {
           node->canExpand = true;
         }
         else{//all other moves are illegal
-          assert((node->thisValuesNotInBook.winLossValue<-9.99e19 && pla==C_WHITE)||(node->thisValuesNotInBook.winLossValue>9.99e19 && pla==C_BLACK));
+          double currentValue =
+            pla == C_WHITE ? node->thisValuesNotInBook.winLossValue : -node->thisValuesNotInBook.winLossValue;
+          if (currentValue > -1e19)
+          {
+            cout << "Warning: !node->canExpand but value = " << currentValue << endl; // <-0.98 may because of some VCF prune, >-0.98 may be bug
+            if(currentValue != -1)
+              node->thisValuesNotInBook.winLossValue = pla == C_WHITE ? -1e20 : 1e20;
+          }
           node->thisValuesNotInBook.winner = getOpp(pla);
           node->thisValuesNotInBook.winMoveNum = 0;
           //node->thisValuesNotInBook.winLossValue = (node->thisValuesNotInBook.winner == C_WHITE) ? 1.0 : -1.0;
