@@ -168,9 +168,12 @@ int VCFLogic::checkMaxConnectLen(const Board& board, Player pla) {
     {
       if (!board.isOnBoard(loc))
         return 0;
-      if (board.colors[loc] == getOpp(pla))
+      Color c = board.colors[loc];
+      if (board.stage == 1 && board.firstLoc == loc)
+          c = board.nextPla;
+      if (c == getOpp(pla))
         return 0;
-      if (board.colors[loc] == pla)
+      if (c == pla)
       {
         len++;
       }
@@ -183,7 +186,6 @@ int VCFLogic::checkMaxConnectLen(const Board& board, Player pla) {
   for (int y = 0; y < board.y_size; y++) {
     for (int x = 0; x < board.x_size; x++) {
       Loc loc = Location::getLoc(x, y, board.x_size);
-      if (board.colors[loc] == pla) {
         // Horizontal (+x direction)
         int len = checkDirection(loc, 1);
         maxLen = max(maxLen, len);
@@ -199,7 +201,7 @@ int VCFLogic::checkMaxConnectLen(const Board& board, Player pla) {
         // Negative diagonal (-x+y direction)
         len = checkDirection(loc, board.x_size + 1 - 1);
         maxLen = max(maxLen, len);
-      }
+      
     }
   }
   

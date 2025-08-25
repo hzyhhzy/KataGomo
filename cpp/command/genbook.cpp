@@ -646,7 +646,7 @@ int MainCmds::genbook(const vector<string>& args) {
         if(myVCFSearchLimit > 0) {
           if(board.stage == 0) {
             double searchFactor = cfgParams.vcfAttackFactor * myVCFSearchLimit;
-            if(searchFactor > 0 && searchFactor > node.getVCFAttackCalculatedFactor() + 0.01) {
+            if(searchFactor > 0 && searchFactor > node.getVCFAttackCalculatedFactor() * 20) {
               // Perform VCF attack search
               Loc winLoc = Board::NULL_LOC;
               int winMoveNum = vcfcalc->calculateShortestVCF(board, winLoc, pla, hist.rules.maxMoves, searchFactor);
@@ -670,7 +670,7 @@ int MainCmds::genbook(const vector<string>& args) {
           double searchFactor = board.stage == 0 ? cfgParams.vcfDefenseFactorStage0 * oppVCFSearchLimit
                                                  : cfgParams.vcfDefenseFactorStage1 * oppVCFSearchLimit;
 
-          if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() + 0.01) {
+          if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() * 20) {
             // Perform VCF defense search
             std::map<Loc, int16_t> loseLeafMoves;
             loseLeafMoves =

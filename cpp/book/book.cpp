@@ -1460,9 +1460,9 @@ void Book::recomputeNodeValues(BookNode* node) {
   double weight = 0.0;
   double visits = 0.0;
 
-  double bestValueConsiderWin=-1e30;//65536-movenum if win,-65536+movenum if loss, [-1, 1] if not sure
+  double bestValueNoThisConsiderWin = -1e30;  // 65536-movenum if win,-65536+movenum if loss, [-1, 1] if not sure
   if(node->winLeafMove!=Board::NULL_LOC)//can win by VCF
-    bestValueConsiderWin = 65536 - node->winLeafMoveNum;
+    bestValueNoThisConsiderWin = 65536 - node->winLeafMoveNum;
   bool isSureDraw=true;
   bool haveDraw=false;
   {
@@ -1524,27 +1524,6 @@ void Book::recomputeNodeValues(BookNode* node) {
     else {
       BookValues& values = node->thisValuesNotInBook;
       
-      double childValueConsiderWin=values.winLossValue;
-      if(values.winner == node->pla) {
-        assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
-        isSureDraw=false;
-        childValueConsiderWin = 65536 - values.winMoveNum;
-      }
-      else if(values.winner == getOpp(node->pla)) {
-        assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
-        childValueConsiderWin = -65536 + values.winMoveNum;
-      }
-      else if(values.winner == C_EMPTY){
-        assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
-        haveDraw=true;
-        childValueConsiderWin =
-          node->pla == P_WHITE ? params.noResultUtilityForWhiteInBook : -params.noResultUtilityForWhiteInBook;
-      }
-      else{
-        isSureDraw=false;
-        childValueConsiderWin=node->pla == P_WHITE?values.winLossValue:-values.winLossValue;
-      }
-      bestValueConsiderWin=std::max(bestValueConsiderWin,childValueConsiderWin);
 
       double winLossError = values.getAdjustedWinLossError(node->book->initialRules);
       winLossValue = values.winLossValue;
@@ -1590,7 +1569,8 @@ void Book::recomputeNodeValues(BookNode* node) {
       isSureDraw=false;
       childValueConsiderWin=node->pla == P_WHITE?values.winLossValue:-values.winLossValue;
     }
-    bestValueConsiderWin=std::max(bestValueConsiderWin,childValueConsiderWin);
+    bestValueNoThisConsiderWin = std::max(bestValueNoThisConsiderWin, childValueConsiderWin);
+
 
 
 
@@ -1610,6 +1590,59 @@ void Book::recomputeNodeValues(BookNode* node) {
       visits += values.visits;
     }
   }
+
+  double bestValueConsiderWin = bestValueNoThisConsiderWin;
+  if(node->canExpand) {
+    const BookValues& values = node->thisValuesNotInBook;
+
+    double childValueConsiderWin = values.winLossValue;
+    if(values.winner == node->pla) {
+      assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+      isSureDraw = false;
+      childValueConsiderWin = 65536 - values.winMoveNum;
+    } else if(values.winner == getOpp(node->pla)) {
+      assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+      childValueConsiderWin = -65536 + values.winMoveNum;
+    } else if(values.winner == C_EMPTY) {
+      assert(values.winMoveNum < 32768 && values.winMoveNum >= 0);
+      haveDraw = true;
+      childValueConsiderWin =
+        node->pla == P_WHITE ? params.noResultUtilityForWhiteInBook : -params.noResultUtilityForWhiteInBook;
+    } else {
+      isSureDraw = false;
+      childValueConsiderWin = node->pla == P_WHITE ? values.winLossValue : -values.winLossValue;
+    }
+    bestValueConsiderWin = std::max(bestValueConsiderWin, childValueConsiderWin);
+  }
+
+  //sometimes value not in book is higher than calculated moves, this is probably random errors, so downweight it.
+  if(
+    bestValueConsiderWin > bestValueNoThisConsiderWin && bestValueConsiderWin > -1.001 &&
+    bestValueConsiderWin < 1.001 && node->moves.size() > 0)  // unsure result
+  {
+    //cout << bestValueConsiderWin << " " ;
+    if(bestValueNoThisConsiderWin < -1)//maybe lose
+      bestValueNoThisConsiderWin = -1;
+    assert(bestValueNoThisConsiderWin <= 1);
+    double w = pow(node->thisValuesNotInBook.weight / (weight + 1.0), 0.3);
+    double w2 = pow(double(node->moves.size() + 1), -1.5);
+    w=std::max(w,w2);
+
+    //cout << w << " ";
+    assert(w < 1 && w > 0);
+    bestValueConsiderWin = w * bestValueConsiderWin + (1 - w) * bestValueNoThisConsiderWin;
+
+    //cout << bestValueConsiderWin << endl;
+    assert(bestValueConsiderWin < 1.00001 && bestValueConsiderWin > -1.00001);
+    if(bestValueConsiderWin > 1)
+      bestValueConsiderWin = 1;
+    if(bestValueConsiderWin < -1)
+      bestValueConsiderWin = -1;
+    winLossValue = node->pla == C_WHITE ? bestValueConsiderWin : -bestValueConsiderWin;  //
+  }
+
+
+
 
   RecursiveBookValues& values = node->recursiveValues;
   values.weight = weight;
@@ -1656,7 +1689,7 @@ void Book::recomputeNodeValues(BookNode* node) {
       values.winLossUCB = values.winLossValue;
     }
     else{//result not sure
-      
+      assert(bestValueConsiderWin >= -1 && bestValueConsiderWin <= 1);
       values.winLossValue = winLossValue;
       values.winLossLCB = winLossLCB;
       values.winLossUCB = winLossUCB;
@@ -1801,9 +1834,9 @@ void Book::recomputeNodeCost(BookNode* node) {
   if(node->minCostFromRoot < node->minCostFromRootWLPV)
     node->minCostFromRootWLPV = node->minCostFromRoot;
 
+  double bestWinLossThisPerspective = -1e100;
   // Find the winloss PV for this node
   {
-    double bestWinLossThisPerspective = -1e100;
     Loc bestWinLossMove = Board::NULL_LOC;
     for(auto& locAndBookMove: node->moves) {
       locAndBookMove.second.isWLPV = false;
@@ -1893,10 +1926,11 @@ void Book::recomputeNodeCost(BookNode* node) {
       (node->pla == P_BLACK && passUtility < childUtility + 0.02)
     );
 
-    double costFromWL = calculateWinlossLoss(node->recursiveValues.winLossValue, params) -
-                        calculateWinlossLoss(child->recursiveValues.winLossValue, params);
+    double childWinLossThisPerspective = child->recursiveValues.winLossValue;
     if(node->pla == P_BLACK)
-      costFromWL = -costFromWL;
+      childWinLossThisPerspective = -childWinLossThisPerspective;
+    double costFromWL = calculateWinlossLoss(bestWinLossThisPerspective, params) -
+                        calculateWinlossLoss(childWinLossThisPerspective, params);
     assert(costFromWL > -1e-10);//minimax ensures this
 
     if(params.bonusForBiggestWLCost > 0)
@@ -1975,10 +2009,11 @@ void Book::recomputeNodeCost(BookNode* node) {
     //   node->recursiveValues.scoreUCB << endl;
     // cout << "Expansion stats " << ucbWinLossLoss << " " << ucbScoreLoss << " " << rawPolicy << endl;
 
-    double costFromWL = calculateWinlossLoss(node->recursiveValues.winLossValue, params) -
-                        calculateWinlossLoss(node->thisValuesNotInBook.winLossValue, params);
+    double thisValuesNotInBookWinLossThisPerspective = node->thisValuesNotInBook.winLossValue;
     if(node->pla == P_BLACK)
-      costFromWL = -costFromWL;
+      thisValuesNotInBookWinLossThisPerspective = -thisValuesNotInBookWinLossThisPerspective;
+    double costFromWL = calculateWinlossLoss(bestWinLossThisPerspective, params) -
+                        calculateWinlossLoss(thisValuesNotInBookWinLossThisPerspective, params);
     assert(costFromWL > -1e-10);  // minimax ensures this
 
     if(params.bonusForBiggestWLCost > 0)

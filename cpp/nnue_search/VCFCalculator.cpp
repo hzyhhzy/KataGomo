@@ -344,11 +344,14 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                         {
                             if(minWinStepsMap[loc1][loc2] > NOT_SURE)
                             {
-                                //very rare case, may have bug
-                                //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
-                                std::cout<<"Warning: minWinStepsMap[loc1][loc2] > NOT_SURE but dependMap2[loc2] < 2, "<<minWinStepsMap[loc1][loc2]<<" "<<vcfSteps2<<std::endl;
-                                std::cout<<Location::toString(loc1,board)<<" "<<Location::toString(loc2, board)<<std::endl;
-                                Board::printBoard(std::cout,board,loc1,nullptr);
+                                if (VCFCalculator_debug_print)
+                                {
+                                    //very rare case, may have bug
+                                    //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
+                                    std::cout << "Warning: minWinStepsMap[loc1][loc2] > NOT_SURE but dependMap2[loc2] < 2, " << minWinStepsMap[loc1][loc2] << " " << vcfSteps2 << std::endl;
+                                    std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << std::endl;
+                                    Board::printBoard(std::cout, board, loc1, nullptr);
+                                }
                             }
                             minWinStepsMap[loc1][loc2] = std::min(minWinStepsMap[loc1][loc2], int16_t(vcfSteps2));
                             minWinStepsMap[loc2][loc1] = std::min(minWinStepsMap[loc2][loc1], int16_t(vcfSteps2));
@@ -361,11 +364,14 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                     {
                         if(minWinStepsMap[loc1][loc2] < NOT_SURE)
                         {
-                            //very rare case, may have bug
-                            //if no bug, there is a very difficult VCF that loc2 found it and marked loc2 as not-depended loc but loc1-pass didn't find a VCF
-                            std::cout<<"Warning: minWinStepsMap[loc1][loc2] < NOT_SURE but vcfSteps2==0, "<<minWinStepsMap[loc1][loc2]<<" "<<vcfSteps2<<std::endl;
-                            std::cout<<Location::toString(loc1, board)<<" "<<Location::toString(loc2, board)<<std::endl;
-                            Board::printBoard(std::cout,board,loc1,nullptr);
+                            if (VCFCalculator_debug_print)
+                            {
+                                //very rare case, may have bug
+                                //if no bug, there is a very difficult VCF that loc2 found it and marked loc2 as not-depended loc but loc1-pass didn't find a VCF
+                                std::cout << "Warning: minWinStepsMap[loc1][loc2] < NOT_SURE but vcfSteps2==0, " << minWinStepsMap[loc1][loc2] << " " << vcfSteps2 << std::endl;
+                                std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << std::endl;
+                                Board::printBoard(std::cout, board, loc1, nullptr);
+                            }
                         }
                         else
                         {
@@ -383,11 +389,14 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                     {
                         if(minWinStepsMap[loc1][loc2] > NOT_SURE)
                         {
-                            //very rare case, may have bug
-                            //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
-                            std::cout<<"Warning: minWinStepsMap[loc1][loc2] > NOT_SURE but dependMap1[loc1] == 1 and dependMap1[loc2] < 1, "<<minWinStepsMap[loc1][loc2]<<" "<<vcfSteps1<<std::endl;
-                            std::cout<<Location::toString(loc1, board)<<" "<<Location::toString(loc2, board)<<std::endl;
-                            Board::printBoard(std::cout,board,loc1,nullptr);
+                            if (VCFCalculator_debug_print)
+                            {
+                                //very rare case, may have bug
+                                //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
+                                std::cout << "Warning: minWinStepsMap[loc1][loc2] > NOT_SURE but dependMap1[loc1] == 1 and dependMap1[loc2] < 1, " << minWinStepsMap[loc1][loc2] << " " << vcfSteps1 << std::endl;
+                                std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << std::endl;
+                                Board::printBoard(std::cout, board, loc1, nullptr);
+                            }
                         }
                         minWinStepsMap[loc1][loc2] = vcfSteps1;
                         minWinStepsMap[loc2][loc1] = vcfSteps1;
@@ -407,11 +416,14 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                 vcfSteps2 = calculateShortestVCFAndDependMap(board1, attackPlayer, maxMove, recommendedMaxMoveStage1, recommendedMaxMoveStage1, searchFactor, dependMap2, tmploc, false);
                 if(vcfSteps2 != vcfSteps1)
                 {
-                    //very rare case, may have bug
-                    //if no bug, there is a very difficult VCF that pass-pass found it and marked loc1 as not-depended loc but loc1-pass didn't find a VCF
-                    std::cout<<"Warning: find a vcf of pass-pass in "<<vcfSteps1<<" moves, but recalculate with loc1 as "<<Location::toString(loc1, board)<<" the vcf is "<<vcfSteps2<<std::endl;
-                    
-                    Board::printBoard(std::cout,board,loc1,nullptr);
+                    if (VCFCalculator_debug_print)
+                    {
+                        //very rare case, may have bug
+                        //if no bug, there is a very difficult VCF that pass-pass found it and marked loc1 as not-depended loc but loc1-pass didn't find a VCF
+                        std::cout << "Warning: find a vcf of pass-pass in " << vcfSteps1 << " moves, but recalculate with loc1 as " << Location::toString(loc1, board) << " the vcf is " << vcfSteps2 << std::endl;
+
+                        Board::printBoard(std::cout, board, loc1, nullptr);
+                    }
                 }
                 if(vcfSteps2 > 0)
                 {
@@ -422,11 +434,14 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                         {
                             if(minWinStepsMap[loc1][loc2] > NOT_SURE)
                             {
-                                //very rare case, may have bug
-                                //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
-                                std::cout<<"Warning: minWinStepsMap[loc1][loc2] > NOT_SURE but after loc1 played dependMap2[loc2] < 2, "<<minWinStepsMap[loc1][loc2]<<" "<<vcfSteps1<<" "<<vcfSteps2<<std::endl;
-                                std::cout<<Location::toString(loc1, board)<<" "<<Location::toString(loc2, board)<<std::endl;
-                                Board::printBoard(std::cout,board,loc1,nullptr);
+                                if (VCFCalculator_debug_print)
+                                {
+                                    //very rare case, may have bug
+                                    //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
+                                    std::cout << "Warning: minWinStepsMap[loc1][loc2] > NOT_SURE but after loc1 played dependMap2[loc2] < 2, " << minWinStepsMap[loc1][loc2] << " " << vcfSteps1 << " " << vcfSteps2 << std::endl;
+                                    std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << std::endl;
+                                    Board::printBoard(std::cout, board, loc1, nullptr);
+                                }
                             }
                             minWinStepsMap[loc1][loc2] = std::min(minWinStepsMap[loc1][loc2], int16_t(vcfSteps2));
                             minWinStepsMap[loc2][loc1] = std::min(minWinStepsMap[loc2][loc1], int16_t(vcfSteps2));
@@ -565,22 +580,28 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                         {
                             if (minWinStepsMap[loc1][loc3] > NOT_SURE)
                             {
-                                //very rare case, may have bug
-                                //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
-                                std::cout << "Warning: minWinStepsMap[loc1][loc3] > NOT_SURE but after loc1+loc2 played dependMap2[loc3] < 2, " << minWinStepsMap[loc1][loc3] << " " << testVcfSteps << " " << std::endl;
-                                std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << " " << Location::toString(loc3, board) << std::endl;
-                                Board::printBoard(std::cout, board, loc1, nullptr);
+                                if (VCFCalculator_debug_print)
+                                {
+                                    //very rare case, may have bug
+                                    //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
+                                    std::cout << "Warning: minWinStepsMap[loc1][loc3] > NOT_SURE but after loc1+loc2 played dependMap2[loc3] < 2, " << minWinStepsMap[loc1][loc3] << " " << testVcfSteps << " " << std::endl;
+                                    std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << " " << Location::toString(loc3, board) << std::endl;
+                                    Board::printBoard(std::cout, board, loc1, nullptr);
+                                }
                             }
                             minWinStepsMap[loc1][loc3] = std::min(minWinStepsMap[loc1][loc3], int16_t(testVcfSteps));
                             minWinStepsMap[loc3][loc1] = std::min(minWinStepsMap[loc3][loc1], int16_t(testVcfSteps));
 
                             if (minWinStepsMap[loc2][loc3] > NOT_SURE)
                             {
-                                //very rare case, may have bug
-                                //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
-                                std::cout << "Warning: minWinStepsMap[loc2][loc3] > NOT_SURE but after loc1+loc2 played dependMap2[loc3] < 2, " << minWinStepsMap[loc2][loc3] << " " << testVcfSteps << " " << std::endl;
-                                std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << " " << Location::toString(loc3, board) << std::endl;
-                                Board::printBoard(std::cout, board, loc2, nullptr);
+                                if (VCFCalculator_debug_print)
+                                {
+                                    //very rare case, may have bug
+                                    //if no bug, there is a very difficult VCF that loc1-pass found it and marked loc2 as not-depended loc, but loc2-pass didn't find a VCF
+                                    std::cout << "Warning: minWinStepsMap[loc2][loc3] > NOT_SURE but after loc1+loc2 played dependMap2[loc3] < 2, " << minWinStepsMap[loc2][loc3] << " " << testVcfSteps << " " << std::endl;
+                                    std::cout << Location::toString(loc1, board) << " " << Location::toString(loc2, board) << " " << Location::toString(loc3, board) << std::endl;
+                                    Board::printBoard(std::cout, board, loc2, nullptr);
+                                }
                             }
                             minWinStepsMap[loc2][loc3] = std::min(minWinStepsMap[loc2][loc3], int16_t(testVcfSteps));
                             minWinStepsMap[loc3][loc2] = std::min(minWinStepsMap[loc3][loc2], int16_t(testVcfSteps));

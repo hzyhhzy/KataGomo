@@ -351,7 +351,7 @@ bool MCTSsearch::vcfSearchAutoStop(NNUEBoardHistory* hist, Player attackPla, dou
     }
     
     // Calculate stopping condition: visits / (attackerValue + 1) > searchFactor
-    double ratio = (double)totalVisits / pow(attackerWinrate ,2);
+    double ratio = (double)totalVisits / pow(attackerWinrate ,1.0);
     
     if (ratio > searchFactor) {
       break;
