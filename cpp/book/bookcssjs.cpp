@@ -382,26 +382,26 @@ let svgNS = "http://www.w3.org/2000/svg";
           isWinLeaf = (symWinX == x && symWinY == y);
         }
         if(isWinLeaf) {
-          // Create background rectangle
-          let winBackground = document.createElementNS(svgNS, "rect");
-          winBackground.setAttribute("x", x - 0.25);
-          winBackground.setAttribute("y", y - 0.25);
-          winBackground.setAttribute("width", 0.5);
-          winBackground.setAttribute("height", 0.5);
-          winBackground.setAttribute("fill", "rgba(255, 255, 255, 0.8)");
+          // Create red circular background for win leaf move
+          let winBackground = document.createElementNS(svgNS, "circle");
+          winBackground.setAttribute("cx", x);
+          winBackground.setAttribute("cy", y);
+          winBackground.setAttribute("r", 0.5);
+          winBackground.setAttribute("fill", "red");
           winBackground.setAttribute("stroke", "none");
-          winBackground.setAttribute("rx", 0.1);
           boardSvg.appendChild(winBackground);
           
-          // Create text marker
+          // Create text marker for win leaf move showing W+steps
           let winMarker = document.createElementNS(svgNS, "text");
-          winMarker.textContent = "W";
+          // Calculate remaining moves from current position
+          let remainingMoves = typeof winLeafMoveNum !== 'undefined' ? winLeafMoveNum - currentMoveCount : 0;
+          winMarker.textContent = "W" + remainingMoves;
           winMarker.setAttribute("x", x);
           winMarker.setAttribute("y", y);
-          winMarker.setAttribute("font-size", markerFontSize * 0.5);
+          winMarker.setAttribute("font-size", markerFontSize * 0.6);
           winMarker.setAttribute("dominant-baseline", "central");
           winMarker.setAttribute("text-anchor", "middle");
-          winMarker.setAttribute("fill", "red");
+          winMarker.setAttribute("fill", "white");
           winMarker.setAttribute("font-weight", "bold");
           boardSvg.appendChild(winMarker);
         }
@@ -446,6 +446,28 @@ let svgNS = "http://www.w3.org/2000/svg";
             loseMarker.setAttribute("font-weight", "bold");
             boardSvg.appendChild(loseMarker);
           }
+        }
+        
+        // Check if this position is the bestMoveForHighWinrate
+        let isBestMoveForHighWinrate = false;
+        if(bestMoveForHighWinrate && maxMoveForHighWinrate > 0) {
+          let bestPos = bestMoveForHighWinrate[1] * bSizeX + bestMoveForHighWinrate[0];
+          let symBestPos = getSymPos(bestPos);
+          let symBestX = symBestPos % bSizeX;
+          let symBestY = Math.floor(symBestPos / bSizeX);
+          isBestMoveForHighWinrate = (symBestX == x && symBestY == y);
+        }
+        
+        if(isBestMoveForHighWinrate) {
+          // Create red circle outline around the intersection
+          let highWinrateCircle = document.createElementNS(svgNS, "circle");
+          highWinrateCircle.setAttribute("cx", x);
+          highWinrateCircle.setAttribute("cy", y);
+          highWinrateCircle.setAttribute("r", 0.55);
+          highWinrateCircle.setAttribute("fill", "none");
+          highWinrateCircle.setAttribute("stroke", "red");
+          highWinrateCircle.setAttribute("stroke-width", 0.1);
+          boardSvg.appendChild(highWinrateCircle);
         }
       }
     }
@@ -586,6 +608,11 @@ let svgNS = "http://www.w3.org/2000/svg";
       // Text for marker, centered.
       let marker = document.createElementNS(svgNS, "text");
       
+
+
+)%%";
+const std::string Book::BOOK_JS3 = R"%%(
+
       if(showWinrate) {
         // Show winrate or result instead of move number
         let moveData = moves[i];
@@ -623,10 +650,6 @@ let svgNS = "http://www.w3.org/2000/svg";
       boardSvg.appendChild(marker);
 
       let linkForPos = getLinkForPos(pos);
-
-
-)%%";
-const std::string Book::BOOK_JS3 = R"%%(
 
       // Group for hover shadow
       let shadowGroup = document.createElementNS(svgNS, "g");

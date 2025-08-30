@@ -278,7 +278,10 @@ BookNode::BookNode(BookHash h, Book* b, Player p, const vector<int>& syms)
    loseLeafMoves(),
    vcfAttackCalculatedFactor(0.0f),
    winLeafMove(Board::NULL_LOC),
-   winLeafMoveNum(0)
+   winLeafMoveNum(0),
+   bestMoveForHighWinrate(Board::NULL_LOC),
+   maxMoveForHighWinrate(0),
+   visitsForHighWinrate(0)
 {}
 
 BookNode::~BookNode() {
@@ -430,6 +433,16 @@ vector<BookMove> ConstSymBookNode::getUniqueMovesInBook() {
   }
   return ret;
 }
+
+int ConstSymBookNode::getNumChildren() const{
+  assert(node != nullptr);
+  return node->moves.size();
+}
+int SymBookNode::getNumChildren() const {
+  assert(node != nullptr);
+  return node->moves.size();
+}
+
 
 BookValues& SymBookNode::thisValuesNotInBook() {
   assert(node != nullptr);
@@ -828,6 +841,48 @@ int16_t ConstSymBookNode::getWinLeafMoveNum() const {
   return node->winLeafMoveNum;
 }
 
+// High winrate search results methods
+Loc SymBookNode::getBestMoveForHighWinrate() const {
+  assert(node != nullptr);
+  if(node->bestMoveForHighWinrate == Board::NULL_LOC)
+    return Board::NULL_LOC;
+  return SymmetryHelpers::getSymLoc(node->bestMoveForHighWinrate, node->book->initialBoard, symmetryOfNode);
+}
+
+int SymBookNode::getMaxMoveForHighWinrate() const {
+  assert(node != nullptr);
+  return node->maxMoveForHighWinrate;
+}
+
+int SymBookNode::getVisitsForHighWinrate() const {
+  assert(node != nullptr);
+  return node->visitsForHighWinrate;
+}
+
+
+void SymBookNode::setBestMoveForHighWinrate(Loc move, int maxMove, int visits) {
+  assert(node != nullptr);
+  node->bestMoveForHighWinrate = (move == Board::NULL_LOC) ? Board::NULL_LOC : SymmetryHelpers::getSymLoc(move, node->book->initialBoard, invSymmetryOfNode);
+  node->maxMoveForHighWinrate = maxMove;
+  node->visitsForHighWinrate = visits;
+}
+
+Loc ConstSymBookNode::getBestMoveForHighWinrate() const {
+  assert(node != nullptr);
+  if(node->bestMoveForHighWinrate == Board::NULL_LOC)
+    return Board::NULL_LOC;
+  return SymmetryHelpers::getSymLoc(node->bestMoveForHighWinrate, node->book->initialBoard, symmetryOfNode);
+}
+
+int ConstSymBookNode::getMaxMoveForHighWinrate() const {
+  assert(node != nullptr);
+  return node->maxMoveForHighWinrate;
+}
+
+int ConstSymBookNode::getVisitsForHighWinrate() const {
+  assert(node != nullptr);
+  return node->visitsForHighWinrate;
+}
 static double invSigmoid(double proportion) {
   if(proportion <= 0.0)
     return -std::numeric_limits<double>::infinity();
@@ -854,7 +909,9 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.costPerUCBWinLossLoss = cfg.getDouble("costPerUCBWinLossLoss",0.0,1000000.0);
   cfgParams.costPerUCBWinLossLossPow3 = cfg.getDouble("costPerUCBWinLossLossPow3",0.0,1000000.0);
   cfgParams.costPerUCBWinLossLossPow7 = cfg.getDouble("costPerUCBWinLossLossPow7",0.0,1000000.0);
-  cfgParams.costPerLogPolicy = cfg.getDouble("costPerLogPolicy",0.0,1000000.0);
+  cfgParams.costPerLogPolicy = cfg.getDouble("costPerLogPolicy", 0.0, 1000000.0);
+  cfgParams.costPerMovesRank = cfg.getDouble("costPerMovesRank", 0.0, 1000000.0);
+  cfgParams.costPerSquaredMovesRank = cfg.getDouble("costPerSquaredMovesRank", 0.0, 1000000.0);
   cfgParams.costPerMovesExpanded = cfg.getDouble("costPerMovesExpanded",0.0,1000000.0);
   cfgParams.costPerSquaredMovesExpanded = cfg.getDouble("costPerSquaredMovesExpanded",0.0,1000000.0);
   cfgParams.costWhenPassFavored = cfg.getDouble("costWhenPassFavored",0.0,1000000.0);
@@ -865,6 +922,7 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.bonusForWLPV2 = cfg.contains("bonusForWLPV2") ? cfg.getDouble("bonusForWLPV2",0.0,1000000.0) : 0.0;
   cfgParams.bonusForWLPVFinalProp = cfg.contains("bonusForWLPVFinalProp") ? cfg.getDouble("bonusForWLPVFinalProp",0.0,1.0) : 0.5;
   cfgParams.bonusForBiggestWLCost = cfg.contains("bonusForBiggestWLCost") ? cfg.getDouble("bonusForBiggestWLCost",0.0,1000000.0) : 0.0;
+  cfgParams.bonusForHighWinrateMove = cfg.contains("bonusForHighWinrateMove") ? cfg.getDouble("bonusForHighWinrateMove",0.0,1000000.0) : 3.0;
   cfgParams.earlyBookCostReductionFactor = cfg.contains("earlyBookCostReductionFactor") ? cfg.getDouble("earlyBookCostReductionFactor",0.0,1.0) : 0.0;
   cfgParams.earlyBookCostReductionLambda = cfg.contains("earlyBookCostReductionLambda") ? cfg.getDouble("earlyBookCostReductionLambda",0.0,1.0) : 0.5;
   cfgParams.policyBoostSoftUtilityScale = cfg.getDouble("policyBoostSoftUtilityScale",0.0,1000000.0);
@@ -872,6 +930,7 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.adjustedVisitsWLScale = cfg.contains("adjustedVisitsWLScale") ? cfg.getDouble("adjustedVisitsWLScale",0.0,1000000.0) : 0.05;
   cfgParams.maxVisitsForReExpansion = cfg.contains("maxVisitsForReExpansion") ? cfg.getDouble("maxVisitsForReExpansion",0.0,1e50) : 0.0;
   cfgParams.visitsScale = cfg.contains("visitsScale") ? cfg.getDouble("visitsScale") : (maxVisits + 1) / 2;
+  cfgParams.maxVisitsForHighWinrateSearch = cfg.contains("maxVisitsForHighWinrateSearch") ? cfg.getDouble("maxVisitsForHighWinrateSearch") : 0;
   cfgParams.noResultUtilityForWhiteInBook = cfg.contains("noResultUtilityForWhiteInBook") ? cfg.getDouble("noResultUtilityForWhiteInBook") : 0;
   cfgParams.blackVCFSearchLimit = cfg.contains("blackVCFSearchLimit") ? cfg.getDouble("blackVCFSearchLimit", 0.0, 1e50) : 0;
   cfgParams.whiteVCFSearchLimit = cfg.contains("whiteVCFSearchLimit") ? cfg.getDouble("whiteVCFSearchLimit", 0.0, 1e50) : 0;
@@ -2096,6 +2155,18 @@ void Book::recomputeNodeCost(BookNode* node) {
   {
     node->thisNodeExpansionCost += pow(log(2), costExceedVisitsPow);
   }
+
+  //bonus for high winrate move
+  Loc highWinrateLoc = node->bestMoveForHighWinrate;
+  if(highWinrateLoc != Board::NULL_LOC && params.bonusForHighWinrateMove > 0) {
+    for(auto& locAndBookMove: node->moves) {
+      if(locAndBookMove.first == highWinrateLoc)
+        locAndBookMove.second.costFromRoot -= params.bonusForHighWinrateMove;
+    }
+  }
+
+
+
   nodeCostSoftmax(node);
 
   // For each move, in order, if its plain winrate is a lot better than the winrate of other moves, then its cost can't be too much worse.
@@ -2521,6 +2592,10 @@ int64_t Book::exportToHtmlDir(
       dataVarsStr += "const winLeafMove = null;\n";
     }
     
+    // Add winLeafMoveNum
+    int16_t winLeafMoveNum = constSymNode.getWinLeafMoveNum();
+    dataVarsStr += "const winLeafMoveNum = " + Global::intToString(winLeafMoveNum) + ";\n";
+    
     dataVarsStr += "const loseLeafMoves = {";
     for(const auto& pair : loseLeafMoves) {
       if(pair.first != Board::NULL_LOC) {
@@ -2541,6 +2616,28 @@ int64_t Book::exportToHtmlDir(
         assert(false);
     }
     dataVarsStr += "};\n";
+    
+    // Add bestMoveForHighWinrate data
+    Loc bestMoveForHighWinrate = constSymNode.getBestMoveForHighWinrate();
+    int maxMoveForHighWinrate = constSymNode.getMaxMoveForHighWinrate();
+    
+    if(bestMoveForHighWinrate != Board::NULL_LOC && maxMoveForHighWinrate > 0) {
+      if(bestMoveForHighWinrate == Board::PASS_LOC) {
+        // Pass is represented as a special coordinate
+        dataVarsStr += "const bestMoveForHighWinrate = [" + Global::intToString(board.x_size) + "," + Global::intToString(board.y_size) + "];\n";
+      } else if(board.isOnBoard(bestMoveForHighWinrate)) {
+        int x = Location::getX(bestMoveForHighWinrate, board.x_size);
+        int y = Location::getY(bestMoveForHighWinrate, board.x_size);
+        dataVarsStr += "const bestMoveForHighWinrate = [" + Global::intToString(x) + "," + Global::intToString(y) + "];\n";
+      } else {
+        dataVarsStr += "const bestMoveForHighWinrate = null;\n";
+      }
+      dataVarsStr += "const maxMoveForHighWinrate = " + Global::intToString(maxMoveForHighWinrate) + ";\n";
+    } else {
+      dataVarsStr += "const bestMoveForHighWinrate = null;\n";
+      dataVarsStr += "const maxMoveForHighWinrate = 0;\n";
+    }
+    
     {
       SymBookNode parent = symNode.canonicalParent();
       if(parent.isNull()) {
@@ -2857,6 +2954,11 @@ void Book::saveToFile(const string& fileName) const {
       for(const auto& pair : node->loseLeafMoves) {
         nodeData["loseLM"][Location::toString(pair.first, initialBoard)] = pair.second;
       }
+      
+      // Save high winrate search results
+      nodeData["bestMoveHW"] = Location::toString(node->bestMoveForHighWinrate, initialBoard);
+      nodeData["maxMoveHW"] = node->maxMoveForHighWinrate;
+      nodeData["vHW"] = node->visitsForHighWinrate;
 
   
 
@@ -3079,6 +3181,23 @@ Book* Book::loadFromFile(const std::string& fileName) {
           Loc loc = Location::ofString(locStr, book->initialBoard);
           node->loseLeafMoves[loc] = moveNum.get<int16_t>();
         }
+        
+        // Load high winrate search results if present
+        if(nodeData.contains("bestMoveHW")) {
+          node->bestMoveForHighWinrate = Location::ofStringAllowNull(nodeData["bestMoveHW"].get<string>(), book->initialBoard);
+          node->maxMoveForHighWinrate = nodeData["maxMoveHW"].get<int>();
+
+          if(nodeData.contains("vHW")) {
+            node->visitsForHighWinrate = nodeData["vHW"].get<int>();
+          } else {
+            assert(node->bestMoveForHighWinrate == Board::NULL_LOC);
+            node->visitsForHighWinrate = 0;
+          }
+        } else {
+          node->bestMoveForHighWinrate = Board::NULL_LOC;
+          node->maxMoveForHighWinrate = 0;
+          node->visitsForHighWinrate = 0;
+        }
       } else {
         // Set default values if VCF fields are not present
         node->thisValuesNotInBook.winner = C_WALL;
@@ -3088,6 +3207,9 @@ Book* Book::loadFromFile(const std::string& fileName) {
         node->winLeafMove = Board::NULL_LOC;
         node->winLeafMoveNum = 0;
         node->loseLeafMoves.clear();
+        node->bestMoveForHighWinrate = Board::NULL_LOC;
+        node->maxMoveForHighWinrate = 0;
+        node->visitsForHighWinrate = 0;
       }
       // Older versions had some buggy conditions under which they would set this incorrectly, and nodes would be stuck not expanding.
       // So force it true on old versions.

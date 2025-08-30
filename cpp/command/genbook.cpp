@@ -492,20 +492,41 @@ int MainCmds::genbook(const vector<string>& args) {
     ConstSymBookNode constNode,
     bool allowReExpansion,
     std::vector<int>& avoidMoveUntilByLoc,
-    bool& isReExpansion
+    bool& isReExpansion,
+    bool allowHighWinrateMove,
+    bool& shouldPrioritizeBestMove
   ) {
     avoidMoveUntilByLoc = std::vector<int>(Board::MAX_ARR_SIZE,0);
     isReExpansion = allowReExpansion && constNode.canReExpand() && constNode.recursiveValues().visits <= book->getParams().maxVisitsForReExpansion;
     Player pla = hist.presumedNextMovePla;
     Board board = hist.getRecentBoard(0);
     bool hasAtLeastOneLegalNewMove = false;
+    
+    // If bestMoveForHighWinrate have not been searched, search it
+    Loc bestMoveForHighWinrate = constNode.getBestMoveForHighWinrate();
+    shouldPrioritizeBestMove = (allowHighWinrateMove) && (bestMoveForHighWinrate != Board::NULL_LOC && 
+                                     !constNode.isMoveInBook(bestMoveForHighWinrate) );
+    if(shouldPrioritizeBestMove) {
+      cout << "2";
+      assert(hist.isLegal(board, bestMoveForHighWinrate, pla));
+    }
+    
     for(Loc moveLoc = 0; moveLoc < Board::MAX_ARR_SIZE; moveLoc++) {
       if(hist.isLegal(board,moveLoc,pla)) {
-        if((!isReExpansion && constNode.isMoveInBook(moveLoc))||constNode.isMoveLosingLeaf(moveLoc))
+        if(shouldPrioritizeBestMove && moveLoc != bestMoveForHighWinrate) {
+          // If we should prioritize bestMoveForHighWinrate, avoid all other moves
           avoidMoveUntilByLoc[moveLoc] = 1;
-        else
+        } else if((!isReExpansion && constNode.isMoveInBook(moveLoc))||constNode.isMoveLosingLeaf(moveLoc)) {
+          avoidMoveUntilByLoc[moveLoc] = 1;
+        } else {
           hasAtLeastOneLegalNewMove = true;
+        }
       }
+    }
+    
+    // If we're prioritizing bestMoveForHighWinrate, ensure it's marked as available
+    if(shouldPrioritizeBestMove) {
+      assert(hasAtLeastOneLegalNewMove);
     }
     return hasAtLeastOneLegalNewMove;
   };
@@ -571,6 +592,24 @@ int MainCmds::genbook(const vector<string>& args) {
     node.canExpand() = false;
   };
 
+  auto setNodeThisValuesVCFWin = [&](SymBookNode node) {
+    assert(node.getWinLeafMove()!=Board::NULL_LOC);
+    assert(node.getWinLeafMoveNum() > 0);
+    std::lock_guard<std::mutex> lock(bookMutex);
+    BookValues& nodeValues = node.thisValuesNotInBook();
+    nodeValues.winLossValue = node.pla() == C_WHITE ? 1.0 : -1.0;    ;
+    nodeValues.winner = node.pla();
+    nodeValues.winMoveNum = node.getWinLeafMoveNum();
+
+    nodeValues.winLossError = 0.0;
+    nodeValues.maxPolicy = 1.0;
+    double visits = maxVisitsForLeaves;
+    nodeValues.weight = visits;
+    nodeValues.visits = visits;
+
+    //node.canExpand() = false;
+  };
+
   auto setNodeThisValuesFromFinishedSearch = [&](
     SymBookNode node,
     Search* search,
@@ -631,6 +670,134 @@ int MainCmds::genbook(const vector<string>& args) {
     nodeValues.visits = (double)remainingSearchValues.visits;
     if(!anyLegal)
       setNodeThisValuesNoMovesNoLock(node);
+  };
+
+  // Function for high winrate search
+  auto maybePerformHighWinrateSearch = [&](Search* search, SymBookNode node, Player pla, const Board& board, const BoardHistory& hist, const std::vector<int>& symmetries) {
+    
+    if(cfgParams.maxVisitsForHighWinrateSearch <= 0)
+      return;
+    //already searched
+    if(node.getVisitsForHighWinrate() * 2 > cfgParams.maxVisitsForHighWinrateSearch)
+      return;
+
+    Rules originalRules = hist.rules;
+    //only for normal rules with maxmoves
+    if(originalRules.VCNRule != Rules::VCNRULE_NOVC || originalRules.firstPassWin)
+      return;
+      
+    // Check if this is a high winrate position and perform additional searches
+    Loc bestMove = Board::NULL_LOC;
+    int lastValidMaxMoves = originalRules.maxMoves;
+
+    const double winrateThrehold = 0.9;
+
+    ReportedSearchValues searchValues;
+    bool getSuc = search->getPrunedNodeValues(search->getRootNode(), searchValues);
+    assert(getSuc);
+    (void)getSuc;
+    double currentWinrate = node.thisValuesNotInBook().winLossValue;
+    {
+      double dif =
+        currentWinrate - searchValues.winLossValue - params.noResultUtilityForWhite * searchValues.noResultValue;
+      assert(dif < 0.0001 && dif > -0.0001);
+    }
+
+    if(pla == C_BLACK) {
+      currentWinrate = -currentWinrate;
+    }
+
+
+    if(node.getNumChildren() == 0) { //new leaf, the search can be used
+
+      bestMove = search->getChosenMoveLoc();
+    } 
+    else {
+      bestMove = Board::NULL_LOC; //many locations are pruned, so the best search loc is probably not the best
+      double currentWinrate2 = node.recursiveValues().winLossValue;
+      if(pla == C_BLACK) {
+        currentWinrate2 = -currentWinrate2;
+      }
+      currentWinrate = std::max(currentWinrate2, currentWinrate);
+    }
+    // Convert to current player's perspective
+
+    // winrate is not high enough
+    if(currentWinrate < winrateThrehold) {
+      return;
+    }
+      
+    // If winrate > 0.95, perform additional searches with reduced maxMoves
+    int maxTestMoves = board.movenum + 34;
+    int minTestMoves = board.movenum + 6 - board.stage;
+    if(originalRules.maxMoves > 0)
+      maxTestMoves = std::min(maxTestMoves, originalRules.maxMoves - 4);
+    //ensure the last move is current player
+    {
+      int s = board.movenum - board.stage - 2 - 4 * 10000;
+      int dif = maxTestMoves - s;
+      assert(dif > 0);
+      dif = (dif / 4) * 4;
+      maxTestMoves = s + dif;
+    }
+    if(maxTestMoves <= board.movenum + 2)  // one move win, will be handled other place
+      return;
+    if(maxTestMoves > board.x_size*board.y_size)
+      return;
+
+        
+    int testMoves = maxTestMoves;
+    while(testMoves >= minTestMoves) {
+        // Create modified rules with reduced maxMoves
+        Rules testRules = originalRules;
+        testRules.maxMoves = testMoves;
+          
+        // Create new board history with modified rules
+        BoardHistory testHist = hist;
+        testHist.rules = testRules;
+          
+        // Set up search with new rules
+        search->setPosition(pla, board, testHist);
+        search->setRootSymmetryPruningOnly(symmetries);
+          
+        // Run search with same parameters
+        SearchParams testParams = params;
+        testParams.maxVisits = cfgParams.maxVisitsForHighWinrateSearch;
+        search->setParams(testParams);
+        search->runWholeSearch(search->rootPla);
+          
+        // Check new winrate
+        ReportedSearchValues testValues;
+        bool getSuc = search->getPrunedNodeValues(search->getRootNode(), testValues);
+        assert(getSuc);
+        (void)getSuc;
+        double testWinrate = testValues.winLossValue;
+        if(pla == C_BLACK) {
+            testWinrate = -testWinrate;
+        }
+            
+        if(testWinrate > 0.9) {
+            lastValidMaxMoves = testMoves;
+            bestMove = search->getChosenMoveLoc();
+            currentWinrate = testWinrate;
+            Board::printBoard(cout, board, bestMove, NULL);
+            cout << testMoves << " " << testWinrate << endl;
+        } else {
+            break;
+        }
+          
+        testMoves -= 4;
+    }
+        
+    // Store the results in the book node
+    {
+      std::lock_guard<std::mutex> lock(bookMutex);
+      node.setBestMoveForHighWinrate(bestMove, lastValidMaxMoves, cfgParams.maxVisitsForHighWinrateSearch);
+    }
+        
+    search->clearSearch();
+    
+    
   };
 
   auto checkVcfAttackAndDefense =
@@ -716,17 +883,19 @@ int MainCmds::genbook(const vector<string>& args) {
 
 
     checkVcfAttackAndDefense(vcfcalc, node, board, hist);
-    if(node.getWinLeafMove() != Board::NULL_LOC)
+    if(node.getWinLeafMove() != Board::NULL_LOC) {
+      setNodeThisValuesVCFWin(node);
       return;
+    }
 
     std::vector<int> avoidMoveUntilByLoc;
     bool foundNewMoves;
     {
       const bool allowReExpansion = false;
-      bool isReExpansion;
+      bool isReExpansion,usePriorMovetmp;
       {
           std::lock_guard<std::mutex> lock(bookMutex);
-          foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion);
+          foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion,false,usePriorMovetmp);
       }
     }
 
@@ -762,8 +931,10 @@ int MainCmds::genbook(const vector<string>& args) {
         setNodeThisValuesNoMovesNoLock(node);
       }
       // Stick all the new values into the book node
-      else
+      else {
         setNodeThisValuesFromFinishedSearch(node, search, search->getRootNode(), search->getRootBoard(), search->getRootHist(), avoidMoveUntilByLoc);
+        maybePerformHighWinrateSearch(search, node, pla, board, hist, symmetries);
+      }
     }
   };
 
@@ -1128,12 +1299,12 @@ int MainCmds::genbook(const vector<string>& args) {
     }
 
     std::vector<int> avoidMoveUntilByLoc;
-    bool foundNewMoves;
+    bool foundNewMoves,usePriorMove;
     bool isReExpansion;
     {
       const bool allowReExpansion = true;
       std::lock_guard<std::mutex> lock(bookMutex);
-      foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion);
+      foundNewMoves = findNewMovesAlreadyLocked(hist,constNode,allowReExpansion,avoidMoveUntilByLoc,isReExpansion,true,usePriorMove);
     }
     if(!foundNewMoves) {
       setNodeThisValuesNoMoves(node);
@@ -1147,10 +1318,10 @@ int MainCmds::genbook(const vector<string>& args) {
     thisParams.cpuctExplorationLog = cpuctExplorationLogBookExplore;
     setParamsAndAvoidMoves(search,thisParams,avoidMoveUntilByLoc);
     search->runWholeSearch(search->rootPla);
-
     // check whether it has new legal moves
     if (search->getRootVisits() == 0 || search->getChosenMoveLoc() == Board::NULL_LOC)
     {
+      assert(!usePriorMove);
       std::lock_guard<std::mutex> lock(bookMutex);
       logger.write("WARNING: search->getRootVisits() == 0, probably some legal moves are pruned");
       logger.write("BookHash of node unable to expand: " + constNode.hash().toString());

@@ -145,6 +145,11 @@ class BookNode {
   Loc winLeafMove;//the winning move
   int16_t winLeafMoveNum;//the movenum of the winning move
   
+  // High winrate search results
+  Loc bestMoveForHighWinrate; // Best move when winrate > 0.95
+  int maxMoveForHighWinrate;   // Corresponding maxMove value
+  int visitsForHighWinrate;
+  
 
 
 
@@ -220,6 +225,14 @@ class SymBookNode {
 
   bool isMoveLosingLeaf(Loc move) const;
   
+  // High winrate search results accessors
+  Loc getBestMoveForHighWinrate() const;
+  int getMaxMoveForHighWinrate() const;
+  int getVisitsForHighWinrate() const;
+  void setBestMoveForHighWinrate(Loc move, int maxMove, int visits);
+
+  int getNumChildren() const;
+
   friend class ConstSymBookNode;
   friend class Book;
 };
@@ -278,6 +291,13 @@ class ConstSymBookNode {
 
   bool isMoveLosingLeaf(Loc move) const;
 
+  // High winrate search results accessors
+  Loc getBestMoveForHighWinrate() const;
+  int getMaxMoveForHighWinrate() const;
+  int getVisitsForHighWinrate() const;
+
+  int getNumChildren() const;
+
   friend class Book;
 };
 
@@ -295,6 +315,8 @@ struct BookParams {
   double costPerUCBWinLossLossPow7 = 0.0;
   // Cost per nat of log policy that a move is less likely than 100%.
   double costPerLogPolicy = 0.0;
+  double costPerMovesRank = 0.0;
+  double costPerSquaredMovesRank = 0.0;
   // For expanding new moves - extra penalty per move or move squared already expanded at a node.
   double costPerMovesExpanded = 1.0;
   double costPerSquaredMovesExpanded = 0.0;
@@ -314,6 +336,8 @@ struct BookParams {
   double bonusForWLPVFinalProp = 0.5;
   // Bonus for the biggest single WL cost on a given path, per unit of cost. (helps favor lines with only 1 mistake but not lines with more than one)
   double bonusForBiggestWLCost = 0.0;
+  // Bonus for the winning move with lowest movenum limit (
+  double bonusForHighWinrateMove = 0.0;
   // Reduce costs near the start of a book. First move costs are reduced by earlyBookCostReductionFactor
   // and this gets multiplied by by earlyBookCostReductionLambda per move deeper.
   double earlyBookCostReductionFactor = 0.0;
@@ -327,6 +351,8 @@ struct BookParams {
   double maxVisitsForReExpansion = 1000.0;
   // How many visits such that below this many is considered not many? Used to scale some visit-based cost heuristics.
   double visitsScale = 1000.0;
+  // visits for min-movenum search
+  double maxVisitsForHighWinrateSearch = 1000.0;
   // Draw winloss value for white
   double noResultUtilityForWhiteInBook = 0.0;
   // black vcf search limit, 0 to disable, 1e6 is recommended
