@@ -836,8 +836,11 @@ int MainCmds::genbook(const vector<string>& args) {
         if(oppVCFSearchLimit > 0) {
           double searchFactor = board.stage == 0 ? cfgParams.vcfDefenseFactorStage0 * oppVCFSearchLimit
                                                  : cfgParams.vcfDefenseFactorStage1 * oppVCFSearchLimit;
+          int minChildren = board.stage == 0 ? cfgParams.minChildrenForVcfDefenseStage0
+                                             : cfgParams.minChildrenForVcfDefenseStage1;
+          int currentChildren = node.getNumChildren();
 
-          if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() * 20) {
+          if(searchFactor > 0 && searchFactor > node.getVCFDefenseCalculatedFactor() * 20 && currentChildren >= minChildren) {
             // Perform VCF defense search
             std::map<Loc, int16_t> loseLeafMoves;
             loseLeafMoves =

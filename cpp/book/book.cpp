@@ -928,6 +928,7 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.policyBoostSoftUtilityScale = cfg.getDouble("policyBoostSoftUtilityScale",0.0,1000000.0);
   cfgParams.utilityPerPolicyForSorting = cfg.getDouble("utilityPerPolicyForSorting",0.0,1000000.0);
   cfgParams.adjustedVisitsWLScale = cfg.contains("adjustedVisitsWLScale") ? cfg.getDouble("adjustedVisitsWLScale",0.0,1000000.0) : 0.05;
+  cfgParams.overVisitCostWrFactor = cfg.contains("overVisitCostWrFactor") ? cfg.getDouble("overVisitCostWrFactor", -1.0, 1.0) : 0.0;
   cfgParams.maxVisitsForReExpansion = cfg.contains("maxVisitsForReExpansion") ? cfg.getDouble("maxVisitsForReExpansion",0.0,1e50) : 0.0;
   cfgParams.visitsScale = cfg.contains("visitsScale") ? cfg.getDouble("visitsScale") : (maxVisits + 1) / 2;
   cfgParams.maxVisitsForHighWinrateSearch = cfg.contains("maxVisitsForHighWinrateSearch") ? cfg.getDouble("maxVisitsForHighWinrateSearch") : 0;
@@ -937,6 +938,8 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.vcfAttackFactor = cfg.contains("vcfAttackFactor") ? cfg.getDouble("vcfAttackFactor", 0.0, 1e50) : 10.0;
   cfgParams.vcfDefenseFactorStage0 = cfg.contains("vcfDefenseFactorStage0") ? cfg.getDouble("vcfDefenseFactorStage0", 0.0, 1e50) : 0.3;
   cfgParams.vcfDefenseFactorStage1 = cfg.contains("vcfDefenseFactorStage1") ? cfg.getDouble("vcfDefenseFactorStage1", 0.0, 1e50) : 1.0;
+  cfgParams.minChildrenForVcfDefenseStage0 = cfg.contains("minChildrenForVcfDefenseStage0") ? cfg.getInt("minChildrenForVcfDefenseStage0", 0, 1000) : 0;
+  cfgParams.minChildrenForVcfDefenseStage1 = cfg.contains("minChildrenForVcfDefenseStage1") ? cfg.getInt("minChildrenForVcfDefenseStage1", 0, 1000) : 0;
   cfgParams.costPenaltyForDeterminedWinner = cfg.contains("costPenaltyForDeterminedWinner") ? cfg.getDouble("costPenaltyForDeterminedWinner", 0.0, 1e50) : 10000.0;
   return cfgParams;
 }
@@ -1683,7 +1686,7 @@ void Book::recomputeNodeValues(BookNode* node) {
     if(bestValueNoThisConsiderWin < -1)//maybe lose
       bestValueNoThisConsiderWin = -1;
     assert(bestValueNoThisConsiderWin <= 1);
-    double w = pow(node->thisValuesNotInBook.weight / (weight + 1.0), 0.3);
+    double w = pow(node->thisValuesNotInBook.weight / (weight + 1.0), 0.5);
     double w2 = pow(double(node->moves.size() + 1), -1.5);
     w=std::max(w,w2);
 
@@ -1868,7 +1871,7 @@ void Book::recomputeNodeCost(BookNode* node) {
   }
   // Add cost penalty for nodes with determined winner (not C_WALL)
   if(node->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
-    node->minCostFromRoot += params.costPenaltyForDeterminedWinner;
+    node->minCostFromRoot += params.costPenaltyForDeterminedWinner / 2.0;
   }
   // cout << "-----------------------------------------------------------------------" << endl;
   // cout << "Initial min cost from root " << node->minCostFromRoot << endl;
@@ -2008,6 +2011,12 @@ void Book::recomputeNodeCost(BookNode* node) {
       + costFromUCB
       + (-boostedLogRawPolicy * params.costPerLogPolicy)
       + (passFavored ? params.costWhenPassFavored : 0.0);
+
+    
+    if(child->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
+        cost += params.costPenaltyForDeterminedWinner / 2.0;
+    }
+
     locAndBookMove.second.costFromRoot = cost;
     locAndBookMove.second.biggestWLCostFromRoot = std::max(node->biggestWLCostFromRoot, costFromWL);
 
@@ -2137,6 +2146,16 @@ void Book::recomputeNodeCost(BookNode* node) {
     totalAdjustedVisits += node->thisValuesNotInBook.visits;
   }
 
+  //scale this by winrate
+  double overVisitScale = 1.0;
+  {
+    double wr = node->recursiveValues.winLossValue;
+    if(node->pla == C_BLACK)
+      wr = -wr;
+    double overVisitWrScale = (1 - params.overVisitCostWrFactor) + params.overVisitCostWrFactor * (1 - wr);
+    overVisitScale *= overVisitWrScale;  // higher winrate require lower overVisitScale
+  }
+
   const double costExceedVisitsPow = 2.5;
   for(auto& locAndBookMove: node->moves) {
     const BookNode* child = get(locAndBookMove.second.hash);
@@ -2148,12 +2167,12 @@ void Book::recomputeNodeCost(BookNode* node) {
     assert(expectedVisitsLog < 300);
     double expectedVisits = exp(expectedVisitsLog);
     double costFromVisitNum = log(visits/expectedVisits + 1);
-    costFromVisitNum = pow(costFromVisitNum, costExceedVisitsPow);
+    costFromVisitNum = overVisitScale*pow(costFromVisitNum, costExceedVisitsPow);
     locAndBookMove.second.costFromRoot += costFromVisitNum;
   }
   if (node->canExpand)
   {
-    node->thisNodeExpansionCost += pow(log(2), costExceedVisitsPow);
+    node->thisNodeExpansionCost += overVisitScale*pow(log(2), costExceedVisitsPow);
   }
 
   //bonus for high winrate move
@@ -2166,6 +2185,25 @@ void Book::recomputeNodeCost(BookNode* node) {
   }
 
 
+  // Add rank-based cost penalty
+  if(params.costPerMovesRank > 0.0 || params.costPerSquaredMovesRank > 0.0) {
+    // Create a vector of pairs (cost, iterator) for sorting
+    std::vector<std::pair<double, BookMove*>> costRanking;
+    for(auto it = node->moves.begin(); it != node->moves.end(); ++it) {
+      costRanking.push_back(std::make_pair(it->second.costFromRoot, &(it->second)));
+    }
+    
+    // Sort by cost (ascending order, so rank 1 = lowest cost)
+    std::sort(costRanking.begin(), costRanking.end());
+    
+    // Apply rank-based penalty
+    for(size_t rank = 0; rank < costRanking.size(); rank++) {
+      auto moveIt = costRanking[rank].second;
+      int n = rank + 1; // rank starts from 1
+      double rankPenalty = params.costPerMovesRank * n + params.costPerSquaredMovesRank * n * n;
+      moveIt->costFromRoot += rankPenalty;
+    }
+  }
 
   nodeCostSoftmax(node);
 

@@ -347,6 +347,8 @@ struct BookParams {
   double utilityPerPolicyForSorting = 0.0;
   // The scale of WL difference at which we are averaging for adjusting visit counts.
   double adjustedVisitsWLScale = 0.05;
+  //cost of over-visit will multiply (1-overVisitCostWrFactor)+overVisitCostWrFactor*2*(1-wr)
+  double overVisitCostWrFactor = 0.0;
   // Allow re-expanding a node if it has <= this many visits
   double maxVisitsForReExpansion = 1000.0;
   // How many visits such that below this many is considered not many? Used to scale some visit-based cost heuristics.
@@ -364,6 +366,8 @@ struct BookParams {
   // factor of VCF defense, 0 to disable
   double vcfDefenseFactorStage0 = 0.3;
   double vcfDefenseFactorStage1 = 1.0;
+  int minChildrenForVcfDefenseStage0 = 0;
+  int minChildrenForVcfDefenseStage1 = 0;
   // Cost penalty for nodes with determined winner (not C_WALL)
   double costPenaltyForDeterminedWinner = 1000.0;
 
