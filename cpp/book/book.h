@@ -338,6 +338,14 @@ struct BookParams {
   double bonusForBiggestWLCost = 0.0;
   // Bonus for the winning move with lowest movenum limit (
   double bonusForHighWinrateMove = 0.0;
+  //bonus for leaf nodes
+  double bonusForLeafBlackStage0 = 0.0;
+  double bonusForLeafWhiteStage0 = 0.0;
+  double bonusForLeafBlackStage1 = 0.0;
+  double bonusForLeafWhiteStage1 = 0.0;
+
+
+
   // Reduce costs near the start of a book. First move costs are reduced by earlyBookCostReductionFactor
   // and this gets multiplied by by earlyBookCostReductionLambda per move deeper.
   double earlyBookCostReductionFactor = 0.0;

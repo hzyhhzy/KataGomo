@@ -923,6 +923,12 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.bonusForWLPVFinalProp = cfg.contains("bonusForWLPVFinalProp") ? cfg.getDouble("bonusForWLPVFinalProp",0.0,1.0) : 0.5;
   cfgParams.bonusForBiggestWLCost = cfg.contains("bonusForBiggestWLCost") ? cfg.getDouble("bonusForBiggestWLCost",0.0,1000000.0) : 0.0;
   cfgParams.bonusForHighWinrateMove = cfg.contains("bonusForHighWinrateMove") ? cfg.getDouble("bonusForHighWinrateMove",0.0,1000000.0) : 3.0;
+  cfgParams.bonusForLeafBlackStage0 = cfg.contains("bonusForLeafBlackStage0") ? cfg.getDouble("bonusForLeafBlackStage0",-1000000.0,1000000.0) : 0.0;
+  cfgParams.bonusForLeafWhiteStage0 = cfg.contains("bonusForLeafWhiteStage0") ? cfg.getDouble("bonusForLeafWhiteStage0",-1000000.0,1000000.0) : 0.0;
+  cfgParams.bonusForLeafBlackStage1 = cfg.contains("bonusForLeafBlackStage1") ? cfg.getDouble("bonusForLeafBlackStage1",-1000000.0,1000000.0) : 0.0;
+  cfgParams.bonusForLeafWhiteStage1 = cfg.contains("bonusForLeafWhiteStage1") ? cfg.getDouble("bonusForLeafWhiteStage1",-1000000.0,1000000.0) : 0.0;
+
+
   cfgParams.earlyBookCostReductionFactor = cfg.contains("earlyBookCostReductionFactor") ? cfg.getDouble("earlyBookCostReductionFactor",0.0,1.0) : 0.0;
   cfgParams.earlyBookCostReductionLambda = cfg.contains("earlyBookCostReductionLambda") ? cfg.getDouble("earlyBookCostReductionLambda",0.0,1.0) : 0.5;
   cfgParams.policyBoostSoftUtilityScale = cfg.getDouble("policyBoostSoftUtilityScale",0.0,1000000.0);
@@ -1509,6 +1515,82 @@ void Book::recomputeAdjustedVisits(
   node->recursiveValues.adjustedVisits = adjustedVisits;
 }
 
+// Helper function to compute weighted value using sorted approach
+static double computeWeightedAverageValue(const std::vector<double>& adjustedVisits, const std::vector<double>& values) {
+  if (adjustedVisits.empty() || values.empty() || adjustedVisits.size() != values.size()) {
+    assert(false);
+  }
+  
+  size_t n = values.size();
+  if (n == 1)
+  {
+    double value = values[0];
+    if(value > 1)
+      value = 1;
+    if(value < -1)
+      value = -1;
+    return value;
+  }
+  
+  // Create indices for sorting
+  std::vector<size_t> valueIndices(n);
+  std::vector<size_t> visitIndices(n);
+  for (size_t i = 0; i < n; ++i) {
+    valueIndices[i] = i;
+    visitIndices[i] = i;
+  }
+  
+  // Sort by value (descending) and by visits (descending)
+  std::sort(valueIndices.begin(), valueIndices.end(), [&](size_t a, size_t b) {
+    return values[a] > values[b];
+  });
+  std::sort(visitIndices.begin(), visitIndices.end(), [&](size_t a, size_t b) {
+    return adjustedVisits[a] > adjustedVisits[b];
+  });
+  
+  // Create visit rank mapping
+  std::vector<int> visitRank(n);
+  for (size_t i = 0; i < n; ++i) {
+    visitRank[visitIndices[i]] = i; // rank starts from 0
+  }
+  
+  // Compute weighted sum from highest value, with weight based on visit rank
+  double totalWeightedValue = 0.0;
+  double totalWeight = 0.0;
+  
+  for (size_t i = 0; i < n; ++i) {
+    size_t idx = valueIndices[i];
+    int rank = visitRank[idx];
+    
+    // Weight formula based on visit rank - you can implement your specific formula here
+    double weight = 5 * pow(double(rank) + 1.0, -1.0);  // Simple inverse rank weighting as placeholder
+    if(adjustedVisits[idx] < 0)//"thisvalue"
+    {
+      weight = 5.0 * pow(double(adjustedVisits.size()), -1.5);
+    }
+    if(weight > 1.001)
+      weight = 1.001;
+    double value = values[idx];
+    if(value > 1)
+      value = 1;
+    if(value < -1)
+      value = -1;
+    totalWeightedValue += weight * value;
+    totalWeight += weight;
+    
+    // Stop when total weight reaches 1 (or close to it)
+    if (totalWeight >= 1.0) {
+      break;
+    }
+  }
+  double value = totalWeight > 0.0 ? totalWeightedValue / totalWeight : 0.0;
+  if(value > 1)
+    value = 1;
+  if(value < -1)
+    value = -1;
+  return value;
+}
+
 void Book::recomputeNodeValues(BookNode* node) {
   double winLossValue;
   double scoreMean;
@@ -1522,9 +1604,14 @@ void Book::recomputeNodeValues(BookNode* node) {
   double weight = 0.0;
   double visits = 0.0;
 
-  double bestValueNoThisConsiderWin = -1e30;  // 65536-movenum if win,-65536+movenum if loss, [-1, 1] if not sure
+  double bestValueConsiderWin = -1e30;  // 65536-movenum if win,-65536+movenum if loss, [-1, 1] if not sure
   if(node->winLeafMove!=Board::NULL_LOC)//can win by VCF
-    bestValueNoThisConsiderWin = 65536 - node->winLeafMoveNum;
+    bestValueConsiderWin = 65536 - node->winLeafMoveNum;
+
+  // Vectors to store adjustedVisits and values for weighted calculation
+  std::vector<double> childAdjustedVisits;
+  std::vector<double> childValues;
+    
   bool isSureDraw=true;
   bool haveDraw=false;
   {
@@ -1631,7 +1718,13 @@ void Book::recomputeNodeValues(BookNode* node) {
       isSureDraw=false;
       childValueConsiderWin=node->pla == P_WHITE?values.winLossValue:-values.winLossValue;
     }
-    bestValueNoThisConsiderWin = std::max(bestValueNoThisConsiderWin, childValueConsiderWin);
+    
+    // Update bestValueConsiderWin for win/loss determination
+    bestValueConsiderWin = std::max(bestValueConsiderWin, childValueConsiderWin);
+    
+    // Collect adjustedVisits and values for weighted calculation
+    childAdjustedVisits.push_back(values.adjustedVisits);
+    childValues.push_back(childValueConsiderWin);
 
 
 
@@ -1653,7 +1746,7 @@ void Book::recomputeNodeValues(BookNode* node) {
     }
   }
 
-  double bestValueConsiderWin = bestValueNoThisConsiderWin;
+  // Add thisValuesNotInBook to the vectors if node can expand
   if(node->canExpand) {
     const BookValues& values = node->thisValuesNotInBook;
 
@@ -1674,34 +1767,15 @@ void Book::recomputeNodeValues(BookNode* node) {
       isSureDraw = false;
       childValueConsiderWin = node->pla == P_WHITE ? values.winLossValue : -values.winLossValue;
     }
+    
+    // Update bestValueConsiderWin for win/loss determination
     bestValueConsiderWin = std::max(bestValueConsiderWin, childValueConsiderWin);
+    
+    // Add thisValuesNotInBook to vectors for weighted calculation
+    childAdjustedVisits.push_back(-1); // Use -1 as adjustedVisits for thisValuesNotInBook
+    childValues.push_back(childValueConsiderWin);
   }
-
-  //sometimes value not in book is higher than calculated moves, this is probably random errors, so downweight it.
-  if(
-    bestValueConsiderWin > bestValueNoThisConsiderWin && bestValueConsiderWin > -1.001 &&
-    bestValueConsiderWin < 1.001 && node->moves.size() > 0)  // unsure result
-  {
-    //cout << bestValueConsiderWin << " " ;
-    if(bestValueNoThisConsiderWin < -1)//maybe lose
-      bestValueNoThisConsiderWin = -1;
-    assert(bestValueNoThisConsiderWin <= 1);
-    double w = pow(node->thisValuesNotInBook.weight / (weight + 1.0), 0.5);
-    double w2 = pow(double(node->moves.size() + 1), -1.5);
-    w=std::max(w,w2);
-
-    //cout << w << " ";
-    assert(w < 1 && w > 0);
-    bestValueConsiderWin = w * bestValueConsiderWin + (1 - w) * bestValueNoThisConsiderWin;
-
-    //cout << bestValueConsiderWin << endl;
-    assert(bestValueConsiderWin < 1.00001 && bestValueConsiderWin > -1.00001);
-    if(bestValueConsiderWin > 1)
-      bestValueConsiderWin = 1;
-    if(bestValueConsiderWin < -1)
-      bestValueConsiderWin = -1;
-    winLossValue = node->pla == C_WHITE ? bestValueConsiderWin : -bestValueConsiderWin;  //
-  }
+  
 
 
 
@@ -1752,6 +1826,12 @@ void Book::recomputeNodeValues(BookNode* node) {
     }
     else{//result not sure
       assert(bestValueConsiderWin >= -1 && bestValueConsiderWin <= 1);
+      
+      // Calculate weighted value using the new function for non-definitive cases
+      double weightedValue = computeWeightedAverageValue(childAdjustedVisits, childValues);
+      // Use weighted value for winLossValue calculation, but keep bestValueConsiderWin for win/loss determination
+      winLossValue = node->pla == C_WHITE ? weightedValue : -weightedValue;
+
       values.winLossValue = winLossValue;
       values.winLossLCB = winLossLCB;
       values.winLossUCB = winLossUCB;
@@ -2132,7 +2212,7 @@ void Book::recomputeNodeCost(BookNode* node) {
   //}
   
   nodeCostSoftmax(node);
-
+  
   //calculate over-visit cost
   if(params.costSoftmaxFactor != 1.0 || params.costSoftmaxScale != 1.0)
     throw StringError("params.costSoftmaxFactor and params.costSoftmaxScale should be 1.0");
@@ -2458,6 +2538,36 @@ void Book::recomputeNodeCost(BookNode* node) {
       }
     }
   }
+
+
+  // leaf bonus
+  if(node->canExpand && node->moves.size() == 0 && node->parents.size() > 0) {
+    double leafBonus = 0.0;
+    int stage;
+    // need to know the stage from parent's pla
+    {
+      std::pair<BookHash, Loc>& parentInfo = node->parents[0];
+      const BookNode* parent = get(parentInfo.first);
+      if(parent->pla == node->pla)
+        stage = 1;
+      else
+        stage = 0;
+    }
+
+    if(node->pla == C_BLACK) {
+      if(stage == 0)
+        leafBonus = params.bonusForLeafBlackStage0;
+      else
+        leafBonus = params.bonusForLeafBlackStage1;
+    } else {
+      if(stage == 0)
+        leafBonus = params.bonusForLeafWhiteStage0;
+      else
+        leafBonus = params.bonusForLeafWhiteStage1;
+    }
+    node->thisNodeExpansionCost -= leafBonus;
+  }
+
 
 
   // cout << "Setting cost " << node->hash << " " << node->minCostFromRoot << " " << node->thisNodeExpansionCost << endl;
