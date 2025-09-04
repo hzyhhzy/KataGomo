@@ -434,6 +434,103 @@ vector<BookMove> ConstSymBookNode::getUniqueMovesInBook() {
   return ret;
 }
 
+// Helper function to copy all mutable data from source node to target node
+void Book::copyNodeData(BookNode* target, const BookNode* source) {
+  // Copy all mutable member variables (excluding const members like hash, book, pla, symmetries)
+  target->thisValuesNotInBook = source->thisValuesNotInBook;
+  target->canExpand = source->canExpand;
+  target->canReExpand = source->canReExpand;
+  target->moves = source->moves;
+  target->parents = source->parents;
+  target->bestParentIdx = source->bestParentIdx;
+  target->recursiveValues = source->recursiveValues;
+  target->minDepthFromRoot = source->minDepthFromRoot;
+  target->minCostFromRoot = source->minCostFromRoot;
+  target->thisNodeExpansionCost = source->thisNodeExpansionCost;
+  target->minCostFromRootWLPV = source->minCostFromRootWLPV;
+  target->expansionIsWLPV = source->expansionIsWLPV;
+  target->biggestWLCostFromRoot = source->biggestWLCostFromRoot;
+  target->vcfDefenseCalculatedFactor = source->vcfDefenseCalculatedFactor;
+  target->loseLeafMoves = source->loseLeafMoves;
+  target->vcfAttackCalculatedFactor = source->vcfAttackCalculatedFactor;
+  target->winLeafMove = source->winLeafMove;
+  target->winLeafMoveNum = source->winLeafMoveNum;
+  target->bestMoveForHighWinrate = source->bestMoveForHighWinrate;
+  target->maxMoveForHighWinrate = source->maxMoveForHighWinrate;
+  target->visitsForHighWinrate = source->visitsForHighWinrate;
+}
+
+void Book::mergeFrom(const Book& otherBook) {
+  // Assert that other book has a root
+  assert(otherBook.root != nullptr);
+  
+  // Check if the other book's root exists in current book
+  BookNode* otherRootInCurrentBook = get(otherBook.root->hash);
+  if(otherRootInCurrentBook == nullptr) {
+    // Other book's root doesn't exist in current book, throw warning
+    throw StringError("Cannot merge books: other book's root node does not exist in current book");
+  }
+  
+  // Iterate through all nodes in the other book
+  for(const BookNode* otherNode : otherBook.nodes) {
+    if(otherNode == nullptr) continue;
+    
+    BookHash nodeHash = otherNode->hash;
+    
+    // Check if this node already exists in current book
+    BookNode* existingNode = get(nodeHash);
+    
+    if(existingNode != nullptr) {
+      // Node exists, replace its data with the other node's data
+      // Special handling for root node - preserve current book's parent info
+      if(nodeHash == otherBook.root->hash) {
+        // For root node, preserve current book's parent information
+        std::vector<std::pair<BookHash,Loc>> originalParents = existingNode->parents;
+        int64_t originalBestParentIdx = existingNode->bestParentIdx;
+        
+        copyNodeData(existingNode, otherNode);
+        
+        // Restore original parent information
+        existingNode->parents = originalParents;
+        existingNode->bestParentIdx = originalBestParentIdx;
+      } else {
+        copyNodeData(existingNode, otherNode);
+      }
+    } else {
+      // Node doesn't exist, create a new one
+      BookNode* newNode = new BookNode(nodeHash, this, otherNode->pla, otherNode->symmetries);
+      
+      // Copy all the values from otherNode to newNode
+      copyNodeData(newNode, otherNode);
+      
+      // Add the new node to this book
+      add(nodeHash, newNode);
+    }
+  }
+  
+  // Update root if the other book has a root and this book doesn't
+  if(root == nullptr && otherBook.root != nullptr) {
+    BookNode* rootNode = get(otherBook.root->hash);
+    if(rootNode != nullptr) {
+      root = rootNode;
+    }
+  }
+  
+  // Merge bonus and settings maps
+  for(const auto& pair : otherBook.bonusByHash) {
+    bonusByHash[pair.first] = pair.second;
+  }
+  for(const auto& pair : otherBook.expandBonusByHash) {
+    expandBonusByHash[pair.first] = pair.second;
+  }
+  for(const auto& pair : otherBook.visitsRequiredByHash) {
+    visitsRequiredByHash[pair.first] = pair.second;
+  }
+  for(const auto& pair : otherBook.branchRequiredByHash) {
+    branchRequiredByHash[pair.first] = pair.second;
+  }
+}
+
 int ConstSymBookNode::getNumChildren() const{
   assert(node != nullptr);
   return node->moves.size();

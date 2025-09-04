@@ -494,6 +494,10 @@ class Book {
 
   void saveToFile(const std::string& fileName) const;
   static Book* loadFromFile(const std::string& fileName);
+  
+  // Merge all nodes from another book into this book
+  // If duplicate nodes exist, they will be replaced
+  void mergeFrom(const Book& otherBook);
 
  private:
   int64_t getIdx(BookHash hash) const;
@@ -539,6 +543,9 @@ class Book {
   void recomputeNodeValues(BookNode* node);
   void recomputeNodeCost(BookNode* node);
   void nodeCostSoftmax(BookNode* node);
+
+  // Helper function to copy all mutable data from source node to target node
+  void copyNodeData(BookNode* target, const BookNode* source);
 
   double getUtility(const RecursiveBookValues& values) const;
 

@@ -1293,7 +1293,7 @@ int MainCmds::genbook(const vector<string>& args) {
         out << Location::toString(m.loc,board) << " ";
       out << endl;
       for(double winLoss: winlossHistory)
-        out << Global::strprintf("%2.0f", 100.0*(0.5 * (winLoss + 1.0))) << " ";
+        out << Global::strprintf("%2.2f", 100.0*(0.5 * (winLoss + 1.0))) << " ";
       out << endl;
       Board::printBoard(out, board, Board::NULL_LOC, &(hist.moveHistory));
       std::lock_guard<std::mutex> lock(bookMutex);
@@ -1706,6 +1706,75 @@ int MainCmds::writebook(const vector<string>& args) {
   logger.write("Done exporting, exported " + Global::int64ToString(numFilesWritten) + " files");
 
   delete book;
+  logger.write("DONE");
+  return 0;
+}
+
+int MainCmds::mergebook(const vector<string>& args) {
+  Board::initHash();
+  string bookFileA;
+  string bookFileB;
+  string bookFileC;
+  try {
+    KataGoCommandLine cmd("Merge book B into book A and save to book C");
+
+    TCLAP::ValueArg<string> bookFileAArg("","target","First book file (base book)",true,string(),"FILE");
+    TCLAP::ValueArg<string> bookFileBArg("","merge","Second book file (to merge from)",true,string(),"FILE");
+    TCLAP::ValueArg<string> bookFileCArg("","save","Output book file (merged result)",true,string(),"FILE");
+    cmd.add(bookFileAArg);
+    cmd.add(bookFileBArg);
+    cmd.add(bookFileCArg);
+
+    cmd.parseArgs(args);
+
+    bookFileA = bookFileAArg.getValue();
+    bookFileB = bookFileBArg.getValue();
+    bookFileC = bookFileCArg.getValue();
+  }
+  catch (TCLAP::ArgException &e) {
+    cerr << "Error: " << e.error() << " for argument " << e.argId() << endl;
+    return 1;
+  }
+
+  const bool logToStdout = true;
+  const bool logToStderr = false;
+  const bool logTime = false;
+  Logger logger(nullptr, logToStdout, logToStderr, logTime);
+
+  Book* bookA = nullptr;
+  Book* bookB = nullptr;
+  
+  try {
+    // Load book A
+    logger.write("Loading book A from " + bookFileA);
+    bookA = Book::loadFromFile(bookFileA);
+    logger.write("Loaded book A with " + Global::uint64ToString(bookA->size()) + " nodes");
+    
+    // Load book B
+    logger.write("Loading book B from " + bookFileB);
+    bookB = Book::loadFromFile(bookFileB);
+    logger.write("Loaded book B with " + Global::uint64ToString(bookB->size()) + " nodes");
+    
+    // Merge book B into book A
+    logger.write("Merging book B into book A...");
+    bookA->mergeFrom(*bookB);
+    logger.write("Merge completed. Final book has " + Global::uint64ToString(bookA->size()) + " nodes");
+    
+    // Save merged book to file C
+    logger.write("Saving merged book to " + bookFileC);
+    bookA->saveToFile(bookFileC);
+    logger.write("Saved merged book to " + bookFileC);
+    
+  }
+  catch(TCLAP::ArgException &e) {
+    logger.write("Error: " + string(e.what()));
+    if(bookA) delete bookA;
+    if(bookB) delete bookB;
+    return 1;
+  }
+  
+  delete bookA;
+  delete bookB;
   logger.write("DONE");
   return 0;
 }

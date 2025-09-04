@@ -22,6 +22,7 @@ namespace MainCmds {
   int genbook(const std::vector<std::string>& args);
   int writebook(const std::vector<std::string>& args);
   int checkbook(const std::vector<std::string>& args);
+  int mergebook(const std::vector<std::string>& args);
   int booktoposes(const std::vector<std::string>& args);
 
   int trystartposes(const std::vector<std::string>& args);

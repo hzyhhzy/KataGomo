@@ -43,6 +43,10 @@ tuner : (OpenCL only) Run tuning to find and optimize parameters that work on yo
 selfplay : Play selfplay games and generate training data.
 gatekeeper : Poll directory for new nets and match them against the latest net so far.
 
+---Book subcommands-----------------------
+
+mergebook : Merge two book files together.
+
 ---Testing/debugging subcommands-------------
 evalsgf : Utility/debug tool, analyze a single position of a game from an SGF file.
 
@@ -88,6 +92,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::writebook(subArgs);
   else if(subcommand == "checkbook")
     return MainCmds::checkbook(subArgs);
+  else if(subcommand == "mergebook")
+    return MainCmds::mergebook(subArgs);
   else if(subcommand == "trystartposes")
     return MainCmds::trystartposes(subArgs);
   else if(subcommand == "viewstartposes")
