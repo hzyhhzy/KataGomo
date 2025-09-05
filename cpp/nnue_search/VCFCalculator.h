@@ -42,7 +42,8 @@ public:
         double searchFactor,
         std::vector<int8_t>& dependMap,
         Loc& winLoc,
-        bool noOptimize //if true, return immediately when find a vcf, not optimize the VCF steps
+        bool noOptimize, //if true, return immediately when find a vcf, not optimize the VCF steps
+        int64_t& lastSuccessfulVCFVisits //output: visit count of the last successful VCF MCTS
     );
     // Calculate shortest VCF steps
     int calculateShortestVCF(

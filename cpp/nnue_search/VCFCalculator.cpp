@@ -78,7 +78,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResults_stage0(
     Loc tmploc;
     // Calculate shortest VCF and dependency map for boardWith1pass
     std::vector<int8_t> dependMap1;
-    int vcfSteps1 = calculateShortestVCFAndDependMap(boardWith2pass, attackPlayer, maxMove, 0, 0, searchFactor, dependMap1, tmploc, false);
+    int64_t visits1;
+    int vcfSteps1 = calculateShortestVCFAndDependMap(boardWith2pass, attackPlayer, maxMove, 0, 0, searchFactor, dependMap1, tmploc, false, visits1);
 
     std::map<Loc,int16_t> results;
     
@@ -143,7 +144,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResults_stage0(
             // Calculate VCF for the test board
             Board board1With1pass = board1;
             board1With1pass.playMoveAssumeLegal(Board::PASS_LOC, board1With1pass.nextPla);
-            vcfSteps2 = calculateShortestVCFAndDependMap(board1With1pass, attackPlayer, maxMove, vcfSteps1, vcfSteps1, searchFactor, dependMap2, tmploc, false);
+            int64_t visits2;
+            vcfSteps2 = calculateShortestVCFAndDependMap(board1With1pass, attackPlayer, maxMove, vcfSteps1, vcfSteps1, searchFactor, dependMap2, tmploc, false, visits2);
             //std::cout << i <<" "<< vcfSteps2 << " " << Location::toString(loc1, board1) << "\n";
             //std::cout.flush();
             if(vcfSteps2<=0)
@@ -227,7 +229,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResults_stage0(
 
             // Calculate VCF for the test board
             std::vector<int8_t> testDependMap;
-            int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, vcfSteps2, vcfSteps2, searchFactor, testDependMap, tmploc, false);
+            int64_t testVisits;
+            int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, vcfSteps2, vcfSteps2, searchFactor, testDependMap, tmploc, false, testVisits);
 
             if (testVcfSteps > 0) {
                 longestDefense = std::max(longestDefense, testVcfSteps);
@@ -265,8 +268,9 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
 
     const bool enable_loc3_prune = true;
     const int initialRecommendedMovenumExtra = 18;
-    const int stage1RecommendedMovenumExtra = 4; //moves not pruned in stage1 often affects the VCF length, not try to make vcfStep2 equal to vcfStep1 because a failed VCF waste a lot of time
+    const int stage1RecommendedMovenumExtra = 0; //moves not pruned in stage1 often affects the VCF length, not try to make vcfStep2 equal to vcfStep1 because a failed VCF waste a lot of time
     const int stage2RecommendedMovenumExtra = 0; 
+    const double skipStage1Factor = 20;// skip stage1 calculation if visit1>skipStage1Factor*searchFactor
 
 
 
@@ -291,14 +295,39 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
 
     // Calculate shortest VCF and dependency map for boardWith1pass
     std::vector<int8_t> dependMap1;
-    int vcfSteps1 = calculateShortestVCFAndDependMap(boardWith2pass, attackPlayer, maxMove, 0, boardWith2pass.movenum + initialRecommendedMovenumExtra, searchFactor, dependMap1, tmploc, false);
-
+    int64_t visits1;
+    int vcfSteps1 = calculateShortestVCFAndDependMap(boardWith2pass, attackPlayer, maxMove, 0, boardWith2pass.movenum + initialRecommendedMovenumExtra, searchFactor, dependMap1, tmploc, false, visits1);
+    
     std::map<Loc,int16_t> results;
     
     if (vcfSteps1 <= 0) { //can't VCF even with 2 pass
         return results;
     }
-    
+
+    int dependMap1lv2count = 0;
+    for(int y1 = 0; y1 < board.y_size; y1++) {
+      for(int x1 = 0; x1 < board.x_size; x1++) {
+        Loc loc1 = Location::getLoc(x1, y1, board.x_size);
+        if(!board.isLegal(loc1, board.nextPla))
+          continue;
+        int8_t dependValue1 = dependMap1[loc1];
+
+        if(dependValue1 == 2) {
+          dependMap1lv2count += 1;
+        }
+      }
+    }
+    bool skipStage1 = visits1 * dependMap1lv2count >
+                      skipStage1Factor * searchFactor;  // if visits1 very large, it will cost many minutes, so skip
+
+    if(VCFCalculator_debug_print)
+      std::cout << std::endl
+                << "vcfcalculator-stage0 visit1=" << visits1 << " dependMap1lv2count=" << dependMap1lv2count
+                << " skipStage1=" << int(skipStage1) << std::endl;
+    if(skipStage1 && VCFCalculator_debug_print) {
+      VCFLogic::printBoardWithDependencyMap(boardWith2pass, dependMap1);
+    }
+
     results[Board::PASS_LOC] = vcfSteps1;
     
     // Record positions where VCF is not possible (vcfSteps2 <= 0)
@@ -326,6 +355,9 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
 
             if(dependValue1 == 2)
             {
+                if (skipStage1)
+                  continue;
+
                 Board board1 = board;
                 board1.playMoveAssumeLegal(loc1, board1.nextPla);
                 board1.playMoveAssumeLegal(Board::PASS_LOC, board1.nextPla);
@@ -334,7 +366,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                 std::vector<int8_t> dependMap2;
                 int vcfSteps2 = 0;
                 int recommendedMaxMoveStage1 = vcfSteps1 + stage1RecommendedMovenumExtra;
-                vcfSteps2 = calculateShortestVCFAndDependMap(board1, attackPlayer, maxMove, recommendedMaxMoveStage1, recommendedMaxMoveStage1, searchFactor, dependMap2, tmploc, false);
+                int64_t visits2;
+                vcfSteps2 = calculateShortestVCFAndDependMap(board1, attackPlayer, maxMove, recommendedMaxMoveStage1, recommendedMaxMoveStage1, searchFactor, dependMap2, tmploc, false, visits2);
                 if(vcfSteps2 > 0)
                 {
                     //all locs with loc1 has no vcf
@@ -403,6 +436,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                     }
                 }
 
+                if (skipStage1)
+                  continue;
                 //the depend map may change, recalculate
                 
                 Board board1 = board;
@@ -413,7 +448,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
                 std::vector<int8_t> dependMap2;
                 int vcfSteps2 = 0;
                 int recommendedMaxMoveStage1 = vcfSteps1 + 0;
-                vcfSteps2 = calculateShortestVCFAndDependMap(board1, attackPlayer, maxMove, recommendedMaxMoveStage1, recommendedMaxMoveStage1, searchFactor, dependMap2, tmploc, false);
+                int64_t visits2;
+                vcfSteps2 = calculateShortestVCFAndDependMap(board1, attackPlayer, maxMove, recommendedMaxMoveStage1, recommendedMaxMoveStage1, searchFactor, dependMap2, tmploc, false, visits2);
                 if(vcfSteps2 != vcfSteps1)
                 {
                     if (VCFCalculator_debug_print)
@@ -547,6 +583,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
 
 
         bool canDefend = false;
+        if (skipStage1)
+          canDefend = true;
         longestDefense = longestKnownDefense; //initially the vcf win move of pass
 
         // Process second move positions in sorted order
@@ -563,7 +601,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
             // Calculate VCF for the test board
             std::vector<int8_t> testDependMap;
             int recommendedMaxMoveStage2 = longestKnownDefense + stage2RecommendedMovenumExtra;
-            int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, recommendedMaxMoveStage2, recommendedMaxMoveStage2, searchFactor, testDependMap, tmploc, false);
+            int64_t visits2;
+            int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, recommendedMaxMoveStage2, recommendedMaxMoveStage2, searchFactor, testDependMap, tmploc, false, visits2);
             loc2countTotal += 1;
             if (testVcfSteps > 0) {
                 longestDefense = std::max(longestDefense, int16_t(testVcfSteps));
@@ -661,7 +700,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResults_stage1(
     // Calculate shortest VCF and dependency map for boardWith1pass
     std::vector<int8_t> dependMap;
     Loc tmploc;
-    int vcfSteps = calculateShortestVCFAndDependMap(boardWith1pass, attackPlayer, maxMove, 0, 0, searchFactor, dependMap, tmploc, false);
+    int64_t visits;
+    int vcfSteps = calculateShortestVCFAndDependMap(boardWith1pass, attackPlayer, maxMove, 0, 0, searchFactor, dependMap, tmploc, false, visits);
     
     std::map<Loc,int16_t> results;
     
@@ -695,7 +735,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResults_stage1(
                 
                 // Calculate VCF for the test board
                 std::vector<int8_t> testDependMap;
-                int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, vcfSteps, vcfSteps, searchFactor, testDependMap, tmploc, false);
+                int64_t visits2;
+                int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, vcfSteps, vcfSteps, searchFactor, testDependMap, tmploc, false, visits2);
                 
                 if (testVcfSteps > 0) {
                     // VCF still possible after playing this move - position is pruned
@@ -719,6 +760,8 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage1(
     Color attackPlayer,
     int maxMove,
     double searchFactor) {
+    const double skipStage1Factor = 20;// skip stage1 calculation if visit1>skipStage1Factor*searchFactor
+    const int stage1RecommendedMovenumExtra = 0;
 
     Color defendPlayer = getOpp(attackPlayer);
     assert(board.stage == 1);
@@ -741,14 +784,40 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage1(
     // Calculate shortest VCF and dependency map for boardWith1pass
     Loc tmploc;
     std::vector<int8_t> dependMap;
-    int vcfSteps = calculateShortestVCFAndDependMap(boardWith1pass, attackPlayer, maxMove, 0, 0, searchFactor, dependMap, tmploc, false);
+    int64_t visits1;
+    int vcfSteps = calculateShortestVCFAndDependMap(boardWith1pass, attackPlayer, maxMove, 0, 0, searchFactor, dependMap, tmploc, false, visits1);
+
 
     std::map<Loc,int16_t> results;
 
     if (vcfSteps <= 0) { //can't VCF even with 1 pass
         return results;
     }
-    
+
+    int dependMap1lv2count = 0;
+    for(int y1 = 0; y1 < board.y_size; y1++) {
+      for(int x1 = 0; x1 < board.x_size; x1++) {
+        Loc loc1 = Location::getLoc(x1, y1, board.x_size);
+        if(!board.isLegal(loc1, board.nextPla))
+          continue;
+        int8_t dependValue1 = dependMap[loc1];
+
+        if(dependValue1 == 2) {
+          dependMap1lv2count += 1;
+        }
+      }
+    }
+    bool skipStage1 = visits1 * dependMap1lv2count >
+                      skipStage1Factor * searchFactor;  // if visits1 very large, it will cost many minutes, so skip
+
+    if(VCFCalculator_debug_print)
+      std::cout << std::endl
+                << "vcfcalculator-stage1 visit1=" << visits1 << " dependMap1lv2count=" << dependMap1lv2count
+                << " skipStage1=" << int(skipStage1) << std::endl;
+    if(skipStage1 && VCFCalculator_debug_print) {
+      VCFLogic::printBoardWithDependencyMap(boardWith1pass, dependMap);
+    }
+
     results[Board::PASS_LOC] = vcfSteps;
 
     int16_t minWinStepsMap[Board::MAX_ARR_SIZE];
@@ -789,13 +858,18 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage1(
             }
             else {
                 assert(dependMap[loc] == 2);
+                if (skipStage1)
+                  continue;
                 // Need to test this position by actually playing it
                 Board testBoard = board;
                 testBoard.playMoveAssumeLegal(loc, board.nextPla);
 
                 // Calculate VCF for the test board
                 std::vector<int8_t> testDependMap;
-                int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, vcfSteps, vcfSteps, searchFactor, testDependMap, tmploc, false);
+                int64_t visits2;
+
+                int recommendedMaxMoveStage1 = vcfSteps + stage1RecommendedMovenumExtra;
+                int testVcfSteps = calculateShortestVCFAndDependMap(testBoard, attackPlayer, maxMove, vcfSteps, recommendedMaxMoveStage1, searchFactor, testDependMap, tmploc, false, visits2);
 
                 if (testVcfSteps > 0) {
                     // VCF still possible after playing this move - position is pruned
@@ -862,13 +936,17 @@ int VCFCalculator::calculateShortestVCFAndDependMap(
     double searchFactor,
     std::vector<int8_t>& dependMap,
     Loc& winLoc,
-    bool noOptimize) {
+    bool noOptimize,
+    int64_t& lastSuccessfulVCFVisits) {
+    const double factorForRecommendedMaxMove = 0.25;//search fewer visits for recommendedMaxMove
     if (VCFCalculator_debug_print)
     {
         std::cout << 1;
         std::cout.flush();
     }
     dependMap.clear();
+    winLoc = Board::NULL_LOC;
+    lastSuccessfulVCFVisits = -1;
 
     assert(board.nextPla == attackPlayer);
     assert(board.stage == 0);
@@ -928,6 +1006,7 @@ int VCFCalculator::calculateShortestVCFAndDependMap(
     int lastSuccessfulVCFSteps = -1;
     std::vector<int8_t> lastSuccessfulDependMap;
     Loc lastWinLoc = Board::NULL_LOC;
+    int lastSuccessfulVisits = 0;
     
     while (true) {
         if (currentMaxMove < board.movenum + 6 || currentMaxMove < minMaxMove)
@@ -944,9 +1023,9 @@ int VCFCalculator::calculateShortestVCFAndDependMap(
         
         // Create MCTS search instance
         MCTSsearch mcts(cacheTable, &nnueHistory1, attackPlayer);
-        
+        double sf = isTestingRecommendedMaxMove ? searchFactor * factorForRecommendedMaxMove :searchFactor;
         // Perform VCF search
-        bool canWin = mcts.vcfSearchAutoStop(&nnueHistory1, attackPlayer, searchFactor);
+        bool canWin = mcts.vcfSearchAutoStop(&nnueHistory1, attackPlayer, sf);
         //std::cout << currentMaxMove <<" "<<canWin<< std::endl;
         
         if (canWin) {
@@ -964,6 +1043,7 @@ int VCFCalculator::calculateShortestVCFAndDependMap(
             lastSuccessfulVCFSteps = winMoveNum;
             lastSuccessfulDependMap = currentDependMap;
             lastWinLoc = winL;
+            lastSuccessfulVisits = mcts.rootNode->visits;
             
             // Try with fewer moves (reduce by 4 as specified)
             currentMaxMove = winMoveNum - 4;
@@ -987,11 +1067,13 @@ int VCFCalculator::calculateShortestVCFAndDependMap(
     if (lastSuccessfulVCFSteps != -1) {
         dependMap = lastSuccessfulDependMap;
         winLoc = lastWinLoc;
+        lastSuccessfulVCFVisits = lastSuccessfulVisits;
         return lastSuccessfulVCFSteps;
     } else {
         // No successful VCF found
         dependMap.clear();
         winLoc = Board::NULL_LOC;
+        lastSuccessfulVCFVisits = 0;
         return -1;
     }
 }
@@ -999,6 +1081,7 @@ int VCFCalculator::calculateShortestVCFAndDependMap(
 int VCFCalculator::calculateShortestVCF(const Board& board, Loc& winLoc, Color attackPlayer, int initialMaxMove, double searchFactor)
 {
     std::vector<int8_t> dependMap;
+    int64_t visits;
     return calculateShortestVCFAndDependMap(
         board,
         attackPlayer,
@@ -1008,5 +1091,6 @@ int VCFCalculator::calculateShortestVCF(const Board& board, Loc& winLoc, Color a
         searchFactor,
         dependMap,
         winLoc,
-        false);
+        false,
+        visits);
 }

@@ -579,7 +579,8 @@ void testMCTSSearch3(const ModelWeight* weights) {
   auto startTime = chrono::high_resolution_clock::now();
   Loc winloc;
   std::vector<int8_t> dependMap;
-  int vcfmovenum = vcfCalculator.calculateShortestVCFAndDependMap(board, board.nextPla, 109, 0, 0, searchFactor, dependMap, winloc, false);
+  int64_t v;
+  int vcfmovenum = vcfCalculator.calculateShortestVCFAndDependMap(board, board.nextPla, 109, 0, 0, searchFactor, dependMap, winloc, false,v );
 
 
   auto endTime = chrono::high_resolution_clock::now();
