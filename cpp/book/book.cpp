@@ -2153,6 +2153,15 @@ void Book::recomputeNodeCost(BookNode* node) {
   }
 
   // Update cost for moves for children to reference.
+  int movesWinrateHigherThanExpansion = 0;
+  double expansionWinloss = -1e30;
+  if (node->canExpand)
+  {
+    expansionWinloss = node->thisValuesNotInBook.winLossValue;
+    if(node->pla == C_BLACK)
+      expansionWinloss = -expansionWinloss;
+  }
+
   double smallestCostFromUCB = 1e100;
   for(auto& locAndBookMove: node->moves) {
     const BookNode* child = get(locAndBookMove.second.hash);
@@ -2168,6 +2177,8 @@ void Book::recomputeNodeCost(BookNode* node) {
     double childWinLossThisPerspective = child->recursiveValues.winLossValue;
     if(node->pla == P_BLACK)
       childWinLossThisPerspective = -childWinLossThisPerspective;
+    if(childWinLossThisPerspective > expansionWinloss)
+      movesWinrateHigherThanExpansion += 1;
     double costFromWL = calculateWinlossLoss(bestWinLossThisPerspective, params) -
                         calculateWinlossLoss(childWinLossThisPerspective, params);
     assert(costFromWL > -1e-10);//minimax ensures this
@@ -2276,8 +2287,8 @@ void Book::recomputeNodeCost(BookNode* node) {
       params.costPerMove
       + costFromUCB
       + (-boostedLogRawPolicy * params.costPerLogPolicy)
-      + movesExpanded * params.costPerMovesExpanded
-      + movesExpanded * movesExpanded * params.costPerSquaredMovesExpanded
+      + movesWinrateHigherThanExpansion * params.costPerMovesExpanded
+      + movesWinrateHigherThanExpansion * movesWinrateHigherThanExpansion * params.costPerSquaredMovesExpanded
       + (passFavored ? params.costWhenPassFavored : 0.0);
 
     // cout << "Setting this node expansion cost "
