@@ -685,6 +685,16 @@ int MainCmds::genbook(const vector<string>& args) {
     //only for normal rules with maxmoves
     if(originalRules.VCNRule != Rules::VCNRULE_NOVC || originalRules.firstPassWin)
       return;
+
+    //one-move win, ignore
+    {
+      GameLogic::ResultsBeforeNN r;
+      r.init(board, hist, pla);
+      if (r.myOnlyLoc != Board::NULL_LOC)
+      {
+        return;
+      }
+    }
       
     // Check if this is a high winrate position and perform additional searches
     Loc bestMove = Board::NULL_LOC;
@@ -780,8 +790,8 @@ int MainCmds::genbook(const vector<string>& args) {
             lastValidMaxMoves = testMoves;
             bestMove = search->getChosenMoveLoc();
             currentWinrate = testWinrate;
-            Board::printBoard(cout, board, bestMove, NULL);
-            cout << testMoves << " " << testWinrate << endl;
+            //Board::printBoard(cout, board, bestMove, NULL);
+            //cout << testMoves << " " << testWinrate << endl;
         } else {
             break;
         }
@@ -792,6 +802,8 @@ int MainCmds::genbook(const vector<string>& args) {
     // Store the results in the book node
     {
       std::lock_guard<std::mutex> lock(bookMutex);
+      //Board::printBoard(cout, board, bestMove, NULL);
+      cout << testMoves << " " << currentWinrate << endl;
       node.setBestMoveForHighWinrate(bestMove, lastValidMaxMoves, cfgParams.maxVisitsForHighWinrateSearch);
     }
         
@@ -1301,6 +1313,25 @@ int MainCmds::genbook(const vector<string>& args) {
       logger.write(out.str());
     }
 
+
+    // there was a bug that the high winrate move is pruned by ResultsBeforeNN when one-move win, remove high winrate move in this case
+    {
+      if(constNode.getBestMoveForHighWinrate() != Board::NULL_LOC) {
+        GameLogic::ResultsBeforeNN r;
+        r.init(board, hist, pla);
+        if(r.myOnlyLoc != Board::NULL_LOC) {
+          std::lock_guard<std::mutex> lock(bookMutex);
+          logger.write("getBestMoveForHighWinrate() != Board::NULL_LOC while myOnlyLoc != Board::NULL_LOC, remove the BestMoveForHighWinrate");
+          logger.write("PriorMove=" + Location::toString(constNode.getBestMoveForHighWinrate(), board));
+          logger.write("myOnlyLoc=" + Location::toString(r.myOnlyLoc, board));
+          ostringstream debugOut;
+          hist.printDebugInfo(debugOut, board);
+          logger.write(debugOut.str());
+          node.setBestMoveForHighWinrate(Board::NULL_LOC, 0, 100000000);
+        }
+      }
+    }
+
     std::vector<int> avoidMoveUntilByLoc;
     bool foundNewMoves,usePriorMove;
     bool isReExpansion;
@@ -1324,13 +1355,23 @@ int MainCmds::genbook(const vector<string>& args) {
     // check whether it has new legal moves
     if (search->getRootVisits() == 0 || search->getChosenMoveLoc() == Board::NULL_LOC)
     {
-      assert(!usePriorMove);
       std::lock_guard<std::mutex> lock(bookMutex);
       logger.write("WARNING: search->getRootVisits() == 0, probably some legal moves are pruned");
       logger.write("BookHash of node unable to expand: " + constNode.hash().toString());
       ostringstream debugOut;
       hist.printDebugInfo(debugOut,board);
       logger.write(debugOut.str());
+
+      if(usePriorMove) {
+        logger.write("Warning search->getRootVisits() == 0 while usePriorMove");
+        logger.write("PriorMove=" + Location::toString(constNode.getBestMoveForHighWinrate(), board));
+        ostringstream debugOut;
+        hist.printDebugInfo(debugOut, board);
+        logger.write(debugOut.str());
+
+        ASSERT_UNREACHABLE;
+      }
+      //assert(!usePriorMove);
 
       setNodeThisValuesNoMovesNoLock(node);
       //node.canExpand() = false;

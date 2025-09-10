@@ -270,7 +270,7 @@ std::map<Loc,int16_t> VCFCalculator::CalculateAllVCFDefendResultsV2_stage0(
     const int initialRecommendedMovenumExtra = 18;
     const int stage1RecommendedMovenumExtra = 0; //moves not pruned in stage1 often affects the VCF length, not try to make vcfStep2 equal to vcfStep1 because a failed VCF waste a lot of time
     const int stage2RecommendedMovenumExtra = 0; 
-    const double skipStage1Factor = 20;// skip stage1 calculation if visit1>skipStage1Factor*searchFactor
+    const double skipStage1Factor = 3;// skip stage1 calculation if visit1>skipStage1Factor*searchFactor
 
 
 
