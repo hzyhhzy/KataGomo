@@ -266,7 +266,7 @@ class ConstSymBookNode {
   const BookValues& thisValuesNotInBook();
   bool canExpand();
   bool canReExpand();
-  const RecursiveBookValues& recursiveValues();
+  const RecursiveBookValues& recursiveValues() const;
   int minDepthFromRoot();
   double minCostFromRoot();
   double totalExpansionCost();
@@ -378,7 +378,9 @@ struct BookParams {
   int minChildrenForVcfDefenseStage1 = 0;
   // Cost penalty for nodes with determined winner (not C_WALL)
   double costPenaltyForDeterminedWinner = 1000.0;
-
+  
+  // Scale factor for hint position bonus
+  double hintPosBonusScale = 1.0;
 
 
 
@@ -417,6 +419,7 @@ class Book {
   std::map<BookHash,double> expandBonusByHash;
   std::map<BookHash,double> visitsRequiredByHash;
   std::map<BookHash,int> branchRequiredByHash;
+  std::map<BookHash,std::pair<Loc,double>> moveBonusByHash;
 
   int initialSymmetry; // The symmetry that needs to be applied to initialBoard to align it with rootNode. (initialspace -> rootnodespace)
   BookNode* root;
@@ -456,6 +459,8 @@ class Book {
   void setVisitsRequiredByHash(const std::map<BookHash,double>& d);
   std::map<BookHash,int> getBranchRequiredByHash() const;
   void setBranchRequiredByHash(const std::map<BookHash,int>& d);
+  std::map<BookHash,std::pair<Loc,double>> getMoveBonusByHash() const;
+  void setMoveBonusByHash(const std::map<BookHash,std::pair<Loc,double>>& d);
 
   // Gets the root node, in the orientation of the initial board.
   SymBookNode getRoot();

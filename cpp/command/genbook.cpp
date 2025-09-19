@@ -173,6 +173,102 @@ static void maybeParseInitialMoveBonus(
   }
 }
 
+static void parseHintPosFile(
+  const std::string& hintPosFile,
+  Rules rules,
+  Logger& logger,
+  std::map<BookHash, std::pair<Loc, double>>& moveBonusByHash,
+  const Board& initialBoard,
+  Player initialPla) {
+  if(hintPosFile != "") {
+    std::ifstream infile;
+    if(!FileUtils::tryOpen(infile, hintPosFile)) {
+      throw StringError("Could not open hintpos file: " + hintPosFile);
+    }
+    
+    string line;
+    int lineNum = 0;
+    while(std::getline(infile, line)) {
+      lineNum++;
+      if(line.empty() || line[0] == '#') continue; // Skip empty lines and comments
+      
+      // Parse line format: "movesequence color bonus"
+      std::istringstream iss(line);
+      string moveSeqStr, colorStr, bonusStr;
+      if(!(iss >> moveSeqStr >> colorStr >> bonusStr)) {
+        throw StringError("Invalid format in hintpos file line " + Global::intToString(lineNum) + ": " + line);
+      }
+      
+      Player targetColor;
+      if(colorStr == "b" || colorStr == "B") {
+        targetColor = C_BLACK;
+      } else if(colorStr == "w" || colorStr == "W") {
+        targetColor = C_WHITE;
+      } else {
+        throw StringError("Invalid color '" + colorStr + "' in hintpos file line " + Global::intToString(lineNum));
+      }
+      
+      double bonus;
+      if(!Global::tryStringToDouble(bonusStr, bonus)) {
+        throw StringError("Invalid bonus value '" + bonusStr + "' in hintpos file line " + Global::intToString(lineNum));
+      }
+      
+      // Parse move sequence
+      Board board = initialBoard;
+      Player pla = initialPla;
+      pla = board.nextPla;
+      vector<Loc> moveSeq = Location::parseSequenceGom(moveSeqStr, board);
+      BoardHistory hist(board, pla, rules);
+      
+      for(int i = 0; i < moveSeq.size(); i++) {
+        Loc loc = moveSeq[i];
+        if(loc != Board::NULL_LOC) {
+          if(!board.isLegal(loc, pla))
+            throw StringError("Illegal move in hintpos file line " + Global::intToString(lineNum) + ": " + line);
+          
+          // If this move is by the target color, add it to moveBonusByHash
+          if(pla == targetColor) {
+            BookHash hashRet;
+            int symmetryToAlignRet;
+            vector<int> symmetriesRet;
+            for(int bookVersion = 2; bookVersion <= Book::LATEST_BOOK_VERSION; bookVersion++) {
+              BookHash::getHashAndSymmetry(hist, hashRet, symmetryToAlignRet, symmetriesRet, bookVersion);
+              Loc symloc = SymmetryHelpers::getSymLoc(loc, board, symmetryToAlignRet);
+              //if dumplicated, use the smallest bonus
+              if (contains(moveBonusByHash, hashRet))
+              {
+                auto r = moveBonusByHash[hashRet];
+                if (r.first == symloc)
+                {
+                  if(bonus < r.second) {
+                    moveBonusByHash[hashRet] = std::make_pair(symloc, bonus);
+                    logger.write(
+                      "Change move bonus to " + Global::doubleToString(bonus) + " for move " +
+                      Location::toString(symloc, board) + " to hash " + hashRet.toString());
+                  }
+                }
+                else {
+                  throw StringError("Different bonus poses for " + hashRet.toString() + ". Check hintpos file");
+                }
+              } 
+              else {
+                moveBonusByHash[hashRet] = std::make_pair(symloc, bonus);
+                logger.write(
+                  "Adding move bonus " + Global::doubleToString(bonus) + " for move " +
+                  Location::toString(symloc, board) + " to hash " + hashRet.toString());
+              }
+            }
+          }
+          
+          hist.makeBoardMoveAssumeLegal(board, loc, pla);
+        }
+        pla = board.nextPla;
+      }
+    }
+    infile.close();
+  }
+}
+
 int MainCmds::genbook(const vector<string>& args) {
   Board::initHash();
 
@@ -184,6 +280,7 @@ int MainCmds::genbook(const vector<string>& args) {
   string traceSgfFile;
   string logFile;
   string bonusFile;
+  string hintPosFile;
   string nnuePath;
   int numIterations;
   int saveEveryIterations;
@@ -204,6 +301,7 @@ int MainCmds::genbook(const vector<string>& args) {
     TCLAP::ValueArg<string> traceSgfFileArg("","trace-sgf-file","Other sgf file we should copy all the lines from",false,string(),"FILE");
     TCLAP::ValueArg<string> logFileArg("","log-file","Log file to write to",true,string(),"DIR");
     TCLAP::ValueArg<string> bonusFileArg("","bonus-file","SGF of bonuses marked",false,string(),"DIR");
+    TCLAP::ValueArg<string> hintPosFileArg("","hintpos","File containing hint positions with move sequences, color and bonus",false,string(),"FILE");
     TCLAP::ValueArg<string> nnuePathArg("","nnue-path","Path to NNUE weight file",false,string(),"FILE");
     TCLAP::ValueArg<int> numIterationsArg("","num-iters","Number of iterations to expand book",true,0,"N");
     TCLAP::ValueArg<int> saveEveryIterationsArg("","save-every","Number of iterations per save to book file",true,0,"N");
@@ -218,6 +316,7 @@ int MainCmds::genbook(const vector<string>& args) {
     cmd.add(traceSgfFileArg);
     cmd.add(logFileArg);
     cmd.add(bonusFileArg);
+    cmd.add(hintPosFileArg);
     cmd.add(nnuePathArg);
     cmd.add(numIterationsArg);
     cmd.add(saveEveryIterationsArg);
@@ -237,6 +336,7 @@ int MainCmds::genbook(const vector<string>& args) {
     traceSgfFile = traceSgfFileArg.getValue();
     logFile = logFileArg.getValue();
     bonusFile = bonusFileArg.getValue();
+    hintPosFile = hintPosFileArg.getValue();
     nnuePath = nnuePathArg.getValue();
     numIterations = numIterationsArg.getValue();
     saveEveryIterations = saveEveryIterationsArg.getValue();
@@ -314,11 +414,20 @@ int MainCmds::genbook(const vector<string>& args) {
   std::map<BookHash,double> expandBonusByHash;
   std::map<BookHash,double> visitsRequiredByHash;
   std::map<BookHash,int> branchRequiredByHash;
+  std::map<BookHash,std::pair<Loc,double>> moveBonusByHash;
   Board bonusInitialBoard;
   Player bonusInitialPla;
 
   bonusInitialBoard = Board(boardSizeX, boardSizeY);
-  bonusInitialPla = P_BLACK; 
+  bonusInitialPla = bonusInitialBoard.nextPla; 
+  // Parse hint positions file
+  parseHintPosFile(
+    hintPosFile,
+    rules,
+    logger,
+    moveBonusByHash,
+    bonusInitialBoard,
+    bonusInitialPla);
   if(rootBoardSequence != "") {
     vector<Loc> rootBoardLocSeq = Location::parseSequenceGom(rootBoardSequence, bonusInitialBoard);
     playMoveLocSequence(bonusInitialBoard, bonusInitialPla, rootBoardLocSeq);
@@ -331,6 +440,8 @@ int MainCmds::genbook(const vector<string>& args) {
     bonusByHash,
     bonusInitialBoard,
     bonusInitialPla);
+  
+  
   //bonusInitialBoard.playMoveAssumeLegal(Location::getLoc(3, boardSizeY - 3, bonusInitialBoard.x_size), C_BLACK);
   //bonusInitialPla = P_WHITE;
 
@@ -470,6 +581,7 @@ int MainCmds::genbook(const vector<string>& args) {
   book->setExpandBonusByHash(expandBonusByHash);
   book->setVisitsRequiredByHash(visitsRequiredByHash);
   book->setBranchRequiredByHash(branchRequiredByHash);
+  book->setMoveBonusByHash(moveBonusByHash);
   book->recomputeEverything();
 
   if(!std::atomic_is_lock_free(&shouldStop))
@@ -1671,6 +1783,7 @@ int MainCmds::writebook(const vector<string>& args) {
   string htmlDir;
   string bookFile;
   string bonusFile;
+  string hintPosFile;
   bool htmlDevMode;
   bool htmlWinrate;
   double htmlMinVisits;
@@ -1682,12 +1795,14 @@ int MainCmds::writebook(const vector<string>& args) {
     TCLAP::ValueArg<string> htmlDirArg("","html-dir","HTML directory to export to, at the end of -num-iters",true,string(),"DIR");
     TCLAP::ValueArg<string> bookFileArg("","book-file","Book file to write to or continue expanding",true,string(),"FILE");
     TCLAP::ValueArg<string> bonusFileArg("","bonus-file","SGF of bonuses marked",false,string(),"DIR");
+    TCLAP::ValueArg<string> hintPosFileArg("","hintpos","File containing hint positions with move sequences, color and bonus",false,string(),"FILE");
     TCLAP::SwitchArg htmlDevModeArg("","html-dev-mode","Denser debug output for html");
     TCLAP::SwitchArg htmlWinrateArg("","writebook-winrate","Show winrate or result on each move in HTML export");
     TCLAP::ValueArg<double> htmlMinVisitsArg("","html-min-visits","Require >= this many visits to export a position to html",false,0.0,"N");
     cmd.add(htmlDirArg);
     cmd.add(bookFileArg);
     cmd.add(bonusFileArg);
+    cmd.add(hintPosFileArg);
     cmd.add(htmlDevModeArg);
     cmd.add(htmlWinrateArg);
     cmd.add(htmlMinVisitsArg);
@@ -1698,6 +1813,7 @@ int MainCmds::writebook(const vector<string>& args) {
     htmlDir = htmlDirArg.getValue();
     bookFile = bookFileArg.getValue();
     bonusFile = bonusFileArg.getValue();
+    hintPosFile = hintPosFileArg.getValue();
     htmlDevMode = htmlDevModeArg.getValue();
     htmlWinrate = htmlWinrateArg.getValue();
     htmlMinVisits = htmlMinVisitsArg.getValue();
@@ -1727,7 +1843,18 @@ int MainCmds::writebook(const vector<string>& args) {
   std::map<BookHash,double> expandBonusByHash;
   std::map<BookHash,double> visitsRequiredByHash;
   std::map<BookHash,int> branchRequiredByHash;
+  std::map<BookHash,std::pair<Loc,double>> moveBonusByHash;
 
+  // Parse hint positions file
+  Board bonusInitialBoard(boardSizeX, boardSizeY);
+  Player bonusInitialPla = bonusInitialBoard.nextPla;
+  parseHintPosFile(
+    hintPosFile,
+    rules,
+    logger,
+    moveBonusByHash,
+    bonusInitialBoard,
+    bonusInitialPla);
 
   // Check for unused config keys
   cfg.warnUnusedKeys(cerr,&logger);
@@ -1740,6 +1867,7 @@ int MainCmds::writebook(const vector<string>& args) {
   book->setExpandBonusByHash(expandBonusByHash);
   book->setVisitsRequiredByHash(visitsRequiredByHash);
   book->setBranchRequiredByHash(branchRequiredByHash);
+  book->setMoveBonusByHash(moveBonusByHash);
   book->recomputeEverything();
 
   logger.write("EXPORTING HTML TO " + htmlDir);

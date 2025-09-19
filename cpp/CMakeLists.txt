@@ -234,6 +234,7 @@ add_executable(katago
   command/evalsgf.cpp
   command/gatekeeper.cpp
   command/genbook.cpp
+  command/testbook.cpp
   command/gputest.cpp
   command/gtp.cpp
   command/match.cpp

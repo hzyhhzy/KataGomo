@@ -529,6 +529,9 @@ void Book::mergeFrom(const Book& otherBook) {
   for(const auto& pair : otherBook.branchRequiredByHash) {
     branchRequiredByHash[pair.first] = pair.second;
   }
+  for(const auto& pair : otherBook.moveBonusByHash) {
+    moveBonusByHash[pair.first] = pair.second;
+  }
 }
 
 int ConstSymBookNode::getNumChildren() const{
@@ -572,7 +575,7 @@ const RecursiveBookValues& SymBookNode::recursiveValues() {
   assert(node != nullptr);
   return node->recursiveValues;
 }
-const RecursiveBookValues& ConstSymBookNode::recursiveValues() {
+const RecursiveBookValues& ConstSymBookNode::recursiveValues() const {
   assert(node != nullptr);
   return node->recursiveValues;
 }
@@ -1044,6 +1047,7 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.minChildrenForVcfDefenseStage0 = cfg.contains("minChildrenForVcfDefenseStage0") ? cfg.getInt("minChildrenForVcfDefenseStage0", 0, 1000) : 0;
   cfgParams.minChildrenForVcfDefenseStage1 = cfg.contains("minChildrenForVcfDefenseStage1") ? cfg.getInt("minChildrenForVcfDefenseStage1", 0, 1000) : 0;
   cfgParams.costPenaltyForDeterminedWinner = cfg.contains("costPenaltyForDeterminedWinner") ? cfg.getDouble("costPenaltyForDeterminedWinner", 0.0, 1e50) : 10000.0;
+  cfgParams.hintPosBonusScale = cfg.contains("hintPosBonusScale") ? cfg.getDouble("hintPosBonusScale", 0.0, 1000.0) : 1.0;
   return cfgParams;
 }
 
@@ -1136,6 +1140,8 @@ std::map<BookHash,double> Book::getVisitsRequiredByHash() const { return visitsR
 void Book::setVisitsRequiredByHash(const std::map<BookHash,double>& d) { visitsRequiredByHash = d; }
 std::map<BookHash,int> Book::getBranchRequiredByHash() const { return branchRequiredByHash; }
 void Book::setBranchRequiredByHash(const std::map<BookHash,int>& d) { branchRequiredByHash = d; }
+std::map<BookHash,std::pair<Loc,double>> Book::getMoveBonusByHash() const { return moveBonusByHash; }
+void Book::setMoveBonusByHash(const std::map<BookHash,std::pair<Loc,double>>& d) { moveBonusByHash = d; }
 
 
 SymBookNode Book::getRoot() {
@@ -2162,6 +2168,17 @@ void Book::recomputeNodeCost(BookNode* node) {
       expansionWinloss = -expansionWinloss;
   }
 
+  Loc hintLoc=Board::NULL_LOC;
+  double hintLocBonus=0.0;
+  if(params.hintPosBonusScale>0 && contains(moveBonusByHash, node->hash))
+  {
+      const auto& moveBonus = moveBonusByHash[node->hash];
+      hintLoc = moveBonus.first;
+      hintLocBonus = moveBonus.second * params.hintPosBonusScale;
+  }
+
+  bool foundHintLoc=false;
+
   double smallestCostFromUCB = 1e100;
   for(auto& locAndBookMove: node->moves) {
     const BookNode* child = get(locAndBookMove.second.hash);
@@ -2200,6 +2217,11 @@ void Book::recomputeNodeCost(BookNode* node) {
       + (-boostedLogRawPolicy * params.costPerLogPolicy)
       + (passFavored ? params.costWhenPassFavored : 0.0);
 
+    // Apply hint position bonus if this move is in moveBonusByHash
+    if(hintLoc == locAndBookMove.first) {
+      cost -= hintLocBonus;
+      foundHintLoc = true;
+    }
     
     if(child->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
         cost += params.costPenaltyForDeterminedWinner / 2.0;
@@ -2290,6 +2312,11 @@ void Book::recomputeNodeCost(BookNode* node) {
       + movesWinrateHigherThanExpansion * params.costPerMovesExpanded
       + movesWinrateHigherThanExpansion * movesWinrateHigherThanExpansion * params.costPerSquaredMovesExpanded
       + (passFavored ? params.costWhenPassFavored : 0.0);
+
+    // Apply hint position bonus for expansion if this position has a hint but no corresponding child node
+    if(hintLoc!=Board::NULL_LOC && !foundHintLoc) {
+      node->thisNodeExpansionCost -= hintLocBonus;
+    }
 
     // cout << "Setting this node expansion cost "
     //      << " costPerMove " << costPerMove
