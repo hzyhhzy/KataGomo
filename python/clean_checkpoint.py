@@ -18,7 +18,7 @@ args = vars(parser.parse_args())
 checkpoint_path = args["checkpoint"]
 output_path = args["output"]
 
-data = torch.load(checkpoint_path,map_location="cpu")
+data = torch.load(checkpoint_path,map_location="cpu",weights_only=False)
 
 if "optimizer" in data:
     del data["optimizer"]

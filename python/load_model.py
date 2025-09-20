@@ -21,20 +21,31 @@ def load_model_state_dict(state_dict):
         model_state_dict[key] = state_dict["model"][old_key]
     return model_state_dict
 
-def load_swa_model_state_dict(state_dict):
-    if "swa_model" not in state_dict:
-        return None
+def load_swa_model_state_dict(state_dict, idx, orig_model_prefix=False):
+    name=f"swa_model_{idx}"
+    print(state_dict.keys())
+    if name not in state_dict:
+        if "swa_model" in state_dict:
+            name="swa_model"
+        else:
+            return None
     swa_model_state_dict = {}
-    for key in state_dict["swa_model"]:
+    for key in state_dict[name]:
         # Filter out some extra keys that were present in older checkpoints
         if "score_belief_offset_vector" in key or "score_belief_offset_bias_vector" in key or "score_belief_parity_vector" in key:
             continue
-        swa_model_state_dict[key] = state_dict["swa_model"][key]
+        key2=key
+        if orig_model_prefix and key2.startswith("module."):
+            # 移除 "module." 前缀 (长度为 7)
+            suffix = key2[7:]
+            # 构建新的键名
+            key2 = f"module._orig_mod.{suffix}"
+        swa_model_state_dict[key2] = state_dict[name][key]
     return swa_model_state_dict
 
 
 def load_model(checkpoint_file, use_swa, device, pos_len=19, verbose=False):
-    state_dict = torch.load(checkpoint_file,map_location="cpu")
+    state_dict = torch.load(checkpoint_file,map_location="cpu",weights_only=False)
 
     if "config" in state_dict:
         model_config = state_dict["config"]
@@ -58,7 +69,7 @@ def load_model(checkpoint_file, use_swa, device, pos_len=19, verbose=False):
     if use_swa:
         if state_dict is None:
             raise Exception("Cannot use swa without a trained model")
-        swa_model_state_dict = load_swa_model_state_dict(state_dict)
+        swa_model_state_dict = load_swa_model_state_dict(state_dict, 0)
         if swa_model_state_dict is None:
             raise Exception("Checkpoint doesn't contain swa_model")
         swa_model = AveragedModel(model, device=device)

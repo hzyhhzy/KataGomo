@@ -101,7 +101,9 @@ def main(args):
         writeln(model.scorestdev_multiplier)
         writeln(model.lead_multiplier)
         writeln(model.variance_time_multiplier)
-        writeln(model.shortterm_value_error_multiplier)
+        #writeln(model.shortterm_value_error_multiplier)
+        print("model.shortterm_value_error_multiplier ",model.shortterm_value_error_multiplier)
+        writeln("0.1")
         writeln(model.shortterm_score_error_multiplier)
 
     if version >= 15:
@@ -144,7 +146,10 @@ def main(args):
 
     def write_conv(name,conv):
         assert conv.bias is None
-        write_conv_weight(name, conv.weight)
+        if("conv_ownership" in name):
+            write_conv_weight(name, 0.0*conv.weight)
+        else:
+            write_conv_weight(name, conv.weight)
 
     def write_bn(name,normmask):
         writeln(name)
@@ -413,6 +418,8 @@ def main(args):
         b2 = valuehead.linear_moremiscvaluehead.bias[0:2]
         w = torch.cat((w,w2),dim=0)
         b = torch.cat((b,b2),dim=0)
+        w[1:]=0
+        b[1:]=0
         write_matmul(name+".linear_miscvaluehead", w)
         write_matbias(name+".bias_miscvaluehead", b)
 

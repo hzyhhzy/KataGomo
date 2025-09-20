@@ -43,7 +43,7 @@ def log_metrics(metric_sums, metric_weights, metrics, metrics_out, exportprefix)
             metrics_to_print[metric] = metrics[metric]
             
     if ("p0loss" in metrics_to_print) and ("time_since_last_print" in metrics_to_print):#train
-        logging.info(f"{exportprefix}: nsamp={int(metrics_to_print['nsamp'])}, time={metrics_to_print['time_since_last_print']:.2f}, p0loss={metrics_to_print['p0loss']:.4f}, vloss={metrics_to_print['vloss']:.4f}, pslr={metrics_to_print['pslr_batch']:.3e}")
+        logging.info(f"{exportprefix}: nsamp={int(metrics_to_print['nsamp'])}, time={metrics_to_print['time_since_last_print']:.2f}, p0loss={metrics_to_print['p0loss']:.4f}, vloss={metrics_to_print['vloss']:.4f}, pslr={metrics_to_print['pslr_batch']:.3e}, norm={metrics_to_print['norm_normal_batch']:.5e}, attn_norm={metrics_to_print['norm_normal_attn_batch']:.5e}")
         #if("Ip0loss" in metrics_to_print):
         #    logging.info(f"Ip0loss={metrics_to_print['Ip0loss']:.4f}, Ivloss={metrics_to_print['Ivloss']:.4f}")
     else:#val

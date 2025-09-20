@@ -7,7 +7,8 @@ import torch.nn.init
 import packaging
 import packaging.version
 from typing import List, Dict, Optional, Set
-
+from torch.cuda.amp import autocast, GradScaler
+import logging
 import modelconfigs
 
 EXTRA_SCORE_DISTR_RADIUS = 60
@@ -183,7 +184,7 @@ class NormMask(torch.nn.Module):
         if self.norm_kind == "bnorm" or (self.norm_kind == "fixscaleonenorm" and self.is_last_batchnorm):
             self.is_using_batchnorm = True
             if self.use_gamma:
-                self.gamma = torch.nn.Parameter(torch.ones(1, c_in, 1, 1))
+                self.gamma = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.beta = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.register_buffer(
                 "running_mean", torch.zeros(c_in, dtype=torch.float)
@@ -194,7 +195,7 @@ class NormMask(torch.nn.Module):
         elif self.norm_kind == "brenorm" or self.norm_kind == "fixbrenorm":
             self.is_using_batchnorm = True
             if self.use_gamma:
-                self.gamma = torch.nn.Parameter(torch.ones(1, c_in, 1, 1))
+                self.gamma = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.beta = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.register_buffer(
                 "running_mean", torch.zeros(c_in, dtype=torch.float)
@@ -222,7 +223,7 @@ class NormMask(torch.nn.Module):
             self.is_using_batchnorm = False
             self.beta = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             if self.use_gamma:
-                self.gamma = torch.nn.Parameter(torch.ones(1, c_in, 1, 1))
+                self.gamma = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
         else:
             assert False, f"Unimplemented norm_kind: {self.norm_kind}"
 
@@ -257,17 +258,20 @@ class NormMask(torch.nn.Module):
         # Similarly, the variance computed exactly only over those spots
         var = torch.sum(torch.square(zeromean_x * mask),dim=(0,2,3),keepdim=True) / mask_sum
         std = torch.sqrt(var + self.epsilon)
+        #if(self.is_last_batchnorm):
+        #    print(x[0:8,0,9,9])
         return zeromean_x, mean, std
 
     def apply_gamma_beta_scale_mask(self, x, mask):
+        #logging.info(f"{(x*x).mean()},{(x*x).max()}")
         if self.scale is not None:
             if self.gamma is not None:
-                return (x * (self.gamma * self.scale) + self.beta) * mask
+                return (x * ((self.gamma + 1.0) * self.scale) + self.beta) * mask
             else:
                 return (x * self.scale + self.beta) * mask
         else:
             if self.gamma is not None:
-                return (x * self.gamma + self.beta) * mask
+                return (x * (self.gamma + 1.0) + self.beta) * mask
             else:
                 return (x + self.beta) * mask
 
@@ -301,19 +305,26 @@ class NormMask(torch.nn.Module):
             assert x.shape[1] == self.c_in
             if self.training:
                 zeromean_x, mean, std = self._compute_bnorm_values(x, mask, mask_sum)
-
+    
                 detached_mean = mean.view(self.c_in).detach()
                 detached_std = std.view(self.c_in).detach()
                 with torch.no_grad():
                     unclipped_r = detached_std / self.renorm_running_std
                     unclipped_d = (detached_mean - self.renorm_running_mean) / self.renorm_running_std
+                    #logging.info(str(unclipped_r))
+                    #logging.info(str(unclipped_d))
                     r = unclipped_r.clamp(1.0 / self.rmax, self.rmax)
                     d = unclipped_d.clamp(-self.dmax, self.dmax)
+                    #if(self.is_last_batchnorm):
+                    #    print(r[:8],d[:8])
 
                     self.renorm_running_mean += self.renorm_avg_momentum * (detached_mean - self.renorm_running_mean)
                     self.renorm_running_std += self.renorm_avg_momentum * (detached_std - self.renorm_running_std)
                     self.running_mean += self.running_avg_momentum * (detached_mean - self.running_mean)
                     self.running_std += self.running_avg_momentum * (detached_std - self.running_std)
+                    #if(self.is_last_batchnorm):
+                    #    logging.info(detached_std[:8])
+                    #    logging.info(self.renorm_running_std[:8])
 
                     upper_rclippage = torch.mean(torch.nn.functional.relu(torch.log(unclipped_r / r)))
                     lower_rclippage = torch.mean(torch.nn.functional.relu(-torch.log(unclipped_r / r)))
@@ -323,6 +334,9 @@ class NormMask(torch.nn.Module):
                     self.renorm_dclippage += 0.01 * (dclippage - self.renorm_dclippage)
 
                 if self.rmax > 1.00000001 or self.dmax > 0.00000001:
+                    #if(self.is_last_batchnorm):
+                    #    return self.apply_gamma_beta_scale_mask((zeromean_x + mean.detach().view(1,self.c_in,1,1) - self.renorm_running_mean.view(1,self.c_in,1,1))/ self.renorm_running_std.detach().view(1,self.c_in,1,1) + 0*self.renorm_running_mean.detach().view(1,self.c_in,1,1), mask)
+                    #else:
                     return self.apply_gamma_beta_scale_mask(zeromean_x / std * r.detach().view(1,self.c_in,1,1) + d.detach().view(1,self.c_in,1,1), mask)
                 else:
                     return self.apply_gamma_beta_scale_mask(zeromean_x / std, mask)
@@ -336,6 +350,301 @@ class NormMask(torch.nn.Module):
         else:
             assert False
 
+class QKNormAttention(torch.nn.Module):
+    def __init__(self, c_main, config: modelconfigs.ModelConfig):
+        super(QKNormAttention, self).__init__()
+        self.c_main = c_main
+        self.config = config
+        
+        # Multi-head attention parameters
+        self.num_heads = config.get("transformer_heads", 8)
+        self.head_dim = c_main // self.num_heads
+        assert c_main % self.num_heads == 0, f"c_main ({c_main}) must be divisible by num_heads ({self.num_heads})"
+        
+        # Query, Key, Value projections
+        self.query_proj = torch.nn.Linear(c_main, c_main, bias=False)
+        self.key_proj = torch.nn.Linear(c_main, c_main, bias=False)
+        self.value_proj = torch.nn.Linear(c_main, c_main, bias=False)
+        
+        # Output projection
+        self.out_proj = torch.nn.Linear(c_main, c_main, bias=False)
+        
+        # QK normalization using NormRMSMask
+        self.q_norm = NormRMSMask(c_main, config, fixup_use_gamma=True, useNHWC=True, is1d=True)
+        self.k_norm = NormRMSMask(c_main, config, fixup_use_gamma=True, useNHWC=True, is1d=True)
+        
+        # Attention parameters
+        self.scale = 1.0 / math.sqrt(self.head_dim)
+        
+    def initialize(self, scale):
+        # Initialize linear layers
+        torch.nn.init.xavier_uniform_(self.query_proj.weight, gain=scale)
+        torch.nn.init.xavier_uniform_(self.key_proj.weight, gain=scale)
+        torch.nn.init.xavier_uniform_(self.value_proj.weight, gain=scale)
+        torch.nn.init.xavier_uniform_(self.out_proj.weight, gain=scale)
+        
+    def add_reg_dict(self, reg_dict: Dict[str, List]):
+        reg_dict["normal_attn"].append(self.query_proj.weight)
+        reg_dict["normal_attn"].append(self.key_proj.weight)
+        reg_dict["normal_attn"].append(self.value_proj.weight)
+        reg_dict["normal_attn"].append(self.out_proj.weight)
+        self.q_norm.add_reg_dict(reg_dict)
+        self.k_norm.add_reg_dict(reg_dict)
+        
+    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
+        self.q_norm.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+        self.k_norm.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+        
+    def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
+        self.q_norm.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        self.k_norm.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        
+    def forward(self, x, mask, mask_sum: float):
+        # x shape: (batch, channels, height, width)
+        batch_size, channels, height, width = x.shape
+        seq_len = height * width
+        
+        # Reshape to sequence format: (batch, seq_len, channels)
+        x_seq = x.view(batch_size, channels, -1).transpose(1, 2)  # (batch, seq_len, channels)
+        
+        # Generate Q, K, V
+        q = self.query_proj(x_seq)  # (batch, seq_len, channels)
+        k = self.key_proj(x_seq)   # (batch, seq_len, channels)
+        v = self.value_proj(x_seq)  # (batch, seq_len, channels)
+        
+        # Reshape back to spatial format for normalization
+        #q = q.transpose(1, 2).view(batch_size, channels, height, width)
+        #k = k.transpose(1, 2).view(batch_size, channels, height, width)
+        
+        # Apply QK normalization
+        q = self.q_norm(q, mask, mask_sum)
+        k = self.k_norm(k, mask, mask_sum)
+        
+        # Reshape to multi-head format: (batch, seq_len, num_heads, head_dim)
+        #q = q.view(batch_size, channels, -1).transpose(1, 2)  # (batch, seq_len, channels)
+        #k = k.view(batch_size, channels, -1).transpose(1, 2)  # (batch, seq_len, channels)
+        #v = v.view(batch_size, channels, -1).transpose(1, 2)  # (batch, seq_len, channels)
+        
+        q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)  # (batch, num_heads, seq_len, head_dim)
+        k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)  # (batch, num_heads, seq_len, head_dim)
+        v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)  # (batch, num_heads, seq_len, head_dim)
+        
+        # Compute attention scores for all heads
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # (batch, num_heads, seq_len, seq_len)
+        
+        # Apply mask to attention scores
+        mask_seq = mask.view(batch_size, 1, 1, -1)  # (batch, 1, 1, seq_len)
+        mask_matrix = mask_seq * mask_seq.transpose(-2, -1)  # (batch, 1, seq_len, seq_len)
+        attn_scores = attn_scores.masked_fill(mask_matrix == 0, float('-inf'))
+        
+        # Apply softmax
+        attn_weights = torch.nn.functional.softmax(attn_scores, dim=-1)
+        
+        attn_weights = attn_weights.masked_fill(mask_matrix == 0, 0.0)
+        
+        # Apply attention to values
+        attn_output = torch.matmul(attn_weights, v)  # (batch, num_heads, seq_len, head_dim)
+        
+        # Concatenate heads: (batch, seq_len, channels)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, channels)
+        
+        # Output projection
+        output = self.out_proj(attn_output)  # Apply to (batch, channels, seq_len)
+        
+        # Reshape back to spatial format (NCHW)
+        output = output.transpose(1, 2).contiguous().view(batch_size, channels, height, width)
+        
+        return output
+
+class NormRMSMask(torch.nn.Module):
+    def __init__(
+        self,
+        c_in,
+        config: modelconfigs.ModelConfig,
+        useNHWC: bool,
+        is1d: bool,
+        fixup_use_gamma: bool,
+        force_use_gamma: bool = False,
+        is_last_batchnorm: bool = False,
+    ):
+        """Various kinds of normalization.
+
+        bnorm - batch norm
+        brenorm - batch renorm
+        fixup - fixup initialization https://arxiv.org/abs/1901.09321
+        fixscale - fixed scaling initialization. Normalization layers simply multiply a constant scalar according
+          to what batchnorm *would* do if all inputs were unit variance and all linear layers or convolutions
+          preserved variance.
+        fixbrenorm - fixed scaling normalization PLUS batch renorm.
+        fixscaleonenorm - fixed scaling normalization PLUS only have one batch norm layer in the entire net, at the end of the residual trunk.
+        """
+
+        super(NormRMSMask, self).__init__()
+        self.norm_kind = config["norm_kind"]
+        self.epsilon = config["bnorm_epsilon"]
+        self.running_avg_momentum = config["bnorm_running_avg_momentum"]
+        self.fixup_use_gamma = fixup_use_gamma
+        self.is_last_batchnorm = is_last_batchnorm
+        self.useNHWC = useNHWC
+        self.is1d = is1d
+        self.shape0 = ((1, 1, 1, c_in) if useNHWC else (1, c_in, 1, 1)) if not is1d else ((1, 1, c_in) if useNHWC else (1, c_in, 1))
+        self.use_gamma = (
+            ("bnorm_use_gamma" in config and config["bnorm_use_gamma"]) or
+            ((self.norm_kind == "fixup" or self.norm_kind == "fixscale" or self.norm_kind == "fixscaleonenorm") and fixup_use_gamma) or
+            force_use_gamma
+        )
+        self.c_in = c_in
+
+        self.scale = None
+        self.gamma = None
+        if self.norm_kind == "bnorm" or (self.norm_kind == "fixscaleonenorm" and self.is_last_batchnorm):
+            self.is_using_batchnorm = True
+            if self.use_gamma:
+                self.gamma = torch.nn.Parameter(torch.zeros(*self.shape0))
+            self.register_buffer(
+                "running_std", torch.ones(c_in, dtype=torch.float)
+            )
+        elif self.norm_kind == "brenorm" or self.norm_kind == "fixbrenorm":
+            self.is_using_batchnorm = True
+            if self.use_gamma:
+                self.gamma = torch.nn.Parameter(torch.zeros(*self.shape0))
+            self.beta = torch.nn.Parameter(torch.zeros(*self.shape0))
+            self.register_buffer(
+                "running_std", torch.ones(c_in, dtype=torch.float)
+            )
+            self.register_buffer(
+                "renorm_running_std", torch.ones(c_in, dtype=torch.float)
+            )
+            self.register_buffer(
+                "renorm_upper_rclippage", torch.zeros((), dtype=torch.float)
+            )
+            self.register_buffer(
+                "renorm_lower_rclippage", torch.zeros((), dtype=torch.float)
+            )
+
+        elif self.norm_kind == "fixup" or self.norm_kind == "fixscale" or (self.norm_kind == "fixscaleonenorm" and not self.is_last_batchnorm):
+            self.is_using_batchnorm = False
+            if self.use_gamma:
+                self.gamma = torch.nn.Parameter(torch.zeros(*self.shape0))
+        else:
+            assert False, f"Unimplemented norm_kind: {self.norm_kind}"
+
+    def set_scale(self, scale: Optional[float]):
+        self.scale = scale
+
+    def add_reg_dict(self, reg_dict:Dict[str,List]):
+        if self.is_last_batchnorm:
+            if self.gamma is not None:
+                reg_dict["output"].append(self.gamma)
+        else:
+            if self.gamma is not None:
+                reg_dict["normal_gamma"].append(self.gamma)
+
+    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
+        self.renorm_avg_momentum = renorm_avg_momentum
+        self.rmax = rmax
+
+    def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
+        upper_rclippage.append(self.renorm_upper_rclippage.cpu().item())
+        lower_rclippage.append(self.renorm_lower_rclippage.cpu().item())
+
+    def _compute_bnorm_values(self, x, mask, mask_sum: float):
+        # This is the mean, computed only over exactly the areas of the mask, weighting each spot equally,
+        # even across different elements in the batch that might have different board sizes.
+        # Similarly, the variance computed exactly only over those spots
+        sum_dims = ((0,1,2) if self.useNHWC else (0,2,3)) if not self.is1d else ((0,1) if self.useNHWC else (0,2))
+        var = torch.sum(torch.square(x * mask),dim=sum_dims,keepdim=True) / mask_sum
+        std = torch.sqrt(var + self.epsilon)
+        #if(self.is_last_batchnorm):
+        #    print(x[0:8,0,9,9])
+        return std
+
+    def apply_gamma_beta_scale_mask(self, x, mask):
+        #logging.info(f"{(x*x).mean()},{(x*x).max()}")
+        if self.scale is not None:
+            if self.gamma is not None:
+                return (x * ((self.gamma + 1.0) * self.scale)) * mask
+            else:
+                return (x * self.scale) * mask
+        else:
+            if self.gamma is not None:
+                return (x * (self.gamma + 1.0)) * mask
+            else:
+                return (x) * mask
+
+
+    def forward(self, x, mask, mask_sum: float):
+        """
+        Parameters:
+        x: NCHW
+        mask: N1HW
+        mask_sum: scalar
+
+        Returns: NCHW
+        """
+        if self.is1d:
+            if self.useNHWC:
+                mask=mask.view(-1,x.shape[1],1)
+            else:
+                mask=mask.view(-1,1,x.shape[2])
+        else:
+            if(self.useNHWC):
+                mask=mask.view(-1,x.shape[1],x.shape[2],1)
+
+        if self.norm_kind == "bnorm" or (self.norm_kind == "fixscaleonenorm" and self.is_last_batchnorm):
+            assert (x.shape[-1] == self.c_in) if self.useNHWC else (x.shape[1] == self.c_in)
+            if self.training:
+                std = self._compute_bnorm_values(x, mask, mask_sum)
+
+                detached_std = std.view(self.c_in).detach()
+                with torch.no_grad():
+                    self.running_std += self.running_avg_momentum * (detached_std - self.running_std)
+
+                return self.apply_gamma_beta_scale_mask(x / std, mask)
+            else:
+                return self.apply_gamma_beta_scale_mask(x / self.running_std.view(*self.shape0), mask)
+
+        elif self.norm_kind == "brenorm" or self.norm_kind == "fixbrenorm":
+            assert (x.shape[-1] == self.c_in) if self.useNHWC else (x.shape[1] == self.c_in)
+            if self.training:
+                std = self._compute_bnorm_values(x, mask, mask_sum)
+    
+                detached_std = std.view(self.c_in).detach()
+                with torch.no_grad():
+                    unclipped_r = detached_std / self.renorm_running_std
+                    #logging.info(str(unclipped_r))
+                    #logging.info(str(unclipped_d))
+                    r = unclipped_r.clamp(1.0 / self.rmax, self.rmax)
+                    #if(self.is_last_batchnorm):
+                    #    print(r[:8],d[:8])
+
+                    self.renorm_running_std += self.renorm_avg_momentum * (detached_std - self.renorm_running_std)
+                    self.running_std += self.running_avg_momentum * (detached_std - self.running_std)
+                    #if(self.is_last_batchnorm):
+                    #    logging.info(detached_std[:8])
+                    #    logging.info(self.renorm_running_std[:8])
+
+                    upper_rclippage = torch.mean(torch.nn.functional.relu(torch.log(unclipped_r / r)))
+                    lower_rclippage = torch.mean(torch.nn.functional.relu(-torch.log(unclipped_r / r)))
+                    self.renorm_upper_rclippage += 0.01 * (upper_rclippage - self.renorm_upper_rclippage)
+                    self.renorm_lower_rclippage += 0.01 * (lower_rclippage - self.renorm_lower_rclippage)
+
+                if self.rmax > 1.00000001:
+                    #if(self.is_last_batchnorm):
+                    #    return self.apply_gamma_beta_scale_mask((zeromean_x + mean.detach().view(1,self.c_in,1,1) - self.renorm_running_mean.view(1,self.c_in,1,1))/ self.renorm_running_std.detach().view(1,self.c_in,1,1) + 0*self.renorm_running_mean.detach().view(1,self.c_in,1,1), mask)
+                    #else:
+                    return self.apply_gamma_beta_scale_mask(x / std * r.detach().view(*self.shape0) , mask)
+                else:
+                    return self.apply_gamma_beta_scale_mask(x / std, mask)
+
+            else:
+                return self.apply_gamma_beta_scale_mask(x  / self.running_std.view(*self.shape0), mask)
+
+        elif self.norm_kind == "fixup" or self.norm_kind == "fixscale" or (self.norm_kind == "fixscaleonenorm" and not self.is_last_batchnorm):
+            return self.apply_gamma_beta_scale_mask(x, mask)
+
+        else:
+            assert False
 
 class KataGPool(torch.nn.Module):
     def __init__(self):
@@ -770,7 +1079,6 @@ class ResBlock(torch.nn.Module):
             extra_outputs.report(self.name+".out", result)
         return result
 
-
 # 模仿ResBlock，实现transformer的block
 class TransformerBlock(torch.nn.Module):
     def __init__(
@@ -853,6 +1161,360 @@ class TransformerBlock(torch.nn.Module):
 
         return x
 
+# 模仿ResBlock，实现transformer的block
+# ffn换成katago风格
+class TransformerBlock2(torch.nn.Module):
+    def __init__(
+        self,
+        name: str,
+        c_main: int,
+        config: modelconfigs.ModelConfig,
+        activation: str,
+    ):
+        super(TransformerBlock2, self).__init__()
+        self.name = name
+        self.norm_kind = config["norm_kind"]
+        self.ffn_dim = config["transformer_ffn_channels"] if "transformer_ffn_channels" in config else c_main*2
+        
+
+
+        # Multi-head attention
+        self.attention = torch.nn.MultiheadAttention(
+            embed_dim=c_main,
+            num_heads=config["transformer_heads"] if "transformer_heads" in config else 4,
+            kdim=config["transformer_kdim"] if "transformer_kdim" in config else c_main,
+            vdim=c_main,
+            dropout=0.0
+        )
+        # Layer normalization
+        self.norm1 = torch.nn.LayerNorm(c_main)
+        
+        self.normactconvp = NormActConv(
+            name=name+".normactconvp",
+            c_in=c_main,
+            c_out=self.ffn_dim,
+            c_gpool=None,
+            config=config,
+            activation=activation,
+            kernel_size=1,
+            fixup_use_gamma=False,
+        )
+        self.normactconvq = NormActConv(
+            name=name+".normactconvq",
+            c_in=self.ffn_dim,
+            c_out=c_main,
+            c_gpool=None,
+            config=config,
+            activation=activation,
+            kernel_size=1,
+            fixup_use_gamma=True,
+        )
+
+        
+
+        
+    def initialize(self, fixup_scale):
+        # Initialize weights
+        for p in self.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
+                
+        if self.norm_kind == "fixup":
+            self.normactconvp.initialize(scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+            self.normactconvq.initialize(scale=0.0)
+        elif self.norm_kind == "fixscale" or self.norm_kind == "fixbrenorm" or self.norm_kind == "fixscaleonenorm":
+            self.normactconvp.initialize(scale=1.0, norm_scale=fixup_scale)
+            self.normactconvq.initialize(scale=1.0)
+        else:
+            self.normactconvp.initialize(scale=1.0)
+            self.normactconvq.initialize(scale=1.0)
+                
+                
+    def add_reg_dict(self, reg_dict: Dict[str, List]):
+        # Add parameters to regularization dictionary
+        for name, param in self.attention.named_parameters():
+            if "weight" in name and "norm" not in name:
+                reg_dict["normal_attn"].append(param)
+            elif "bias" in name:
+                reg_dict["noreg"].append(param)
+            else:
+                print(f"Warning: {name} not added to reg_dict")
+                reg_dict["noreg"].append(param)
+                
+        for name, param in self.norm1.named_parameters():
+            reg_dict["noreg"].append(param)
+        self.normactconvp.add_reg_dict(reg_dict)
+        self.normactconvq.add_reg_dict(reg_dict)
+               
+    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
+        self.normactconvp.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+        self.normactconvq.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+
+    def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
+        self.normactconvp.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        self.normactconvq.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        
+    def forward(self, x, mask, mask_sum_hw, mask_sum: float, extra_outputs: Optional[ExtraOutputs]):
+        # 将NCHW转换为NLC格式，因为transformer需要序列输入
+        batch_size, channels, height, width = x.shape
+        x = x.view(batch_size, channels, -1).permute(2, 0, 1)  # (H*W, N, C)
+        
+        # 将mask从N1HW转换为N(H*W)格式
+        mask1 = mask.view(batch_size, -1)  # (N, H*W)
+        # Self-attention
+        attn_output, _ = self.attention(
+            x, x, x,
+            key_padding_mask=mask1.squeeze(1)
+        )
+        x = x + attn_output
+        x = self.norm1(x)
+        
+        # 将NLC格式转换回NCHW格式
+        x = x.permute(1, 2, 0).view(batch_size, channels, height, width)
+        
+        # Feed forward
+        ffn_output = self.normactconvp(x, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+        ffn_output = self.normactconvq(ffn_output, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+        x = x + ffn_output
+        
+
+        return x
+
+# norm换成batchnorm
+class TransformerBlock2a(torch.nn.Module):
+    def __init__(
+        self,
+        name: str,
+        c_main: int,
+        config: modelconfigs.ModelConfig,
+        activation: str,
+    ):
+        super(TransformerBlock2a, self).__init__()
+        self.name = name
+        self.norm_kind = config["norm_kind"]
+        self.ffn_dim = config["transformer_ffn_channels"] if "transformer_ffn_channels" in config else c_main*2
+        
+
+        # normalization
+        self.prenorm = NormMask(
+            c_main,
+            config=config,
+            fixup_use_gamma=True
+        )
+
+        # Multi-head attention
+        self.attention = torch.nn.MultiheadAttention(
+            embed_dim=c_main,
+            num_heads=config["transformer_heads"] if "transformer_heads" in config else 4,
+            kdim=config["transformer_kdim"] if "transformer_kdim" in config else c_main,
+            vdim=c_main,
+            dropout=0.0
+        )
+        
+        self.normactconvp = NormActConv(
+            name=name+".normactconvp",
+            c_in=c_main,
+            c_out=self.ffn_dim,
+            c_gpool=None,
+            config=config,
+            activation=activation,
+            kernel_size=1,
+            fixup_use_gamma=False,
+        )
+        self.normactconvq = NormActConv(
+            name=name+".normactconvq",
+            c_in=self.ffn_dim,
+            c_out=c_main,
+            c_gpool=None,
+            config=config,
+            activation=activation,
+            kernel_size=1,
+            fixup_use_gamma=True,
+        )
+
+        
+
+        
+    def initialize(self, fixup_scale):
+        # Initialize weights
+        for p in self.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
+                
+        if self.norm_kind == "fixup":
+            self.normactconvp.initialize(scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+            self.normactconvq.initialize(scale=0.0)
+        elif self.norm_kind == "fixscale" or self.norm_kind == "fixbrenorm" or self.norm_kind == "fixscaleonenorm":
+            self.normactconvp.initialize(scale=1.0, norm_scale=fixup_scale)
+            self.normactconvq.initialize(scale=1.0)
+        else:
+            self.normactconvp.initialize(scale=1.0)
+            self.normactconvq.initialize(scale=1.0)
+                
+                
+    def add_reg_dict(self, reg_dict: Dict[str, List]):
+        # Add parameters to regularization dictionary
+        for name, param in self.attention.named_parameters():
+            if "weight" in name and "norm" not in name:
+                reg_dict["normal_attn"].append(param)
+            elif "bias" in name:
+                reg_dict["noreg"].append(param)
+            else:
+                print(f"Warning: {name} not added to reg_dict")
+                reg_dict["noreg"].append(param)
+                
+        self.prenorm.add_reg_dict(reg_dict)
+        self.normactconvp.add_reg_dict(reg_dict)
+        self.normactconvq.add_reg_dict(reg_dict)
+               
+    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
+        self.normactconvp.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+        self.normactconvq.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+
+    def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
+        self.normactconvp.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        self.normactconvq.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        
+    def forward(self, x, mask, mask_sum_hw, mask_sum: float, extra_outputs: Optional[ExtraOutputs]):
+        # 将NCHW转换为NLC格式，因为transformer需要序列输入
+        batch_size, channels, height, width = x.shape
+        
+        x = self.prenorm(x, mask=mask, mask_sum=mask_sum)
+
+        x = x.view(batch_size, channels, -1).permute(2, 0, 1)  # (H*W, N, C)
+        
+        # 将mask从N1HW转换为N(H*W)格式
+        mask1 = mask.view(batch_size, -1)  # (N, H*W)
+        # Self-attention
+        attn_output, _ = self.attention(
+            x, x, x,
+            key_padding_mask=mask1.squeeze(1)
+        )
+        x = x + attn_output
+        
+        # 将NLC格式转换回NCHW格式
+        x = x.permute(1, 2, 0).view(batch_size, channels, height, width)
+        
+        # Feed forward
+        ffn_output = self.normactconvp(x, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+        ffn_output = self.normactconvq(ffn_output, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+        x = x + ffn_output
+        
+
+        return x
+
+# using NormRMSMask as QK-norm 
+class TransformerBlock3(torch.nn.Module):
+    def __init__(
+        self,
+        name: str,
+        c_main: int,
+        config: modelconfigs.ModelConfig,
+        activation: str,
+    ):
+        super(TransformerBlock3, self).__init__()
+        self.name = name
+        self.norm_kind = config["norm_kind"]
+        self.ffn_dim = config["transformer_ffn_channels"] if "transformer_ffn_channels" in config else c_main*2
+        
+
+        # normalization
+        self.prenorm = NormMask(
+            c_main,
+            config=config,
+            fixup_use_gamma=True
+        )
+
+        # Multi-head attention with QK normalization
+        self.attention = QKNormAttention(c_main, config)
+        
+        self.normactconvp = NormActConv(
+            name=name+".normactconvp",
+            c_in=c_main,
+            c_out=self.ffn_dim,
+            c_gpool=None,
+            config=config,
+            activation=activation,
+            kernel_size=1,
+            fixup_use_gamma=False,
+        )
+        self.normactconvq = NormActConv(
+            name=name+".normactconvq",
+            c_in=self.ffn_dim,
+            c_out=c_main,
+            c_gpool=None,
+            config=config,
+            activation=activation,
+            kernel_size=1,
+            fixup_use_gamma=True,
+        )
+
+        
+
+        
+    def initialize(self, fixup_scale):
+        # Initialize weights
+        for p in self.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
+                
+        if self.norm_kind == "fixup":
+            self.normactconvp.initialize(scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
+            self.normactconvq.initialize(scale=0.0)
+        elif self.norm_kind == "fixscale" or self.norm_kind == "fixbrenorm" or self.norm_kind == "fixscaleonenorm":
+            self.normactconvp.initialize(scale=1.0, norm_scale=fixup_scale)
+            self.normactconvq.initialize(scale=1.0)
+        else:
+            self.normactconvp.initialize(scale=1.0)
+            self.normactconvq.initialize(scale=1.0)
+                
+                
+    def add_reg_dict(self, reg_dict: Dict[str, List]):
+        # Add parameters to regularization dictionary
+        
+                
+        self.attention.add_reg_dict(reg_dict)
+        self.prenorm.add_reg_dict(reg_dict)
+        self.normactconvp.add_reg_dict(reg_dict)
+        self.normactconvq.add_reg_dict(reg_dict)
+               
+    def set_brenorm_params(self, renorm_avg_momentum: float, rmax: float, dmax: float):
+        self.attention.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+        self.normactconvp.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+        self.normactconvq.set_brenorm_params(renorm_avg_momentum, rmax, dmax)
+
+    def add_brenorm_clippage(self, upper_rclippage, lower_rclippage, dclippage):
+        self.attention.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        self.normactconvp.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        self.normactconvq.add_brenorm_clippage(upper_rclippage, lower_rclippage, dclippage)
+        
+    def forward(self, x, mask, mask_sum_hw, mask_sum: float, extra_outputs: Optional[ExtraOutputs]):
+        batch_size, channels, height, width = x.shape
+        
+        x = self.prenorm(x, mask=mask, mask_sum=mask_sum)
+
+        #x = x.view(batch_size, channels, -1).permute(2, 0, 1)  # (H*W, N, C)
+        
+        # 将mask从N1HW转换为N(H*W)格式
+        #mask1 = mask.view(batch_size, -1)  # (N, H*W)
+        # Self-attention
+        attn_output = self.attention(
+            x, 
+            mask=mask,
+            mask_sum=mask_sum
+        )
+        x = x + attn_output
+        
+        # 将NLC格式转换回NCHW格式
+        #x = x.permute(1, 2, 0).view(batch_size, channels, height, width)
+        
+        # Feed forward
+        ffn_output = self.normactconvp(x, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+        ffn_output = self.normactconvq(ffn_output, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+        x = x + ffn_output
+        
+
+        return x
 
 class BottleneckResBlock(torch.nn.Module):
     def __init__(
@@ -1692,6 +2354,27 @@ class Model(torch.nn.Module):
                     config=self.config,
                     activation=self.activation,
                 ))
+            elif block_kind == "transformer2":
+                self.blocks.append(TransformerBlock2(
+                    name=block_name,
+                    c_main=self.c_trunk,
+                    config=self.config,
+                    activation=self.activation,
+                ))
+            elif block_kind == "transformer2a":
+                self.blocks.append(TransformerBlock2a(
+                    name=block_name,
+                    c_main=self.c_trunk,
+                    config=self.config,
+                    activation=self.activation,
+                ))
+            elif block_kind == "transformer3":
+                self.blocks.append(TransformerBlock3(
+                    name=block_name,
+                    c_main=self.c_trunk,
+                    config=self.config,
+                    activation=self.activation,
+                ))
             else:
                 assert False, f"Unknown block kind: {block_config[1]}"
 
@@ -1785,6 +2468,7 @@ class Model(torch.nn.Module):
     def add_reg_dict(self, reg_dict:Dict[str,List]):
         reg_dict["normal"] = []
         reg_dict["normal_gamma"] = []
+        reg_dict["normal_attn"] = []
         reg_dict["output"] = []
         reg_dict["noreg"] = []
         reg_dict["output_noreg"] = []
@@ -1866,21 +2550,22 @@ class Model(torch.nn.Module):
                 out = block(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
                 count += 1
 
-            # print("INTERMEDIATE")
-            iout = out
-            iout = self.norm_intermediate_trunkfinal(iout, mask=mask, mask_sum=mask_sum)
-            iout = self.act_intermediate_trunkfinal(iout)
-            iout_policy = self.intermediate_policy_head(iout, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
-            (
-                iout_value,
-                iout_miscvalue,
-                iout_moremiscvalue,
-                iout_ownership,
-                iout_scoring,
-                iout_futurepos,
-                iout_seki,
-                iout_scorebelief_logprobs,
-            ) = self.intermediate_value_head(iout, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, input_global=input_global, extra_outputs=extra_outputs)
+            with autocast(enabled=False):
+                # print("INTERMEDIATE")
+                iout = out
+                iout = self.norm_intermediate_trunkfinal(iout, mask=mask, mask_sum=mask_sum)
+                iout = self.act_intermediate_trunkfinal(iout)
+                iout_policy = self.intermediate_policy_head(iout, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+                (
+                    iout_value,
+                    iout_miscvalue,
+                    iout_moremiscvalue,
+                    iout_ownership,
+                    iout_scoring,
+                    iout_futurepos,
+                    iout_seki,
+                    iout_scorebelief_logprobs,
+                ) = self.intermediate_value_head(iout, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, input_global=input_global, extra_outputs=extra_outputs)
 
             for block in self.blocks[self.intermediate_head_blocks:]:
                 # print("TENSOR BEFORE BLOCK")
@@ -1898,28 +2583,53 @@ class Model(torch.nn.Module):
                 out = block(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
                 count += 1
 
-        out = self.norm_trunkfinal(out, mask=mask, mask_sum=mask_sum)
-        out = self.act_trunkfinal(out)
-
-        if extra_outputs is not None:
-            extra_outputs.report("trunkfinal", out)
-
-        # print("MAIN")
-        out_policy = self.policy_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
-        (
-            out_value,
-            out_miscvalue,
-            out_moremiscvalue,
-            out_ownership,
-            out_scoring,
-            out_futurepos,
-            out_seki,
-            out_scorebelief_logprobs,
-        ) = self.value_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, input_global=input_global, extra_outputs=extra_outputs)
-
-        if self.has_intermediate_head:
-            return (
-                (
+        with autocast(enabled=False):
+            out = self.norm_trunkfinal(out, mask=mask, mask_sum=mask_sum)
+            out = self.act_trunkfinal(out)
+    
+            if extra_outputs is not None:
+                extra_outputs.report("trunkfinal", out)
+    
+            # print("MAIN")
+            out_policy = self.policy_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, extra_outputs=extra_outputs)
+            (
+                out_value,
+                out_miscvalue,
+                out_moremiscvalue,
+                out_ownership,
+                out_scoring,
+                out_futurepos,
+                out_seki,
+                out_scorebelief_logprobs,
+            ) = self.value_head(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum, input_global=input_global, extra_outputs=extra_outputs)
+    
+            if self.has_intermediate_head:
+                return (
+                    (
+                        out_policy,
+                        out_value,
+                        out_miscvalue,
+                        out_moremiscvalue,
+                        out_ownership,
+                        out_scoring,
+                        out_futurepos,
+                        out_seki,
+                        out_scorebelief_logprobs,
+                    ),
+                    (
+                        iout_policy,
+                        iout_value,
+                        iout_miscvalue,
+                        iout_moremiscvalue,
+                        iout_ownership,
+                        iout_scoring,
+                        iout_futurepos,
+                        iout_seki,
+                        iout_scorebelief_logprobs,
+                    ),
+                )
+            else:
+                return ((
                     out_policy,
                     out_value,
                     out_miscvalue,
@@ -1929,31 +2639,7 @@ class Model(torch.nn.Module):
                     out_futurepos,
                     out_seki,
                     out_scorebelief_logprobs,
-                ),
-                (
-                    iout_policy,
-                    iout_value,
-                    iout_miscvalue,
-                    iout_moremiscvalue,
-                    iout_ownership,
-                    iout_scoring,
-                    iout_futurepos,
-                    iout_seki,
-                    iout_scorebelief_logprobs,
-                ),
-            )
-        else:
-            return ((
-                out_policy,
-                out_value,
-                out_miscvalue,
-                out_moremiscvalue,
-                out_ownership,
-                out_scoring,
-                out_futurepos,
-                out_seki,
-                out_scorebelief_logprobs,
-            ),)
+                ),)
 
     def float32ify_output(self, outputs_byheads):
         return tuple(self.float32ify_single_heads_output(outputs) for outputs in outputs_byheads)

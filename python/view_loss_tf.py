@@ -1,14 +1,6 @@
 baseDir="../data/train/"
-lossItems={"Ip0loss":(2.00,2.35),"Ivloss":(0.22,0.35),"loss":(44,46),"Ipacc1":(0.5,0.6),"gnorm_batch":(0,15000),"exgnorm":(0,500),"norm_normal_batch":(0,2e4),"norm_output_batch":(0,2e5),"pslr_batch":(1e-7,1e-2)}#name,ylim,  0 means default
-#trainDirs=["b12c240nb1t_adam2_lr2","b6c64d1","b6c64sgd3b"]
-trainDirs=["b6c64d2","b12c240nb1t4","b6c64sgd3a","b12c240nb1t_adam2_lr2"]
-trainDirs=["b6c64d2","b6c64d3","b6c64d4","b12c240nb1t4"]
-trainDirs=["b6c64d4"]
-trainDirs=["b6c64d2","b6c64d4","b6c64adam4","b6c64adam5","b6c64padam2","b6c64padam2_fd1","b6c64padam2_fd3","b6c64padam2_fd4","b6c64tf2_adam1","b6c64muon_ki3_fd1","b6c64muon_ki3_fd2","b6c64muon_ki3_fd3","b6c64muon_ki3","b6c64tf2_muon1","b6c64muon_ki5_momentum0999","b6c64muon_ki5_momentum0999_fd1","b6c64adam6"]
-
-trainDirs=["b6c64d2","b6c64padam2_fd4","b6c64muon_ki3_fd4","b6c64muon_ki3_fd3","b6c64muon_ki3_fd1","b6c64muon_ki3","b6c64muon_ki4","b6c64muon_ki5_momentum0999","b6c64muon_ki8","b6c64muon_ki9a","b6c64muon_ki9b","b6c64muon_ki10","b6c64adam6","b6c64nadam1","b6c64soap1_fd1","b6c64soap1","b6c64muon_nolookahead"]
-
-trainDirs=["b6c64muon_ki3","b6c64d2","b6c64padam2_fd4","b6c64muon_ki3_fd5","b6c64muon_ki3_fd4","b6c64adam6","b6c64nadam1","b6c64soap1_fd2","b6c64soap1","b6c64muon_nolookahead"]
+lossItems={"Ip0loss":(1.9,2.15),"Ivloss":(0.6,0.8),"loss":(47,55),"Ipacc1":(0.4,0.7),"gnorm_batch":(0,10000),"exgnorm":(0,500),"norm_normal_batch":(0,9e4),"norm_normal_attn_batch":(0,0),"norm_output_batch":(0,0),"norm_noreg_batch":(0,0),"norm_output_noreg_batch":(0,0),"pslr_batch":(1e-7,1e-2)}#name,ylim,  0 means default
+trainDirs=["b12c240nb1t_muon1_28bdata","b20c128tf3_muon1","b10c256nbt_muon1","b20c128tf3_muon1_fd1","b10c256nbt_muon1_fd1"]
 
 autoBias=False
 biases=[0,0,0]
@@ -18,14 +10,14 @@ lossTypes=["train","val","val_swa0","val_swa1","val_swa2","val_swa3","val_swa4"]
 lossTypes=["train","val_swa0"]
 lossTypes=["train"]
 #lossTypes=["val_swa0"]
-outputFile="../loss.png"
+outputFile="../losstf.png"
 
 logPlot=True
-logPlotXmin=1e7
+logPlotXmin=1e8
 #logPlotXmin=2.5e9
-#logPlotXmax=3e9
-logPlotXmax=None
-smooth_window=10
+logPlotXmax=5e9
+#logPlotXmax=None
+smooth_window=100
 smooth_window_val=0
 
 
@@ -151,9 +143,17 @@ for trainDirId in range(len(trainDirs)):
             smooth_window_this=smooth_window_val
             if(lossType=="train"):
                 smooth_window_this = smooth_window
+                
+            if(smooth_window_this>0.1*len(ydata)):
+                smooth_window_this=int(0.1*len(ydata))
+                if(smooth_window_this<2):
+                    smooth_window_this=0
+                   
             if smooth_window_this>0:
                 ydata = savgol_filter(ydata, window_length=smooth_window_this, polyorder=1)  # Adjust window_length and polyorder as needed
     
+            if(len(ydata)<len(xdata)):
+                ydata=[0,]*(len(xdata)-len(ydata))+list(ydata)
             ax.plot(xdata, ydata, label=plotLabel)
             #ax.scatter(xdata, ydata, label=plotLabel, s=1, marker='o')
             ax.legend(loc="upper right")
