@@ -286,8 +286,12 @@ void RandomOpening::initializeSpecialOpening(
     assert(rules.maxMoves > 10 && rules.maxMoves < board.x_size * board.y_size);
   }
 
-  if(board.x_size != 19 || board.y_size != 19) //not prepared
+  if(board.x_size != 19 || board.y_size != 19)  // not prepared
+  {
+    nextPlayer = board.nextPla;
+    hist.clear(board, nextPlayer, rules);
     return;
+  }
 
   int r = gameRand.nextUInt(100);
   if(r < 8)  // main branch of J10 K11 J8
