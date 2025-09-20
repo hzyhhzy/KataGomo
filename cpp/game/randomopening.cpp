@@ -267,15 +267,27 @@ void RandomOpening::initializeSpecialOpening(
   Rand& gameRand) {
   if(board.numStonesOnBoard() != 0)
     throw StringError("Board should be empty before calling RandomOpening::initializeBalancedRandomOpening");
-  if(board.x_size != 19 || board.y_size != 19)
+
+  if(board.x_size < 19 || board.y_size < 19)
     return;
+
   rules = Rules();
   otherGameProps.isOpeningPos = true;
 
   if(gameRand.nextBool(0.8)) {
-    int t = (109 - 1) / 4 + int(2.0 * gameRand.nextGaussianTruncated(6) + 0.5);
+    int mean = (board.x_size <= 20 || board.y_size <= 20)   ? 109
+                       : (board.x_size <= 21 || board.y_size <= 21) ? 93
+                                                                    : 89;
+    int stdev = (board.x_size == 19 && board.y_size == 19)             ? 1
+                : (board.x_size == board.y_size && board.x_size != 20) ? 2 
+                                                                       : 3;
+    int t = (mean - 1) / 4 + int(stdev * gameRand.nextGaussianTruncated(5) + 0.5);
     rules.maxMoves = t * 4 + 1;  // mostly 105,109 and 113
+    assert(rules.maxMoves > 10 && rules.maxMoves < board.x_size * board.y_size);
   }
+
+  if(board.x_size != 19 || board.y_size != 19) //not prepared
+    return;
 
   int r = gameRand.nextUInt(100);
   if(r < 8)  // main branch of J10 K11 J8
