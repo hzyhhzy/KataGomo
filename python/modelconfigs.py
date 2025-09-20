@@ -2406,6 +2406,34 @@ b20c128tf5 = {
     "num_scorebeliefs":8,
     "v2_size":96,
 }
+b6c64tf5 = {
+    "version":15,
+    "norm_kind":"fixup",
+    "bnorm_epsilon": 1e-4,
+    "bnorm_running_avg_momentum": 0.001,
+    "initial_conv_1x1": False,
+    "trunk_num_channels":64,
+    "mid_num_channels":64,
+    "gpool_num_channels":16,
+    "transformer_ffn_channels":256,
+    "transformer_heads":4,
+    "use_attention_pool":False,
+    "num_attention_pool_heads":4,
+    "block_kind": [
+        ["rconv1","regular"],
+        ["rconv2","transformer3"],
+        ["rconv3","regular"],
+        ["rconv4","transformer3"],
+        ["rconv5","regular"],
+        ["rconv6","transformer3"],
+    ],
+    "p1_num_channels":32,
+    "g1_num_channels":32,
+    "v1_num_channels":32,
+    "sbv2_num_channels":48,
+    "num_scorebeliefs":4,
+    "v2_size":64,
+}
 b20c256tf2 = {
     "version":15,
     "norm_kind":"fixup",
@@ -2567,6 +2595,7 @@ base_config_of_name = {
     "b20c128tf3": b20c128tf3,
     "b20c128tf4": b20c128tf4,
     "b20c128tf5": b20c128tf5,
+    "b6c64tf5": b6c64tf5,
     "b20c256tf2": b20c256tf2,
 
     

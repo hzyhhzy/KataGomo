@@ -376,12 +376,13 @@ class QKNormAttention(torch.nn.Module):
         # Attention parameters
         self.scale = 1.0 / math.sqrt(self.head_dim)
         
-    def initialize(self, scale):
+    def initialize(self):
+        pass
         # Initialize linear layers
-        torch.nn.init.xavier_uniform_(self.query_proj.weight, gain=scale)
-        torch.nn.init.xavier_uniform_(self.key_proj.weight, gain=scale)
-        torch.nn.init.xavier_uniform_(self.value_proj.weight, gain=scale)
-        torch.nn.init.xavier_uniform_(self.out_proj.weight, gain=scale)
+        #torch.nn.init.xavier_uniform_(self.query_proj.weight, gain=scale)
+        #torch.nn.init.xavier_uniform_(self.key_proj.weight, gain=scale)
+        #torch.nn.init.xavier_uniform_(self.value_proj.weight, gain=scale)
+        #torch.nn.init.xavier_uniform_(self.out_proj.weight, gain=scale)
         
     def add_reg_dict(self, reg_dict: Dict[str, List]):
         reg_dict["normal_attn"].append(self.query_proj.weight)
@@ -1146,7 +1147,7 @@ class TransformerBlock(torch.nn.Module):
         # Self-attention
         attn_output, _ = self.attention(
             x, x, x,
-            key_padding_mask=mask.squeeze(1)
+            key_padding_mask=(mask1.squeeze(1)==0)
         )
         x = x + attn_output
         x = self.norm1(x)
@@ -1215,9 +1216,9 @@ class TransformerBlock2(torch.nn.Module):
         
     def initialize(self, fixup_scale):
         # Initialize weights
-        for p in self.parameters():
-            if p.dim() > 1:
-                torch.nn.init.xavier_uniform_(p)
+        #for p in self.parameters():
+        #    if p.dim() > 1:
+        #        torch.nn.init.xavier_uniform_(p)
                 
         if self.norm_kind == "fixup":
             self.normactconvp.initialize(scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
@@ -1264,7 +1265,7 @@ class TransformerBlock2(torch.nn.Module):
         # Self-attention
         attn_output, _ = self.attention(
             x, x, x,
-            key_padding_mask=mask1.squeeze(1)
+            key_padding_mask=(mask1.squeeze(1)==0)
         )
         x = x + attn_output
         x = self.norm1(x)
@@ -1337,9 +1338,9 @@ class TransformerBlock2a(torch.nn.Module):
         
     def initialize(self, fixup_scale):
         # Initialize weights
-        for p in self.parameters():
-            if p.dim() > 1:
-                torch.nn.init.xavier_uniform_(p)
+        #for p in self.parameters():
+        #    if p.dim() > 1:
+        #        torch.nn.init.xavier_uniform_(p)
                 
         if self.norm_kind == "fixup":
             self.normactconvp.initialize(scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
@@ -1388,7 +1389,7 @@ class TransformerBlock2a(torch.nn.Module):
         # Self-attention
         attn_output, _ = self.attention(
             x, x, x,
-            key_padding_mask=mask1.squeeze(1)
+            key_padding_mask=(mask1.squeeze(1)==0)
         )
         x = x + attn_output
         
@@ -1454,9 +1455,7 @@ class TransformerBlock3(torch.nn.Module):
         
     def initialize(self, fixup_scale):
         # Initialize weights
-        for p in self.parameters():
-            if p.dim() > 1:
-                torch.nn.init.xavier_uniform_(p)
+        self.attention.initialize()
                 
         if self.norm_kind == "fixup":
             self.normactconvp.initialize(scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)))
