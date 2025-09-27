@@ -2218,9 +2218,18 @@ void Book::recomputeNodeCost(BookNode* node) {
       + (passFavored ? params.costWhenPassFavored : 0.0);
 
     // Apply hint position bonus if this move is in moveBonusByHash
-    if(hintLoc == locAndBookMove.first) {
-      cost -= hintLocBonus;
-      foundHintLoc = true;
+    {
+      bool isHintLoc = false;
+      for(int symmetry: node->symmetries) {
+        if(SymmetryHelpers::getSymLoc(hintLoc, node->book->initialBoard, symmetry) == locAndBookMove.first) {
+          isHintLoc = true;
+          break;
+        }
+      }
+      if(isHintLoc) {
+        cost -= hintLocBonus;
+        foundHintLoc = true;
+      }
     }
     
     if(child->recursiveValues.winner != C_WALL && params.costPenaltyForDeterminedWinner > 0.0) {
