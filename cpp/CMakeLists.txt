@@ -353,6 +353,9 @@ elseif(USE_BACKEND STREQUAL "TENSORRT")
   endif()
   include_directories(SYSTEM ${CUDAToolkit_INCLUDE_DIRS} ${TENSORRT_INCLUDE_DIR}) #SYSTEM is for suppressing some compiler warnings in thrust libraries
   target_link_libraries(katago CUDA::cudart_static ${TENSORRT_LIBRARY})
+  
+  find_library(TENSORRT_ONNX_LIBRARY nvonnxparser HINTS ${TENSORRT_ROOT_DIR} PATH_SUFFIXES lib)
+  target_link_libraries(katago ${TENSORRT_ONNX_LIBRARY})
 elseif(USE_BACKEND STREQUAL "OPENCL")
   target_compile_definitions(katago PRIVATE USE_OPENCL_BACKEND)
   find_package(OpenCL)

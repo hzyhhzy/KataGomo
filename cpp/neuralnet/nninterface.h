@@ -65,6 +65,7 @@ namespace NeuralNet {
     int nnYLen,
     const std::string& openCLTunerFile,
     const std::string& homeDataDirOverride,
+    const std::string& onnxFile,
     bool openCLReTunePerBoardSize,
     enabled_t useFP16Mode,
     enabled_t useNHWCMode,

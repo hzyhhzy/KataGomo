@@ -137,9 +137,19 @@ NNEvaluator::NNEvaluator(
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
     numInputMetaChannels = NeuralNet::getNumInputMetaChannels(loadedModel);
     postProcessParams = NeuralNet::getPostProcessParams(loadedModel);
+    string onnxPath = "";
+    //replace .bin.gz by .onnx
+    onnxPath = modelFileName;
+    onnxPath.replace(onnxPath.end()-7,onnxPath.end(),".onnx");
+    
     computeContext = NeuralNet::createComputeContext(
-      gpuIdxs,logger,nnXLen,nnYLen,
-      openCLTunerFile,homeDataDirOverride,openCLReTunePerBoardSize,
+      gpuIdxs,
+      logger,
+      nnXLen,
+      nnYLen,
+      openCLTunerFile,homeDataDirOverride,
+      onnxPath,
+      openCLReTunePerBoardSize,
       usingFP16Mode,usingNHWCMode,loadedModel
     );
   }
