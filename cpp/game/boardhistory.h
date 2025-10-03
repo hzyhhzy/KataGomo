@@ -15,7 +15,6 @@ struct BoardHistory {
   //Chronological history of moves
   std::vector<Move> moveHistory;
 
-  std::map<Hash128, int> posHashHistoryCount;
 
   //The board and player to move as of the very start, before moveHistory.
   Board initialBoard;

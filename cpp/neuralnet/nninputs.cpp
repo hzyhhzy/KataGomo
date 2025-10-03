@@ -529,47 +529,29 @@ void NNInputs::fillRowV7(
         setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
       else if(stone == C_BAN)
         setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
+
+      if(board.stage == 0 && board.legalMap[loc] == 1)
+        setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
     }
   }
 
   // mid state
   if(board.stage == 0)  // choose
   {
-    if(!GameLogic::hasLegalMoveAssumeStage0(board))
-      rowGlobal[1] = 1.0f;
 
   } else if(board.stage == 1)  // place
   {
     rowGlobal[0] = 1.0f;
-    Loc chosenMove = board.midLocs[0];
-    if(!board.isOnBoard(chosenMove)) {
-      std::cout << "nninput: chosen move not on board ";
-    } else {
-      int pos = NNPos::locToPos(chosenMove, board.x_size, nnXLen, nnYLen);
-      setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
-    }
   } else
     ASSERT_UNREACHABLE;
 
 
   //Scoring
   if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSSCORING) {
-  } else if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSCONTINUE) {
-    rowGlobal[2] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::LOOPLOSE_PASSSCORING) {
-    rowGlobal[3] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::LOOPSCORING_PASSSCORING) {
-    rowGlobal[4] = 1.0f;
-  } else
+  } 
+  else
     ASSERT_UNREACHABLE;
 
-  float selfKomi = pla == C_BLACK ? hist.rules.komi : -hist.rules.komi;
-  rowGlobal[5] = tanh(selfKomi);
-  rowGlobal[6] = tanh(selfKomi * 0.3);
-  rowGlobal[7] = tanh(selfKomi * 0.1);
-  rowGlobal[8] = selfKomi / board.boardArea();
-
-  rowGlobal[9] = (hist.rules.komi + board.boardArea()) % 2;
   
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.

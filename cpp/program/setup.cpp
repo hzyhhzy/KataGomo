@@ -683,8 +683,12 @@ Rules Setup::loadSingleRules(
     rules = Rules::parseRules(cfg.getString("rules"));
   }
   else {
-    string loopPassRule = cfg.getString("loopPassRule", Rules::loopPassRuleStrings());
-    rules.loopPassRule = Rules::parseLoopPassRule(loopPassRule);
+    string loopPassRule =
+      cfg.contains("loopPassRule") ? cfg.getString("loopPassRule", Rules::loopPassRuleStrings()) : "";
+    if(loopPassRule == "")
+      rules.loopPassRule = Rules::LOOPDRAW_PASSSCORING;
+    else
+      rules.loopPassRule = Rules::parseLoopPassRule(loopPassRule);
 
 
   }

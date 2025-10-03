@@ -12,7 +12,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #ifndef COMPILE_MAX_BOARD_LEN 
-#define COMPILE_MAX_BOARD_LEN 7
+#define COMPILE_MAX_BOARD_LEN 10
 #endif
 
 //how many stages in each move
@@ -156,6 +156,10 @@ struct Board
   //Returns false if location or color were out of range.
   bool setStone(Loc loc, Color color);
 
+  
+  Loc findPiece(Color color) const;//only one stone of this color
+  void calculateLegalMap();
+
   // Same, but sets multiple stones, and only requires that the final configuration contain no zero-liberty groups.
   // If it does contain a zero liberty group, fails and returns false and leaves the board in an arbitrarily changed but
   // valid state. Also returns false if any location is specified more than once.
@@ -198,6 +202,8 @@ struct Board
   int x_size;                  //Horizontal size of board
   int y_size;                  //Vertical size of board
   Color colors[MAX_ARR_SIZE];  //Color of each location on the board.
+  bool legalMapUpToDate; //whether legalMap is up to date
+  int8_t legalMap[MAX_ARR_SIZE]; //all legal moves of stage 1. 0 is illegal, 1 is legal, 2 are walls
 
   /* PointList empty_list; //List of all empty locations on board */
 
@@ -212,8 +218,6 @@ struct Board
   //who plays the next move
   Color nextPla;
 
-  //一步内每一阶段的选点
-  //例如：象棋类midLoc[0]是选择的棋子，midLoc[1]是落点
   Loc midLocs[STAGE_NUM_EACH_PLA];
 
 

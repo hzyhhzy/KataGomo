@@ -9,7 +9,6 @@ using namespace std;
 BoardHistory::BoardHistory()
   :rules(),
    moveHistory(),
-   posHashHistoryCount(),
    initialBoard(),
    initialPla(P_BLACK),
    initialTurnNumber(0),
@@ -27,7 +26,6 @@ BoardHistory::~BoardHistory()
 BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
   :rules(r),
    moveHistory(),
-   posHashHistoryCount(),
    initialBoard(),
    initialPla(),
    initialTurnNumber(0),
@@ -44,7 +42,6 @@ BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
 BoardHistory::BoardHistory(const BoardHistory& other)
   :rules(other.rules),
    moveHistory(other.moveHistory),
-   posHashHistoryCount(other.posHashHistoryCount),
    initialBoard(other.initialBoard),
    initialPla(other.initialPla),
    initialTurnNumber(other.initialTurnNumber),
@@ -64,7 +61,6 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
     return *this;
   rules = other.rules;
   moveHistory = other.moveHistory;
-  posHashHistoryCount = other.posHashHistoryCount;
   initialBoard = other.initialBoard;
   initialPla = other.initialPla;
   initialTurnNumber = other.initialTurnNumber;
@@ -82,7 +78,6 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
 BoardHistory::BoardHistory(BoardHistory&& other) noexcept
  :rules(other.rules),
   moveHistory(std::move(other.moveHistory)),
-  posHashHistoryCount(std::move(other.posHashHistoryCount)),
   initialBoard(other.initialBoard),
   initialPla(other.initialPla),
   initialTurnNumber(other.initialTurnNumber),
@@ -99,7 +94,6 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
 {
   rules = other.rules;
   moveHistory = std::move(other.moveHistory);
-  posHashHistoryCount = std::move(other.posHashHistoryCount);
   initialBoard = other.initialBoard;
   initialPla = other.initialPla;
   initialTurnNumber = other.initialTurnNumber;
@@ -117,7 +111,6 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
 void BoardHistory::clear(const Board& board, Player pla, const Rules& r) {
   rules = r;
   moveHistory.clear();
-  posHashHistoryCount.clear();
 
   initialBoard = board;
   initialPla = pla;
@@ -222,24 +215,10 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   isNoResult = false;
   isResignation = false;
 
-  
-  int hashCountBeforePlay = posHashHistoryCount.count(board.pos_hash);
-  bool isCopyStone = board.stage == 0 && board.colors[moveLoc]==C_EMPTY;
 
-  if(isCopyStone || hashCountBeforePlay>=2)
-    posHashHistoryCount.clear();
-
-  bool isLegalPass = moveLoc == Board::PASS_LOC && board.stage == 0 && (!GameLogic::hasLegalMoveAssumeStage0(board));
 
   board.playMoveAssumeLegal(moveLoc,movePla);
 
-  
-  Hash128 h = board.pos_hash;
-  int c = posHashHistoryCount.count(h);
-  if(c == 0)
-    posHashHistoryCount[h] = 1;
-  else
-    posHashHistoryCount[h] += 1;
 
   //Update recent boards
   currentRecentBoardIdx = (currentRecentBoardIdx + 1) % NUM_RECENT_BOARDS;
@@ -247,7 +226,7 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
 
   moveHistory.push_back(Move(moveLoc,movePla));
   presumedNextMovePla = board.nextPla;
-  Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc,isLegalPass);
+  Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc);
   if(maybeWinner!=C_WALL) { //game finished
     setWinner(maybeWinner);
   }
