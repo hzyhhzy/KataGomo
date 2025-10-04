@@ -925,6 +925,8 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
       char s = PlayerIO::colorToChar(board.colors[loc]);
       if(board.colors[loc] == C_EMPTY && markLoc == loc)
         out << '@';
+      else if(board.colors[loc] == C_BAN)
+        out << '#';
       else
         out << s;
 
