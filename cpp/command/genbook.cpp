@@ -812,6 +812,7 @@ int MainCmds::genbook(const vector<string>& args) {
     Loc bestMove = Board::NULL_LOC;
     int lastValidMaxMoves = originalRules.maxMoves;
 
+
     const double winrateThrehold = 0.9;
 
     ReportedSearchValues searchValues;
@@ -848,6 +849,54 @@ int MainCmds::genbook(const vector<string>& args) {
     if(currentWinrate < winrateThrehold) {
       return;
     }
+
+    const double winrateThreholdVCT = 0.6;//80%
+    bool maybeVCT = true;
+    //try VCT
+    {
+      // Create modified rules with reduced maxMoves
+      Rules testRules = originalRules;
+      testRules.maxMoves = originalRules.maxMoves;
+      testRules.VCNRule = pla == C_BLACK ? Rules::VCNRULE_VC3_B : Rules::VCNRULE_VC3_W;
+
+      // Create new board history with modified rules
+      BoardHistory testHist = hist;
+      testHist.rules = testRules;
+
+      // Set up search with new rules
+      search->setPosition(pla, board, testHist);
+      search->setRootSymmetryPruningOnly(symmetries);
+
+      // Run search with same parameters
+      SearchParams testParams = params;
+      testParams.maxVisits = cfgParams.maxVisitsForHighWinrateSearch;
+      search->setParams(testParams);
+      search->runWholeSearch(search->rootPla);
+
+      // Check new winrate
+      ReportedSearchValues testValues;
+      bool getSuc = search->getPrunedNodeValues(search->getRootNode(), testValues);
+      assert(getSuc);
+      (void)getSuc;
+      double testWinrate = testValues.winLossValue;
+      if(pla == C_BLACK) {
+        testWinrate = -testWinrate;
+      }
+
+      if(testWinrate > winrateThreholdVCT) {
+        lastValidMaxMoves = testRules.maxMoves;
+        bestMove = search->getChosenMoveLoc();
+        currentWinrate = testWinrate;
+        // Board::printBoard(cout, board, bestMove, NULL);
+        // cout << testMoves << " " << testWinrate << endl;
+      } else {
+        maybeVCT = false;
+      }
+
+
+    }
+
+
       
     // If winrate > 0.95, perform additional searches with reduced maxMoves
     int maxTestMoves = board.movenum + 34;
@@ -873,6 +922,8 @@ int MainCmds::genbook(const vector<string>& args) {
         // Create modified rules with reduced maxMoves
         Rules testRules = originalRules;
         testRules.maxMoves = testMoves;
+        if(maybeVCT)
+          testRules.VCNRule = pla == C_BLACK ? Rules::VCNRULE_VC3_B : Rules::VCNRULE_VC3_W;
           
         // Create new board history with modified rules
         BoardHistory testHist = hist;
@@ -898,7 +949,7 @@ int MainCmds::genbook(const vector<string>& args) {
             testWinrate = -testWinrate;
         }
             
-        if(testWinrate > 0.9) {
+        if(testWinrate > (maybeVCT?winrateThreholdVCT:winrateThrehold)) {
             lastValidMaxMoves = testMoves;
             bestMove = search->getChosenMoveLoc();
             currentWinrate = testWinrate;
@@ -915,8 +966,11 @@ int MainCmds::genbook(const vector<string>& args) {
     {
       std::lock_guard<std::mutex> lock(bookMutex);
       //Board::printBoard(cout, board, bestMove, NULL);
-      cout << testMoves << " " << currentWinrate << endl;
-      node.setBestMoveForHighWinrate(bestMove, lastValidMaxMoves, cfgParams.maxVisitsForHighWinrateSearch);
+      int mmToRecord = lastValidMaxMoves;
+      if(maybeVCT)
+        mmToRecord += 1000;
+      cout << testMoves << " vct-" << (maybeVCT?"true":"false") << currentWinrate << endl;
+      node.setBestMoveForHighWinrate(bestMove, mmToRecord, cfgParams.maxVisitsForHighWinrateSearch);
     }
         
     search->clearSearch();

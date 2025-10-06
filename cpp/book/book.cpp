@@ -1022,7 +1022,8 @@ BookParams BookParams::loadFromCfg(ConfigParser& cfg, int64_t maxVisits) {
   cfgParams.bonusForWLPV2 = cfg.contains("bonusForWLPV2") ? cfg.getDouble("bonusForWLPV2",0.0,1000000.0) : 0.0;
   cfgParams.bonusForWLPVFinalProp = cfg.contains("bonusForWLPVFinalProp") ? cfg.getDouble("bonusForWLPVFinalProp",0.0,1.0) : 0.5;
   cfgParams.bonusForBiggestWLCost = cfg.contains("bonusForBiggestWLCost") ? cfg.getDouble("bonusForBiggestWLCost",0.0,1000000.0) : 0.0;
-  cfgParams.bonusForHighWinrateMove = cfg.contains("bonusForHighWinrateMove") ? cfg.getDouble("bonusForHighWinrateMove",0.0,1000000.0) : 3.0;
+  cfgParams.bonusForHighWinrateMove = cfg.contains("bonusForHighWinrateMove") ? cfg.getDouble("bonusForHighWinrateMove",0.0,1000000.0) : 2.0;
+  cfgParams.bonusForHighWinrateMoveVCT = cfg.contains("bonusForHighWinrateMoveVCT") ? cfg.getDouble("bonusForHighWinrateMoveVCT",0.0,1000000.0) : 5.0;
   cfgParams.bonusForLeafBlackStage0 = cfg.contains("bonusForLeafBlackStage0") ? cfg.getDouble("bonusForLeafBlackStage0",-1000000.0,1000000.0) : 0.0;
   cfgParams.bonusForLeafWhiteStage0 = cfg.contains("bonusForLeafWhiteStage0") ? cfg.getDouble("bonusForLeafWhiteStage0",-1000000.0,1000000.0) : 0.0;
   cfgParams.bonusForLeafBlackStage1 = cfg.contains("bonusForLeafBlackStage1") ? cfg.getDouble("bonusForLeafBlackStage1",-1000000.0,1000000.0) : 0.0;
@@ -2401,10 +2402,12 @@ void Book::recomputeNodeCost(BookNode* node) {
 
   //bonus for high winrate move
   Loc highWinrateLoc = node->bestMoveForHighWinrate;
-  if(highWinrateLoc != Board::NULL_LOC && params.bonusForHighWinrateMove > 0) {
+  double bonusForHighWinrateMove =
+    node->maxMoveForHighWinrate > 1000 ? params.bonusForHighWinrateMoveVCT : params.bonusForHighWinrateMove;
+  if(highWinrateLoc != Board::NULL_LOC && bonusForHighWinrateMove > 0) {
     for(auto& locAndBookMove: node->moves) {
       if(locAndBookMove.first == highWinrateLoc)
-        locAndBookMove.second.costFromRoot -= params.bonusForHighWinrateMove;
+        locAndBookMove.second.costFromRoot -= bonusForHighWinrateMove;
     }
   }
 

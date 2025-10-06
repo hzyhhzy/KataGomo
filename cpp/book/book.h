@@ -338,6 +338,7 @@ struct BookParams {
   double bonusForBiggestWLCost = 0.0;
   // Bonus for the winning move with lowest movenum limit (
   double bonusForHighWinrateMove = 0.0;
+  double bonusForHighWinrateMoveVCT = 0.0;
   //bonus for leaf nodes
   double bonusForLeafBlackStage0 = 0.0;
   double bonusForLeafWhiteStage0 = 0.0;
