@@ -968,7 +968,7 @@ int MainCmds::genbook(const vector<string>& args) {
       //Board::printBoard(cout, board, bestMove, NULL);
       int mmToRecord = lastValidMaxMoves;
       if(maybeVCT)
-        mmToRecord += 1000;
+        mmToRecord += 10000;
       cout << testMoves << " vct-" << (maybeVCT?"true":"false") << currentWinrate << endl;
       node.setBestMoveForHighWinrate(bestMove, mmToRecord, cfgParams.maxVisitsForHighWinrateSearch);
     }

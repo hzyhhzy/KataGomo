@@ -2403,7 +2403,7 @@ void Book::recomputeNodeCost(BookNode* node) {
   //bonus for high winrate move
   Loc highWinrateLoc = node->bestMoveForHighWinrate;
   double bonusForHighWinrateMove =
-    node->maxMoveForHighWinrate > 1000 ? params.bonusForHighWinrateMoveVCT : params.bonusForHighWinrateMove;
+    node->maxMoveForHighWinrate > 10000 ? params.bonusForHighWinrateMoveVCT : params.bonusForHighWinrateMove;
   if(highWinrateLoc != Board::NULL_LOC && bonusForHighWinrateMove > 0) {
     for(auto& locAndBookMove: node->moves) {
       if(locAndBookMove.first == highWinrateLoc)
