@@ -76,8 +76,8 @@ time python ./train.py \
     -lookahead-k 6 \
     -value-loss-scale 0.6 \
     -td-value-loss-scales 0.6,0.6,0.6 \
-    -swa-scale 8.0 \
-    -swa-period-samples 100000 \
+    -swa-scale 4.0 \
+    -swa-period-samples 50000 \
     -use-fp16 \
     -randomize-symmetries 2 \
     -main-loss-scale 0.2 \

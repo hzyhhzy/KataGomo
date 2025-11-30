@@ -139,7 +139,7 @@ def main(args):
       if normmask.gamma is not None:
         assert normmask.gamma.shape == (1, normmask.c_in, 1, 1)
         assert has_gamma_or_scale
-        write_weights(normmask.scale * normmask.gamma)
+        write_weights(normmask.scale * (normmask.gamma + 1.0))
       else:
         assert has_gamma_or_scale
         write_weights(normmask.scale * torch.ones(normmask.c_in, dtype=torch.float, device="cpu"))
@@ -147,7 +147,7 @@ def main(args):
       if normmask.gamma is not None:
         assert normmask.gamma.shape == (1, normmask.c_in, 1, 1)
         assert has_gamma_or_scale
-        write_weights(normmask.gamma)
+        write_weights(normmask.gamma + 1.0)
       else:
         assert not has_gamma_or_scale
         pass

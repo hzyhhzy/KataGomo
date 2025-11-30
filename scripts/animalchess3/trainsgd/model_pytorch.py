@@ -143,7 +143,7 @@ class NormMask(torch.nn.Module):
         if self.norm_kind == "bnorm" or (self.norm_kind == "fixscaleonenorm" and self.is_last_batchnorm):
             self.is_using_batchnorm = True
             if self.use_gamma:
-                self.gamma = torch.nn.Parameter(torch.ones(1, c_in, 1, 1))
+                self.gamma = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.beta = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.register_buffer(
                 "running_mean", torch.zeros(c_in, dtype=torch.float)
@@ -154,7 +154,7 @@ class NormMask(torch.nn.Module):
         elif self.norm_kind == "brenorm" or self.norm_kind == "fixbrenorm":
             self.is_using_batchnorm = True
             if self.use_gamma:
-                self.gamma = torch.nn.Parameter(torch.ones(1, c_in, 1, 1))
+                self.gamma = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.beta = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             self.register_buffer(
                 "running_mean", torch.zeros(c_in, dtype=torch.float)
@@ -182,7 +182,7 @@ class NormMask(torch.nn.Module):
             self.is_using_batchnorm = False
             self.beta = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
             if self.use_gamma:
-                self.gamma = torch.nn.Parameter(torch.ones(1, c_in, 1, 1))
+                self.gamma = torch.nn.Parameter(torch.zeros(1, c_in, 1, 1))
         else:
             assert False, f"Unimplemented norm_kind: {self.norm_kind}"
 
@@ -222,12 +222,12 @@ class NormMask(torch.nn.Module):
     def apply_gamma_beta_scale_mask(self, x, mask):
         if self.scale is not None:
             if self.gamma is not None:
-                return (x * (self.gamma * self.scale) + self.beta) * mask
+                return (x * ((self.gamma + 1.0) * self.scale) + self.beta) * mask
             else:
                 return (x * self.scale + self.beta) * mask
         else:
             if self.gamma is not None:
-                return (x * self.gamma + self.beta) * mask
+                return (x * (self.gamma + 1.0) + self.beta) * mask
             else:
                 return (x + self.beta) * mask
 

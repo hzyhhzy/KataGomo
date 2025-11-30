@@ -487,8 +487,8 @@ def main(rank: int, world_size: int, args, multi_gpu_device_ids, readpipes, writ
     train_state["total_num_data_rows"] = 0
   if "old_train_data_dirs" not in train_state:
     train_state["old_train_data_dirs"] = []
-  if "data_files_used" not in train_state:
-    train_state["data_files_used"] = set()
+  #if "data_files_used" not in train_state:
+  train_state["data_files_used"] = set()
   if "swa_sample_accum" not in train_state:
     train_state["swa_sample_accum"] = 0.0
 

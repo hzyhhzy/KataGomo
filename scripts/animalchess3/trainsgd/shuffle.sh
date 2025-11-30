@@ -42,14 +42,14 @@ echo "Beginning shuffle at" $(date "+%Y-%m-%d %H:%M:%S")
 (
     time python ./shuffle.py \
          "$BASEDIR"/selfplay/ \
-         -expand-window-per-row 0.4 \
-         -taper-window-exponent 0.65 \
+         -expand-window-per-row 0.2 \
+         -taper-window-exponent 0.8 \
          -out-dir "$DATADIR"/shuffleddata/$OUTDIRTRAIN \
          -out-tmp-dir "$TMPDIR"/train \
          -approx-rows-per-out-file 25600 \
          -num-processes "$NTHREADS" \
          -batch-size "$BATCHSIZE" \
-         -min-rows 500000 \
+         -min-rows 700000 \
          -keep-target-rows 2200000 \
          -only-include-md5-path-prop-lbound 0.00 \
          -only-include-md5-path-prop-ubound 0.97 \
@@ -62,14 +62,14 @@ echo "Beginning shuffle at" $(date "+%Y-%m-%d %H:%M:%S")
 (
     time python ./shuffle.py \
          "$BASEDIR"/selfplay/ \
-         -expand-window-per-row 0.4 \
-         -taper-window-exponent 0.65 \
+         -expand-window-per-row 0.2 \
+         -taper-window-exponent 0.8 \
          -out-dir "$DATADIR"/shuffleddata/$OUTDIRVAL \
          -out-tmp-dir "$TMPDIR"/val \
          -approx-rows-per-out-file 50000 \
          -num-processes "$NTHREADS" \
          -batch-size "$BATCHSIZE" \
-         -min-rows 500000 \
+         -min-rows 700000 \
          -keep-target-rows 1000000 \
          -only-include-md5-path-prop-lbound 0.97 \
          -only-include-md5-path-prop-ubound 1.00 \

@@ -27,6 +27,8 @@ def get_num_bin_input_features(config: ModelConfig):
     return 40
   elif version == 102:
     return 32
+  elif version == 201:
+    return 48
   else:
     assert(False)
 
@@ -36,14 +38,16 @@ def get_num_global_input_features(config: ModelConfig):
     return 28
   elif version == 102:
     return 48
+  elif version == 201:
+    return 64
   else:
     assert(False)
 
 b2c16 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":16,
   "mid_num_channels":16,
@@ -63,10 +67,10 @@ b2c16 = {
 }
 
 b4c32 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":32,
   "mid_num_channels":32,
@@ -88,10 +92,10 @@ b4c32 = {
 }
 
 b6c96 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":96,
   "mid_num_channels":96,
@@ -114,10 +118,10 @@ b6c96 = {
   "v2_size":64,
 }
 b5c64 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":64,
   "mid_num_channels":64,
@@ -140,10 +144,10 @@ b5c64 = {
 }
 
 b10c128 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":128,
   "mid_num_channels":128,
@@ -171,10 +175,10 @@ b10c128 = {
 }
 
 b5c192nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":192,
   "mid_num_channels":96,
@@ -197,10 +201,10 @@ b5c192nbt = {
 }
 
 b15c192 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":192,
   "mid_num_channels":192,
@@ -233,10 +237,10 @@ b15c192 = {
 }
 
 b20c256 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":256,
@@ -274,10 +278,10 @@ b20c256 = {
 }
 
 b30c256bt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":128,
@@ -325,10 +329,10 @@ b30c256bt = {
 }
 
 b24c320bt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":320,
   "mid_num_channels":160,
@@ -370,10 +374,10 @@ b24c320bt = {
 }
 
 b20c384bt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -412,10 +416,10 @@ b20c384bt = {
 
 
 b10c512lbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":512,
   "mid_num_channels":256,
@@ -444,10 +448,10 @@ b10c512lbt = {
 
 
 b15c384lbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -480,10 +484,10 @@ b15c384lbt = {
 }
 
 b18c320lbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":320,
   "mid_num_channels":160,
@@ -519,10 +523,10 @@ b18c320lbt = {
 }
 
 b23c256lbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":128,
@@ -563,10 +567,10 @@ b23c256lbt = {
 }
 
 b12c384llbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -597,10 +601,10 @@ b12c384llbt = {
 
 
 b10c384nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -628,10 +632,10 @@ b10c384nbt = {
 }
 
 b20c256nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":128,
@@ -670,10 +674,10 @@ b20c256nbt = {
 
 
 b7c512nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":512,
   "mid_num_channels":256,
@@ -699,10 +703,10 @@ b7c512nbt = {
 
 
 b10c480nb3t = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":480,
   "mid_num_channels":160,
@@ -731,10 +735,10 @@ b10c480nb3t = {
 
 
 b7c384lnbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -759,10 +763,10 @@ b7c384lnbt = {
 }
 
 b5c512nnbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": True,
   "trunk_num_channels":512,
   "outermid_num_channels":256,
@@ -786,10 +790,10 @@ b5c512nnbt = {
 }
 
 b7c512nnbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": True,
   "trunk_num_channels":512,
   "outermid_num_channels":256,
@@ -815,10 +819,10 @@ b7c512nnbt = {
 }
 
 b20c384lbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -857,10 +861,10 @@ b20c384lbt = {
 
 
 b30c320 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":320,
   "mid_num_channels":320,
@@ -908,10 +912,10 @@ b30c320 = {
 }
 
 b40c256 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":256,
@@ -969,10 +973,10 @@ b40c256 = {
 }
 
 b18c384nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -1008,10 +1012,10 @@ b18c384nbt = {
 }
 
 b10c256nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":128,
@@ -1039,10 +1043,10 @@ b10c256nbt = {
 }
 
 b14c448nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":448,
   "mid_num_channels":224,
@@ -1074,10 +1078,10 @@ b14c448nbt = {
 }
 
 b40c384 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":384,
@@ -1136,10 +1140,10 @@ b40c384 = {
 
 
 b60c320 = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":320,
   "mid_num_channels":320,
@@ -1218,10 +1222,10 @@ b60c320 = {
 
 
 b41c384nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":384,
   "mid_num_channels":192,
@@ -1280,10 +1284,10 @@ b41c384nbt = {
 }
 
 b32c448nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":448,
   "mid_num_channels":224,
@@ -1334,10 +1338,10 @@ b32c448nbt = {
 
 
 b28c512nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":512,
   "mid_num_channels":256,
@@ -1383,10 +1387,10 @@ b28c512nbt = {
 }
 
 b20c640nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":640,
   "mid_num_channels":320,
@@ -1424,10 +1428,10 @@ b20c640nbt = {
 }
 
 b40c512nbt = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":512,
   "mid_num_channels":256,
@@ -1485,10 +1489,10 @@ b40c512nbt = {
 }
 
 sandbox = {
-  "version":11,
+  "version":201,
   "norm_kind":"fixup",
   "bnorm_epsilon": 1e-4,
-  "bnorm_running_avg_momentum": 0.001,
+  "bnorm_running_avg_momentum": 0.01,
   "initial_conv_1x1": False,
   "trunk_num_channels":256,
   "mid_num_channels":256,
