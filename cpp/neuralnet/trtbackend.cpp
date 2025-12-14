@@ -28,7 +28,7 @@ using namespace nvinfer1;
 // initialization at the cost of excessive disk space usage
 //#define CACHE_TENSORRT_PLAN
 
-const int TensorRT_BuilderOptimizationLevel = 0; //0 for fast init, 2 is default, 5 is max
+const int TensorRT_BuilderOptimizationLevel = 2; //0 for fast init, 2 is default, 5 is max
 
 static void checkCudaError(const cudaError_t status, const char* opName, const char* file, const char* func, int line) {
   if(status != cudaSuccess)
@@ -252,12 +252,15 @@ struct ComputeHandle {
       string tmp;
       FileUtils::loadFileIntoString(ctx->onnxfile, "", tmp, &ONNX_sha256);
     }
-    profile->setDimensions("input_spatial", OptProfileSelector::kMIN, Dims4(1, 22, 19, 19));
-    profile->setDimensions("input_spatial", OptProfileSelector::kOPT, Dims4(maxBatchSize, 22, 19, 19));
-    profile->setDimensions("input_spatial", OptProfileSelector::kMAX, Dims4(maxBatchSize, 22, 19, 19));
-    profile->setDimensions("input_global", OptProfileSelector::kMIN, Dims2(1, 19));
-    profile->setDimensions("input_global", OptProfileSelector::kOPT, Dims2(maxBatchSize, 19));
-    profile->setDimensions("input_global", OptProfileSelector::kMAX, Dims2(maxBatchSize, 19));
+
+    int64_t spatialC = NNModelVersion::getNumSpatialFeatures(modelVersion);
+    int64_t globalC = NNModelVersion::getNumGlobalFeatures(modelVersion);
+    profile->setDimensions("input_spatial", OptProfileSelector::kMIN, Dims4(1, spatialC, ctx->nnYLen, ctx->nnXLen));
+    profile->setDimensions("input_spatial", OptProfileSelector::kOPT, Dims4(maxBatchSize, spatialC, ctx->nnYLen, ctx->nnXLen));
+    profile->setDimensions("input_spatial", OptProfileSelector::kMAX, Dims4(maxBatchSize, spatialC, ctx->nnYLen, ctx->nnXLen));
+    profile->setDimensions("input_global", OptProfileSelector::kMIN, Dims2(1, globalC));
+    profile->setDimensions("input_global", OptProfileSelector::kOPT, Dims2(maxBatchSize, globalC));
+    profile->setDimensions("input_global", OptProfileSelector::kMAX, Dims2(maxBatchSize, globalC));
 
     if(builder->platformHasFastFp16()) {
         if(ctx->useFP16Mode == enabled_t::True || ctx->useFP16Mode == enabled_t::Auto) {
@@ -1247,14 +1250,16 @@ void NeuralNet::getOutput(
       for(int i = 0; i < nnXLen * nnYLen; i++) {
         float p = policySrcBuf[i];
         // float pOpt = policySrcBuf[i + nnXLen * nnYLen];// ֹ۲  ԣ 362*5
-        float pOpt = policySrcBuf[i + 1810];
+        float pOpt = policySrcBuf[i + 5 * (nnXLen * nnYLen + 1)];
         policyProbsTmp[i] = p + (pOpt - p) * policyOptimism;
       }
       SymmetryHelpers::copyOutputsWithSymmetry(
         policyProbsTmp, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);  // 361,362*6-1 = 2171,   һλΪ2171
       // policyProbs[nnXLen * nnYLen] = policyPassSrcBuf[0] + (policyPassSrcBuf[1] - policyPassSrcBuf[0]) *
       // policyOptimism;
-      policyProbs[nnXLen * nnYLen] = policySrcBuf[361] + (policySrcBuf[2171] - policySrcBuf[361]) * policyOptimism;
+      policyProbs[nnXLen * nnYLen] = 
+        policySrcBuf[nnXLen * nnYLen] + 
+        (policySrcBuf[5 * (nnXLen * nnYLen + 1) + nnXLen * nnYLen] - policySrcBuf[nnXLen * nnYLen]) * policyOptimism;
     } else {
       assert(numPolicyChannels == 1);
       SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
