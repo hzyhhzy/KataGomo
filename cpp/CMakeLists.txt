@@ -260,22 +260,61 @@ if(USE_BACKEND STREQUAL "CUDA")
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)
   find_package(CUDAToolkit REQUIRED)
-  find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS ${TENSORRT_ROOT_DIR} ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES include)
+  find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS ${TENSORRT_ROOT_DIR} PATH_SUFFIXES include)
   if((NOT TENSORRT_INCLUDE_DIR))
     message(FATAL_ERROR "${ColorBoldRed} NvInfer.h was NOT found, specify TENSORRT_INCLUDE_DIR to indicate where it is. ${ColorReset}")
   endif()
-  find_library(TENSORRT_LIBRARY nvinfer HINTS ${TENSORRT_ROOT_DIR} ${CUDAToolkit_LIBRARY_DIR} PATH_SUFFIXES lib64)
+  find_library(TENSORRT_LIBRARY nvinfer HINTS ${TENSORRT_ROOT_DIR} PATH_SUFFIXES lib)
+
+  # Hackily extract out the version from the TensorRT header
+  # In each case, try the old format and on failure try the new format.
   file(READ "${TENSORRT_INCLUDE_DIR}/NvInferVersion.h" tensorrt_version_header)
-  string(REGEX MATCH "#define NV_TENSORRT_MAJOR ([0-9]+)" tensorrt_version_macro ${tensorrt_version_header})
-  set(TENSORRT_VERSION_MAJOR ${CMAKE_MATCH_1})
-  string(REGEX MATCH "#define NV_TENSORRT_MINOR ([0-9]+)" tensorrt_version_macro ${tensorrt_version_header})
-  set(TENSORRT_VERSION_MINOR ${CMAKE_MATCH_1})
-  string(REGEX MATCH "#define NV_TENSORRT_PATCH ([0-9]+)" tensorrt_version_macro ${tensorrt_version_header})
-  set(TENSORRT_VERSION_PATCH ${CMAKE_MATCH_1})
+
+  set(TENSORRT_VERSION_MAJOR "")
+  set(TENSORRT_VERSION_MINOR "")
+  set(TENSORRT_VERSION_PATCH "")
+
+  string(REGEX MATCH "#define NV_TENSORRT_MAJOR +([0-9]+)" tensorrt_version_macro ${tensorrt_version_header})
+  if(DEFINED CMAKE_MATCH_1 AND NOT "${CMAKE_MATCH_1}" STREQUAL "")
+    set(TENSORRT_VERSION_MAJOR ${CMAKE_MATCH_1})
+  else()
+    string(REGEX MATCH "#define TRT_MAJOR_ENTERPRISE +([0-9]+)" tensorrt_major_enterprise ${tensorrt_version_header})
+    if(DEFINED CMAKE_MATCH_1 AND NOT "${CMAKE_MATCH_1}" STREQUAL "")
+      set(TENSORRT_VERSION_MAJOR ${CMAKE_MATCH_1})
+    endif()
+  endif()
+
+  string(REGEX MATCH "#define NV_TENSORRT_MINOR +([0-9]+)" tensorrt_version_macro ${tensorrt_version_header})
+  if(DEFINED CMAKE_MATCH_1 AND NOT "${CMAKE_MATCH_1}" STREQUAL "")
+    set(TENSORRT_VERSION_MINOR ${CMAKE_MATCH_1})
+  else()
+    string(REGEX MATCH "#define TRT_MINOR_ENTERPRISE +([0-9]+)" tensorrt_minor_enterprise ${tensorrt_version_header})
+    if(DEFINED CMAKE_MATCH_1 AND NOT "${CMAKE_MATCH_1}" STREQUAL "")
+      set(TENSORRT_VERSION_MINOR ${CMAKE_MATCH_1})
+    endif()
+  endif()
+
+  string(REGEX MATCH "#define NV_TENSORRT_PATCH +([0-9]+)" tensorrt_version_macro ${tensorrt_version_header})
+  if(DEFINED CMAKE_MATCH_1 AND NOT "${CMAKE_MATCH_1}" STREQUAL "")
+    set(TENSORRT_VERSION_PATCH ${CMAKE_MATCH_1})
+  else()
+    string(REGEX MATCH "#define TRT_PATCH_ENTERPRISE +([0-9]+)" tensorrt_patch_enterprise ${tensorrt_version_header})
+    if(DEFINED CMAKE_MATCH_1 AND NOT "${CMAKE_MATCH_1}" STREQUAL "")
+      set(TENSORRT_VERSION_PATCH ${CMAKE_MATCH_1})
+    endif()
+  endif()
+
   set(TENSORRT_VERSION "${TENSORRT_VERSION_MAJOR}.${TENSORRT_VERSION_MINOR}.${TENSORRT_VERSION_PATCH}")
+  message(STATUS "Detected TensorRT version: ${TENSORRT_VERSION}")
+
+  if("${TENSORRT_VERSION_MAJOR}" STREQUAL "" OR "${TENSORRT_VERSION_MINOR}" STREQUAL "" OR "${TENSORRT_VERSION_PATCH}" STREQUAL "")
+    message(FATAL_ERROR "Could not determine TensorRT version from header file")
+  endif()
+
   # Version 8 is required for serializing the builder timing cache.
   # Version 8.2 is required for eliminating the global logger for Builder and Runtime.
   # Version 8.5 is required for eliminating many deprecated APIs and adopting new features.
+  # Version 8.6 is for CUDA 12 support and further reduction in initialization time.
   if(TENSORRT_VERSION VERSION_LESS 8.5)
     message(FATAL_ERROR "TensorRT 8.5 or greater is required but ${TENSORRT_VERSION} was found.")
   endif()
