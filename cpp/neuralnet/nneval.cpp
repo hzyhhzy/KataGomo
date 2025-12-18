@@ -158,9 +158,16 @@ NNEvaluator::NNEvaluator(
     loadedModel = NeuralNet::loadModelFile(modelFileName,expectedSha256);
     modelVersion = NeuralNet::getModelVersion(loadedModel);
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
+    string onnxPath = "";
+    // replace .bin.gz by .onnx
+    onnxPath = modelFileName;
+    onnxPath.replace(onnxPath.end() - 7, onnxPath.end(), ".onnx");
     computeContext = NeuralNet::createComputeContext(
       gpuIdxs,logger,nnXLen,nnYLen,
-      openCLTunerFile,homeDataDirOverride,openCLReTunePerBoardSize,
+      openCLTunerFile,
+      homeDataDirOverride,
+      onnxPath,
+      openCLReTunePerBoardSize,
       usingFP16Mode,usingNHWCMode,loadedModel
     );
   }
