@@ -7,6 +7,7 @@ tmp*.txt
 LinuxCompile*/
 
 cpp/build
+cpp/build_old
 cpp/build_trt
 cpp/build_cuda
 cpp/build_opencl
