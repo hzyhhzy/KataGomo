@@ -361,7 +361,7 @@ struct ComputeHandle {
         } else {
           string cachedParamStr = plan.substr(plan.size() - paramStr.size());
           string modelHash = plan.substr(plan.size() - 64 - paramStr.size(), 64);
-          if(modelHash != loadedModel->modelDesc.sha256) {
+          if(modelHash != ONNX_sha256) {
             logger->write("Plan cache is corrupted or is for the wrong model in " + planCacheFile);
             plan.clear();
           } else if(cachedParamStr != paramStr) {
@@ -383,7 +383,7 @@ struct ComputeHandle {
           plan.end(),
           static_cast<char*>(planBuffer->data()),
           static_cast<char*>(planBuffer->data()) + planBuffer->size());
-        if(loadedModel->modelDesc.sha256.size() != 64) {
+        if(ONNX_sha256.size() != 64) {
           throw StringError("Unexpected model hash size");
         }
         if(true)
@@ -395,7 +395,7 @@ struct ComputeHandle {
           logger->write("Saved new pure plan cache to " + planCacheFile + ".pure");
          
         }
-        plan.insert(plan.end(), loadedModel->modelDesc.sha256.begin(), loadedModel->modelDesc.sha256.end());
+        plan.insert(plan.end(), ONNX_sha256.begin(), ONNX_sha256.end());
         plan.insert(plan.end(), paramStr.begin(), paramStr.end());
         ofstream ofs;
         FileUtils::open(ofs, planCacheFile, ios::out | ios::binary);
