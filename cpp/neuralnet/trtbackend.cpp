@@ -289,6 +289,11 @@ struct ComputeHandle {
     if(prop->major >= 8) {
       // This is to avoid tactics that have shape switching overhead
       config->setTacticSources(1U << static_cast<uint32_t>(TacticSource::kJIT_CONVOLUTIONS));
+      //uint32_t sources = (1U << static_cast<uint32_t>(TacticSource::kCUBLAS)) |
+      //                   (1U << static_cast<uint32_t>(TacticSource::kCUBLAS_LT)) |
+      //                   (1U << static_cast<uint32_t>(TacticSource::kCUDNN)) |
+      //                   (1U << static_cast<uint32_t>(TacticSource::kJIT_CONVOLUTIONS));
+      //config->setTacticSources(sources);
       config->setBuilderOptimizationLevel(TensorRT_BuilderOptimizationLevel);
     }
 
@@ -812,7 +817,8 @@ struct InputBuffers {
     // singleScoreValueResultBytes = singleScoreValueResultElts * sizeof(float);
     // singleOwnershipResultElts = m.numOwnershipChannels * nnXLen * nnYLen;
     // singleOwnershipResultBytes = singleOwnershipResultElts * sizeof(float);
-    singleout_policyElts = 1 * 6 * (nnXLen * nnYLen + 1);  // 1 6 362
+    int policyNum = (loadedModel->modelDesc.modelVersion >= 12 && loadedModel->modelDesc.modelVersion <= 99) ? 6 : 4;
+    singleout_policyElts = 1 * policyNum * (nnXLen * nnYLen + 1);  // 1 6 362
     singleout_policyBytes = singleout_policyElts * sizeof(float);
     singleout_valueElts = 3;
     singleout_valueBytes = singleout_valueElts * sizeof(float);
@@ -1244,7 +1250,7 @@ void NeuralNet::getOutput(
     // policy probabilities and white game outcome probabilities
     // Also we don't fill in the nnHash here either
     // Handle version >= 12 policy optimism
-    int numPolicyChannels = 2;
+    int numPolicyChannels = (modelVersion >= 12 && modelVersion <= 99) ? 2 : 1;
     if(numPolicyChannels == 2) {
       // TRT is all NCHW
       for(int i = 0; i < nnXLen * nnYLen; i++) {
@@ -1260,10 +1266,12 @@ void NeuralNet::getOutput(
       policyProbs[nnXLen * nnYLen] = 
         policySrcBuf[nnXLen * nnYLen] + 
         (policySrcBuf[5 * (nnXLen * nnYLen + 1) + nnXLen * nnYLen] - policySrcBuf[nnXLen * nnYLen]) * policyOptimism;
-    } else {
+    } 
+    else {
       assert(numPolicyChannels == 1);
       SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-      // policyProbs[nnXLen * nnYLen] = policyPassSrcBuf[0];
+      
+      policyProbs[nnXLen * nnYLen] = policySrcBuf[nnXLen * nnYLen];
     }
 
     // int numValueChannels = inputBuffers->singleValueResultElts;
