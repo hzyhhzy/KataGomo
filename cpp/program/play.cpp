@@ -1466,7 +1466,7 @@ FinishedGameData* Play::runGame(
         for(int j = 0; j < playSettings.resignConsecTurns; j++) {
           double drawValue = historicalMctsDrawValues[historicalMctsDrawValues.size() - j - 1];
           bool drawThisTurn = false;
-          if(drawThisTurn < playSettings.judgeDrawThreshold) {
+          if(drawValue < playSettings.judgeDrawThreshold) {
             shouldDraw = false;
             break;
           }

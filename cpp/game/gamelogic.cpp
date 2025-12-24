@@ -29,7 +29,6 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc, const Rules& ru
 
   if(board.stage == 0)  // move the piece
   {
-    assert(board.legalMapUpToDate);
     if(loc==Board::PASS_LOC) {
       return true;
     }
