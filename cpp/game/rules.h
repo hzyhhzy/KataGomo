@@ -8,6 +8,7 @@
 
 struct Rules {
 
+  static const int STONE_NUM_LIMIT = 16;//each player can play 16 stones
   
 
   // LOOPDRAW: if the situation repeats, draw
@@ -16,13 +17,15 @@ struct Rules {
   // PASSSCORING: if one player have no legal moves, all empty locations belong to opponent and count score
   // PASSCONTINUE: if one player have no legal moves, pass and let opponent continue playing. this is only different from PASS_SCORING when using LOOP_DRAW rule on some rare conditions
 
+
+
   static const int LOOPDRAW_PASSSCORING = 0;
   static const int LOOPDRAW_PASSCONTINUE = 1;  
   static const int LOOPLOSE_PASSSCORING = 2;  
   static const int LOOPSCORING_PASSSCORING = 3;  
   int loopPassRule;
 
-  int komi; //non-integer komi is meaningless
+  int komi; //此处komi被改造成“最多几个中立棋子”
 
 
 

@@ -314,7 +314,8 @@ Rules GameInitializer::createRulesUnsynchronized() {
   float komiStdevThis = rand.nextBool(komiBigStdevProb) ? komiBigStdev : komiStdev;
   do {
     rules.komi = llround(komiMean + rand.nextGaussian() * komiStdevThis);
-  } while(rules.komi <= -boardArea || rules.komi >= boardArea);
+  } while(rules.komi < 0 || rules.komi >= 12); // max 11 neutral stones for starzone
+  static_assert(Rules::STONE_NUM_LIMIT == 16 && Board::MAX_LEN == 9, "The komi limit is only for starszone");
 
   return rules;
 }
@@ -399,47 +400,16 @@ void GameInitializer::createGameSharedUnsynchronized(
     assert(board.x_size>=2 && board.y_size>=2);
 
     if(rand.nextBool(randomInitialStonesProb)) {
-      board.setStone(board.findPiece(C_BLACK), C_EMPTY);
-      board.setStone(board.findPiece(C_WHITE), C_EMPTY);
-      assert(board.numPlaStonesOnBoard(C_EMPTY)==board.x_size*board.y_size);
-      //random place these two pieces
-
-      while(true)
-      {
-        int xb=rand.nextUInt(board.x_size);
-        int yb=rand.nextUInt(board.y_size);
-        int xw=rand.nextUInt(board.x_size);
-        int yw=rand.nextUInt(board.y_size);
-        if(xb!=xw && yb!=yw)
-        {
-          board.setStone(Location::getLoc(xb,yb,board.x_size), C_BLACK);
-          board.setStone(Location::getLoc(xw,yw,board.x_size), C_WHITE);
-          break;
-        }
-      }
+      ASSERT_UNREACHABLE;
 
     }
     
 
     //place banned locs
     if(rand.nextBool(banLocProb)) {
-      double banRate=banLocAreaPropAvg*rand.nextExponential();
-      if(banRate > banLocAreaPropMax)
-        banRate = banLocAreaPropMax;
-      for(int x=0;x<board.x_size;x++)
-      {
-        for(int y=0;y<board.y_size;y++)
-        {
-          Loc loc=Location::getLoc(x,y,board.x_size);
-          if(board.colors[loc]==C_EMPTY && rand.nextBool(banRate))
-          {
-            board.setStone(loc, C_BAN);
-          }
-        }
-      }
+      ASSERT_UNREACHABLE;
     }
-
-    board.calculateLegalMap();
+    
     board.checkConsistency();
 
 

@@ -10,7 +10,7 @@ using json = nlohmann::json;
 Rules::Rules() {
   //Defaults if not set - closest match to TT rules
   loopPassRule = LOOPDRAW_PASSSCORING;
-  komi = 0;
+  komi = 7;
 }
 
 Rules::Rules(

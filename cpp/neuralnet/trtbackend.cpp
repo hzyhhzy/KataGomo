@@ -14,6 +14,8 @@
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/nninterface.h"
 
+const int TensorRT_BuilderOptimizationLevel = 2;  // 0 for fast init, 2 is default, 5 is max
+
 using namespace std;
 using namespace nvinfer1;
 
@@ -998,7 +1000,7 @@ struct ComputeHandle {
     } else {
       config->setTacticSources(1U << static_cast<uint32_t>(TacticSource::kJIT_CONVOLUTIONS));
     }
-
+    config->setBuilderOptimizationLevel(TensorRT_BuilderOptimizationLevel);
     // So that there are no concurrent kernel executions probably from other parts of code while profiling
     // See CUDA Runtime API document for more details related to NULL stream and synchronization behaviors
     config->setProfileStream(cudaStreamLegacy);

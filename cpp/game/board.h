@@ -12,7 +12,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #ifndef COMPILE_MAX_BOARD_LEN 
-#define COMPILE_MAX_BOARD_LEN 10
+#define COMPILE_MAX_BOARD_LEN 9
 #endif
 
 //how many stages in each move
@@ -24,6 +24,7 @@ static const int MAX_MOVE_NUM = 100 * COMPILE_MAX_BOARD_LEN * COMPILE_MAX_BOARD_
 
 
 //TYPES AND CONSTANTS-----------------------------------------------------------------
+struct Rules;
 
 struct Board;
 
@@ -127,6 +128,10 @@ struct Board
   static Hash128 ZOBRIST_STAGELOC_HASH[MAX_ARR_SIZE][STAGE_NUM_EACH_PLA];
   static Hash128 ZOBRIST_NEXTPLA_HASH[4];
   static Hash128 ZOBRIST_PLAYER_HASH[4];
+  static Hash128 ZOBRIST_NEUTRAL_STONE_B_HASH[MAX_ARR_SIZE];  // 中立棋子
+  static Hash128 ZOBRIST_NEUTRAL_STONE_W_HASH[MAX_ARR_SIZE];  // 中立棋子
+  //static Hash128 ZOBRIST_REMAIN_STONE_B_HASH[MAX_ARR_SIZE];  // 剩余棋子
+  //static Hash128 ZOBRIST_REMAIN_STONE_W_HASH[MAX_ARR_SIZE];   // 剩余棋子
   static const Hash128 ZOBRIST_GAME_IS_OVER;
 
   //Structs---------------------------------------
@@ -140,7 +145,7 @@ struct Board
 
   //Functions------------------------------------
 
-  bool isLegal(Loc loc, Player pla) const;
+  bool isLegal(Loc loc, Player pla, const Rules& rule) const;
   //Check if this location is on the board
   bool isOnBoard(Loc loc) const;
   //Is this board empty?
@@ -157,8 +162,6 @@ struct Board
   bool setStone(Loc loc, Color color);
 
   
-  Loc findPiece(Color color) const;//only one stone of this color
-  void calculateLegalMap();
 
   // Same, but sets multiple stones, and only requires that the final configuration contain no zero-liberty groups.
   // If it does contain a zero liberty group, fails and returns false and leaves the board in an arbitrarily changed but
@@ -176,6 +179,8 @@ struct Board
 
   // who plays the last move
   Player prevPla() const;
+
+  int calculateFinalScore(Player pla) const; //星域的打分
 
 
   
@@ -202,8 +207,6 @@ struct Board
   int x_size;                  //Horizontal size of board
   int y_size;                  //Vertical size of board
   Color colors[MAX_ARR_SIZE];  //Color of each location on the board.
-  bool legalMapUpToDate; //whether legalMap is up to date
-  int8_t legalMap[MAX_ARR_SIZE]; //all legal moves of stage 1. 0 is illegal, 1 is legal, 2 are walls
 
   /* PointList empty_list; //List of all empty locations on board */
 
@@ -219,6 +222,10 @@ struct Board
   Color nextPla;
 
   Loc midLocs[STAGE_NUM_EACH_PLA];
+  int32_t neutral_stones_b; //走了几个白子，而不是剩下几个
+  int32_t neutral_stones_w;
+  //int32_t remain_stones_b;
+  //int32_t remain_stones_w;
 
 
   private:

@@ -530,8 +530,6 @@ void NNInputs::fillRowV7(
       else if(stone == C_BAN)
         setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
 
-      if(board.stage == 0 && board.legalMap[loc] == 1)
-        setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
     }
   }
 
@@ -545,6 +543,45 @@ void NNInputs::fillRowV7(
   } else
     ASSERT_UNREACHABLE;
 
+
+  //who is the last player
+  {
+    int mystone = board.numPlaStonesOnBoard(pla);
+    if(board.stage == 0)
+      mystone += 1;
+    int oppstone = board.numPlaStonesOnBoard(opp);
+    if(mystone > oppstone)//opponent will play the last stone, current player is probably black
+      rowGlobal[1] = 1.0f;
+
+    double remainMoves = Rules::STONE_NUM_LIMIT - oppstone;
+    assert(remainMoves >= 0);
+    rowGlobal[2] = remainMoves / double(Rules::STONE_NUM_LIMIT);
+    rowGlobal[3] = exp(-remainMoves / 2.0);
+    rowGlobal[4] = exp(-remainMoves / 6.0);
+  }
+
+  //how many neutral stones are remained
+  {
+    int myNeutral = pla == C_WHITE ? board.neutral_stones_w : board.neutral_stones_b;
+    int oppNeutral = pla == C_WHITE ? board.neutral_stones_b : board.neutral_stones_w;
+    int myRemain = hist.rules.komi - myNeutral;
+    int oppRemain = hist.rules.komi - oppNeutral;
+    //assert(myRemain >= 0);
+    //assert(oppRemain >= 0);
+    if(myRemain < 0)
+      myRemain = 0;
+    if(oppRemain < 0)
+      oppRemain = 0;
+    rowGlobal[5] = myRemain > 0 ? 1.0f : 0.0f;
+    rowGlobal[6] = oppRemain > 0 ? 1.0f : 0.0f;
+    rowGlobal[7] = myRemain / 5.0;
+    rowGlobal[8] = oppRemain / 5.0;
+    rowGlobal[9] = exp(-myRemain / 1.0);
+    rowGlobal[10] = exp(-oppRemain / 1.0);
+    rowGlobal[11] = exp(-myRemain / 3.0);
+    rowGlobal[12] = exp(-oppRemain / 3.0);
+
+  }
 
   //Scoring
   if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSSCORING) {
