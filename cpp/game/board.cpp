@@ -47,15 +47,16 @@ void Location::getAdjacentOffsets(short adj_offsets[8], int x_size)
   adj_offsets[1] = -1;
   adj_offsets[2] = 1;
   adj_offsets[3] = (x_size+1);
-  adj_offsets[4] = -(x_size+1)-1;
+  adj_offsets[4] = (x_size+1)-1;
   adj_offsets[5] = -(x_size+1)+1;
-  adj_offsets[6] = (x_size+1)-1;
+  adj_offsets[6] = -(x_size+1)-1;
   adj_offsets[7] = (x_size+1)+1;
 }
 
 bool Location::isAdjacent(Loc loc0, Loc loc1, int x_size)
 {
-  return loc0 == loc1 - (x_size+1) || loc0 == loc1 - 1 || loc0 == loc1 + 1 || loc0 == loc1 + (x_size+1);
+  return loc0 == loc1 - (x_size + 1) || loc0 == loc1 - 1 || loc0 == loc1 + 1 || loc0 == loc1 + (x_size + 1) ||
+         loc0 == loc1 + (x_size + 1) - 1|| loc0 == loc1 - (x_size + 1) + 1;
 }
 
 
@@ -120,7 +121,8 @@ Board::Board(const Board& other)
 void Board::init(int xS, int yS)
 {
   assert(IS_ZOBRIST_INITALIZED);
-  if(xS < 0 || yS < 0 || xS > MAX_LEN || yS > MAX_LEN)
+  //if(xS < 0 || yS < 0 || xS > MAX_LEN || yS > MAX_LEN)
+  if(xS != 9 || yS != 9)
     throw StringError("Board::init - invalid board size");
 
   x_size = xS;
@@ -150,12 +152,24 @@ void Board::init(int xS, int yS)
 
   Location::getAdjacentOffsets(adj_offsets, x_size);
 
-
+  int c = x_size / 2; //4
+  //remove the corner
+  for(int y = 0; y < y_size; y++) {
+    for(int x = 0; x < x_size; x++) {
+      if(x + y < c || x + y > x_size + y_size - 2 - c)
+        setStone(Location::getLoc(x, y, x_size), C_BAN);
+    }
+  }
   //initial stones
-  setStone(Location::getLoc(0, 0, x_size), C_BLACK);
-  setStone(Location::getLoc(x_size - 1, y_size - 1, x_size), C_BLACK);
-  setStone(Location::getLoc(0, y_size - 1, x_size), C_WHITE);
+  setStone(Location::getLoc(c, 0, x_size), C_BLACK);
+  setStone(Location::getLoc(x_size - 1, c, x_size), C_BLACK);
+  setStone(Location::getLoc(0, y_size - 1, x_size), C_BLACK);
+  setStone(Location::getLoc(0, c, x_size), C_WHITE);
+  setStone(Location::getLoc(c, y_size - 1, x_size), C_WHITE);
   setStone(Location::getLoc(x_size - 1, 0, x_size), C_WHITE);
+  setStone(Location::getLoc(c, c - 1, x_size), C_BAN);
+  setStone(Location::getLoc(c + 1, c, x_size), C_BAN);
+  setStone(Location::getLoc(c - 1, c + 1, x_size), C_BAN);
 }
 
 void Board::initHash()
@@ -323,7 +337,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
   {
     if(colors[loc]==C_EMPTY) {
       setStone(loc, pla);
-      for(int i = 0; i < 8; i++) {
+      for(int i = 0; i < 6; i++) {
         Loc loc1 = loc + adj_offsets[i];
         if(colors[loc1] == opp)
           setStone(loc1, pla);
@@ -351,7 +365,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     Loc chosenLoc = midLocs[0];
     setStone(chosenLoc, C_EMPTY);
     setStone(loc, pla);
-    for(int i = 0; i < 8; i++) {
+    for(int i = 0; i < 6; i++) {
       Loc loc1 = loc + adj_offsets[i];
       if(colors[loc1] == opp)
         setStone(loc1, pla);
@@ -401,7 +415,7 @@ int Location::distance(Loc loc0, Loc loc1, int x_size) {
 int Location::euclideanDistanceSquared(Loc loc0, Loc loc1, int x_size) {
   int dx = getX(loc1,x_size) - getX(loc0,x_size);
   int dy = (loc1-loc0-dx) / (x_size+1);
-  return dx*dx + dy*dy;
+  return dx*dx + dy*dy + dx*dy;
 }
 
 //TACTICAL STUFF--------------------------------------------------------------------

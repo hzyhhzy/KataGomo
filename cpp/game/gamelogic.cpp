@@ -34,7 +34,7 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     if(board.colors[loc] == pla)
       return hasLegalMoveAssumeStage1(board, loc);
     else if(board.colors[loc] == C_EMPTY) {
-      for(int i = 0; i < 8; i++)
+      for(int i = 0; i < 6; i++)
         if(board.colors[loc + board.adj_offsets[i]] == pla)
           return true;
       return false;
@@ -50,7 +50,7 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     if(board.colors[loc] != C_EMPTY)
       return false;
     int disSqr = Location::euclideanDistanceSquared(chosenMove, loc, board.x_size);
-    return disSqr <= 8 && disSqr >= 4;
+    return disSqr <= 4 && disSqr >= 3;
   }
   ASSERT_UNREACHABLE;
   return false;
@@ -85,6 +85,8 @@ bool GameLogic::hasLegalMoveAssumeStage0(const Board& board) {
             int y1 = y + dy;
             if(x1 < 0 || x1 >= board.x_size || y1 < 0 || y1 >= board.y_size)
               continue;
+            if(dx * dx + dy * dy + dx * dy > 4)
+              continue;
             Loc loc1 = Location::getLoc(x1, y1, board.x_size);
             if(board.colors[loc1] == pla)
               return true;
@@ -107,7 +109,8 @@ bool GameLogic::hasLegalMoveAssumeStage1(const Board& board, Loc chosenLoc) {
   // find place to jump
   for(int dy = -2; dy <= 2; dy++) {
     for(int dx = -2; dx <= 2; dx++) {
-      if(dx * dx + dy * dy <= 2)
+      int distsqr = dx * dx + dy * dy + dx * dy;
+      if(distsqr > 4 || distsqr < 3)
         continue;
       int x1 = x + dx;
       int y1 = y + dy;
