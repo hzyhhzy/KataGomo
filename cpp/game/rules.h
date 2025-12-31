@@ -39,8 +39,8 @@ struct Rules {
 
   static Rules getTrompTaylorish();
 
-  static std::map<std::string, int> Rules::loopPassRuleStringsMap();
-  static std::set<std::string> Rules::loopPassRuleStrings();
+  static std::map<std::string, int> loopPassRuleStringsMap();
+  static std::set<std::string> loopPassRuleStrings();
   static int parseLoopPassRule(const std::string& s);
   static std::string writeLoopPassRule(int scoringRule);
 
