@@ -17,6 +17,8 @@ std::vector<std::string> Setup::getBackendPrefixes() {
   prefixes.push_back("trt");
   prefixes.push_back("opencl");
   prefixes.push_back("eigen");
+  prefixes.push_back("onnxcpu");
+  prefixes.push_back("onnxdml");
   prefixes.push_back("dummybackend");
   return prefixes;
 }
@@ -86,6 +88,10 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   string backendPrefix = "opencl";
   #elif defined(USE_EIGEN_BACKEND)
   string backendPrefix = "eigen";
+  #elif defined(USE_ONNX_CPU_BACKEND)
+  string backendPrefix = "onnxcpu";
+  #elif defined(USE_ONNX_DIRECTML_BACKEND)
+  string backendPrefix = "onnxdml";
   #else
   string backendPrefix = "dummybackend";
   #endif
@@ -139,7 +145,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         requireExactNNLen = cfg.getBool("requireMaxBoardSize");
     }
 
-    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" ? false : true;
+    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "onnxcpu"|| backendPrefix == "onnxdml" ? false : true;
     if(cfg.contains(backendPrefix+"InputsUseNHWC"+idxStr))
       inputsUseNHWC = cfg.getBool(backendPrefix+"InputsUseNHWC"+idxStr);
     else if(cfg.contains("inputsUseNHWC"+idxStr))
@@ -286,7 +292,23 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       setupFor == SETUP_FOR_ANALYSIS ? 17 :
       cfg.getInt("nnMutexPoolSizePowerOfTwo", -1, 24);
 
-#ifndef USE_EIGEN_BACKEND
+#if defined(USE_ONNX_CPU_BACKEND)
+    // Large batches don't really help CPUs the way they do GPUs because a single CPU on its own is single-threaded
+    // and doesn't greatly benefit from having a bigger chunk of parallelizable work to do on the large scale.
+    // So we just fix a size here that isn't crazy and saves memory, completely ignore what the user would have
+    // specified for GPUs.
+    int nnMaxBatchSize = 1;
+    cfg.markAllKeysUsedWithPrefix("nnMaxBatchSize");
+    (void)defaultMaxBatchSize;
+#elif defined(USE_EIGEN_BACKEND)
+    // Large batches don't really help CPUs the way they do GPUs because a single CPU on its own is single-threaded
+    // and doesn't greatly benefit from having a bigger chunk of parallelizable work to do on the large scale.
+    // So we just fix a size here that isn't crazy and saves memory, completely ignore what the user would have
+    // specified for GPUs.
+    int nnMaxBatchSize = 2;
+    cfg.markAllKeysUsedWithPrefix("nnMaxBatchSize");
+    (void)defaultMaxBatchSize;
+#else
     int nnMaxBatchSize;
     if(setupFor == SETUP_FOR_BENCHMARK || setupFor == SETUP_FOR_DISTRIBUTED) {
       nnMaxBatchSize = defaultMaxBatchSize;
@@ -299,20 +321,20 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     else {
       nnMaxBatchSize = cfg.getInt("nnMaxBatchSize", 1, 65536);
     }
-#else
-    //Large batches don't really help CPUs the way they do GPUs because a single CPU on its own is single-threaded
-    //and doesn't greatly benefit from having a bigger chunk of parallelizable work to do on the large scale.
-    //So we just fix a size here that isn't crazy and saves memory, completely ignore what the user would have
-    //specified for GPUs.
-    int nnMaxBatchSize = 4;
-    cfg.markAllKeysUsedWithPrefix("nnMaxBatchSize");
-    (void)defaultMaxBatchSize;
+
 #endif
 
     int defaultSymmetry = forcedSymmetry >= 0 ? forcedSymmetry : 0;
     if(disableFP16)
       useFP16Mode = enabled_t::False;
 
+    int backendNumThreads = 1;
+#if defined(USE_ONNX_CPU_BACKEND)
+
+    // Use the globally configured numSearchThreads for ONNX intra-op threads
+    backendNumThreads = cfg.getInt("backendNumThreads", 1, 4096);
+
+#endif
     NNEvaluator* nnEval = new NNEvaluator(
       nnModelName,
       nnModelFile,
@@ -336,7 +358,8 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       gpuIdxByServerThread,
       nnRandSeed,
       (forcedSymmetry >= 0 ? false : nnRandomize),
-      defaultSymmetry
+      defaultSymmetry,
+      backendNumThreads
     );
 
     nnEval->spawnServerThreads();
@@ -410,8 +433,12 @@ vector<SearchParams> Setup::loadParams(
     else if(cfg.contains("lagBuffer"))   params.lagBuffer = cfg.getDouble("lagBuffer",        0.0, 3600.0);
     else                                 params.lagBuffer = 0.0;
 
+#if defined(USE_ONNX_CPU_BACKEND)
+    params.numThreads = 1;  // use "backendNumThreads" instead
+#else
     if(cfg.contains("numSearchThreads"+idxStr)) params.numThreads = cfg.getInt("numSearchThreads"+idxStr, 1, 4096);
     else                                        params.numThreads = cfg.getInt("numSearchThreads",        1, 4096);
+#endif
 
     if(cfg.contains("winLossUtilityFactor"+idxStr)) params.winLossUtilityFactor = cfg.getDouble("winLossUtilityFactor"+idxStr, 0.0, 1.0);
     else if(cfg.contains("winLossUtilityFactor"))   params.winLossUtilityFactor = cfg.getDouble("winLossUtilityFactor",        0.0, 1.0);
