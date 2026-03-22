@@ -65,7 +65,8 @@ SearchParams::SearchParams()
    subtreeValueBiasWeightExponent(0.5),
    nodeTableShardsPowerOfTwo(16),
    numVirtualLossesPerThread(3.0),
-   numThreads(1),
+   numThreads(1),   
+   backendNumThreads(1),
    maxVisits(((int64_t)1) << 50),
    maxPlayouts(((int64_t)1) << 50),
    maxTime(1.0e20),
@@ -229,6 +230,7 @@ void SearchParams::printParams(std::ostream& out) {
 
 
   PRINTPARAM(numThreads);
+  PRINTPARAM(backendNumThreads);
   PRINTPARAM(maxVisits);
   PRINTPARAM(maxPlayouts);
   PRINTPARAM(maxTime);

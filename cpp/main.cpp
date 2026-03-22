@@ -191,6 +191,10 @@ string Version::getKataGoVersionFullInfo() {
   out << "Using OpenCL backend" << endl;
 #elif defined(USE_EIGEN_BACKEND)
   out << "Using Eigen(CPU) backend" << endl;
+#elif defined(USE_ONNX_CPU_BACKEND) 
+  out << "Using ONNX CPU backend" << endl;
+#elif defined(USE_ONNX_DIRECTML_BACKEND)
+  out << "Using ONNX DirectML backend" << endl;
 #else
   out << "Using dummy backend" << endl;
 #endif
@@ -223,6 +227,10 @@ string Version::getGitRevisionWithBackend() {
   s += "-opencl";
 #elif defined(USE_EIGEN_BACKEND)
   s += "-eigen";
+#elif defined(USE_ONNX_CPU_BACKEND)
+  s += "-onnx-cpu";
+#elif defined(USE_ONNX_DIRECTML_BACKEND)
+  s += "-onnx-directml";
 #else
   s += "-dummy";
 #endif

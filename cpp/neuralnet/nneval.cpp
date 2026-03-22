@@ -77,7 +77,8 @@ NNEvaluator::NNEvaluator(
   const vector<int>& gpuIdxByServerThr,
   const string& rSeed,
   bool doRandomize,
-  int defaultSymmetry
+  int defaultSymmetry,
+  int backendNumThr
 )
   :modelName(mName),
    modelFileName(mFileName),
@@ -89,6 +90,7 @@ NNEvaluator::NNEvaluator(
    usingFP16Mode(useFP16Mode),
    usingNHWCMode(useNHWCMode),
    numThreads(numThr),
+   backendNumThreads(backendNumThr),
    gpuIdxByServerThread(gpuIdxByServerThr),
    randSeed(rSeed),
    debugSkipNeuralNet(skipNeuralNet),
@@ -158,6 +160,14 @@ NNEvaluator::NNEvaluator(
     loadedModel = NeuralNet::loadModelFile(modelFileName,expectedSha256);
     modelVersion = NeuralNet::getModelVersion(loadedModel);
     inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
+    const ModelDesc& desc = NeuralNet::getModelDesc(loadedModel);
+    if(desc.onnxHeader.isOnnx) {
+      desc.onnxHeader.maybeChangeNNLen(*this);
+      if(nnXLen > NNPos::MAX_BOARD_LEN)
+        throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
+      if(nnYLen > NNPos::MAX_BOARD_LEN)
+        throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
+    }
     computeContext = NeuralNet::createComputeContext(
       gpuIdxs,logger,nnXLen,nnYLen,
       openCLTunerFile,homeDataDirOverride,openCLReTunePerBoardSize,
@@ -407,7 +417,8 @@ void NNEvaluator::serve(
       requireExactNNLen,
       inputsUseNHWC,
       gpuIdxForThisThread,
-      serverThreadIdx
+      serverThreadIdx,
+      backendNumThreads
     );
 
   {

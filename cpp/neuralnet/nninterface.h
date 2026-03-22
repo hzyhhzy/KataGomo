@@ -49,6 +49,7 @@ namespace NeuralNet {
   //Fills supported with true if desiredRules itself was exactly supported, false if some modifications had to be made.
   Rules getSupportedRules(const LoadedModel* loadedModel, const Rules& desiredRules, bool& supported);
 
+  const ModelDesc& getModelDesc(const LoadedModel* loadedModel);
   // Context -------------------------------------------------------------------
 
   ComputeContext* createComputeContext(
@@ -85,7 +86,8 @@ namespace NeuralNet {
     bool requireExactNNLen,
     bool inputsUseNHWC,
     int gpuIdxForThisThread,
-    int serverThreadIdx
+    int serverThreadIdx,
+    int backendNumThreads
   );
   void freeComputeHandle(ComputeHandle* computeHandle);
 

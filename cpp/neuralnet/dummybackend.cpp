@@ -70,6 +70,11 @@ Rules NeuralNet::getSupportedRules(const LoadedModel* loadedModel, const Rules& 
   throw StringError("Dummy neural net backend: NeuralNet::getSupportedRules unimplemented");
 }
 
+const ModelDesc& NeuralNet::getModelDesc(const LoadedModel* loadedModel) {
+  (void)loadedModel;
+  throw StringError("Dummy neural net backend: NeuralNet::getModelDesc unimplemented");
+}
+
 ComputeHandle* NeuralNet::createComputeHandle(
   ComputeContext* context,
   const LoadedModel* loadedModel,
@@ -78,8 +83,10 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool requireExactNNLen,
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
-  int serverThreadIdx
-) {
+  int serverThreadIdx,
+  int backendNumThreads) 
+{
+  (void)backendNumThreads;  // Unused
   (void)context;
   (void)loadedModel;
   (void)logger;
@@ -122,7 +129,8 @@ void NeuralNet::getOutput(
   InputBuffers* inputBuffers,
   int numBatchEltsFilled,
   NNResultBuf** inputBufs,
-  vector<NNOutput*>& outputs
+  vector<NNOutput*>& outputs,
+  float* outputPolicys
 ) {
   (void)gpuHandle;
   (void)inputBuffers;

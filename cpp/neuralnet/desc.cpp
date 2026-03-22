@@ -977,8 +977,9 @@ ModelDesc::ModelDesc()
     numScoreValueChannels(0),
     numOwnershipChannels(0) {}
 
-ModelDesc::ModelDesc(istream& in, bool binaryFloats) {
+ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
   in >> name;
+  sha256 = sha256_;
   in >> version;
   if(in.fail())
     throw StringError("Model failed to parse name or version. Is this a valid model file? You probably specified the wrong file.");
@@ -1054,6 +1055,7 @@ ModelDesc::ModelDesc(ModelDesc&& other) {
 
 ModelDesc& ModelDesc::operator=(ModelDesc&& other) {
   name = std::move(other.name);
+  sha256 = std::move(other.sha256);
   version = other.version;
   numInputChannels = other.numInputChannels;
   numInputGlobalChannels = other.numInputGlobalChannels;
@@ -1102,22 +1104,25 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
     if(Global::isSuffix(lower,".txt")) {
       bool binaryFloats = false;
       string uncompressed;
-      FileUtils::loadFileIntoString(fileName,expectedSha256,uncompressed);
+      string sha256Buf;
+      FileUtils::loadFileIntoString(fileName, expectedSha256, uncompressed, &sha256Buf);
       NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
       std::istream uncompressedIn(&uncompressedStreamBuf);
-      descBuf = ModelDesc(uncompressedIn,binaryFloats);
+      descBuf = ModelDesc(uncompressedIn, sha256Buf, binaryFloats);
     }
     else if(Global::isSuffix(lower,".bin")) {
       bool binaryFloats = true;
       string uncompressed;
-      FileUtils::loadFileIntoString(fileName,expectedSha256,uncompressed);
+      string sha256Buf;
+      FileUtils::loadFileIntoString(fileName, expectedSha256, uncompressed, &sha256Buf);
       NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
       std::istream uncompressedIn(&uncompressedStreamBuf);
-      descBuf = ModelDesc(uncompressedIn,binaryFloats);
+      descBuf = ModelDesc(uncompressedIn, sha256Buf, binaryFloats);
     }
     else if(Global::isSuffix(lower,".txt.gz") || Global::isSuffix(lower,".bin.gz") || Global::isSuffix(lower,".gz")) {
       string uncompressed;
-      FileUtils::uncompressAndLoadFileIntoString(fileName,expectedSha256,uncompressed);
+      string sha256Buf;
+      FileUtils::uncompressAndLoadFileIntoString(fileName, expectedSha256, uncompressed, &sha256Buf);
 
       bool binaryFloats = !Global::isSuffix(lower,".txt.gz");
       try {
@@ -1125,7 +1130,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
         NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
         std::istream uncompressedIn(&uncompressedStreamBuf);
         //And read in the model desc
-        descBuf = ModelDesc(uncompressedIn,binaryFloats);
+        descBuf = ModelDesc(uncompressedIn, sha256Buf, binaryFloats);
       }
       catch(const StringError& e) {
         //On failure, try again to read as a .txt.gz file if the extension was ambiguous
@@ -1137,7 +1142,7 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
           try {
             NonCopyingStreamBuf uncompressedStreamBuf(uncompressed);
             std::istream uncompressedIn(&uncompressedStreamBuf);
-            descBuf = ModelDesc(uncompressedIn,binaryFloats);
+            descBuf = ModelDesc(uncompressedIn, sha256Buf, binaryFloats);
           }
           catch(const StringError& e2) {
             throw StringError(string("Could neither parse .gz model as .txt.gz model nor as .bin.gz model, errors were:\n") + e2.what() + "\n" + e.what());
@@ -1153,7 +1158,23 @@ void ModelDesc::loadFromFileMaybeGZipped(const string& fileName, ModelDesc& desc
     throw StringError("Error loading or parsing model file " + fileName + ": " + e.what());
   }
 }
+void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
+  descBuf.onnxHeader.load(onnxFile);
 
+  descBuf.version = descBuf.onnxHeader.modelVersion;
+  descBuf.name = descBuf.onnxHeader.modelName;
+  descBuf.numInputChannels = descBuf.onnxHeader.num_spatial_inputs;
+  descBuf.numInputGlobalChannels = descBuf.onnxHeader.num_global_inputs;
+  if(descBuf.numInputChannels != NNModelVersion::getNumSpatialFeatures(descBuf.version))
+    throw StringError("ONNX model requires num_spatial_inputs metadata field to match modelVersion");
+  if(descBuf.numInputGlobalChannels != NNModelVersion::getNumGlobalFeatures(descBuf.version))
+    throw StringError("ONNX model requires num_global_inputs metadata field to match modelVersion");
+
+  //descBuf.numPolicyChannels = 0;  // will not be used
+  descBuf.numValueChannels = 0;   // will not be used
+  descBuf.numScoreValueChannels = 0;
+  descBuf.numOwnershipChannels = 0;
+}
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
   static_assert(NNModelVersion::latestModelVersionImplemented == 103, "");
