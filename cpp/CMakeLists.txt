@@ -28,7 +28,7 @@ endif()
 set(BUILD_DISTRIBUTED 0 CACHE BOOL "Build with http support for contributing to distributed training")
 set(USE_BACKEND CACHE STRING "Neural net backend")
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
-set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN)
+set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ONNX-CPU ONNX-DIRECTML)
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
@@ -50,7 +50,13 @@ if(USE_BACKEND STREQUAL "CUDA")
     neuralnet/cudahelpers.cu
   )
 # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
-  if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0)
+  if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 88 89 90 100 110 103 120 121)
+    set(CMAKE_CUDA_FLAGS "-Wno-deprecated-gpu-targets")
+  elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+    set(CMAKE_CUDA_ARCHITECTURES 50 52 53 60 61 62 70 72 75 80 86 87 90 120)
+    set(CMAKE_CUDA_FLAGS "-Wno-deprecated-gpu-targets")
+  elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0)
     set(CMAKE_CUDA_ARCHITECTURES 50 52 53 60 61 62 70 72 75 80 86 87 90)
     set(CMAKE_CUDA_FLAGS "-Wno-deprecated-gpu-targets")
   elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
@@ -92,6 +98,19 @@ elseif(USE_BACKEND STREQUAL "EIGEN")
   endif()
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/eigenbackend.cpp
+    )
+elseif(USE_BACKEND STREQUAL "ONNX-CPU")
+  message(STATUS "-DUSE_BACKEND=ONNX-CPU, using ONNX Runtime CPU backend.")
+  set(NEURALNET_BACKEND_SOURCES
+    neuralnet/onnxbackend_cpu.cpp
+    )
+elseif(USE_BACKEND STREQUAL "ONNX-DIRECTML")
+  message(STATUS "-DUSE_BACKEND=ONNX-DIRECTML, using ONNX Runtime DirectML backend.")
+  if(NOT WIN32)
+    message(FATAL_ERROR "ONNX-DIRECTML backend is only supported on Windows.")
+  endif()
+  set(NEURALNET_BACKEND_SOURCES
+    neuralnet/onnxbackend_directml.cpp
     )
 elseif(USE_BACKEND STREQUAL "")
   message(WARNING "${ColorBoldRed}WARNING: Using dummy neural net backend, intended for non-neural-net testing only, will fail on any code path requiring a neural net. To use neural net, specify -DUSE_BACKEND=CUDA or -DUSE_BACKEND=TENSORRT or -DUSE_BACKEND=OPENCL or -DUSE_BACKEND=EIGEN to compile with the respective backend.${ColorReset}")
@@ -196,6 +215,7 @@ add_executable(katago
   neuralnet/modelversion.cpp
   neuralnet/nneval.cpp
   neuralnet/desc.cpp
+  neuralnet/onnxprotoreader.cpp
   ${NEURALNET_BACKEND_SOURCES}
   book/book.cpp
   book/bookcssjs.cpp
@@ -279,7 +299,9 @@ elseif(USE_BACKEND STREQUAL "TENSORRT")
     message(FATAL_ERROR "TensorRT 8.5 or greater is required but ${TENSORRT_VERSION} was found.")
   endif()
   include_directories(SYSTEM ${CUDAToolkit_INCLUDE_DIRS} ${TENSORRT_INCLUDE_DIR}) #SYSTEM is for suppressing some compiler warnings in thrust libraries
-  target_link_libraries(katago CUDA::cudart_static ${TENSORRT_LIBRARY})
+  target_link_libraries(katago CUDA::cudart_static ${TENSORRT_LIBRARY})  
+  find_library(TENSORRT_ONNX_LIBRARY nvonnxparser HINTS ${TENSORRT_ROOT_DIR} PATH_SUFFIXES lib)
+  target_link_libraries(katago ${TENSORRT_ONNX_LIBRARY})
 elseif(USE_BACKEND STREQUAL "OPENCL")
   target_compile_definitions(katago PRIVATE USE_OPENCL_BACKEND)
   find_package(OpenCL)
@@ -320,6 +342,29 @@ elseif(USE_BACKEND STREQUAL "EIGEN")
       endif()
     endif()
   endif()
+elseif(USE_BACKEND STREQUAL "ONNX-CPU")
+  target_compile_definitions(katago PRIVATE USE_ONNX_CPU_BACKEND)
+
+  set(ONNXRUNTIME_ROOT "" CACHE PATH "Root directory of ONNX Runtime installation")
+
+  find_path(ONNXRUNTIME_INCLUDE_DIR NAMES onnxruntime_cxx_api.h HINTS ${ONNXRUNTIME_ROOT} ${ONNXRUNTIME_ROOT}/include PATH_SUFFIXES include core/session)
+  find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime HINTS ${ONNXRUNTIME_ROOT} ${ONNXRUNTIME_ROOT}/lib PATH_SUFFIXES lib)
+
+  if(NOT ONNXRUNTIME_INCLUDE_DIR)
+     set(ONNXRUNTIME_INCLUDE_DIR "ONNXRUNTIME_INCLUDE_DIR-NOTFOUND" CACHE PATH "Path to ONNX Runtime include directory")
+     message(FATAL_ERROR "ONNXRUNTIME_INCLUDE_DIR not found. Please set ONNXRUNTIME_ROOT to your ONNX Runtime installation directory, or set ONNXRUNTIME_INCLUDE_DIR manually.")
+  endif()
+  if(NOT ONNXRUNTIME_LIBRARY)
+     set(ONNXRUNTIME_LIBRARY "ONNXRUNTIME_LIBRARY-NOTFOUND" CACHE FILEPATH "Path to ONNX Runtime library")
+     message(FATAL_ERROR "ONNXRUNTIME_LIBRARY not found. Please set ONNXRUNTIME_ROOT to your ONNX Runtime installation directory, or set ONNXRUNTIME_LIBRARY manually.")
+  endif()
+
+  include_directories(${ONNXRUNTIME_INCLUDE_DIR})
+  target_link_libraries(katago ${ONNXRUNTIME_LIBRARY})
+
+elseif(USE_BACKEND STREQUAL "ONNX-DIRECTML")
+  target_compile_definitions(katago PRIVATE USE_ONNX_DIRECTML_BACKEND)
+  
 endif()
 
 if(USE_BIGGER_BOARDS_EXPENSIVE)
