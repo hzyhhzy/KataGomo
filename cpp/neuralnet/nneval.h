@@ -99,7 +99,8 @@ class NNEvaluator {
     const std::vector<int>& gpuIdxByServerThread,
     const std::string& randSeed,
     bool doRandomize,
-    int defaultSymmetry
+    int defaultSymmetry,
+    int backendNumThr
   );
   ~NNEvaluator();
 
@@ -180,14 +181,15 @@ class NNEvaluator {
  private:
   const std::string modelName;
   const std::string modelFileName;
-  const int nnXLen;
-  const int nnYLen;
-  const bool requireExactNNLen;
-  const int policySize;
+  int nnXLen;
+  int nnYLen;
+  bool requireExactNNLen;
+  int policySize;
   const bool inputsUseNHWC;
   const enabled_t usingFP16Mode;
   const enabled_t usingNHWCMode;
   int numThreads;
+  int backendNumThreads;
   std::vector<int> gpuIdxByServerThread;
   const std::string randSeed;
   const bool debugSkipNeuralNet;
@@ -239,7 +241,7 @@ class NNEvaluator {
   int m_currentResultBufsLen; //Number of rows used in in the latest (not yet full) resultBufss.
   int m_currentResultBufsIdx; //Index of the current resultBufs being filled.
   int m_oldestResultBufsIdx; //Index of the oldest resultBufs that still needs to be processed by a server thread
-
+  friend class ONNXModelHeader;
  public:
   //Helper, for internal use only
   void serve(NNServerBuf& buf, Rand& rand, int gpuIdxForThisThread, int serverThreadIdx);
