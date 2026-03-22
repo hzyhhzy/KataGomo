@@ -10,6 +10,7 @@
 
 #include "../game/rules.h"
 #include "../neuralnet/activations.h"
+#include "../neuralnet/onnxprotoreader.h"
 
 struct ConvLayerDesc {
   std::string name;
@@ -258,6 +259,7 @@ struct ValueHeadDesc {
 
 struct ModelDesc {
   std::string name;
+  std::string sha256;
   int version;
   int numInputChannels;
   int numInputGlobalChannels;
@@ -265,13 +267,15 @@ struct ModelDesc {
   int numScoreValueChannels;
   int numOwnershipChannels;
 
+  ONNXModelHeader onnxHeader;
+
   TrunkDesc trunk;
   PolicyHeadDesc policyHead;
   ValueHeadDesc valueHead;
 
   ModelDesc();
   ~ModelDesc();
-  ModelDesc(std::istream& in, bool binaryFloats);
+  ModelDesc(std::istream& in, const std::string& sha256_, bool binaryFloats);
   ModelDesc(ModelDesc&& other);
 
   ModelDesc(const ModelDesc&) = delete;
@@ -285,7 +289,8 @@ struct ModelDesc {
   //Loads a model from a file that may or may not be gzipped, storing it in descBuf
   //If expectedSha256 is nonempty, will also verify sha256 of the loaded data.
   static void loadFromFileMaybeGZipped(const std::string& fileName, ModelDesc& descBuf, const std::string& expectedSha256);
-
+  static void loadFromONNX(const std::string& onnxFile, ModelDesc& descBuf);
+  
   //Return the "nearest" supported ruleset to desiredRules by this model.
   //Fills supported with true if desiredRules itself was exactly supported, false if some modifications had to be made.
   Rules getSupportedRules(const Rules& desiredRules, bool& supported) const;

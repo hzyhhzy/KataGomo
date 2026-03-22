@@ -135,7 +135,9 @@ int NeuralNet::getModelVersion(const LoadedModel* loadedModel) {
 Rules NeuralNet::getSupportedRules(const LoadedModel* loadedModel, const Rules& desiredRules, bool& supported) {
   return loadedModel->modelDesc.getSupportedRules(desiredRules, supported);
 }
-
+const ModelDesc& NeuralNet::getModelDesc(const LoadedModel* loadedModel) {
+  return loadedModel->modelDesc;
+}
 //---------------------------------------------------------------------------------------------------------
 
 // Wraps cl_program with a destructor that calls clReleaseProgram
@@ -2626,8 +2628,10 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool requireExactNNLen,
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
-  int serverThreadIdx
-) {
+  int serverThreadIdx,
+  int backendNumThreads) {
+  (void)backendNumThreads;  // Unused
+
   auto deviceStr = [&]() {
     if(gpuIdxForThisThread < 0)
       return string("");
