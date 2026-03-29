@@ -25,7 +25,7 @@ using namespace nvinfer1;
 
 // Define this to use plan cache instead of timing cache, which enables instant
 // initialization at the cost of excessive disk space usage
-//#define CACHE_TENSORRT_PLAN
+#define CACHE_TENSORRT_PLAN
 
 const int TensorRT_BuilderOptimizationLevel = 3; //0 for fast init, 2 is default, 5 is max
 
