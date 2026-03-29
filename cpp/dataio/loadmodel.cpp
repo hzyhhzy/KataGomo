@@ -20,6 +20,7 @@ std::time_t to_time_t(TP tp)
 static const vector<string> ACCEPTABLE_MODEL_SUFFIXES {
   ".bin.gz",
   ".bin",
+  ".onnx",
   "model.txt.gz",
   "model.txt"
 };
@@ -36,6 +37,8 @@ static const vector<string> GENERIC_MODEL_NAMES {
   "MODEL.bin",
   "MODEL.txt.gz",
   "MODEL.txt"
+  "model.onnx",
+  "MODEL.onnx"
   "model.ckpt",
   "Model.ckpt"
   "MODEL.ckpt",
