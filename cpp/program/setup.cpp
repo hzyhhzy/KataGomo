@@ -641,6 +641,13 @@ vector<SearchParams> Setup::loadParams(
     else
       params.useForbiddenInput = true;
 
+    if(cfg.contains("useHistoryInput" + idxStr))
+      params.useHistoryInput = cfg.getBool("useHistoryInput" + idxStr);
+    else if(cfg.contains("useHistoryInput"))
+      params.useHistoryInput = cfg.getBool("useHistoryInput");
+    else
+      params.useHistoryInput = true;
+
     if(cfg.contains("fourAttackPolicyReduce" + idxStr))
       params.fourAttackPolicyReduce = cfg.getFloat("fourAttackPolicyReduce" + idxStr, 0.0f, 5.0f);
     else if(cfg.contains("fourAttackPolicyReduce"))

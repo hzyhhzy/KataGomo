@@ -14,6 +14,7 @@ void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf) {
   MiscNNInputParams nnInputParams;
   nnInputParams.noResultUtilityForWhite = searchParams.noResultUtilityForWhite;
   nnInputParams.useForbiddenInput = searchParams.useForbiddenInput;
+  nnInputParams.useHistoryInput = searchParams.useHistoryInput;
   nnInputParams.useVCFInput = searchParams.useVCFInput && hist.rules.maxMoves == 0;
   nnInputParams.fourAttackPolicyReduce = searchParams.fourAttackPolicyReduce;
   nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
@@ -41,6 +42,7 @@ bool Search::initNodeNNOutput(
   MiscNNInputParams nnInputParams;
   nnInputParams.noResultUtilityForWhite = searchParams.noResultUtilityForWhite;
   nnInputParams.useForbiddenInput = searchParams.useForbiddenInput;
+  nnInputParams.useHistoryInput = searchParams.useHistoryInput;
   nnInputParams.useVCFInput = searchParams.useVCFInput && thread.history.rules.maxMoves == 0;
   nnInputParams.fourAttackPolicyReduce = searchParams.fourAttackPolicyReduce;
   nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;

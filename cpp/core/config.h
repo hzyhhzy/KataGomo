@@ -9,6 +9,9 @@
 //训练数据带着禁手特征的概率
 #define TRAINING_DATA_FORBIDDEN_FEATURE_PROB 0.5
 
+//feature of the last move
+#define TRAINING_DATA_HISTORY_FEATURE_PROB 1.0
+
 //#define FORGOMOCUP
 
 

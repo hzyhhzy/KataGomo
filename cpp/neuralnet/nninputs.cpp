@@ -43,6 +43,7 @@ const Hash128 MiscNNInputParams::ZOBRIST_NO_RESULT_UTILITY = Hash128(0x391d24501
 const Hash128 MiscNNInputParams::ZOBRIST_USE_VCF = Hash128(0xd8b858bf3159e999ULL, 0x2eeaaa4d750b89e0ULL);
 const Hash128 MiscNNInputParams::ZOBRIST_USE_FORBIDDEN_FEATURE = Hash128(0xc07f051dcf020534ULL, 0xf24d6bb55323e505ULL);
 const Hash128 MiscNNInputParams::ZOBRIST_FOUR_POLICY_REDUCE_BASE = Hash128(0x80FF1EFC3F63C521ULL, 0xC5725C983B4B7D74ULL);
+const Hash128 MiscNNInputParams::ZOBRIST_USE_HISTORY_FEATURE = Hash128(0x794026be0f1e621dULL, 0x59e2ac82d0836797ULL);
 //-----------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------
 
@@ -493,6 +494,8 @@ Hash128 NNInputs::getHash(
     hash ^= MiscNNInputParams::ZOBRIST_USE_VCF;
   if(nnInputParams.useForbiddenInput)
     hash ^= MiscNNInputParams::ZOBRIST_USE_FORBIDDEN_FEATURE;
+  if(nnInputParams.useHistoryInput)
+    hash ^= MiscNNInputParams::ZOBRIST_USE_HISTORY_FEATURE;
 
   //Fold in asymmetric playout indicator
   if(nnInputParams.playoutDoublingAdvantage != 0) {
@@ -719,14 +722,16 @@ void NNInputs::fillRowV101(
   // 3       己方黑棋禁手
   // 4       对方黑棋禁手
   // 5       胜点（如果有）
+  // 6       上一步的位置（如果启用history feature）
 
   // gf
+  // 1       是否有history feature
+  // 2       冲四降policy（已弃用）
   // 3       无禁/有禁0，无禁六不胜1
   // 4       无禁/无禁六不胜0，有禁1
   // 5       无禁/无禁六不胜0，有禁黑-1，有禁白1
   // 6       是否使用禁手特征（两种无禁恒为0）
   // 7~12    自己和对手的VCF（是否使用vcf，vcf的结果是什么）
-  // 38      胜点是否是pass（仅可能用于vcn防守方）
 
   // 13  非VCN模式：和棋胜率，1.0是和棋己方胜，-1.0是和棋对方胜
   //     VCN模式：0
@@ -752,13 +757,15 @@ void NNInputs::fillRowV101(
   //
   // 30  maxmoves!=0
   // if(maxmoves!=0)
-  //  31  maxmoves/boardarea
-  //  32  moves/boardarea
-  //  33  exp(-(maxmoves-moves)/50.0)
-  //  34  exp(-(maxmoves-moves)/15.0)
-  //  35  exp(-(maxmoves-moves)/5.0)
-  //  36  exp(-(maxmoves-moves)/1.5)
-  //  37 2*((maxmoves-moves)%2)-1
+  //   31  maxmoves/boardarea
+  //   32  moves/boardarea
+  //   33  exp(-(maxmoves-moves)/50.0)
+  //   34  exp(-(maxmoves-moves)/15.0)
+  //   35  exp(-(maxmoves-moves)/5.0)
+  //   36  exp(-(maxmoves-moves)/1.5)
+  //   37 2*((maxmoves-moves)%2)-1
+  // 
+  // 38      胜点是否是pass（仅可能用于vcn防守方）
 
 
   bool hasForbiddenFeature = nnInputParams.useForbiddenInput && hist.rules.basicRule == Rules::BASICRULE_RENJU;
@@ -798,6 +805,24 @@ void NNInputs::fillRowV101(
       }
     }
   }
+
+
+
+  // History feature
+  if(
+    nnInputParams.useHistoryInput && 
+    hist.moveHistory.size() > 0 &&
+    hist.moveHistory[hist.moveHistory.size() - 1].pla == opp) {
+
+    Loc prev1Loc = hist.moveHistory[hist.moveHistory.size() - 1].loc;
+    rowGlobal[1] = 1.0f;  // has history feature
+    if(board.isOnBoard(prev1Loc)) {
+      int pos = NNPos::locToPos(prev1Loc, xSize, nnXLen, nnYLen);
+      setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
+    }
+  }
+
+
 
   rowGlobal[2] = nnInputParams.fourAttackPolicyReduce;
   rowGlobal[3] = hist.rules.basicRule == Rules::BASICRULE_STANDARD;

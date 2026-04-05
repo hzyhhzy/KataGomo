@@ -40,6 +40,7 @@ struct MiscNNInputParams {
   bool useVCFInput = true;
   bool useForbiddenInput = true;
   double fourAttackPolicyReduce = 0.0;
+  bool useHistoryInput = true;
 
   GameLogic::ResultsBeforeNN resultsBeforeNN = GameLogic::ResultsBeforeNN();
 
@@ -52,6 +53,7 @@ struct MiscNNInputParams {
   static const Hash128 ZOBRIST_USE_VCF;
   static const Hash128 ZOBRIST_USE_FORBIDDEN_FEATURE;
   static const Hash128 ZOBRIST_FOUR_POLICY_REDUCE_BASE;
+  static const Hash128 ZOBRIST_USE_HISTORY_FEATURE;
 };
 
 namespace NNInputs {
