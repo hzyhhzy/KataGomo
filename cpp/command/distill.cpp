@@ -185,6 +185,7 @@ int MainCmds::distill(const vector<string>& args) {
       Setup::SETUP_FOR_OTHER
     );
 
+    int maxBatchSizeForLabelModel = 1;
     logger.write("Loaded latest neural net " + modelName + " from: " + modelFile);
     nnEvalLabel = Setup::initializeNNEvaluator(
        labelModel,
@@ -197,10 +198,10 @@ int MainCmds::distill(const vector<string>& args) {
        expectedConcurrentEvals,
        maxBoardXSizeUsed,
        maxBoardYSizeUsed,
-       defaultMaxBatchSize,
+       maxBatchSizeForLabelModel,
        defaultRequireExactNNLen,
        disableFP16,
-       Setup::SETUP_FOR_OTHER);
+       Setup::SETUP_FOR_DISTRIBUTED);
      logger.write("Loaded distill neural net " + modelName + " from: " + modelFile);
 
     string modelOutputDir = outputDir + "/" + modelName;
