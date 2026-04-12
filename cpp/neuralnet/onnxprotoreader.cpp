@@ -207,6 +207,7 @@ void ONNXModelHeader::load(const std::string& onnxFile) {
 
 
 void ONNXModelHeader::maybeChangeNNLen(NNEvaluator& nneval) const {
+  return;
   if(!isOnnx)
     return; // not onnx, do nothing
 

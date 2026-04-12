@@ -137,7 +137,7 @@ int MainCmds::analysis(const vector<string>& args) {
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_ANALYSIS
     );
   }

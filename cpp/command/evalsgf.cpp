@@ -217,7 +217,7 @@ int MainCmds::evalsgf(const vector<string>& args) {
     string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      board.x_size,board.y_size,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      board.x_size,board.y_size,board.z_size,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_GTP
     );
   }

@@ -50,6 +50,7 @@ void NeuralNet::globalCleanup() {
 struct ComputeContext {
   int nnXLen;
   int nnYLen;
+  int nnZLen;
   enabled_t useFP16Mode;
   string onnxModelPath;
 };
@@ -81,6 +82,7 @@ ComputeContext* NeuralNet::createComputeContext(
   Logger* logger,
   int nnXLen,
   int nnYLen,
+  int nnZLen,
   const string& openCLTunerFile,
   const string& homeDataDirOverride,
   bool openCLReTunePerBoardSize,
@@ -95,6 +97,7 @@ ComputeContext* NeuralNet::createComputeContext(
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
+  context->nnZLen = nnZLen;
   context->useFP16Mode = useFP16Mode;
   context->onnxModelPath = loadedModel->fileName;
   return context;
@@ -281,8 +284,8 @@ struct InputBuffers {
   }
 };
 
-InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen) {
-  return new InputBuffers(loadedModel, maxBatchSize, nnXLen, nnYLen);
+InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen, int nnZLen) {
+  return new InputBuffers(loadedModel, maxBatchSize, nnXLen, nnYLen * nnZLen);
 }
 
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {

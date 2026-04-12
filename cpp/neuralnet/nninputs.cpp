@@ -333,8 +333,18 @@ namespace {
     }
   }
 
-  static void copyWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry, bool reverse) {
-    int totalSize = hSize * wSize;
+  static void copyWithSymmetry(
+    const float* src,
+    float* dst,
+    int nSize,
+    int hSize,
+    int wSize,
+    int zSize,
+    int cSize,
+    bool useNHWC,
+    int symmetry,
+    bool reverse) {
+    int totalSize = hSize * wSize * hSize;
     if(totalSize == Board::MAX_PLAY_SIZE) {
       int appliedSymmetry = reverse ? SymmetryHelpers::invert(symmetry) : symmetry;
       if(useNHWC) {
@@ -361,17 +371,26 @@ namespace {
       }
       return;
     }
-    copyWithSymmetry2D(src, dst, nSize, hSize, wSize, cSize, useNHWC, symmetry, reverse);
+    //copyWithSymmetry2D(src, dst, nSize, hSize, wSize, cSize, useNHWC, symmetry, reverse);
   }
 }
 
 
-void SymmetryHelpers::copyInputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry) {
-  copyWithSymmetry(src, dst, nSize, hSize, wSize, cSize, useNHWC, symmetry, false);
+void SymmetryHelpers::copyInputsWithSymmetry(
+  const float* src,
+  float* dst,
+  int nSize,
+  int hSize,
+  int wSize,
+  int zSize,
+  int cSize,
+  bool useNHWC,
+  int symmetry) {
+  copyWithSymmetry(src, dst, nSize, hSize, wSize, zSize, cSize, useNHWC, symmetry, false);
 }
 
-void SymmetryHelpers::copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int symmetry) {
-  copyWithSymmetry(src, dst, nSize, hSize, wSize, 1, false, symmetry, true);
+void SymmetryHelpers::copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int zSize, int symmetry) {
+  copyWithSymmetry(src, dst, nSize, hSize, wSize, zSize, 1, false, symmetry, true);
 }
 
 int SymmetryHelpers::invert(int symmetry) {

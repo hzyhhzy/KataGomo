@@ -30,6 +30,7 @@ namespace Setup {
     int expectedConcurrentEvals,
     int defaultNNXLen,
     int defaultNNYLen,
+    int defaultNNZLen,
     int defaultMaxBatchSize,
     bool defaultRequireExactNNLen,
     bool disableFP16,
@@ -47,6 +48,7 @@ namespace Setup {
     int expectedConcurrentEvals,
     int defaultNNXLen,
     int defaultNNYLen,
+    int defaultNNZLen,
     int defaultMaxBatchSize,
     bool defaultRequireExactNNLen,
     bool disableFP16,
@@ -77,12 +79,13 @@ namespace Setup {
     ConfigParser& cfg
   );
 
-  //Returns true if the user's config specified the size, false if it did not. If false, does not set defaultBoardXSizeRet or defaultBoardYSizeRet.
-  bool loadDefaultBoardXYSize(
+  //Returns true if the user's config specified the size, false if it did not. If false, does not set defaultBoardXSizeRet, defaultBoardYSizeRet, or defaultBoardZSizeRet.
+  bool loadDefaultBoardXYZSize(
     ConfigParser& cfg,
     Logger& logger,
     int& defaultBoardXSizeRet,
-    int& defaultBoardYSizeRet
+    int& defaultBoardYSizeRet,
+    int& defaultBoardZSizeRet
   );
 
   std::string loadHomeDataDirOverride(

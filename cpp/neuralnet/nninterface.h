@@ -59,6 +59,7 @@ namespace NeuralNet {
     Logger* logger,
     int nnXLen,
     int nnYLen,
+    int nnZLen,
     const std::string& openCLTunerFile,
     const std::string& homeDataDirOverride,
     bool openCLReTunePerBoardSize,
@@ -95,7 +96,7 @@ namespace NeuralNet {
 
   //Input Buffers ---------------------------------------------------------------
 
-  InputBuffers* createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen);
+  InputBuffers* createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen, int nnZLen);
   void freeInputBuffers(InputBuffers* buffers);
 
   //The neural net takes in 2 tensors as input.

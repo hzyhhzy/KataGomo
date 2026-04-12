@@ -83,7 +83,7 @@ int MainCmds::testgpuerror(const vector<string>& args) {
     const bool disableFP16 = false;
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      boardSize,boardSize,maxBatchSize,defaultRequireExactNNLen,disableFP16,
+      boardSize,boardSize,boardSize,maxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_BENCHMARK
     );
   }
@@ -93,7 +93,7 @@ int MainCmds::testgpuerror(const vector<string>& args) {
       const bool disableFP16 = true;
       nnEval32 = Setup::initializeNNEvaluator(
         modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-        boardSize,boardSize,maxBatchSize,defaultRequireExactNNLen,disableFP16,
+        boardSize,boardSize,boardSize,maxBatchSize,defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_BENCHMARK
       );
     }

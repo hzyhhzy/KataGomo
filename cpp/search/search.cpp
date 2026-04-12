@@ -82,6 +82,7 @@ Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const strin
    nnEvaluator(nnEval),
    nnXLen(),
    nnYLen(),
+   nnZLen(),
    policySize(),
    rootNode(NULL),
    nodeTable(NULL),
@@ -96,9 +97,9 @@ Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const strin
   assert(logger != NULL);
   nnXLen = nnEval->getNNXLen();
   nnYLen = nnEval->getNNYLen();
-  assert(nnXLen > 0 && nnXLen <= NNPos::MAX_BOARD_LEN);
-  assert(nnYLen > 0 && nnYLen <= NNPos::MAX_BOARD_LEN);
-  policySize = NNPos::getPolicySize(nnXLen,nnYLen);
+  nnZLen = nnEval->getNNZLen();
+  assert(nnXLen > 0 && nnYLen > 0 && nnZLen > 0 && nnXLen * nnYLen * nnZLen <= NNPos::MAX_NN_LEN);
+  policySize = NNPos::getPolicySize(nnXLen * nnYLen * nnZLen);
 
 
   valueWeightDistribution = new DistributionTable(
@@ -215,9 +216,9 @@ void Search::setNNEval(NNEvaluator* nnEval) {
   nnEvaluator = nnEval;
   nnXLen = nnEval->getNNXLen();
   nnYLen = nnEval->getNNYLen();
-  assert(nnXLen > 0 && nnXLen <= NNPos::MAX_BOARD_LEN);
-  assert(nnYLen > 0 && nnYLen <= NNPos::MAX_BOARD_LEN);
-  policySize = NNPos::getPolicySize(nnXLen,nnYLen);
+  nnZLen = nnEval->getNNZLen();
+  assert(nnXLen > 0 && nnYLen > 0 && nnZLen > 0 && nnXLen * nnYLen * nnZLen <= NNPos::MAX_NN_LEN);
+  policySize = NNPos::getPolicySize(nnXLen * nnYLen * nnZLen);
 }
 
 void Search::clearSearch() {
@@ -500,9 +501,9 @@ void Search::runWholeSearch(
 //should reasonably tolerate just continuing. We do NOT want to clear history because we could inadvertently make a move
 //that an external ruleset COULD think violated superko.
 void Search::beginSearch(bool pondering) {
-  if(rootBoard.x_size > nnXLen || rootBoard.y_size > nnYLen)
-    throw StringError("Search got from NNEval nnXLen = " + Global::intToString(nnXLen) +
-                      " nnYLen = " + Global::intToString(nnYLen) + " but was asked to search board with larger x or y size");
+  if(rootBoard.x_size > nnXLen || rootBoard.y_size > nnYLen || rootBoard.z_size > nnZLen)
+    throw StringError("Search got from NNEval nnXLen = " + Global::intToString(nnXLen) + " nnYLen = " + Global::intToString(nnYLen) +
+      " nnZLen = " + Global::intToString(nnZLen) + " but was asked to search board with larger x or y or z size");
 
   rootBoard.checkConsistency();
 

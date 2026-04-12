@@ -35,11 +35,14 @@ static void writeLine(
   const Board board = search->getRootBoard();
   int nnXLen = search->nnXLen;
   int nnYLen = search->nnYLen;
+  int nnZLen = search->nnZLen;
 
   cout << board.x_size << " ";
   cout << board.y_size << " ";
+  cout << board.z_size << " ";
   cout << nnXLen << " ";
   cout << nnYLen << " ";
+  cout << nnZLen << " ";
   if(baseHist.isGameFinished) {
     cout << PlayerIO::playerToString(baseHist.winner) << " ";
     cout << baseHist.isResignation << " ";
@@ -387,7 +390,7 @@ int MainCmds::demoplay(const vector<string>& args) {
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_OTHER
     );
   }
@@ -1032,7 +1035,7 @@ int MainCmds::dataminesgfs(const vector<string>& args) {
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_ANALYSIS
     );
   }
@@ -1923,7 +1926,7 @@ int MainCmds::trystartposes(const vector<string>& args) {
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_ANALYSIS
     );
   }
@@ -2067,7 +2070,7 @@ int MainCmds::viewstartposes(const vector<string>& args) {
       const string expectedSha256 = "";
       nnEval = Setup::initializeNNEvaluator(
         modelFile,modelFile,expectedSha256,cfg,logger,rand,maxConcurrentEvals,expectedConcurrentEvals,
-        Board::MAX_LEN,Board::MAX_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        Board::MAX_LEN,Board::MAX_LEN,Board::MAX_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_GTP
       );
     }
@@ -2204,7 +2207,7 @@ int MainCmds::sampleinitializations(const vector<string>& args) {
       const string expectedSha256 = "";
       nnEval = Setup::initializeNNEvaluator(
         modelFile,modelFile,expectedSha256,cfg,logger,rand,maxConcurrentEvals,expectedConcurrentEvals,
-        Board::MAX_LEN,Board::MAX_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        Board::MAX_LEN,Board::MAX_LEN,Board::MAX_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_GTP
       );
     }

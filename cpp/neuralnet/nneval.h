@@ -85,6 +85,7 @@ class NNEvaluator {
     int maxConcurrentEvals,
     int nnXLen,
     int nnYLen,
+    int nnZLen,
     bool requireExactNNLen,
     bool inputsUseNHWC,
     int nnCacheSizePowerOfTwo,
@@ -118,6 +119,7 @@ class NNEvaluator {
   std::set<int> getGpuIdxs() const;
   int getNNXLen() const;
   int getNNYLen() const;
+  int getNNZLen() const;
   enabled_t getUsingFP16Mode() const;
   enabled_t getUsingNHWCMode() const;
 
@@ -183,6 +185,7 @@ class NNEvaluator {
   const std::string modelFileName;
   int nnXLen;
   int nnYLen;
+  int nnZLen;
   bool requireExactNNLen;
   int policySize;
   const bool inputsUseNHWC;

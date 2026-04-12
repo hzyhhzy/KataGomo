@@ -349,7 +349,14 @@ struct GTPEngine {
   }
 
   //Specify -1 for the sizes for a default
-  void setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr) {
+  void setOrResetBoardSize(
+    ConfigParser& cfg,
+    Logger& logger,
+    Rand& seedRand,
+    int boardXSize,
+    int boardYSize,
+    int boardZSize,
+    bool loggingToStderr) {
     if(nnEval != NULL && boardXSize == nnEval->getNNXLen() && boardYSize == nnEval->getNNYLen())
       return;
     if(nnEval != NULL) {
@@ -366,6 +373,7 @@ struct GTPEngine {
     if(boardXSize == -1 || boardYSize == -1) {
       boardXSize = Board::DEFAULT_LEN;
       boardYSize = Board::DEFAULT_LEN;
+      boardZSize = Board::DEFAULT_LEN;
       wasDefault = true;
     }
 
@@ -375,20 +383,22 @@ struct GTPEngine {
     bool defaultRequireExactNNLen = true;
     int nnLenX = boardXSize;
     int nnLenY = boardYSize;
+    int nnLenZ = boardZSize;
     
     if(cfg.contains("gtpDebugForceMaxNNSize") && cfg.getBool("gtpDebugForceMaxNNSize")) {
       defaultRequireExactNNLen = false;
       nnLenX = Board::MAX_LEN;
       nnLenY = Board::MAX_LEN;
+      nnLenZ = Board::MAX_LEN;
     }
     const bool disableFP16 = false;
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      nnLenX,nnLenY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      nnLenX,nnLenY,nnLenZ,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_GTP
     );
-    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
+    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()) + " nnZLen " + Global::intToString(nnEval->getNNZLen()));
 
     {
       bool rulesWereSupported;
@@ -430,7 +440,8 @@ struct GTPEngine {
 
     int viewWidth = getGTPViewCols() * boardLen;
     int viewHeight = ((boardLen + getGTPViewCols() - 1) / getGTPViewCols()) * boardLen;
-    if(nnEval != NULL && viewWidth == nnEval->getNNXLen() && viewHeight == nnEval->getNNYLen() &&
+    int nnLen = boardLen * boardLen * boardLen;
+    if(nnEval != NULL && boardLen == nnEval->getNNXLen() && boardLen == nnEval->getNNYLen() && boardLen == nnEval->getNNZLen() &&
        bot != NULL && bot->getRootBoard().x_size == boardLen && bot->getRootBoard().y_size == boardLen && bot->getRootBoard().z_size == boardLen)
       return;
     if(nnEval != NULL) {
@@ -447,22 +458,24 @@ struct GTPEngine {
     const int expectedConcurrentEvals = params.numThreads;
     const int defaultMaxBatchSize = std::max(8,((params.numThreads+3)/4)*4);
     bool defaultRequireExactNNLen = true;
-    int nnLenX = viewWidth;
-    int nnLenY = viewHeight;
+    int nnLenX = boardLen;
+    int nnLenY = boardLen;
+    int nnLenZ = boardLen;
 
     if(cfg.contains("gtpDebugForceMaxNNSize") && cfg.getBool("gtpDebugForceMaxNNSize")) {
       defaultRequireExactNNLen = false;
-      nnLenX = getGTPViewCols() * Board::MAX_LEN;
-      nnLenY = ((Board::MAX_LEN + getGTPViewCols() - 1) / getGTPViewCols()) * Board::MAX_LEN;
+      nnLenX = Board::MAX_LEN;
+      nnLenY = Board::MAX_LEN;
+      nnLenZ = Board::MAX_LEN;
     }
     const bool disableFP16 = false;
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      nnLenX,nnLenY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      nnLenX,nnLenY,nnLenZ,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_GTP
     );
-    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
+    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()) + " nnZLen " + Global::intToString(nnEval->getNNZLen()));
 
     {
       bool rulesWereSupported;
@@ -472,9 +485,9 @@ struct GTPEngine {
       }
     }
 
-    logger.write("Initializing 3D board with boardLen " + Global::intToString(boardLen) + " gtpViewWidth " + Global::intToString(viewWidth) + " gtpViewHeight " + Global::intToString(viewHeight));
+    logger.write("Initializing 3D board with boardLen " + Global::intToString(boardLen) + " nnLen " + Global::intToString(nnLen) + " gtpViewWidth " + Global::intToString(viewWidth) + " gtpViewHeight " + Global::intToString(viewHeight));
     if(!loggingToStderr)
-      cerr << ("Initializing 3D board with boardLen " + Global::intToString(boardLen) + " gtpViewWidth " + Global::intToString(viewWidth) + " gtpViewHeight " + Global::intToString(viewHeight)) << endl;
+      cerr << ("Initializing 3D board with boardLen " + Global::intToString(boardLen) + " nnLen " + Global::intToString(nnLen) + " gtpViewWidth " + Global::intToString(viewWidth) + " gtpViewHeight " + Global::intToString(viewHeight)) << endl;
 
     string searchRandSeed;
     if(cfg.contains("searchRandSeed"))
@@ -1349,7 +1362,8 @@ int MainCmds::gtp(const vector<string>& args) {
 
   int defaultBoardXSize = -1;
   int defaultBoardYSize = -1;
-  Setup::loadDefaultBoardXYSize(cfg,logger,defaultBoardXSize,defaultBoardYSize);
+  int defaultBoardZSize = -1;
+  Setup::loadDefaultBoardXYZSize(cfg,logger,defaultBoardXSize,defaultBoardYSize,defaultBoardZSize);
 
   const bool forDeterministicTesting =
     cfg.contains("forDeterministicTesting") ? cfg.getBool("forDeterministicTesting") : false;
@@ -1370,7 +1384,7 @@ int MainCmds::gtp(const vector<string>& args) {
     genmoveWideRootNoise,analysisWideRootNoise,
     perspective,analysisPVLen
   );
-  engine->setOrResetBoardSize(cfg,logger,seedRand,defaultBoardXSize,defaultBoardYSize,logger.isLoggingToStderr());
+  engine->setOrResetBoardSize(cfg, logger, seedRand, defaultBoardXSize, defaultBoardYSize, defaultBoardZSize, logger.isLoggingToStderr());
 
   //If nobody specified any time limit in any way, then assume a relatively fast time control
   if(!cfg.contains("maxPlayouts") && !cfg.contains("maxVisits") && !cfg.contains("maxTime")) {
@@ -2397,7 +2411,8 @@ int MainCmds::gtp(const vector<string>& args) {
           }
 
           if(sgfParseSuccess) {
-            engine->setOrResetBoardSize(cfg,logger,seedRand,sgfBoard.x_size,sgfBoard.y_size,logger.isLoggingToStderr());
+            assert(false);
+            engine->setOrResetBoardSize(cfg,logger,seedRand,sgfBoard.x_size,sgfBoard.y_size, 1000,logger.isLoggingToStderr());
             engine->setPositionAndRules(sgfNextPla, sgfBoard, sgfHist, sgfInitialBoard, sgfInitialNextPla, sgfHist.moveHistory);
           }
         }

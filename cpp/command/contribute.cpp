@@ -878,7 +878,7 @@ int MainCmds::contribute(const vector<string>& args) {
       const bool disableFP16 = false;
       nnEval = Setup::initializeNNEvaluator(
         modelName,modelFile,modelInfo.sha256,*userCfg,logger,rand,maxConcurrentEvals,expectedConcurrentEvals,
-        NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
         Setup::SETUP_FOR_DISTRIBUTED
       );
       assert(!nnEval->isNeuralNetLess() || modelFile == "/dev/null");
@@ -892,7 +892,7 @@ int MainCmds::contribute(const vector<string>& args) {
         const bool disableFP16 = true;
         nnEval32 = Setup::initializeNNEvaluator(
           modelName,modelFile,modelInfo.sha256,*userCfg,logger,rand,maxConcurrentEvals,expectedConcurrentEvals,
-          NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+          NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,NNPos::MAX_BOARD_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
           Setup::SETUP_FOR_DISTRIBUTED
         );
       }

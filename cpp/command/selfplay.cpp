@@ -165,7 +165,7 @@ int MainCmds::selfplay(const vector<string>& args) {
     Rand rand;
      NNEvaluator* nnEval = Setup::initializeNNEvaluator(
       modelName,modelFile,expectedSha256,cfg,logger,rand,maxConcurrentEvals,expectedConcurrentEvals,
-      maxBoardXSizeUsed,maxBoardYSizeUsed,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      maxBoardXSizeUsed,maxBoardYSizeUsed,Board::MAX_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_OTHER
     );
     logger.write("Loaded latest neural net " + modelName + " from: " + modelFile);

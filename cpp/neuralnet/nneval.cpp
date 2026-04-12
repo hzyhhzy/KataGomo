@@ -37,8 +37,12 @@ NNServerBuf::NNServerBuf(const NNEvaluator& nnEval, const LoadedModel* model)
    resultBufs(NULL)
 {
   int maxNumRows = nnEval.getMaxBatchSize();
-  if(model != NULL)
-    inputBuffers = NeuralNet::createInputBuffers(model,maxNumRows,nnEval.getNNXLen(),nnEval.getNNYLen());
+  if(model != NULL) {
+    int nnXLen = nnEval.getNNXLen();
+    int nnYLen = nnEval.getNNYLen();
+    int nnZLen = nnEval.getNNZLen();
+    inputBuffers = NeuralNet::createInputBuffers(model,maxNumRows,nnXLen,nnYLen,nnZLen);
+  }
   resultBufs = new NNResultBuf*[maxNumRows];
   for(int i = 0; i < maxNumRows; i++)
     resultBufs[i] = NULL;
@@ -64,6 +68,7 @@ NNEvaluator::NNEvaluator(
   int maxConcurrentEvals,
   int xLen,
   int yLen,
+  int zLen,
   bool rExactNNLen,
   bool iUseNHWC,
   int nnCacheSizePowerOfTwo,
@@ -85,8 +90,9 @@ NNEvaluator::NNEvaluator(
    modelFileName(mFileName),
    nnXLen(xLen),
    nnYLen(yLen),
+   nnZLen(zLen),
    requireExactNNLen(rExactNNLen),
-   policySize(NNPos::getPolicySize(xLen,yLen)),
+   policySize(NNPos::getPolicySize(xLen * yLen * zLen)),
    inputsUseNHWC(iUseNHWC),
    usingFP16Mode(useFP16Mode),
    usingNHWCMode(useNHWCMode),
@@ -122,10 +128,8 @@ NNEvaluator::NNEvaluator(
    m_currentResultBufsIdx(0),
    m_oldestResultBufsIdx(0)
 {
-  if(nnXLen > NNPos::MAX_BOARD_LEN)
-    throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
-  if(nnYLen > NNPos::MAX_BOARD_LEN)
-    throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
+  if(nnXLen <= 0 || nnYLen <= 0 || nnZLen <= 0 || nnXLen * nnYLen * nnZLen > NNPos::MAX_NN_LEN)
+    throw StringError("Maximum supported nnEval volume is " + Global::intToString(NNPos::MAX_NN_LEN));
   if(maxConcurrentEvals <= 0)
     throw StringError("maxConcurrentEvals is negative: " + Global::intToString(maxConcurrentEvals));
   if(maxBatchSize <= 0)
@@ -136,7 +140,7 @@ NNEvaluator::NNEvaluator(
   if(logger != NULL) {
     logger->write(
       "Initializing neural net buffer to be size " +
-      Global::intToString(nnXLen) + " * " + Global::intToString(nnYLen) +
+      Global::intToString(nnXLen) + " * " + Global::intToString(nnYLen) + " * " + Global::intToString(nnZLen) +
       (requireExactNNLen ? " exactly" : " allowing smaller boards")
     );
   }
@@ -164,13 +168,11 @@ NNEvaluator::NNEvaluator(
     const ModelDesc& desc = NeuralNet::getModelDesc(loadedModel);
     if(desc.onnxHeader.isOnnx) {
       desc.onnxHeader.maybeChangeNNLen(*this);
-      if(nnXLen > NNPos::MAX_BOARD_LEN)
-        throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
-      if(nnYLen > NNPos::MAX_BOARD_LEN)
-        throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
+      if(nnXLen <= 0 || nnYLen <= 0 || nnZLen <= 0 || nnXLen * nnYLen * nnZLen > NNPos::MAX_NN_LEN)
+        throw StringError("Maximum supported nnEval volume is " + Global::intToString(NNPos::MAX_NN_LEN));
     }
     computeContext = NeuralNet::createComputeContext(
-      gpuIdxs,logger,nnXLen,nnYLen,
+      gpuIdxs,logger,nnXLen,nnYLen,nnZLen,
       openCLTunerFile,homeDataDirOverride,openCLReTunePerBoardSize,
       usingFP16Mode,usingNHWCMode,loadedModel
     );
@@ -263,6 +265,9 @@ int NNEvaluator::getNNXLen() const {
 }
 int NNEvaluator::getNNYLen() const {
   return nnYLen;
+}
+int NNEvaluator::getNNZLen() const {
+  return nnZLen;
 }
 enabled_t NNEvaluator::getUsingFP16Mode() const {
   return usingFP16Mode;
@@ -483,18 +488,16 @@ void NNEvaluator::serve(
         //At this point, these aren't probabilities, since this is before the postprocessing
         //that happens for each result. These just need to be unnormalized log probabilities.
         //Illegal move filtering happens later.
-        for(int y = 0; y<boardYSize; y++) {
-          for(int x = 0; x<boardXSize; x++) {
-            int pos = NNPos::xyToPos(x,y,nnXLen);
-            policyProbs[pos] = (float)rand.nextGaussian();
-          }
+        int boardVolume = boardXSize * boardYSize * boardZSize;
+        for(int pos = 0; pos < boardVolume; pos++) {
+          policyProbs[pos] = (float)rand.nextGaussian();
         }
-        policyProbs[NNPos::locToPos(Board::PASS_LOC,boardXSize,nnXLen,nnYLen)] = (float)rand.nextGaussian();
+        policyProbs[NNPos::locToPos(Board::PASS_LOC,nnXLen * nnYLen * nnZLen)] = (float)rand.nextGaussian();
 
-        resultBuf->result->nnLen = nnXLen * nnYLen;
+        resultBuf->result->nnLen = nnXLen * nnYLen * nnZLen;
         resultBuf->result->nnXLen = nnXLen;
         resultBuf->result->nnYLen = nnYLen;
-        resultBuf->result->nnZLen = boardZSize;
+        resultBuf->result->nnZLen = nnZLen;
      
 
         //These aren't really probabilities. Win/Loss/NoResult will get softmaxed later
@@ -517,10 +520,10 @@ void NNEvaluator::serve(
       for(int row = 0; row<numRows; row++) {
         NNOutput* emptyOutput = new NNOutput();
         assert(buf.resultBufs[row] != NULL);
-        emptyOutput->nnLen = nnXLen * nnYLen;
+        emptyOutput->nnLen = nnXLen * nnYLen * nnZLen;
         emptyOutput->nnXLen = nnXLen;
         emptyOutput->nnYLen = nnYLen;
-        emptyOutput->nnZLen = buf.resultBufs[row]->boardZSizeForServer;
+        emptyOutput->nnZLen = nnZLen;
         outputBuf.push_back(emptyOutput);
       }
 
@@ -612,15 +615,17 @@ void NNEvaluator::evaluate(
   buf.hasResult = false;
  
 
-  if(board.x_size > nnXLen || board.y_size > nnYLen)
+  if(board.x_size > nnXLen || board.y_size > nnYLen || board.z_size > nnZLen)
     throw StringError("NNEvaluator was configured with nnXLen = " + Global::intToString(nnXLen) +
                       " nnYLen = " + Global::intToString(nnYLen) +
-                      " but was asked to evaluate board with larger x or y size");
+                      " nnZLen = " + Global::intToString(nnZLen) +
+                      " but was asked to evaluate board with larger x or y or z size");
   if(requireExactNNLen) {
-    if(board.x_size != nnXLen || board.y_size != nnYLen)
+    if(board.x_size != nnXLen || board.y_size != nnYLen || board.z_size != nnZLen)
       throw StringError("NNEvaluator was configured with nnXLen = " + Global::intToString(nnXLen) +
                         " nnYLen = " + Global::intToString(nnYLen) +
-                        " and requireExactNNLen, but was asked to evaluate board with different x or y size");
+                        " nnZLen = " + Global::intToString(nnZLen) +
+                        " and requireExactNNLen, but was asked to evaluate board with different x or y or z size");
   }
 
   Hash128 nnHash = NNInputs::getHash(board, history, nextPlayer, nnInputParams);
@@ -639,7 +644,7 @@ void NNEvaluator::evaluate(
   nnInputParamsWithResultsBeforeNN.resultsBeforeNN.init(board, history, nextPlayer);
 
   if(!debugSkipNeuralNet) {
-    int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen;
+    int rowSpatialLen = NNModelVersion::getNumSpatialFeatures(modelVersion) * nnXLen * nnYLen * nnZLen;
     if(buf.rowSpatial == NULL) {
       buf.rowSpatial = new float[rowSpatialLen];
       buf.rowSpatialSize = rowSpatialLen;
@@ -661,7 +666,7 @@ void NNEvaluator::evaluate(
 
     static_assert(NNModelVersion::latestInputsVersionImplemented == 7, "");
     if(inputsVersion == 7)
-      NNInputs::fillRowV7(board, history, nextPlayer, nnInputParamsWithResultsBeforeNN, nnXLen, nnYLen, inputsUseNHWC, buf.rowSpatial, buf.rowGlobal);
+      NNInputs::fillRowV7(board, history, nextPlayer, nnInputParamsWithResultsBeforeNN, nnXLen, nnYLen * nnZLen, inputsUseNHWC, buf.rowSpatial, buf.rowGlobal);
     else
       ASSERT_UNREACHABLE;
   }
@@ -714,21 +719,21 @@ void NNEvaluator::evaluate(
     if(resultsBeforeNN.myOnlyLoc == Board::NULL_LOC) {
       bool hasLegalMoveExceptPass = false;
       for(int i = 0; i < policySize; i++) {
-        Loc loc = NNPos::posToLoc(i, xSize, ySize, nnXLen, nnYLen);
+        Loc loc = NNPos::posToLoc(i, board.boardVolume(), nnXLen * nnYLen * nnZLen);
         isLegal[i] = history.isLegal(board, loc, nextPlayer);
         if(isLegal[i] && loc != Board::PASS_LOC)
           hasLegalMoveExceptPass = true;
       }
       if(hasLegalMoveExceptPass)
-        isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = false;
+        isLegal[NNPos::locToPos(Board::PASS_LOC, nnXLen * nnYLen * nnZLen)] = false;
     } 
     else  // assume all other moves are illegal
     {
       for(int i = 0; i < policySize; i++) {
         isLegal[i] = false;
       }
-      isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = false;
-      isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, xSize, nnXLen, nnYLen)] = true;
+      isLegal[NNPos::locToPos(Board::PASS_LOC, nnXLen * nnYLen * nnZLen)] = false;
+      isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, nnXLen * nnYLen * nnZLen)] = true;
     }
 
     for(int i = 0; i<policySize; i++) {

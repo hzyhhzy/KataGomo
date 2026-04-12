@@ -161,8 +161,9 @@ int MainCmds::benchmark(const vector<string>& args) {
     if(boardSize == -1) {
       int defaultBoardXSize = TestCommon::DEFAULT_BENCHMARK_SGF_DATA_SIZE;
       int defaultBoardYSize = TestCommon::DEFAULT_BENCHMARK_SGF_DATA_SIZE;
-      Setup::loadDefaultBoardXYSize(cfg,logger,defaultBoardXSize,defaultBoardYSize);
-      boardSize = std::max(defaultBoardXSize,defaultBoardYSize);
+      int defaultBoardZSize = TestCommon::DEFAULT_BENCHMARK_SGF_DATA_SIZE;
+      Setup::loadDefaultBoardXYZSize(cfg,logger,defaultBoardXSize,defaultBoardYSize,defaultBoardZSize);
+      boardSize = std::max(std::max(defaultBoardXSize,defaultBoardYSize),defaultBoardZSize);
     }
     logger.write("Testing with default positions for board size: " + Global::intToString(boardSize));
     string sgfData = TestCommon::getBenchmarkSGFData(boardSize);
@@ -296,9 +297,10 @@ static NNEvaluator* createNNEval(int maxNumThreads, CompactSgf* sgf, const strin
   const bool defaultRequireExactNNLen = true;
   const bool disableFP16 = false;
   const string expectedSha256 = "";
+  assert(false);
   NNEvaluator* nnEval = Setup::initializeNNEvaluator(
     modelFile,modelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-    sgf->xSize,sgf->ySize,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+    sgf->xSize,sgf->ySize,1000,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
     Setup::SETUP_FOR_BENCHMARK
   );
 

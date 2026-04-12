@@ -34,6 +34,7 @@ NNEvaluator* Setup::initializeNNEvaluator(
   int expectedConcurrentEvals,
   int defaultNNXLen,
   int defaultNNYLen,
+  int defaultNNZLen,
   int defaultMaxBatchSize,
   bool defaultRequireExactNNLen,
   bool disableFP16,
@@ -51,6 +52,7 @@ NNEvaluator* Setup::initializeNNEvaluator(
       expectedConcurrentEvals,
       defaultNNXLen,
       defaultNNYLen,
+      defaultNNZLen,
       defaultMaxBatchSize,
       defaultRequireExactNNLen,
       disableFP16,
@@ -71,6 +73,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   int expectedConcurrentEvals,
   int defaultNNXLen,
   int defaultNNYLen,
+  int defaultNNZLen,
   int defaultMaxBatchSize,
   bool defaultRequireExactNNLen,
   bool disableFP16,
@@ -117,6 +120,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
 
     int nnXLen = std::max(defaultNNXLen,2);
     int nnYLen = std::max(defaultNNYLen,2);
+    int nnZLen = std::max(defaultNNZLen,1);
     if(setupFor != SETUP_FOR_DISTRIBUTED) {
       if(cfg.contains("maxBoardXSizeForNNBuffer" + idxStr))
         nnXLen = cfg.getInt("maxBoardXSizeForNNBuffer" + idxStr, 2, NNPos::MAX_BOARD_LEN);
@@ -135,6 +139,15 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         nnYLen = cfg.getInt("maxBoardSizeForNNBuffer" + idxStr, 2, NNPos::MAX_BOARD_LEN);
       else if(cfg.contains("maxBoardSizeForNNBuffer"))
         nnYLen = cfg.getInt("maxBoardSizeForNNBuffer", 2, NNPos::MAX_BOARD_LEN);
+
+      if(cfg.contains("maxBoardZSizeForNNBuffer" + idxStr))
+        nnZLen = cfg.getInt("maxBoardZSizeForNNBuffer" + idxStr, 1, NNPos::MAX_BOARD_LEN);
+      else if(cfg.contains("maxBoardZSizeForNNBuffer"))
+        nnZLen = cfg.getInt("maxBoardZSizeForNNBuffer", 1, NNPos::MAX_BOARD_LEN);
+      else if(cfg.contains("maxBoardSizeForNNBuffer" + idxStr))
+        nnZLen = cfg.getInt("maxBoardSizeForNNBuffer" + idxStr, 1, NNPos::MAX_BOARD_LEN);
+      else if(cfg.contains("maxBoardSizeForNNBuffer"))
+        nnZLen = cfg.getInt("maxBoardSizeForNNBuffer", 1, NNPos::MAX_BOARD_LEN);
     }
 
     bool requireExactNNLen = defaultRequireExactNNLen;
@@ -344,6 +357,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       maxConcurrentEvals,
       nnXLen,
       nnYLen,
+      nnZLen,
       requireExactNNLen,
       inputsUseNHWC,
       nnCacheSizePowerOfTwo,
@@ -719,11 +733,12 @@ Rules Setup::loadSingleRules(
   return rules;
 }
 
-bool Setup::loadDefaultBoardXYSize(
+bool Setup::loadDefaultBoardXYZSize(
   ConfigParser& cfg,
   Logger& logger,
   int& defaultBoardXSizeRet,
-  int& defaultBoardYSizeRet
+  int& defaultBoardYSizeRet,
+  int& defaultBoardZSizeRet
 ) {
   const int defaultBoardXSize =
     cfg.contains("defaultBoardXSize") ? cfg.getInt("defaultBoardXSize",2,Board::MAX_LEN) :
@@ -733,14 +748,19 @@ bool Setup::loadDefaultBoardXYSize(
     cfg.contains("defaultBoardYSize") ? cfg.getInt("defaultBoardYSize",2,Board::MAX_LEN) :
     cfg.contains("defaultBoardSize") ? cfg.getInt("defaultBoardSize",2,Board::MAX_LEN) :
     -1;
-  if((defaultBoardXSize == -1) != (defaultBoardYSize == -1))
-    logger.write("Warning: Config specified only one of defaultBoardXSize or defaultBoardYSize and no other board size parameter, ignoring it");
+  const int defaultBoardZSize =
+    cfg.contains("defaultBoardZSize") ? cfg.getInt("defaultBoardZSize",2,Board::MAX_LEN) :
+    cfg.contains("defaultBoardSize") ? cfg.getInt("defaultBoardSize",2,Board::MAX_LEN) :
+    -1;
+  if((defaultBoardXSize == -1) != (defaultBoardYSize == -1) || (defaultBoardXSize == -1) != (defaultBoardZSize == -1))
+    logger.write("Warning: Config specified only some of defaultBoardXSize, defaultBoardYSize, defaultBoardZSize and no other board size parameter, ignoring it");
 
-  if(defaultBoardXSize == -1 || defaultBoardYSize == -1) {
+  if(defaultBoardXSize == -1 || defaultBoardYSize == -1 || defaultBoardZSize == -1) {
     return false;
   }
   defaultBoardXSizeRet = defaultBoardXSize;
   defaultBoardYSizeRet = defaultBoardYSize;
+  defaultBoardZSizeRet = defaultBoardZSize;
   return true;
 }
 

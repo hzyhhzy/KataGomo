@@ -111,12 +111,12 @@ bool Location::isNearCentral(Loc loc, int x_size, int y_size) {
 
 Board::Board()
 {
-  init(DEFAULT_LEN,DEFAULT_LEN);
+  init(DEFAULT_LEN, DEFAULT_LEN, DEFAULT_LEN);
 }
 
 Board::Board(int x, int y)
 {
-  init(x,y,1);
+  init(x,y,y);
 }
 
 Board::Board(int x, int y, int z)
@@ -146,7 +146,7 @@ Board::Board(const Board& other)
 
 void Board::init(int xS, int yS)
 {
-  init(xS,yS,1);
+  init(xS,yS,yS);
 }
 
 void Board::init(int xS, int yS, int zS)

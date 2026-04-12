@@ -120,6 +120,7 @@ struct Search {
   NNEvaluator* nnEvaluator;
   int nnXLen;
   int nnYLen;
+  int nnZLen;
   int policySize;
 
   //================================================================================================================

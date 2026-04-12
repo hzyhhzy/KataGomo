@@ -156,7 +156,7 @@ int MainCmds::match(const vector<string>& args) {
   const vector<string> expectedSha256s;
   vector<NNEvaluator*> nnEvals = Setup::initializeNNEvaluators(
     nnModelNames,nnModelFiles,expectedSha256s,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-    maxBoardXSizeUsed,maxBoardYSizeUsed,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+    maxBoardXSizeUsed,maxBoardYSizeUsed,Board::MAX_LEN,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
     Setup::SETUP_FOR_MATCH
   );
   logger.write("Loaded neural net");

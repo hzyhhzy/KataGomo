@@ -18,6 +18,7 @@ ComputeContext* NeuralNet::createComputeContext(
   Logger* logger,
   int nnXLen,
   int nnYLen,
+  int nnZLen,
   const string& openCLTunerFile,
   const string& homeDataDirOverride,
   bool openCLReTunePerBoardSize,
@@ -29,6 +30,7 @@ ComputeContext* NeuralNet::createComputeContext(
   (void)logger;
   (void)nnXLen;
   (void)nnYLen;
+  (void)nnZLen;
   (void)openCLTunerFile;
   (void)homeDataDirOverride;
   (void)openCLReTunePerBoardSize;
@@ -111,11 +113,12 @@ bool NeuralNet::isUsingFP16(const ComputeHandle* handle) {
 void NeuralNet::printDevices() {
 }
 
-InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen) {
+InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen, int nnZLen) {
   (void)loadedModel;
   (void)maxBatchSize;
   (void)nnXLen;
   (void)nnYLen;
+  (void)nnZLen;
   throw StringError("Dummy neural net backend: NeuralNet::createInputBuffers unimplemented");
 }
 

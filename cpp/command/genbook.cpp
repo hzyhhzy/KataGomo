@@ -107,8 +107,9 @@ int MainCmds::genbook(const vector<string>& args) {
 
   Rules rules = Setup::loadSingleRules(cfg);
 
-  const int boardSizeX = cfg.getInt("boardSizeX",2,Board::MAX_LEN);
-  const int boardSizeY = cfg.getInt("boardSizeY",2,Board::MAX_LEN);
+  const int boardSizeX = cfg.getInt("boardSizeX", 2, Board::MAX_LEN);
+  const int boardSizeY = cfg.getInt("boardSizeY", 2, Board::MAX_LEN);
+  const int boardSizeZ = cfg.getInt("boardSizeZ", 2, Board::MAX_LEN);
   const double errorFactor = cfg.getDouble("errorFactor",0.01,100.0);
   const double costPerMove = cfg.getDouble("costPerMove",0.0,1000000.0);
   const double costPerUCBWinLossLoss = cfg.getDouble("costPerUCBWinLossLoss",0.0,1000000.0);
@@ -190,7 +191,7 @@ int MainCmds::genbook(const vector<string>& args) {
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       modelFile,modelFile,expectedSha256,cfg,logger,rand,maxConcurrentEvals,expectedConcurrentEvals,
-      boardSizeX,boardSizeY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      boardSizeX,boardSizeY,boardSizeZ,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_ANALYSIS
     );
   }

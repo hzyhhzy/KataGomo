@@ -114,8 +114,8 @@ namespace SymmetryHelpers {
   constexpr int NUM_SYMMETRIES_WITHOUT_TRANSPOSE = 8;
 
   //copyOutputsWithSymmetry performs the inverse of symmetry.
-  void copyInputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry);
-  void copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int symmetry);
+  void copyInputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int zSize, int cSize, bool useNHWC, int symmetry);
+  void copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int zSize, int symmetry);
 
   //Applies a symmetry to a location
   Loc getSymLoc(int x, int y, const Board& board, int symmetry);

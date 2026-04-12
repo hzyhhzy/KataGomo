@@ -294,20 +294,22 @@ struct UCIEngine {
     bool defaultRequireExactNNLen = true;
     int nnLenX = boardXSize;
     int nnLenY = boardYSize;
+    int nnLenZ = 10000;
     
     if(cfg.contains("gtpDebugForceMaxNNSize") && cfg.getBool("gtpDebugForceMaxNNSize")) {
       defaultRequireExactNNLen = false;
       nnLenX = Board::MAX_LEN;
       nnLenY = Board::MAX_LEN;
+      nnLenZ = 10000;
     }
     const bool disableFP16 = false;
     const string expectedSha256 = "";
     nnEval = Setup::initializeNNEvaluator(
       nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      nnLenX,nnLenY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      nnLenX,nnLenY,nnLenZ,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
       Setup::SETUP_FOR_GTP
     );
-    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
+    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()) + " nnZLen " + Global::intToString(nnEval->getNNZLen()));
 
     {
       bool rulesWereSupported;
@@ -1174,7 +1176,8 @@ int MainCmds::uci(const vector<string>& args) {
 
   int defaultBoardXSize = -1;
   int defaultBoardYSize = -1;
-  Setup::loadDefaultBoardXYSize(cfg,logger,defaultBoardXSize,defaultBoardYSize);
+  int defaultBoardZSize = -1;
+  Setup::loadDefaultBoardXYZSize(cfg,logger,defaultBoardXSize,defaultBoardYSize,defaultBoardZSize);
 
   const bool forDeterministicTesting =
     cfg.contains("forDeterministicTesting") ? cfg.getBool("forDeterministicTesting") : false;

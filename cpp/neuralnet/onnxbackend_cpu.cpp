@@ -43,6 +43,7 @@ void NeuralNet::globalCleanup() {
 struct ComputeContext {
   int nnXLen;
   int nnYLen;
+  int nnZLen;
   enabled_t useFP16Mode;
   string onnxModelPath;
 };
@@ -74,6 +75,7 @@ ComputeContext* NeuralNet::createComputeContext(
   Logger* logger,
   int nnXLen,
   int nnYLen,
+  int nnZLen,
   const string& openCLTunerFile,
   const string& homeDataDirOverride,
   bool openCLReTunePerBoardSize,
@@ -88,6 +90,7 @@ ComputeContext* NeuralNet::createComputeContext(
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
+  context->nnZLen = nnZLen;
   context->useFP16Mode = useFP16Mode;
   context->onnxModelPath = loadedModel->fileName;
   return context;
@@ -230,10 +233,10 @@ struct InputBuffers {
   unique_ptr<float[]> out_moremiscvalueResults;
   unique_ptr<float[]> out_ownershipResults;
 
-  InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
+  InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen, int nnZLen) {
     const ModelDesc& m = loadedModel->modelDesc;
     maxBatchSize = maxBatchSz;
-    int nnLen = nnXLen * nnYLen;
+    int nnLen = nnXLen * nnYLen * nnZLen;
 
     singleInputElts = m.numInputChannels * nnLen;
     singleInputGlobalElts = m.numInputGlobalChannels;
@@ -257,8 +260,8 @@ struct InputBuffers {
   }
 };
 
-InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen) {
-  return new InputBuffers(loadedModel, maxBatchSize, nnXLen, nnYLen);
+InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen, int nnZLen) {
+  return new InputBuffers(loadedModel, maxBatchSize, nnXLen, nnYLen, nnZLen);
 }
 
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
@@ -275,7 +278,8 @@ void NeuralNet::getOutput(
   int batchSize = numBatchEltsFilled;
   int nnXLen = handle->ctx->nnXLen;
   int nnYLen = handle->ctx->nnYLen;
-  int nnLen = nnXLen * nnYLen;
+  int nnZLen = handle->ctx->nnZLen;
+  int nnLen = nnXLen * nnYLen * nnZLen;
   int modelVersion = handle->modelVersion;
 
   const int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
@@ -283,6 +287,13 @@ void NeuralNet::getOutput(
 
   // Fill inputs
   for(int nIdx = 0; nIdx < batchSize; nIdx++) {
+    if(inputBufs[nIdx] == nullptr)
+      throw StringError("Unexpected null input buffer row");
+    if(inputBufs[nIdx]->boardXSizeForServer != nnXLen)
+      throw StringError("ONNX backend expects same x size for all rows in a batch");
+    if(inputBufs[nIdx]->boardYSizeForServer != nnYLen || inputBufs[nIdx]->boardZSizeForServer != nnZLen)
+      throw StringError("ONNX backend expects same y and z size for all rows in a batch");
+
     float* rowSpatialInput = &inputBuffers->spatialInputs[inputBuffers->singleInputElts * nIdx];
     float* rowGlobalInput = &inputBuffers->globalInputs[inputBuffers->singleInputGlobalElts * nIdx];
 
@@ -291,7 +302,7 @@ void NeuralNet::getOutput(
     
     copy(rowGlobal, rowGlobal + numGlobalFeatures, rowGlobalInput);
     SymmetryHelpers::copyInputsWithSymmetry(
-      rowSpatial, rowSpatialInput, 1, 1, nnLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
+      rowSpatial, rowSpatialInput, batchSize, nnXLen, nnYLen, nnZLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
   }
 
   // Run ONNX inference
@@ -371,6 +382,10 @@ void NeuralNet::getOutput(
 
   for(int row = 0; row < batchSize; row++) {
     NNOutput* output = outputs[row];
+    output->nnLen = nnLen;
+    output->nnXLen = nnXLen;
+    output->nnYLen = nnYLen;
+    output->nnZLen = nnZLen;
     
     // Policy
     const float* policySrcBuf = &inputBuffers->out_policyResults[row * inputBuffers->singleout_policyElts];
@@ -381,7 +396,7 @@ void NeuralNet::getOutput(
         throw StringError("modelVersion >= 12 && modelVersion <= 99 not supported");
     
     SymmetryHelpers::copyOutputsWithSymmetry(
-        policySrcBuf, policyProbs, 1, 1, nnLen, inputBufs[row]->symmetry);
+      policySrcBuf, policyProbs, batchSize, nnXLen, nnYLen, nnZLen, inputBufs[row]->symmetry);
     policyProbs[nnLen] = policySrcBuf[nnLen];
     
     
@@ -390,7 +405,7 @@ void NeuralNet::getOutput(
     output->whiteWinProb = inputBuffers->out_valueResults[row * numValueChannels];
     output->whiteLossProb = inputBuffers->out_valueResults[row * numValueChannels + 1];
     output->whiteNoResultProb = inputBuffers->out_valueResults[row * numValueChannels + 2];
-    
+
     // Misc Value
     int numScoreValueChannels = inputBuffers->singleout_miscvalueElts;
     int numMoreValueChannels = inputBuffers->singleout_moremiscvalueElts;
