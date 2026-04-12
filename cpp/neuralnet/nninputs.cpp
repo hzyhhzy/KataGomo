@@ -16,6 +16,18 @@ int NNPos::locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
   (void)boardXSize;
   return locToPos(loc, nnXLen * nnYLen);
 }
+int NNPos::locToPos(Loc loc, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen) {
+  if(loc == Board::PASS_LOC || loc == Board::NULL_LOC)
+    return locToPos(loc, nnXLen * nnYLen * nnZLen);
+  int x = Location::getX(loc, boardXSize);
+  int y = Location::getY(loc, boardXSize, boardYSize);
+  int z = Location::getZ(loc, boardXSize, boardYSize);
+  assert(x >= 0 && x < nnXLen);
+  assert(y >= 0 && y < nnYLen);
+  assert(z >= 0 && z < nnZLen);
+  (void)boardZSize;
+  return x + y * nnXLen + z * nnXLen * nnYLen;
+}
 Loc NNPos::posToLoc(int pos, int boardVolume, int nnLen) {
   if(pos == nnLen)
     return Board::PASS_LOC;
@@ -26,6 +38,20 @@ Loc NNPos::posToLoc(int pos, int boardVolume, int nnLen) {
 Loc NNPos::posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen) {
   return posToLoc(pos, boardXSize * boardYSize, nnXLen * nnYLen);
 }
+Loc NNPos::posToLoc(int pos, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen) {
+  int nnLen = nnXLen * nnYLen * nnZLen;
+  if(pos == nnLen)
+    return Board::PASS_LOC;
+  if(pos < 0 || pos >= nnLen)
+    return Board::NULL_LOC;
+
+  int x = pos % nnXLen;
+  int y = (pos / nnXLen) % nnYLen;
+  int z = pos / (nnXLen * nnYLen);
+  if(x >= boardXSize || y >= boardYSize || z >= boardZSize)
+    return Board::NULL_LOC;
+  return Location::getLoc(x, y, z, boardXSize, boardYSize);
+}
 
 bool NNPos::isPassPos(int pos, int nnLen) {
   return pos == nnLen;
@@ -34,6 +60,9 @@ bool NNPos::isPassPos(int pos, int nnLen) {
 bool NNPos::isPassPos(int pos, int nnXLen, int nnYLen) {
   return isPassPos(pos, nnXLen * nnYLen);
 }
+bool NNPos::isPassPos(int pos, int nnXLen, int nnYLen, int nnZLen) {
+  return isPassPos(pos, nnXLen * nnYLen * nnZLen);
+}
 
 int NNPos::getPolicySize(int nnLen) {
   return nnLen + 1;
@@ -41,6 +70,9 @@ int NNPos::getPolicySize(int nnLen) {
 
 int NNPos::getPolicySize(int nnXLen, int nnYLen) {
   return getPolicySize(nnXLen * nnYLen);
+}
+int NNPos::getPolicySize(int nnXLen, int nnYLen, int nnZLen) {
+  return getPolicySize(nnXLen * nnYLen * nnZLen);
 }
 
 //-----------------------------------------------------------------------------------------------------------

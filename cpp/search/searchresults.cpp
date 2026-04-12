@@ -220,7 +220,7 @@ bool Search::getPlaySelectionValues(
     bool obeyAllowedRootMove = true;
     while(true) {
       for(int movePos = 0; movePos<policySize; movePos++) {
-        Loc moveLoc = NNPos::posToLoc(movePos,rootBoard.x_size,rootBoard.y_size,nnXLen,nnYLen);
+        Loc moveLoc = NNPos::posToLoc(movePos,rootBoard.x_size,rootBoard.y_size,rootBoard.z_size,nnXLen,nnYLen,nnZLen);
         const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
         double policyProb = policyProbs[movePos];
         if(!rootHistory.isLegal(rootBoard,moveLoc,rootPla) || policyProb < 0 || (obeyAllowedRootMove && !isAllowedRootMove(moveLoc)))
@@ -857,7 +857,7 @@ void Search::getAnalysisData(
       if(bestPos < 0 || bestPolicy < 0.0)
         break;
 
-      Loc bestMove = NNPos::posToLoc(bestPos,rootBoard.x_size,rootBoard.y_size,nnXLen,nnYLen);
+      Loc bestMove = NNPos::posToLoc(bestPos,rootBoard.x_size,rootBoard.y_size,rootBoard.z_size,nnXLen,nnYLen,nnZLen);
       AnalysisData data = getAnalysisDataOfSingleChild(
         NULL, 0, scratchLocs, scratchValues, bestMove, bestPolicy, fpuValue, parentUtility, parentWinLossValue,
         maxPVDepth

@@ -142,7 +142,7 @@ Player Search::getPlayoutDoublingAdvantagePla() const {
 }
 
 int Search::getPos(Loc moveLoc) const {
-  return NNPos::locToPos(moveLoc,rootBoard.x_size,nnXLen,nnYLen);
+  return NNPos::locToPos(moveLoc,rootBoard.x_size,rootBoard.y_size,rootBoard.z_size,nnXLen,nnYLen,nnZLen);
 }
 
 void Search::setPosition(Player pla, const Board& board, const BoardHistory& history) {

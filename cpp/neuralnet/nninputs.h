@@ -23,12 +23,16 @@ namespace NNPos {
   int xyToPos(int x, int y, int nnXLen);
   int locToPos(Loc loc, int nnLen);
   int locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen);
+  int locToPos(Loc loc, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen);
   Loc posToLoc(int pos, int boardVolume, int nnLen);
   Loc posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen);
+  Loc posToLoc(int pos, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen);
   bool isPassPos(int pos, int nnLen);
   bool isPassPos(int pos, int nnXLen, int nnYLen);
+  bool isPassPos(int pos, int nnXLen, int nnYLen, int nnZLen);
   int getPolicySize(int nnLen);
   int getPolicySize(int nnXLen, int nnYLen);
+  int getPolicySize(int nnXLen, int nnYLen, int nnZLen);
 }
 
 namespace NNInputs {
