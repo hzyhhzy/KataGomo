@@ -42,18 +42,7 @@ GameInitializer::GameInitializer(ConfigParser& cfg, Logger& logger, const string
 }
 
 void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
-
-  allowedLoopPassRuleStrs = cfg.getStrings("loopPassRules", Rules::loopPassRuleStrings());
-
-  for(size_t i = 0; i < allowedLoopPassRuleStrs.size(); i++)
-    allowedLoopPassRules.push_back(Rules::parseLoopPassRule(allowedLoopPassRuleStrs[i]));
-  if(allowedLoopPassRules.size() <= 0)
-    throw IOError("loopPassRules must have at least one value in " + cfg.getFileName());
-
-  komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean", -1000, 1000) : 0.0f;
-  komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev", 0.0f, 1000.0f) : 0.0f;
-  komiBigStdevProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb", 0.0, 1.0) : 0.0;
-  komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev", 0.0f, 1000.0f) : 2.0f;
+  (void)logger;
 
   randomInitialStonesProb = cfg.contains("randomInitialStonesProb") ? cfg.getDouble("randomInitialStonesProb", 0.0, 1.0) : 0.0;
   banLocProb = cfg.contains("banLocProb") ? cfg.getDouble("banLocProb", 0.0, 1.0) : 0.0;
@@ -307,15 +296,6 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
-  rules.loopPassRule = allowedLoopPassRules[rand.nextUInt((uint32_t)allowedLoopPassRules.size())];
-
-  int boardArea = Board::MAX_LEN * Board::MAX_LEN;
-
-  float komiStdevThis = rand.nextBool(komiBigStdevProb) ? komiBigStdev : komiStdev;
-  do {
-    rules.komi = llround(komiMean + rand.nextGaussian() * komiStdevThis);
-  } while(rules.komi <= -boardArea || rules.komi >= boardArea);
-
   return rules;
 }
 

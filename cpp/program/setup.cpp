@@ -720,14 +720,17 @@ Rules Setup::loadSingleRules(
   Rules rules;
 
   if(cfg.contains("rules")) {
-    if(cfg.contains("loopPassRule")) throw StringError("Cannot both specify 'rules' and individual rules like scoringRule");
+    if(cfg.contains("basicRule") || cfg.contains("basicRules") || cfg.contains("maxMoves"))
+      throw StringError("Cannot both specify 'rules' and individual rules like basicRule or maxMoves");
     rules = Rules::parseRules(cfg.getString("rules"));
   }
   else {
-    string loopPassRule = cfg.getString("loopPassRule", Rules::loopPassRuleStrings());
-    rules.loopPassRule = Rules::parseLoopPassRule(loopPassRule);
-
-
+    if(cfg.contains("basicRule"))
+      rules.basicRule = Rules::parseBasicRule(cfg.getString("basicRule", Rules::basicRuleStrings()));
+    else if(cfg.contains("basicRules"))
+      rules.basicRule = Rules::parseBasicRule(cfg.getString("basicRules", Rules::basicRuleStrings()));
+    if(cfg.contains("maxMoves"))
+      rules.maxMoves = cfg.getInt("maxMoves", 0, 1 << 30);
   }
 
   return rules;

@@ -8,22 +8,21 @@ using namespace std;
 using json = nlohmann::json;
 
 Rules::Rules() {
-  //Defaults if not set - closest match to TT rules
-  loopPassRule = LOOPDRAW_PASSSCORING;
-  komi = 0;
+  basicRule = BASICRULE_FREESTYLE;
+  maxMoves = 0;
 }
 
 Rules::Rules(
-  int loopPassRule,
-  int komi
+  int basicRule,
+  int maxMoves
 )
-  :loopPassRule(loopPassRule), komi(komi) {}
+  :basicRule(basicRule), maxMoves(maxMoves) {}
 
 Rules::~Rules() {
 }
 
 bool Rules::operator==(const Rules& other) const {
-  return loopPassRule == other.loopPassRule && komi == other.komi;
+  return basicRule == other.basicRule && maxMoves == other.maxMoves;
 }
 
 bool Rules::operator!=(const Rules& other) const {
@@ -33,48 +32,31 @@ bool Rules::operator!=(const Rules& other) const {
 
 Rules Rules::getTrompTaylorish() {
   Rules rules;
-  rules.loopPassRule = LOOPDRAW_PASSSCORING;
   return rules;
 }
 
-
-
-map<string,int> Rules::loopPassRuleStringsMap() {
-  return {
-    pair<string, int>("LOOPDRAW_PASSSCORING", 0),
-    pair<string, int>("LOOPDRAW_PASSCONTINUE", 1),
-    pair<string, int>("LOOPLOSE_PASSSCORING", 2),
-    pair<string, int>("LOOPSCORING_PASSSCORING", 3)
-  };
+set<string> Rules::basicRuleStrings() {
+  return {"FREESTYLE", "STANDARD"};
 }
 
-std::set<std::string> Rules::loopPassRuleStrings() {
-  set<string> ruleSet;
-  auto ruleMap = Rules::loopPassRuleStringsMap();
-  for(auto r = ruleMap.begin(); r != ruleMap.end(); r++) {
-    ruleSet.insert(r->first);
-  }
-  return ruleSet;
+int Rules::parseBasicRule(const string& s) {
+  string value = Global::toUpper(s);
+  if(value == "FREESTYLE")
+    return BASICRULE_FREESTYLE;
+  if(value == "STANDARD")
+    return BASICRULE_STANDARD;
+  throw IOError("Rules::parseBasicRule: Invalid basic rule: " + s);
 }
 
-int Rules::parseLoopPassRule(const string& s) {
-  auto ruleMap = loopPassRuleStringsMap();
-  if(ruleMap.count(s))
-    return ruleMap[s];
-  else throw IOError("Rules::parseScoringRule: Invalid scoring rule: " + s);
+string Rules::writeBasicRule(int basicRule) {
+  if(basicRule == BASICRULE_FREESTYLE)
+    return "FREESTYLE";
+  if(basicRule == BASICRULE_STANDARD)
+    return "STANDARD";
+  return "UNKNOWN";
 }
-
-string Rules::writeLoopPassRule(int scoringRule) {
-  auto ruleMap = loopPassRuleStringsMap();
-  for(auto s=ruleMap.begin();s!=ruleMap.end();s++) {
-    if(s->second == scoringRule)
-      return s->first;
-  }
-  return string("UNKNOWN");
-}
-
 ostream& operator<<(ostream& out, const Rules& rules) {
-  out << "looppass" << Rules::writeLoopPassRule(rules.loopPassRule) << "komi" << rules.komi;
+  out << "basicrule" << Rules::writeBasicRule(rules.basicRule) << "maxmoves" << rules.maxMoves;
   return out;
 }
 
@@ -93,47 +75,50 @@ string Rules::toJsonString() const {
 //which is the default for parsing and if not otherwise specified
 json Rules::toJson() const {
   json ret;
-  ret["looppass"] = writeLoopPassRule(loopPassRule);
-  ret["komi"] = komi;
+  ret["basicrule"] = writeBasicRule(basicRule);
+  ret["maxmoves"] = maxMoves;
   return ret;
 }
 
 
 Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   Rules rules = oldRules;
-  string key = Global::trim(k);
+  string key = Global::toLower(Global::trim(k));
   string value = Global::trim(Global::toUpper(v));
-  if(key == "looppass")
-    rules.loopPassRule = Rules::parseLoopPassRule(value);
-  else if(key == "komi") {
-    int newKomi = oldRules.komi;
-    bool suc = Global::tryStringToInt(value, newKomi);
-    if(suc)
-      rules.komi = newKomi;
+  if(key == "basicrule" || key == "basicrules")
+    rules.basicRule = Rules::parseBasicRule(value);
+  else if(key == "maxmoves") {
+    int newMaxMoves = oldRules.maxMoves;
+    bool suc = Global::tryStringToInt(value, newMaxMoves);
+    if(suc && newMaxMoves >= 0)
+      rules.maxMoves = newMaxMoves;
     else
-      throw IOError("Wrong komi: " + value + ", komi should be an integer");
-  }
-  else throw IOError("Unknown rules option: " + key);
+      throw IOError("Wrong maxmoves: " + value + ", maxmoves should be a non-negative integer");
+  } else
+    throw IOError("Unknown rules option: " + key);
   return rules;
 }
 
 static Rules parseRulesHelper(const string& sOrig) {
   Rules rules;
   string lowercased = Global::trim(Global::toLower(sOrig));
-  
-  if(lowercased == "tromp-taylor" || lowercased == "tromp_taylor" || lowercased == "tromp taylor" || lowercased == "tromptaylor") {
-    rules.loopPassRule= Rules::LOOPDRAW_PASSSCORING;
-    rules.komi = 0;
+
+  if(lowercased == "freestyle") {
+    rules.basicRule = Rules::BASICRULE_FREESTYLE;
+    rules.maxMoves = 0;
+  }
+  else if(lowercased == "standard") {
+    rules.basicRule = Rules::BASICRULE_STANDARD;
+    rules.maxMoves = 0;
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
-    //Default if not specified
     rules = Rules::getTrompTaylorish();
     try {
       json input = json::parse(sOrig);
-      string s;
       for(json::iterator iter = input.begin(); iter != input.end(); ++iter) {
         string key = iter.key();
-        rules = Rules::updateRules(key, iter.value().get<string>(),rules);
+        string value = iter.value().is_string() ? iter.value().get<string>() : iter.value().dump();
+        rules = Rules::updateRules(key, value, rules);
       }
     }
     catch(nlohmann::detail::exception&) {
@@ -165,28 +150,31 @@ static Rules parseRulesHelper(const string& sOrig) {
       if(s.length() <= 0)
         break;
 
-      if(startsWithAndStrip(s,"looppass")) {
-        auto ruleMap = Rules::loopPassRuleStringsMap();
-        for(auto r = ruleMap.begin(); r != ruleMap.end(); r++) {
-          if(startsWithAndStrip(s, r->first)) {
-            rules.loopPassRule = r->second;
-            continue;
+      if(startsWithAndStrip(s,"basicrule")) {
+        auto ruleSet = Rules::basicRuleStrings();
+        bool found = false;
+        for(const string& rule : ruleSet) {
+          if(startsWithAndStrip(s, Global::toLower(rule))) {
+            rules.basicRule = Rules::parseBasicRule(rule);
+            found = true;
+            break;
           }
         }
-        throw IOError("Could not parse rules: " + sOrig);
+        if(!found)
+          throw IOError("Could not parse rules: " + sOrig);
         continue;
       }
-      if(startsWithAndStrip(s, "komi")) {
+      if(startsWithAndStrip(s, "maxmoves")) {
         int endIdx = 0;
         while(endIdx < s.length() && Global::isDigit(s[endIdx]))
           endIdx++;
-        int komi;
-        bool suc = Global::tryStringToInt(s.substr(0, endIdx), komi);
+        int maxMoves;
+        bool suc = Global::tryStringToInt(s.substr(0, endIdx), maxMoves);
         if(!suc)
           throw IOError("Could not parse rules: " + sOrig);
-        if(komi > 1e5 || komi < -1e5)
+        if(maxMoves < 0 || maxMoves > 100000000)
           throw IOError("Could not parse rules: " + sOrig);
-        rules.komi = komi;
+        rules.maxMoves = maxMoves;
         s = s.substr(endIdx);
         s = Global::trim(s);
         continue;
@@ -201,8 +189,8 @@ static Rules parseRulesHelper(const string& sOrig) {
 }
 
 string Rules::toStringMaybeNice() const {
-  if(*this == parseRulesHelper("TrompTaylor"))
-    return "TrompTaylor";
+  if(*this == parseRulesHelper("freestyle"))
+    return "freestyle";
   return toString();
 }
 
@@ -222,11 +210,9 @@ bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
 
 
 
-
-const Hash128 Rules::ZOBRIST_LOOPPASS_RULE_HASH[4] = {
-  Hash128(0xcfe353052ab23e7aULL, 0x243466cc5740fa07ULL),
-  Hash128(0x3bdac963636f8efbULL, 0x7f5d9b5d76a70889ULL),
-  Hash128(0xd4aecfb2904ed7d1ULL, 0x9adba41979253974ULL),
-  Hash128(0x23af6fd73de24455ULL, 0x2339118e63d7a780ULL)};
-const Hash128 Rules::ZOBRIST_KOMI_RULE_HASH_BASE =
-  Hash128(0x4c927b66ae674d8fULL, 0x1956c0e6b45360fbULL);
+const Hash128 Rules::ZOBRIST_BASIC_RULE_HASH[2] = {
+  Hash128(0x72eeccc72c82a5e7ULL, 0x0d1265e413623e2bULL),
+  Hash128(0x125bfe48a41042d5ULL, 0x061866b5f2b98a79ULL),
+};
+const Hash128 Rules::ZOBRIST_MAXMOVES_HASH_BASE =
+  Hash128(0x8aba00580c378fe8ULL, 0x7f6c1210e74fb440ULL);

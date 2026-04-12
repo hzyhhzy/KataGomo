@@ -256,18 +256,24 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
 
 
 
+Hash128 BoardHistory::getRulesHash() const {
+  Hash128 hash = Hash128();
+  hash ^= Rules::ZOBRIST_BASIC_RULE_HASH[rules.basicRule];
+  if(rules.maxMoves != 0) {
+    hash ^= Hash128(
+      Hash::murmurMix(Rules::ZOBRIST_MAXMOVES_HASH_BASE.hash0 + (uint64_t)rules.maxMoves),
+      Hash::nasam(Rules::ZOBRIST_MAXMOVES_HASH_BASE.hash1 - (uint64_t)rules.maxMoves)
+    );
+  }
+  return hash;
+}
+
 Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHistory& hist, Player nextPlayer) {
  //Note that board.pos_hash also incorporates the size of the board.
   Hash128 hash = board.pos_hash;
   hash ^= Board::ZOBRIST_PLAYER_HASH[nextPlayer];
 
-  //Fold in the ko, scoring, and suicide rules
-  hash ^= Rules::ZOBRIST_LOOPPASS_RULE_HASH[hist.rules.loopPassRule];
-  if(hist.rules.komi != 0) {
-    hash = Hash128(Hash::murmurMix(hash.hash0 + hist.rules.komi), Hash::nasam(hash.hash1 - hist.rules.komi));
-  }
-
-
+  hash ^= hist.getRulesHash();
   return hash;
 }
 

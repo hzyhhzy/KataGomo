@@ -780,26 +780,25 @@ void NNInputs::fillRowV7(
   } else
     ASSERT_UNREACHABLE;
 
-
-  //Scoring
-  if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSSCORING) {
-  } else if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSCONTINUE) {
-    rowGlobal[2] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::LOOPLOSE_PASSSCORING) {
+  if(hist.rules.basicRule == Rules::BASICRULE_FREESTYLE)
+    {}
+  else if(hist.rules.basicRule == Rules::BASICRULE_STANDARD)
     rowGlobal[3] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::LOOPSCORING_PASSSCORING) {
-    rowGlobal[4] = 1.0f;
-  } else
+  else
     ASSERT_UNREACHABLE;
 
-  float selfKomi = pla == C_BLACK ? hist.rules.komi : -hist.rules.komi;
-  rowGlobal[5] = tanh(selfKomi);
-  rowGlobal[6] = tanh(selfKomi * 0.3);
-  rowGlobal[7] = tanh(selfKomi * 0.1);
-  rowGlobal[8] = selfKomi / board.boardArea();
+  if(hist.rules.maxMoves > 0) {
+    double t = hist.rules.maxMoves - hist.initialTurnNumber - (int)hist.moveHistory.size();
+    if(t < 0.0)
+      t = 0.0;
+    double volume = board.boardVolume();
+    rowGlobal[4] = (float)exp(-t / 3.0);
+    rowGlobal[5] = (float)exp(-t / 10.0);
+    rowGlobal[6] = (float)exp(-t / 30.0);
+    rowGlobal[7] = (float)exp(-t / 100.0);
+    rowGlobal[8] = (float)(t / volume);
+  }
 
-  rowGlobal[9] = (hist.rules.komi + board.boardArea()) % 2;
-  
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.
   if(nnInputParams.playoutDoublingAdvantage != 0) {

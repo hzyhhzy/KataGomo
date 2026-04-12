@@ -468,7 +468,6 @@ string GTPConfig::makeConfig(
     assert(pos != string::npos);
     config.replace(pos, key.size(), replacement);
   };
-  replace("$$LOOPPASSRULE", "loopPassRule = "+Rules::writeLoopPassRule(rules.loopPassRule)+" ");
 
 
 

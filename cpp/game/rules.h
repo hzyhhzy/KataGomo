@@ -7,29 +7,16 @@
 #include "../external/nlohmann_json/json.hpp"
 
 struct Rules {
+  static const int BASICRULE_FREESTYLE = 0;
+  static const int BASICRULE_STANDARD = 1;
+  int basicRule;
 
-  
-
-  // LOOPDRAW: if the situation repeats, draw
-  // LOOPLOSE: who make the situation repeats is a lose
-  // LOOPSCORING: if the situation repeats, all empty locations belong to opponent and count stones
-  // PASSSCORING: if one player have no legal moves, all empty locations belong to opponent and count score
-  // PASSCONTINUE: if one player have no legal moves, pass and let opponent continue playing. this is only different from PASS_SCORING when using LOOP_DRAW rule on some rare conditions
-
-  static const int LOOPDRAW_PASSSCORING = 0;
-  static const int LOOPDRAW_PASSCONTINUE = 1;  
-  static const int LOOPLOSE_PASSSCORING = 2;  
-  static const int LOOPSCORING_PASSSCORING = 3;  
-  int loopPassRule;
-
-  int komi; //non-integer komi is meaningless
-
-
+  int maxMoves;
 
   Rules();
   Rules(
-    int loopPassRule,
-    int komi
+    int basicRule,
+    int maxMoves
   );
   ~Rules();
 
@@ -39,10 +26,9 @@ struct Rules {
 
   static Rules getTrompTaylorish();
 
-  static std::map<std::string, int> loopPassRuleStringsMap();
-  static std::set<std::string> loopPassRuleStrings();
-  static int parseLoopPassRule(const std::string& s);
-  static std::string writeLoopPassRule(int scoringRule);
+  static std::set<std::string> basicRuleStrings();
+  static int parseBasicRule(const std::string& s);
+  static std::string writeBasicRule(int basicRule);
 
 
   static Rules parseRules(const std::string& str);
@@ -56,8 +42,8 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
 
-  static const Hash128 ZOBRIST_LOOPPASS_RULE_HASH[4];
-  static const Hash128 ZOBRIST_KOMI_RULE_HASH_BASE;
+  static const Hash128 ZOBRIST_BASIC_RULE_HASH[2];
+  static const Hash128 ZOBRIST_MAXMOVES_HASH_BASE;
 
 };
 

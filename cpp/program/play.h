@@ -99,15 +99,8 @@ class GameInitializer {
   std::mutex createGameMutex;
   Rand rand;
 
-  std::vector<std::string> allowedLoopPassRuleStrs;
-  std::vector<int> allowedLoopPassRules;
   std::vector<int> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
-
-  float komiMean;
-  float komiStdev;
-  double komiBigStdevProb;
-  float komiBigStdev;
 
   double randomInitialStonesProb;
   double banLocProb;

@@ -1065,7 +1065,6 @@ bool Connection::uploadTrainingGameAndData(
     int boardSizeX = gameData->startBoard.x_size;
     int boardSizeY = gameData->startBoard.y_size;
     int handicap = gameData->handicapForSgf;
-    double komi = gameData->startHist.rules.komi;
     string rules = gameData->startHist.rules.toJsonStringNoKomiMaybeOmitStuff();
     json extraMetadata;
     extraMetadata["playout_doubling_advantage"] = gameData->playoutDoublingAdvantage;
@@ -1092,7 +1091,6 @@ bool Connection::uploadTrainingGameAndData(
       { "board_size_x", Global::intToString(boardSizeX), "", "" },
       { "board_size_y", Global::intToString(boardSizeY), "", "" },
       { "handicap", Global::intToString(handicap), "", "" },
-      { "komi", Global::doubleToString(komi), "", "" },
       { "gametype", gametype, "", "" },
       { "rules", rules, "", "" },
       { "extra_metadata", extraMetadata.dump(), "", "" },
@@ -1148,7 +1146,6 @@ bool Connection::uploadRatingGame(
     int boardSizeX = gameData->startBoard.x_size;
     int boardSizeY = gameData->startBoard.y_size;
     int handicap = (gameData->numExtraBlack > 0 ? (gameData->numExtraBlack + 1) : 0);
-    double komi = gameData->startHist.rules.komi;
     string rules = gameData->startHist.rules.toJsonStringNoKomiMaybeOmitStuff();
     json extraMetadata = json({});
     string gametype = getGameTypeStr(gameData);
@@ -1170,7 +1167,6 @@ bool Connection::uploadRatingGame(
       { "board_size_x", Global::intToString(boardSizeX), "", "" },
       { "board_size_y", Global::intToString(boardSizeY), "", "" },
       { "handicap", Global::intToString(handicap), "", "" },
-      { "komi", Global::doubleToString(komi), "", "" },
       { "gametype", gametype, "", "" },
       { "rules", rules, "", "" },
       { "extra_metadata", extraMetadata.dump(), "", "" },

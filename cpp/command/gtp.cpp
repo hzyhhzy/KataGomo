@@ -1560,68 +1560,17 @@ int MainCmds::gtp(const vector<string>& args) {
     }
 
     else if(command == "komi") {
-      int boardArea = engine->bot->getRootBoard().boardArea();
       float newKomif = 0;
       if(pieces.size() != 1 || !Global::tryStringToFloat(pieces[0],newKomif)) {
         responseIsError = true;
         response = "Expected single float argument for komi but got '" + Global::concat(pieces," ") + "'";
       } 
-      else if(isnan(newKomif) || newKomif <= -boardArea || newKomif >= boardArea) {
+      else if(isnan(newKomif) || newKomif < -10.0f || newKomif > 10.0f) {
         responseIsError = true;
         response = "unacceptable komi";
       } 
       else {
-        int newKomi;
-        float newNoResultUtilityForWhite;
-
-        int komi2 = llround(newKomif * 2);
-        int komi2mod4 = komi2 % 4;
-        if(komi2mod4 < 0)
-          komi2mod4 += 4;
-        assert(komi2mod4 >= 0 && komi2mod4 < 4);
-        if(boardArea % 2 == 1) {
-          if(komi2mod4 == 0) {
-            newKomi = komi2 / 2;
-            newNoResultUtilityForWhite = 0.0;
-          } else if(komi2mod4 == 1) {
-            newKomi = (komi2 - 1) / 2;
-            newNoResultUtilityForWhite = 1.0;
-          } else if(komi2mod4 == 2) {
-            newKomi = komi2 / 2;
-            newNoResultUtilityForWhite = 0.0;
-          } else if(komi2mod4 == 3) {
-            newKomi = (komi2 + 1) / 2;
-            newNoResultUtilityForWhite = -1.0;
-          }
-        } 
-        else {
-          if(komi2mod4 == 0) {
-            newKomi = komi2 / 2;
-            newNoResultUtilityForWhite = 0.0;
-          } else if(komi2mod4 == 1) {
-            newKomi = (komi2 + 1) / 2;
-            newNoResultUtilityForWhite = -1.0;
-          } else if(komi2mod4 == 2) {
-            newKomi = komi2 / 2;
-            newNoResultUtilityForWhite = 0.0;
-          } else if(komi2mod4 == 3) {
-            newKomi = (komi2 - 1) / 2;
-            newNoResultUtilityForWhite = 1.0;
-          }
-        }
-
-
-
-        Rules newRules = engine->getCurrentRules();
-        newRules.komi = newKomi;
-        string error;
-        bool suc = engine->setRules(newRules, error);
-        if(!suc) {
-          responseIsError = true;
-          response = error;
-        }
-
-        engine->setNoResultUtilityForWhite(newNoResultUtilityForWhite);
+        engine->setNoResultUtilityForWhite(newKomif * 0.1f);
         // In case the controller tells us komi every move, restart pondering afterward.
         maybeStartPondering = engine->bot->getRootHist().moveHistory.size() > 0;
       }
@@ -1694,40 +1643,8 @@ int MainCmds::gtp(const vector<string>& args) {
     }
 
     else if(command == "rule") {
-      if(pieces.size() != 1) {
-        responseIsError = true;
-        response = "Expected one arguments for rule but got '" + Global::concat(pieces, " ") + "'";
-      } else {
-
-        bool parseSuccess = true;
-        string r = pieces[0];
-        Rules newRules = engine->getCurrentRules();
-        if(r == "0" || r == "ps")
-          newRules.loopPassRule = Rules::LOOPDRAW_PASSSCORING;
-        else if(r == "1" || r == "pc")
-          newRules.loopPassRule = Rules::LOOPDRAW_PASSCONTINUE;
-        else if(r == "2" || r == "ll")
-          newRules.loopPassRule = Rules::LOOPLOSE_PASSSCORING;
-        else if(r == "3" || r == "ls")
-          newRules.loopPassRule = Rules::LOOPSCORING_PASSSCORING;
-        else
-          parseSuccess = false;
-
-        if(parseSuccess) {
-          string error;
-          bool suc = engine->setRules(newRules, error);
-          if(!suc) {
-            responseIsError = true;
-            response = error;
-          }
-          logger.write("Changed rules to " + newRules.toStringMaybeNice());
-          if(!logger.isLoggingToStderr())
-            cerr << "Changed rules to " + newRules.toStringMaybeNice() << endl;
-        } else {
-          responseIsError = true;
-          response = "Unknown rule";
-        }
-      }
+      responseIsError = true;
+      response = "rule command is no longer supported";
     }
 
     else if(command == "kgs-rules") {
