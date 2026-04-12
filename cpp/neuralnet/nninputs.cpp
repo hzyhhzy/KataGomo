@@ -293,6 +293,58 @@ namespace {
     outZ = dst[2];
   }
 
+  static inline int encode3DSymmetry(const int perm[3], const bool flip[3]) {
+    int permIdx = -1;
+    for(int i = 0; i < 6; i++) {
+      if(
+        SYM_PERMUTATIONS[i][0] == perm[0] &&
+        SYM_PERMUTATIONS[i][1] == perm[1] &&
+        SYM_PERMUTATIONS[i][2] == perm[2]
+      ) {
+        permIdx = i;
+        break;
+      }
+    }
+    assert(permIdx >= 0);
+    return
+      (permIdx << 3) |
+      (flip[0] ? 0x1 : 0) |
+      (flip[1] ? 0x2 : 0) |
+      (flip[2] ? 0x4 : 0);
+  }
+
+  static inline int invert3DSymmetryFast(int symmetry) {
+    int perm[3];
+    bool flip[3];
+    decode3DSymmetry(symmetry, perm, flip);
+
+    int inversePerm[3];
+    bool inverseFlip[3];
+    for(int i = 0; i < 3; i++) {
+      inversePerm[perm[i]] = i;
+      inverseFlip[perm[i]] = flip[i];
+    }
+    return encode3DSymmetry(inversePerm, inverseFlip);
+  }
+
+  static inline int compose3DSymmetryFast(int firstSymmetry, int nextSymmetry) {
+    int firstPerm[3];
+    bool firstFlip[3];
+    decode3DSymmetry(firstSymmetry, firstPerm, firstFlip);
+
+    int nextPerm[3];
+    bool nextFlip[3];
+    decode3DSymmetry(nextSymmetry, nextPerm, nextFlip);
+
+    int composedPerm[3];
+    bool composedFlip[3];
+    for(int i = 0; i < 3; i++) {
+      composedPerm[i] = firstPerm[nextPerm[i]];
+      composedFlip[i] = nextFlip[i] != firstFlip[nextPerm[i]];
+    }
+    return encode3DSymmetry(composedPerm, composedFlip);
+  }
+
   static inline int getCubeSymPos(int pos, int len, int symmetry) {
     int layerArea = len * len;
     int z = pos / layerArea;
@@ -376,34 +428,44 @@ namespace {
     bool useNHWC,
     int symmetry,
     bool reverse) {
-    int totalSize = hSize * wSize * hSize;
-    if(totalSize == Board::MAX_PLAY_SIZE) {
-      int appliedSymmetry = reverse ? SymmetryHelpers::invert(symmetry) : symmetry;
-      if(useNHWC) {
-        int nStride = totalSize * cSize;
-        for(int n = 0; n < nSize; n++) {
-          for(int pos = 0; pos < totalSize; pos++) {
-            int symPos = getCubeSymPos(pos, Board::MAX_LEN, appliedSymmetry);
-            for(int c = 0; c < cSize; c++)
-              dst[n * nStride + symPos * cSize + c] = src[n * nStride + pos * cSize + c];
-          }
-        }
-      }
-      else {
-        int channelStride = totalSize;
-        for(int n = 0; n < nSize; n++) {
-          for(int c = 0; c < cSize; c++) {
-            int base = (n * cSize + c) * channelStride;
-            for(int pos = 0; pos < totalSize; pos++) {
-              int symPos = getCubeSymPos(pos, Board::MAX_LEN, appliedSymmetry);
-              dst[base + symPos] = src[base + pos];
+    int totalSize = hSize * wSize * zSize;
+    int appliedSymmetry = reverse ? SymmetryHelpers::invert(symmetry) : symmetry;
+    if(useNHWC) {
+      int nStride = totalSize * cSize;
+      for(int n = 0; n < nSize; n++) {
+        for(int z = 0; z < zSize; z++) {
+          for(int y = 0; y < hSize; y++) {
+            for(int x = 0; x < wSize; x++) {
+              int pos = x + y * wSize + z * wSize * hSize;
+              int symX, symY, symZ;
+              apply3DSymmetry(x,y,z,wSize,hSize,zSize,appliedSymmetry,symX,symY,symZ);
+              int symPos = symX + symY * wSize + symZ * wSize * hSize;
+              for(int c = 0; c < cSize; c++)
+                dst[n * nStride + symPos * cSize + c] = src[n * nStride + pos * cSize + c];
             }
           }
         }
       }
-      return;
     }
-    //copyWithSymmetry2D(src, dst, nSize, hSize, wSize, cSize, useNHWC, symmetry, reverse);
+    else {
+      int channelStride = totalSize;
+      for(int n = 0; n < nSize; n++) {
+        for(int c = 0; c < cSize; c++) {
+          int base = (n * cSize + c) * channelStride;
+          for(int z = 0; z < zSize; z++) {
+            for(int y = 0; y < hSize; y++) {
+              for(int x = 0; x < wSize; x++) {
+                int pos = x + y * wSize + z * wSize * hSize;
+                int symX, symY, symZ;
+                apply3DSymmetry(x,y,z,wSize,hSize,zSize,appliedSymmetry,symX,symY,symZ);
+                int symPos = symX + symY * wSize + symZ * wSize * hSize;
+                dst[base + symPos] = src[base + pos];
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 
@@ -426,29 +488,11 @@ void SymmetryHelpers::copyOutputsWithSymmetry(const float* src, float* dst, int 
 }
 
 int SymmetryHelpers::invert(int symmetry) {
-  for(int candidate = 0; candidate < NUM_SYMMETRIES; candidate++) {
-    if(compose(symmetry,candidate) == 0 && compose(candidate,symmetry) == 0)
-      return candidate;
-  }
-  ASSERT_UNREACHABLE;
-  return 0;
+  return invert3DSymmetryFast(symmetry);
 }
 
 int SymmetryHelpers::compose(int firstSymmetry, int nextSymmetry) {
-  for(int candidate = 0; candidate < NUM_SYMMETRIES; candidate++) {
-    bool same = true;
-    for(int pos = 0; pos < Board::MAX_PLAY_SIZE; pos++) {
-      int composed = getCubeSymPos(getCubeSymPos(pos, Board::MAX_LEN, firstSymmetry), Board::MAX_LEN, nextSymmetry);
-      if(getCubeSymPos(pos, Board::MAX_LEN, candidate) != composed) {
-        same = false;
-        break;
-      }
-    }
-    if(same)
-      return candidate;
-  }
-  ASSERT_UNREACHABLE;
-  return 0;
+  return compose3DSymmetryFast(firstSymmetry, nextSymmetry);
 }
 
 int SymmetryHelpers::compose(int firstSymmetry, int nextSymmetry, int nextNextSymmetry) {

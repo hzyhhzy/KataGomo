@@ -522,14 +522,19 @@ void Search::printRootPolicyMap(ostream& out) const {
     return;
 
   const float* policyProbs = nnOutput->getPolicyProbsMaybeNoised();
-  for(int y = 0; y<rootBoard.y_size; y++) {
-    for(int x = 0; x<rootBoard.x_size; x++) {
-      int pos = NNPos::xyToPos(x,y,nnOutput->nnXLen);
-      out << Global::strprintf("%6.1f ", policyProbs[pos]*100);
+  for(int z = 0; z<rootBoard.z_size; z++) {
+    if(rootBoard.z_size > 1)
+      out << "z = " << z << endl;
+    for(int y = 0; y<rootBoard.y_size; y++) {
+      for(int x = 0; x<rootBoard.x_size; x++) {
+        Loc loc = Location::getLoc(x,y,z,rootBoard.x_size,rootBoard.y_size);
+        int pos = NNPos::locToPos(loc,rootBoard.x_size,rootBoard.y_size,rootBoard.z_size,nnOutput->nnXLen,nnOutput->nnYLen,nnOutput->nnZLen);
+        out << Global::strprintf("%6.1f ", policyProbs[pos]*100);
+      }
+      out << endl;
     }
     out << endl;
   }
-  out << endl;
 }
 
 void Search::appendPV(
@@ -1265,14 +1270,17 @@ bool Search::getAnalysisJson(
     if(!suc)
       return false;
     json policy = json::array();
-    for(int y = 0; y < board.y_size; y++) {
-      for(int x = 0; x < board.x_size; x++) {
-        int pos = NNPos::xyToPos(x, y, nnXLen);
-        policy.push_back(Global::roundDynamic(policyProbs[pos],OUTPUT_PRECISION));
+    for(int z = 0; z < board.z_size; z++) {
+      for(int y = 0; y < board.y_size; y++) {
+        for(int x = 0; x < board.x_size; x++) {
+          Loc loc = Location::getLoc(x,y,z,board.x_size,board.y_size);
+          int pos = NNPos::locToPos(loc,board.x_size,board.y_size,board.z_size,nnXLen,nnYLen,nnZLen);
+          policy.push_back(Global::roundDynamic(policyProbs[pos],OUTPUT_PRECISION));
+        }
       }
     }
 
-    int passPos = NNPos::locToPos(Board::PASS_LOC, board.x_size, nnXLen, nnYLen);
+    int passPos = NNPos::locToPos(Board::PASS_LOC, board.x_size, board.y_size, board.z_size, nnXLen, nnYLen, nnZLen);
     policy.push_back(Global::roundDynamic(policyProbs[passPos],OUTPUT_PRECISION));
     ret["policy"] = policy;
   }

@@ -396,7 +396,7 @@ void NeuralNet::getOutput(
         throw StringError("modelVersion >= 12 && modelVersion <= 99 not supported");
     
     SymmetryHelpers::copyOutputsWithSymmetry(
-      policySrcBuf, policyProbs, batchSize, nnXLen, nnYLen, nnZLen, inputBufs[row]->symmetry);
+      policySrcBuf, policyProbs, batchSize, nnYLen, nnXLen, nnZLen, inputBufs[row]->symmetry);
     policyProbs[nnLen] = policySrcBuf[nnLen];
     
     
