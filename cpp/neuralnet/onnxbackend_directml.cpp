@@ -270,19 +270,20 @@ struct InputBuffers {
   InputBuffers(const LoadedModel* loadedModel, int maxBatchSz, int nnXLen, int nnYLen) {
     const ModelDesc& m = loadedModel->modelDesc;
     maxBatchSize = maxBatchSz;
+    int nnLen = nnXLen * nnYLen;
 
-    singleInputElts = m.numInputChannels * nnXLen * nnYLen;
+    singleInputElts = m.numInputChannels * nnLen;
     singleInputGlobalElts = m.numInputGlobalChannels;
     
     // Output sizes - following trtbackend.cpp logic for ONNX
     int policyNum = (m.version >= 12 && m.version <= 99) ? 6 : 4;
     if(m.version >= 12 && m.version <= 99)
       throw StringError("modelVersion >= 12 && modelVersion <= 99 not supported");
-    singleout_policyElts = 1 * policyNum * (nnXLen * nnYLen + 1);
+    singleout_policyElts = 1 * policyNum * (nnLen + 1);
     singleout_valueElts = 3;
     singleout_miscvalueElts = 10;
     singleout_moremiscvalueElts = 8;
-    singleout_ownershipElts = 1 * nnXLen * nnYLen;
+    singleout_ownershipElts = 1 * nnLen;
 
     spatialInputs = make_unique<float[]>(maxBatchSize * singleInputElts);
     globalInputs = make_unique<float[]>(maxBatchSize * singleInputGlobalElts);
@@ -313,6 +314,7 @@ void NeuralNet::getOutput(
   int batchSize = numBatchEltsFilled;
   int nnXLen = handle->ctx->nnXLen;
   int nnYLen = handle->ctx->nnYLen;
+  int nnLen = nnXLen * nnYLen;
   int modelVersion = handle->modelVersion;
 
   const int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
@@ -328,7 +330,7 @@ void NeuralNet::getOutput(
     
     copy(rowGlobal, rowGlobal + numGlobalFeatures, rowGlobalInput);
     SymmetryHelpers::copyInputsWithSymmetry(
-      rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
+      rowSpatial, rowSpatialInput, 1, 1, nnLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
   }
 
   // Run ONNX inference
@@ -336,12 +338,12 @@ void NeuralNet::getOutput(
   vector<const char*> outputNames = {"out_policy", "out_value", "out_miscvalue", "out_moremiscvalue", "out_ownership"};
 
   // Shapes
-  int64_t spatialShape[] = {batchSize, numSpatialFeatures, nnYLen, nnXLen};
+  int64_t spatialShape[] = {batchSize, numSpatialFeatures, nnLen};
   int64_t globalShape[] = {batchSize, numGlobalFeatures};
 
   vector<Ort::Value> inputTensors;
   inputTensors.push_back(Ort::Value::CreateTensor<float>(
-      handle->memoryInfo, inputBuffers->spatialInputs.get(), inputBuffers->singleInputElts * batchSize, spatialShape, 4));
+      handle->memoryInfo, inputBuffers->spatialInputs.get(), inputBuffers->singleInputElts * batchSize, spatialShape, 3));
   inputTensors.push_back(Ort::Value::CreateTensor<float>(
       handle->memoryInfo, inputBuffers->globalInputs.get(), inputBuffers->singleInputGlobalElts * batchSize, globalShape, 2));
 
@@ -416,8 +418,8 @@ void NeuralNet::getOutput(
     if(modelVersion >= 12 && modelVersion <= 99)
       throw StringError("modelVersion >= 12 && modelVersion <= 99 not supported");
 
-    SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
-    policyProbs[nnXLen * nnYLen] = policySrcBuf[nnXLen * nnYLen];
+    SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, 1, nnLen, inputBufs[row]->symmetry);
+    policyProbs[nnLen] = policySrcBuf[nnLen];
 
     // Value
     int numValueChannels = 3;

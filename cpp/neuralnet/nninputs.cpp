@@ -5,29 +5,42 @@ using namespace std;
 int NNPos::xyToPos(int x, int y, int nnXLen) {
   return y * nnXLen + x;
 }
-int NNPos::locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
+int NNPos::locToPos(Loc loc, int nnLen) {
   if(loc == Board::PASS_LOC)
-    return nnXLen * nnYLen;
+    return nnLen;
   else if(loc == Board::NULL_LOC)
-    return nnXLen * (nnYLen + 1);
-  return Location::getY(loc,boardXSize) * nnXLen + Location::getX(loc,boardXSize);
+    return nnLen + 1;
+  return loc;
+}
+int NNPos::locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
+  (void)boardXSize;
+  return locToPos(loc, nnXLen * nnYLen);
+}
+Loc NNPos::posToLoc(int pos, int boardVolume, int nnLen) {
+  if(pos == nnLen)
+    return Board::PASS_LOC;
+  if(pos < 0 || pos >= boardVolume)
+    return Board::NULL_LOC;
+  return (Loc)pos;
 }
 Loc NNPos::posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen) {
-  if(pos == nnXLen * nnYLen)
-    return Board::PASS_LOC;
-  int x = pos % nnXLen;
-  int y = pos / nnXLen;
-  if(x < 0 || x >= boardXSize || y < 0 || y >= boardYSize)
-    return Board::NULL_LOC;
-  return Location::getLoc(x,y,boardXSize);
+  return posToLoc(pos, boardXSize * boardYSize, nnXLen * nnYLen);
+}
+
+bool NNPos::isPassPos(int pos, int nnLen) {
+  return pos == nnLen;
 }
 
 bool NNPos::isPassPos(int pos, int nnXLen, int nnYLen) {
-  return pos == nnXLen * nnYLen;
+  return isPassPos(pos, nnXLen * nnYLen);
+}
+
+int NNPos::getPolicySize(int nnLen) {
+  return nnLen + 1;
 }
 
 int NNPos::getPolicySize(int nnXLen, int nnYLen) {
-  return nnXLen * nnYLen + 1;
+  return getPolicySize(nnXLen * nnYLen);
 }
 
 //-----------------------------------------------------------------------------------------------------------
@@ -56,7 +69,7 @@ static const double piOverTwo = 1.57079632679489661923;
 
 
 NNOutput::NNOutput()
-  :noisedPolicyProbs(NULL)
+  :nnLen(0),nnXLen(0),nnYLen(0),nnZLen(0),noisedPolicyProbs(NULL)
 {}
 NNOutput::NNOutput(const NNOutput& other) {
   nnHash = other.nnHash;
@@ -66,8 +79,10 @@ NNOutput::NNOutput(const NNOutput& other) {
   varTimeLeft = other.varTimeLeft;
   shorttermWinlossError = other.shorttermWinlossError;
 
+  nnLen = other.nnLen;
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
+  nnZLen = other.nnZLen;
 
   if(other.noisedPolicyProbs != NULL) {
     noisedPolicyProbs = new float[NNPos::MAX_NN_POLICY_SIZE];
@@ -108,8 +123,10 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   varTimeLeft /= floatLen;
   shorttermWinlossError /= floatLen;
 
+  nnLen = others[0]->nnLen;
   nnXLen = others[0]->nnXLen;
   nnYLen = others[0]->nnYLen;
+  nnZLen = others[0]->nnZLen;
 
   noisedPolicyProbs = NULL;
 
@@ -150,8 +167,10 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   varTimeLeft = other.varTimeLeft;
   shorttermWinlossError = other.shorttermWinlossError;
 
+  nnLen = other.nnLen;
   nnXLen = other.nnXLen;
   nnYLen = other.nnYLen;
+  nnZLen = other.nnZLen;
 
   if(noisedPolicyProbs != NULL)
     delete[] noisedPolicyProbs;
@@ -184,80 +203,165 @@ void NNOutput::debugPrint(ostream& out, const Board& board) {
   out << "STWinlossError " << Global::strprintf("%.3f",shorttermWinlossError) << endl;
 
   out << "Policy" << endl;
-  for(int y = 0; y<board.y_size; y++) {
-    for(int x = 0; x<board.x_size; x++) {
-      int pos = NNPos::xyToPos(x,y,nnXLen);
-      float prob = policyProbs[pos];
-      if(prob < 0)
-        out << "   - ";
-      else
-        out << Global::strprintf("%4d ", (int)round(prob * 1000));
+  for(int z = 0; z<board.z_size; z++) {
+    if(board.z_size > 1)
+      out << "Layer " << z << endl;
+    for(int y = 0; y<board.y_size; y++) {
+      for(int x = 0; x<board.x_size; x++) {
+        int pos = NNPos::locToPos(Location::getLoc(x,y,z,board.x_size,board.y_size), nnLen);
+        float prob = policyProbs[pos];
+        if(prob < 0)
+          out << "   - ";
+        else
+          out << Global::strprintf("%4d ", (int)round(prob * 1000));
+      }
+      out << endl;
     }
-    out << endl;
   }
-
 }
 
 //-------------------------------------------------------------------------------------------------------------
 
-static void copyWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry, bool reverse) {
-  bool transpose = (symmetry & 0x4) != 0 && hSize == wSize;
-  bool flipX = (symmetry & 0x2) != 0;
-  bool flipY = (symmetry & 0x1) != 0;
-  if(transpose && !reverse)
-    std::swap(flipX,flipY);
-  if(useNHWC) {
-    int nStride = hSize * wSize * cSize;
-    int hStride = wSize * cSize;
-    int wStride = cSize;
-    int hBaseNew = 0; int hStrideNew = hStride;
-    int wBaseNew = 0; int wStrideNew = wStride;
+namespace {
+  static const int SYM_PERMUTATIONS[6][3] = {
+    {0,1,2},
+    {0,2,1},
+    {1,0,2},
+    {1,2,0},
+    {2,0,1},
+    {2,1,0},
+  };
 
-    if(flipY) { hBaseNew = (hSize-1) * hStrideNew; hStrideNew = -hStrideNew; }
-    if(flipX) { wBaseNew = (wSize-1) * wStrideNew; wStrideNew = -wStrideNew; }
+  static inline void decode3DSymmetry(int symmetry, int perm[3], bool flip[3]) {
+    assert(symmetry >= 0 && symmetry < SymmetryHelpers::NUM_SYMMETRIES);
+    int permIdx = SymmetryHelpers::getPermutationIndex(symmetry);
+    for(int i = 0; i < 3; i++)
+      perm[i] = SYM_PERMUTATIONS[permIdx][i];
+    flip[0] = SymmetryHelpers::isFlipX(symmetry);
+    flip[1] = SymmetryHelpers::isFlipY(symmetry);
+    flip[2] = SymmetryHelpers::isFlipZ(symmetry);
+  }
 
-    if(transpose)
-      std::swap(hStrideNew,wStrideNew);
+  static inline void apply3DSymmetry(int x, int y, int z, int xSize, int ySize, int zSize, int symmetry, int& outX, int& outY, int& outZ) {
+    int perm[3];
+    bool flip[3];
+    decode3DSymmetry(symmetry, perm, flip);
+    int src[3] = {x,y,z};
+    int srcDims[3] = {xSize,ySize,zSize};
+    int dst[3];
+    for(int i = 0; i < 3; i++) {
+      int value = src[perm[i]];
+      int axisLen = srcDims[perm[i]];
+      if(flip[i])
+        value = axisLen - value - 1;
+      dst[i] = value;
+    }
+    outX = dst[0];
+    outY = dst[1];
+    outZ = dst[2];
+  }
 
-    for(int n = 0; n<nSize; n++) {
-      for(int h = 0; h<hSize; h++) {
-        int nhOld = n * nStride + h*hStride;
-        int nhNew = n * nStride + hBaseNew + h*hStrideNew;
-        for(int w = 0; w<wSize; w++) {
-          int nhwOld = nhOld + w*wStride;
-          int nhwNew = nhNew + wBaseNew + w*wStrideNew;
-          for(int c = 0; c<cSize; c++) {
-            dst[nhwNew + c] = src[nhwOld + c];
+  static inline int getCubeSymPos(int pos, int len, int symmetry) {
+    int layerArea = len * len;
+    int z = pos / layerArea;
+    int rem = pos % layerArea;
+    int y = rem / len;
+    int x = rem % len;
+    int symX, symY, symZ;
+    apply3DSymmetry(x,y,z,len,len,len,symmetry,symX,symY,symZ);
+    return symX + symY * len + symZ * layerArea;
+  }
+
+  static void copyWithSymmetry2D(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry, bool reverse) {
+    bool transpose = (symmetry & 0x4) != 0 && hSize == wSize;
+    bool flipX = (symmetry & 0x2) != 0;
+    bool flipY = (symmetry & 0x1) != 0;
+    if(transpose && !reverse)
+      std::swap(flipX,flipY);
+    if(useNHWC) {
+      int nStride = hSize * wSize * cSize;
+      int hStride = wSize * cSize;
+      int wStride = cSize;
+      int hBaseNew = 0; int hStrideNew = hStride;
+      int wBaseNew = 0; int wStrideNew = wStride;
+
+      if(flipY) { hBaseNew = (hSize-1) * hStrideNew; hStrideNew = -hStrideNew; }
+      if(flipX) { wBaseNew = (wSize-1) * wStrideNew; wStrideNew = -wStrideNew; }
+
+      if(transpose)
+        std::swap(hStrideNew,wStrideNew);
+
+      for(int n = 0; n<nSize; n++) {
+        for(int h = 0; h<hSize; h++) {
+          int nhOld = n * nStride + h*hStride;
+          int nhNew = n * nStride + hBaseNew + h*hStrideNew;
+          for(int w = 0; w<wSize; w++) {
+            int nhwOld = nhOld + w*wStride;
+            int nhwNew = nhNew + wBaseNew + w*wStrideNew;
+            for(int c = 0; c<cSize; c++) {
+              dst[nhwNew + c] = src[nhwOld + c];
+            }
+          }
+        }
+      }
+    }
+    else {
+      int ncSize = nSize * cSize;
+      int ncStride = hSize * wSize;
+      int hStride = wSize;
+      int wStride = 1;
+      int hBaseNew = 0; int hStrideNew = hStride;
+      int wBaseNew = 0; int wStrideNew = wStride;
+
+      if(flipY) { hBaseNew = (hSize-1) * hStrideNew; hStrideNew = -hStrideNew; }
+      if(flipX) { wBaseNew = (wSize-1) * wStrideNew; wStrideNew = -wStrideNew; }
+
+      if(transpose)
+        std::swap(hStrideNew,wStrideNew);
+
+      for(int nc = 0; nc<ncSize; nc++) {
+        for(int h = 0; h<hSize; h++) {
+          int nchOld = nc * ncStride + h*hStride;
+          int nchNew = nc * ncStride + hBaseNew + h*hStrideNew;
+          for(int w = 0; w<wSize; w++) {
+            int nchwOld = nchOld + w*wStride;
+            int nchwNew = nchNew + wBaseNew + w*wStrideNew;
+            dst[nchwNew] = src[nchwOld];
           }
         }
       }
     }
   }
-  else {
-    int ncSize = nSize * cSize;
-    int ncStride = hSize * wSize;
-    int hStride = wSize;
-    int wStride = 1;
-    int hBaseNew = 0; int hStrideNew = hStride;
-    int wBaseNew = 0; int wStrideNew = wStride;
 
-    if(flipY) { hBaseNew = (hSize-1) * hStrideNew; hStrideNew = -hStrideNew; }
-    if(flipX) { wBaseNew = (wSize-1) * wStrideNew; wStrideNew = -wStrideNew; }
-
-    if(transpose)
-      std::swap(hStrideNew,wStrideNew);
-
-    for(int nc = 0; nc<ncSize; nc++) {
-      for(int h = 0; h<hSize; h++) {
-        int nchOld = nc * ncStride + h*hStride;
-        int nchNew = nc * ncStride + hBaseNew + h*hStrideNew;
-        for(int w = 0; w<wSize; w++) {
-          int nchwOld = nchOld + w*wStride;
-          int nchwNew = nchNew + wBaseNew + w*wStrideNew;
-          dst[nchwNew] = src[nchwOld];
+  static void copyWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry, bool reverse) {
+    int totalSize = hSize * wSize;
+    if(totalSize == Board::MAX_PLAY_SIZE) {
+      int appliedSymmetry = reverse ? SymmetryHelpers::invert(symmetry) : symmetry;
+      if(useNHWC) {
+        int nStride = totalSize * cSize;
+        for(int n = 0; n < nSize; n++) {
+          for(int pos = 0; pos < totalSize; pos++) {
+            int symPos = getCubeSymPos(pos, Board::MAX_LEN, appliedSymmetry);
+            for(int c = 0; c < cSize; c++)
+              dst[n * nStride + symPos * cSize + c] = src[n * nStride + pos * cSize + c];
+          }
         }
       }
+      else {
+        int channelStride = totalSize;
+        for(int n = 0; n < nSize; n++) {
+          for(int c = 0; c < cSize; c++) {
+            int base = (n * cSize + c) * channelStride;
+            for(int pos = 0; pos < totalSize; pos++) {
+              int symPos = getCubeSymPos(pos, Board::MAX_LEN, appliedSymmetry);
+              dst[base + symPos] = src[base + pos];
+            }
+          }
+        }
+      }
+      return;
     }
+    copyWithSymmetry2D(src, dst, nSize, hSize, wSize, cSize, useNHWC, symmetry, reverse);
   }
 }
 
@@ -271,17 +375,29 @@ void SymmetryHelpers::copyOutputsWithSymmetry(const float* src, float* dst, int 
 }
 
 int SymmetryHelpers::invert(int symmetry) {
-  if(symmetry == 5)
-    return 6;
-  if(symmetry == 6)
-    return 5;
-  return symmetry;
+  for(int candidate = 0; candidate < NUM_SYMMETRIES; candidate++) {
+    if(compose(symmetry,candidate) == 0 && compose(candidate,symmetry) == 0)
+      return candidate;
+  }
+  ASSERT_UNREACHABLE;
+  return 0;
 }
 
 int SymmetryHelpers::compose(int firstSymmetry, int nextSymmetry) {
-  if(isTranspose(firstSymmetry))
-    nextSymmetry = (nextSymmetry & 0x4) | ((nextSymmetry & 0x2) >> 1) | ((nextSymmetry & 0x1) << 1);
-  return firstSymmetry ^ nextSymmetry;
+  for(int candidate = 0; candidate < NUM_SYMMETRIES; candidate++) {
+    bool same = true;
+    for(int pos = 0; pos < Board::MAX_PLAY_SIZE; pos++) {
+      int composed = getCubeSymPos(getCubeSymPos(pos, Board::MAX_LEN, firstSymmetry), Board::MAX_LEN, nextSymmetry);
+      if(getCubeSymPos(pos, Board::MAX_LEN, candidate) != composed) {
+        same = false;
+        break;
+      }
+    }
+    if(same)
+      return candidate;
+  }
+  ASSERT_UNREACHABLE;
+  return 0;
 }
 
 int SymmetryHelpers::compose(int firstSymmetry, int nextSymmetry, int nextNextSymmetry) {
@@ -289,25 +405,37 @@ int SymmetryHelpers::compose(int firstSymmetry, int nextSymmetry, int nextNextSy
 }
 
 Loc SymmetryHelpers::getSymLoc(int x, int y, int xSize, int ySize, int symmetry) {
-  bool transpose = (symmetry & 0x4) != 0;
-  bool flipX = (symmetry & 0x2) != 0;
-  bool flipY = (symmetry & 0x1) != 0;
-  if(flipX) { x = xSize - x - 1; }
-  if(flipY) { y = ySize - y - 1; }
-
-  if(transpose)
-    std::swap(x,y);
-  return Location::getLoc(x,y,transpose ? ySize : xSize);
+  if(symmetry < 8) {
+    bool transpose = (symmetry & 0x4) != 0;
+    bool flipX = (symmetry & 0x2) != 0;
+    bool flipY = (symmetry & 0x1) != 0;
+    if(flipX) { x = xSize - x - 1; }
+    if(flipY) { y = ySize - y - 1; }
+    if(transpose)
+      std::swap(x,y);
+    return Location::getLoc(x,y,transpose ? ySize : xSize);
+  }
+  return getSymLoc(x,y,0,xSize,ySize,1,symmetry);
 }
 
 Loc SymmetryHelpers::getSymLoc(int x, int y, const Board& board, int symmetry) {
   return getSymLoc(x,y,board.x_size,board.y_size,symmetry);
 }
 
+Loc SymmetryHelpers::getSymLoc(int x, int y, int z, const Board& board, int symmetry) {
+  return getSymLoc(x,y,z,board.x_size,board.y_size,board.z_size,symmetry);
+}
+
 Loc SymmetryHelpers::getSymLoc(Loc loc, const Board& board, int symmetry) {
   if(loc == Board::NULL_LOC || loc == Board::PASS_LOC)
     return loc;
-  return getSymLoc(Location::getX(loc,board.x_size), Location::getY(loc,board.x_size), board, symmetry);
+  return getSymLoc(
+    Location::getX(loc,board.x_size),
+    Location::getY(loc,board.x_size,board.y_size),
+    Location::getZ(loc,board.x_size,board.y_size),
+    board,
+    symmetry
+  );
 }
 
 Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int symmetry) {
@@ -316,26 +444,35 @@ Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int symmetry) {
   return getSymLoc(Location::getX(loc,xSize), Location::getY(loc,xSize), xSize, ySize, symmetry);
 }
 
+Loc SymmetryHelpers::getSymLoc(int x, int y, int z, int xSize, int ySize, int zSize, int symmetry) {
+  int symX, symY, symZ;
+  apply3DSymmetry(x,y,z,xSize,ySize,zSize,symmetry,symX,symY,symZ);
+  return Location::getLoc(symX,symY,symZ,xSize,ySize);
+}
+
+Loc SymmetryHelpers::getSymLoc(Loc loc, int xSize, int ySize, int zSize, int symmetry) {
+  if(loc == Board::NULL_LOC || loc == Board::PASS_LOC)
+    return loc;
+  return getSymLoc(
+    Location::getX(loc,xSize),
+    Location::getY(loc,xSize,ySize),
+    Location::getZ(loc,xSize,ySize),
+    xSize,ySize,zSize,symmetry
+  );
+}
+
 
 Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
-  bool transpose = (symmetry & 0x4) != 0;
-  bool flipX = (symmetry & 0x2) != 0;
-  bool flipY = (symmetry & 0x1) != 0;
-  Board symBoard(
-    transpose ? board.y_size : board.x_size,
-    transpose ? board.x_size : board.y_size
-  );
-  for(int y = 0; y<board.y_size; y++) {
-    for(int x = 0; x<board.x_size; x++) {
-      Loc loc = Location::getLoc(x,y,board.x_size);
-      int symX = flipX ? board.x_size - x - 1 : x;
-      int symY = flipY ? board.y_size - y - 1 : y;
-      if(transpose)
-        std::swap(symX,symY);
-      Loc symLoc = Location::getLoc(symX,symY,symBoard.x_size);
-      bool suc = symBoard.setStone(symLoc,board.colors[loc]);
-      assert(suc);
-      (void)suc;
+  Board symBoard(board.x_size, board.y_size, board.z_size);
+  for(int z = 0; z<board.z_size; z++) {
+    for(int y = 0; y<board.y_size; y++) {
+      for(int x = 0; x<board.x_size; x++) {
+        Loc loc = Location::getLoc(x,y,z,board.x_size,board.y_size);
+        Loc symLoc = getSymLoc(x,y,z,board,symmetry);
+        bool suc = symBoard.setStone(symLoc,board.colors[loc]);
+        assert(suc);
+        (void)suc;
+      }
     }
   }
   return symBoard;
@@ -355,8 +492,7 @@ void SymmetryHelpers::markDuplicateMoveLocs(
   validSymmetries.push_back(0);
 
 
-  //If board has different sizes of x and y, we will not search symmetries involved with transpose.
-  int symmetrySearchUpperBound = board.x_size == board.y_size ? SymmetryHelpers::NUM_SYMMETRIES : SymmetryHelpers::NUM_SYMMETRIES_WITHOUT_TRANSPOSE;
+  int symmetrySearchUpperBound = board.isCubical() ? SymmetryHelpers::NUM_SYMMETRIES : SymmetryHelpers::NUM_SYMMETRIES_WITHOUT_TRANSPOSE;
 
   for(int symmetry = 1; symmetry < symmetrySearchUpperBound; symmetry++) {
     if(onlySymmetries != NULL && !contains(*onlySymmetries,symmetry))
@@ -374,15 +510,19 @@ void SymmetryHelpers::markDuplicateMoveLocs(
       }
     }
 
-    for(int y = 0; y < board.y_size; y++) {
-      for(int x = 0; x < board.x_size; x++) {
-        Loc loc = Location::getLoc(x, y, board.x_size);
-        Loc symLoc = getSymLoc(x, y, board,symmetry);
-        bool isStoneSym = (board.colors[loc] == board.colors[symLoc]);
-        if(!isStoneSym ) {
-          isBoardSym = false;
-          break;
+    for(int z = 0; z < board.z_size; z++) {
+      for(int y = 0; y < board.y_size; y++) {
+        for(int x = 0; x < board.x_size; x++) {
+          Loc loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
+          Loc symLoc = getSymLoc(x, y, z, board,symmetry);
+          bool isStoneSym = (board.colors[loc] == board.colors[symLoc]);
+          if(!isStoneSym ) {
+            isBoardSym = false;
+            break;
+          }
         }
+        if(!isBoardSym)
+          break;
       }
       if(!isBoardSym)
         break;
@@ -395,33 +535,37 @@ void SymmetryHelpers::markDuplicateMoveLocs(
   //Reverse the iteration order for white, so that natural openings result in white on the left and black on the right
   //as is common now in SGFs
   if(hist.presumedNextMovePla == P_BLACK) {
-    for(int x = board.x_size-1; x >= 0; x--) {
-      for(int y = 0; y < board.y_size; y++) {
-        Loc loc = Location::getLoc(x, y, board.x_size);
-        if(avoidMoves.size() > 0 && avoidMoves[loc] > 0)
-          continue;
-        for(int symmetry: validSymmetries) {
-          if(symmetry == 0)
+    for(int z = board.z_size-1; z >= 0; z--) {
+      for(int x = board.x_size-1; x >= 0; x--) {
+        for(int y = 0; y < board.y_size; y++) {
+          Loc loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
+          if(avoidMoves.size() > 0 && avoidMoves[loc] > 0)
             continue;
-          Loc symLoc = getSymLoc(x, y, board, symmetry);
-          if(!isSymDupLoc[loc] && loc != symLoc)
-            isSymDupLoc[symLoc] = true;
+          for(int symmetry: validSymmetries) {
+            if(symmetry == 0)
+              continue;
+            Loc symLoc = getSymLoc(x, y, z, board, symmetry);
+            if(!isSymDupLoc[loc] && loc != symLoc)
+              isSymDupLoc[symLoc] = true;
+          }
         }
       }
     }
   }
   else {
-    for(int x = 0; x < board.x_size; x++) {
-      for(int y = board.y_size-1; y >= 0; y--) {
-        Loc loc = Location::getLoc(x, y, board.x_size);
-        if(avoidMoves.size() > 0 && avoidMoves[loc] > 0)
-          continue;
-        for(int symmetry: validSymmetries) {
-          if(symmetry == 0)
+    for(int z = 0; z < board.z_size; z++) {
+      for(int x = 0; x < board.x_size; x++) {
+        for(int y = board.y_size-1; y >= 0; y--) {
+          Loc loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
+          if(avoidMoves.size() > 0 && avoidMoves[loc] > 0)
             continue;
-          Loc symLoc = getSymLoc(x, y, board, symmetry);
-          if(!isSymDupLoc[loc] && loc != symLoc)
-            isSymDupLoc[symLoc] = true;
+          for(int symmetry: validSymmetries) {
+            if(symmetry == 0)
+              continue;
+            Loc symLoc = getSymLoc(x, y, z, board, symmetry);
+            if(!isSymDupLoc[loc] && loc != symLoc)
+              isSymDupLoc[symLoc] = true;
+          }
         }
       }
     }
@@ -484,17 +628,14 @@ void NNInputs::fillRowV7(
   const MiscNNInputParams& nnInputParams,
   int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
 ) {
-  assert(nnXLen <= NNPos::MAX_BOARD_LEN);
-  assert(nnYLen <= NNPos::MAX_BOARD_LEN);
-  assert(board.x_size <= nnXLen);
-  assert(board.y_size <= nnYLen);
-  std::fill(rowBin,rowBin+NUM_FEATURES_SPATIAL_V7*nnXLen*nnYLen,false);
+  int nnLen = nnXLen * nnYLen;
+  assert(nnLen <= NNPos::MAX_NN_LEN);
+  assert(board.boardVolume() <= nnLen);
+  std::fill(rowBin,rowBin+NUM_FEATURES_SPATIAL_V7*nnLen,false);
   std::fill(rowGlobal,rowGlobal+NUM_FEATURES_GLOBAL_V7,0.0f);
 
   Player pla = nextPlayer;
   Player opp = getOpp(pla);
-  int xSize = board.x_size;
-  int ySize = board.y_size;
 
   int featureStride;
   int posStride;
@@ -503,7 +644,7 @@ void NNInputs::fillRowV7(
     posStride = NNInputs::NUM_FEATURES_SPATIAL_V7;
   }
   else {
-    featureStride = nnXLen * nnYLen;
+    featureStride = nnLen;
     posStride = 1;
   }
 
@@ -512,24 +653,17 @@ void NNInputs::fillRowV7(
     resultsBeforeNN.init(board, hist, nextPlayer);
   }
 
-  for(int y = 0; y<ySize; y++) {
-    for(int x = 0; x<xSize; x++) {
-      int pos = NNPos::xyToPos(x,y,nnXLen);
-      Loc loc = Location::getLoc(x,y,xSize);
+  for(int loc = 0; loc < board.boardVolume(); loc++) {
+    int pos = NNPos::locToPos((Loc)loc, nnLen);
+    setRowBin(rowBin,pos,0, 1.0f, posStride, featureStride);
 
-      //Feature 0 - on board
-      setRowBin(rowBin,pos,0, 1.0f, posStride, featureStride);
-
-      Color stone = board.colors[loc];
-
-      //Features 1,2 - pla,opp stone
-      if(stone == pla)
-        setRowBin(rowBin, pos, 1, 1.0f, posStride, featureStride);
-      else if(stone == opp)
-        setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
-      else if(stone == C_BAN)
-        setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
-    }
+    Color stone = board.colors[loc];
+    if(stone == pla)
+      setRowBin(rowBin, pos, 1, 1.0f, posStride, featureStride);
+    else if(stone == opp)
+      setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
+    else if(stone == C_BAN)
+      setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
   }
 
   // mid state
@@ -545,7 +679,7 @@ void NNInputs::fillRowV7(
     if(!board.isOnBoard(chosenMove)) {
       std::cout << "nninput: chosen move not on board ";
     } else {
-      int pos = NNPos::locToPos(chosenMove, board.x_size, nnXLen, nnYLen);
+      int pos = NNPos::locToPos(chosenMove, nnLen);
       setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
     }
   } else

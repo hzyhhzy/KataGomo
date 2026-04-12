@@ -13,16 +13,21 @@
 
 namespace NNPos {
   constexpr int MAX_BOARD_LEN = Board::MAX_LEN;
-  constexpr int MAX_BOARD_AREA = MAX_BOARD_LEN * MAX_BOARD_LEN;
+  constexpr int MAX_BOARD_AREA = Board::MAX_PLAY_SIZE;
+  constexpr int MAX_NN_LEN = MAX_BOARD_AREA;
   //Policy output adds +1 for the pass move
-  constexpr int MAX_NN_POLICY_SIZE = MAX_BOARD_AREA + 1;
+  constexpr int MAX_NN_POLICY_SIZE = Board::MAX_POLICY_SIZE;
   // Extra score distribution radius, used for writing score in data rows and for the neural net score belief output
   constexpr int EXTRA_SCORE_DISTR_RADIUS = 60;
 
   int xyToPos(int x, int y, int nnXLen);
+  int locToPos(Loc loc, int nnLen);
   int locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen);
+  Loc posToLoc(int pos, int boardVolume, int nnLen);
   Loc posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen);
+  bool isPassPos(int pos, int nnLen);
   bool isPassPos(int pos, int nnXLen, int nnYLen);
+  int getPolicySize(int nnLen);
   int getPolicySize(int nnXLen, int nnYLen);
 }
 
@@ -80,8 +85,10 @@ struct NNOutput {
   //Values in here will be set to negative for illegal moves, including superko
   float policyProbs[NNPos::MAX_NN_POLICY_SIZE];
 
+  int nnLen;
   int nnXLen;
   int nnYLen;
+  int nnZLen;
 
   //If not NULL, then contains policy with dirichlet noise or any other noise adjustments for this node
   float* noisedPolicyProbs;
@@ -99,25 +106,25 @@ struct NNOutput {
   inline float* getPolicyProbsMaybeNoised() { return noisedPolicyProbs != NULL ? noisedPolicyProbs : policyProbs; }
   inline const float* getPolicyProbsMaybeNoised() const { return noisedPolicyProbs != NULL ? noisedPolicyProbs : policyProbs; }
   void debugPrint(std::ostream& out, const Board& board);
-  inline int getPos(Loc loc, const Board& board) const { return NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen ); }
+  inline int getPos(Loc loc, const Board& board) const { (void)board; return NNPos::locToPos(loc, nnLen); }
 };
 
 namespace SymmetryHelpers {
-  //A symmetry is 3 bits flipY(bit 0), flipX(bit 1), transpose(bit 2). They are applied in that order.
-  //The first four symmetries only reflect, and do not transpose X and Y.
-  constexpr int NUM_SYMMETRIES = 8;
-  constexpr int NUM_SYMMETRIES_WITHOUT_TRANSPOSE = 4;
+  constexpr int NUM_SYMMETRIES = 48;
+  constexpr int NUM_SYMMETRIES_WITHOUT_TRANSPOSE = 8;
 
-  //These two IGNORE transpose if hSize and wSize do not match. So non-square transposes are disallowed.
   //copyOutputsWithSymmetry performs the inverse of symmetry.
   void copyInputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int cSize, bool useNHWC, int symmetry);
   void copyOutputsWithSymmetry(const float* src, float* dst, int nSize, int hSize, int wSize, int symmetry);
 
   //Applies a symmetry to a location
   Loc getSymLoc(int x, int y, const Board& board, int symmetry);
+  Loc getSymLoc(int x, int y, int z, const Board& board, int symmetry);
   Loc getSymLoc(Loc loc, const Board& board, int symmetry);
   Loc getSymLoc(int x, int y, int xSize, int ySize, int symmetry);
+  Loc getSymLoc(int x, int y, int z, int xSize, int ySize, int zSize, int symmetry);
   Loc getSymLoc(Loc loc, int xSize, int ySize, int symmetry);
+  Loc getSymLoc(Loc loc, int xSize, int ySize, int zSize, int symmetry);
 
   //Applies a symmetry to a board
   Board getSymBoard(const Board& board, int symmetry);
@@ -128,9 +135,11 @@ namespace SymmetryHelpers {
   int compose(int firstSymmetry, int nextSymmetry);
   int compose(int firstSymmetry, int nextSymmetry, int nextNextSymmetry);
 
-  inline bool isTranspose(int symmetry) { return (symmetry & 0x4) != 0; }
-  inline bool isFlipX(int symmetry) { return (symmetry & 0x2) != 0; }
-  inline bool isFlipY(int symmetry) { return (symmetry & 0x1) != 0; }
+  inline int getPermutationIndex(int symmetry) { return symmetry >> 3; }
+  inline bool isFlipX(int symmetry) { return (symmetry & 0x1) != 0; }
+  inline bool isFlipY(int symmetry) { return (symmetry & 0x2) != 0; }
+  inline bool isFlipZ(int symmetry) { return (symmetry & 0x4) != 0; }
+  inline bool isAxisPermutation(int symmetry) { return getPermutationIndex(symmetry) != 0; }
 
   //Fill isSymDupLoc with true on all but one copy of each symmetrically equivalent move, and false everywhere else.
   //isSymDupLocs should be an array of size Board::MAX_ARR_SIZE

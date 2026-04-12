@@ -99,6 +99,87 @@ static bool tryParseLoc(const string& s, const Board& b, Loc& loc) {
   return Location::tryOfString(s,b,loc);
 }
 
+static int getGTPViewCols() {
+  return 4;
+}
+
+static int getGTPViewBoardLen(const Board& board) {
+  return board.x_size;
+}
+
+static int getGTPViewWidth(const Board& board) {
+  if(board.z_size <= 1)
+    return board.x_size;
+  return getGTPViewCols() * getGTPViewBoardLen(board);
+}
+
+static int getGTPViewHeight(const Board& board) {
+  if(board.z_size <= 1)
+    return board.y_size;
+  int rows = (board.z_size + getGTPViewCols() - 1) / getGTPViewCols();
+  return rows * getGTPViewBoardLen(board);
+}
+
+static bool tryParseGTPViewLoc(const string& s, const Board& board, Loc& loc) {
+  if(board.z_size <= 1)
+    return tryParseLoc(s,board,loc);
+
+  int viewWidth = getGTPViewWidth(board);
+  int viewHeight = getGTPViewHeight(board);
+  Loc viewLoc;
+  if(!Location::tryOfString(s, viewWidth, viewHeight, viewLoc))
+    return false;
+  if(viewLoc == Board::PASS_LOC) {
+    loc = viewLoc;
+    return true;
+  }
+
+  int boardLen = getGTPViewBoardLen(board);
+  int viewX = Location::getX(viewLoc, viewWidth);
+  int viewY = Location::getY(viewLoc, viewWidth, viewHeight);
+  int tileX = viewX / boardLen;
+  int tileY = viewY / boardLen;
+  int z = tileY * getGTPViewCols() + tileX;
+  if(z < 0 || z >= board.z_size)
+    return false;
+
+  int x = viewX % boardLen;
+  int y = viewY % boardLen;
+  if(x < 0 || x >= board.x_size || y < 0 || y >= board.y_size)
+    return false;
+
+  loc = Location::getLoc(x,y,z,board.x_size,board.y_size);
+  return true;
+}
+
+static string formatGTPViewLoc(Loc loc, const Board& board) {
+  if(board.z_size <= 1)
+    return Location::toString(loc,board);
+  if(loc == Board::PASS_LOC || loc == Board::NULL_LOC)
+    return Location::toString(loc, getGTPViewWidth(board), getGTPViewHeight(board));
+
+  int boardLen = getGTPViewBoardLen(board);
+  int x = Location::getX(loc, board.x_size);
+  int y = Location::getY(loc, board.x_size, board.y_size);
+  int z = Location::getZ(loc, board.x_size, board.y_size);
+  int tileX = z % getGTPViewCols();
+  int tileY = z / getGTPViewCols();
+  int viewX = tileX * boardLen + x;
+  int viewY = tileY * boardLen + y;
+  int viewWidth = getGTPViewWidth(board);
+  int viewHeight = getGTPViewHeight(board);
+  Loc viewLoc = Location::getLoc(viewX, viewY, viewWidth);
+  return Location::toString(viewLoc, viewWidth, viewHeight);
+}
+
+static void writeGTPViewPV(std::ostream& out, const vector<Loc>& pv, const Board& board) {
+  for(size_t j = 0; j < pv.size(); j++) {
+    if(j > 0)
+      out << " ";
+    out << formatGTPViewLoc(pv[j], board);
+  }
+}
+
 //Filter out all double newlines, since double newline terminates GTP command responses
 static string filterDoubleNewlines(const string& s) {
   string filtered;
@@ -343,6 +424,74 @@ struct GTPEngine {
     clearStatsForNewGame();
   }
 
+  void setOrResetBoardSize3DView(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardLen, bool loggingToStderr) {
+    if(boardLen < 2 || boardLen > Board::MAX_LEN)
+      throw StringError("unacceptable size");
+
+    int viewWidth = getGTPViewCols() * boardLen;
+    int viewHeight = ((boardLen + getGTPViewCols() - 1) / getGTPViewCols()) * boardLen;
+    if(nnEval != NULL && viewWidth == nnEval->getNNXLen() && viewHeight == nnEval->getNNYLen() &&
+       bot != NULL && bot->getRootBoard().x_size == boardLen && bot->getRootBoard().y_size == boardLen && bot->getRootBoard().z_size == boardLen)
+      return;
+    if(nnEval != NULL) {
+      assert(bot != NULL);
+      bot->stopAndWait();
+      delete bot;
+      delete nnEval;
+      bot = NULL;
+      nnEval = NULL;
+      logger.write("Cleaned up old neural net and bot");
+    }
+
+    const int maxConcurrentEvals = params.numThreads * 2 + 16;
+    const int expectedConcurrentEvals = params.numThreads;
+    const int defaultMaxBatchSize = std::max(8,((params.numThreads+3)/4)*4);
+    bool defaultRequireExactNNLen = true;
+    int nnLenX = viewWidth;
+    int nnLenY = viewHeight;
+
+    if(cfg.contains("gtpDebugForceMaxNNSize") && cfg.getBool("gtpDebugForceMaxNNSize")) {
+      defaultRequireExactNNLen = false;
+      nnLenX = getGTPViewCols() * Board::MAX_LEN;
+      nnLenY = ((Board::MAX_LEN + getGTPViewCols() - 1) / getGTPViewCols()) * Board::MAX_LEN;
+    }
+    const bool disableFP16 = false;
+    const string expectedSha256 = "";
+    nnEval = Setup::initializeNNEvaluator(
+      nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
+      nnLenX,nnLenY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+      Setup::SETUP_FOR_GTP
+    );
+    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
+
+    {
+      bool rulesWereSupported;
+      nnEval->getSupportedRules(currentRules,rulesWereSupported);
+      if(!rulesWereSupported) {
+        throw StringError("Rules " + currentRules.toJsonString() + " from config file " + cfg.getFileName() + " are NOT supported by neural net");
+      }
+    }
+
+    logger.write("Initializing 3D board with boardLen " + Global::intToString(boardLen) + " gtpViewWidth " + Global::intToString(viewWidth) + " gtpViewHeight " + Global::intToString(viewHeight));
+    if(!loggingToStderr)
+      cerr << ("Initializing 3D board with boardLen " + Global::intToString(boardLen) + " gtpViewWidth " + Global::intToString(viewWidth) + " gtpViewHeight " + Global::intToString(viewHeight)) << endl;
+
+    string searchRandSeed;
+    if(cfg.contains("searchRandSeed"))
+      searchRandSeed = cfg.getString("searchRandSeed");
+    else
+      searchRandSeed = Global::uint64ToString(seedRand.nextUInt64());
+
+    bot = new AsyncBot(params, nnEval, &logger, searchRandSeed);
+
+    Board board(boardLen,boardLen,boardLen);
+    Player pla = P_BLACK;
+    BoardHistory hist(board,pla,currentRules);
+    vector<Move> newMoveHistory;
+    setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
+    clearStatsForNewGame();
+  }
+
   void setPositionAndRules(Player pla, const Board& board, const BoardHistory& h, const Board& newInitialBoard, Player newInitialPla, const vector<Move> newMoveHistory) {
     BoardHistory hist(h);
 
@@ -574,14 +723,14 @@ struct GTPEngine {
             lcb = 1.0 - lcb;
           }
           cout << "info";
-          cout << " move " << Location::toString(data.move,board);
+          cout << " move " << formatGTPViewLoc(data.move,board);
           cout << " visits " << data.numVisits;
           cout << " winrate " << round(winrate * 10000.0);
           cout << " prior " << round(data.policyPrior * 10000.0);
           cout << " lcb " << round(lcb * 10000.0);
           cout << " order " << data.order;
           cout << " pv ";
-          data.writePV(cout,board);
+          writeGTPViewPV(cout,data.pv,board);
           if(args.showPVVisits) {
             cout << " pvVisits ";
             data.writePVVisits(cout);
@@ -633,7 +782,7 @@ struct GTPEngine {
             utilityLcb = -utilityLcb;
           }
           out << "info";
-          out << " move " << Location::toString(data.move,board);
+          out << " move " << formatGTPViewLoc(data.move,board);
           out << " visits " << data.numVisits;
           out << " utility " << utility;
           out << " winrate " << winrate;
@@ -645,10 +794,10 @@ struct GTPEngine {
           out << " utilityLcb " << utilityLcb;
           out << " weight " << data.weightSum;
           if(data.isSymmetryOf != Board::NULL_LOC)
-            out << " isSymmetryOf " << Location::toString(data.isSymmetryOf,board);
+            out << " isSymmetryOf " << formatGTPViewLoc(data.isSymmetryOf,board);
           out << " order " << data.order;
           out << " pv ";
-          data.writePV(out,board);
+          writeGTPViewPV(out,data.pv,board);
           if(args.showPVVisits) {
             out << " pvVisits ";
             data.writePVVisits(out);
@@ -719,7 +868,7 @@ struct GTPEngine {
       sout << "genmove null location or illegal move!?!" << "\n";
       sout << bot->getRootBoard() << "\n";
       sout << "Pla: " << PlayerIO::playerToString(pla) << "\n";
-      sout << "MoveLoc: " << Location::toString(moveLoc,bot->getRootBoard()) << "\n";
+      sout << "MoveLoc: " << formatGTPViewLoc(moveLoc,bot->getRootBoard()) << "\n";
       logger.write(sout.str());
       genmoveTimeSum += timer.getSeconds();
       return;
@@ -787,7 +936,7 @@ struct GTPEngine {
     if(resigned)
       response = "resign";
     else
-      response = Location::toString(moveLoc,bot->getRootBoard());
+      response = formatGTPViewLoc(moveLoc,bot->getRootBoard());
 
     if(!resigned && moveLoc != Board::NULL_LOC && isLegal && playChosenMove) {
       bool suc = bot->makeMove(moveLoc,pla);
@@ -1061,7 +1210,7 @@ static GTPEngine::AnalyzeArgs parseAnalyzeCommand(
         if(s.size() <= 0)
           continue;
         Loc loc;
-        if(!tryParseLoc(s,engine->bot->getRootBoard(),loc)) {
+        if(!(isKata ? tryParseGTPViewLoc(s,engine->bot->getRootBoard(),loc) : tryParseLoc(s,engine->bot->getRootBoard(),loc))) {
           parseFailed = true;
           break;
         }
@@ -1378,16 +1527,17 @@ int MainCmds::gtp(const vector<string>& args) {
         responseIsError = true;
         response = "Expected int argument for boardsize or pair of ints but got '" + Global::concat(pieces," ") + "'";
       }
-      else if(newXSize < 2 || newYSize < 2) {
+      else if(newXSize < 8 || newYSize < 2) {
         responseIsError = true;
         response = "unacceptable size";
       }
-      else if(newXSize > Board::MAX_LEN || newYSize > Board::MAX_LEN) {
+      else if(newXSize / getGTPViewCols() > Board::MAX_LEN) {
         responseIsError = true;
         response = Global::strprintf("unacceptable size (Board::MAX_LEN is %d, consider increasing and recompiling)",(int)Board::MAX_LEN);
       }
       else {
-        engine->setOrResetBoardSize(cfg,logger,seedRand,newXSize,newYSize,logger.isLoggingToStderr());
+        int boardLen = newXSize / getGTPViewCols();
+        engine->setOrResetBoardSize3DView(cfg,logger,seedRand,boardLen,logger.isLoggingToStderr());
       }
     }
 
@@ -1976,7 +2126,7 @@ int MainCmds::gtp(const vector<string>& args) {
         responseIsError = true;
         response = "Could not parse color: '" + pieces[0] + "'";
       }
-      else if(!tryParseLoc(pieces[1],engine->bot->getRootBoard(),loc)) {
+      else if(!tryParseGTPViewLoc(pieces[1],engine->bot->getRootBoard(),loc)) {
         responseIsError = true;
         response = "Could not parse vertex: '" + pieces[1] + "'";
       }

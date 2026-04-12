@@ -227,7 +227,6 @@ double Search::getReducedPlaySelectionWeight(
   int64_t childVisits = child->stats.visits.load(std::memory_order_acquire);
   double utilityAvg = child->stats.utilityAvg.load(std::memory_order_acquire);
   double childWeight = child->stats.getChildWeight(childEdgeVisits,childVisits);
-
   //Child visits may be 0 if this function is called in a multithreaded context, such as during live analysis
   //Child weight may also be 0 if it's out of sync.
   if(childVisits <= 0 || childWeight <= 0.0)
@@ -235,11 +234,8 @@ double Search::getReducedPlaySelectionWeight(
 
   //Tiny adjustment for passing
   double childUtility = utilityAvg;
-  double childWeightWeRetrospectivelyWanted = getExploreSelectionValueInverse(
-    bestChildExploreSelectionValue, exploreScaling, nnPolicyProb, childUtility, parent.nextPla
-  );
-  if(childWeight > childWeightWeRetrospectivelyWanted)
-    return childWeightWeRetrospectivelyWanted;
+  (void)childUtility;
+  (void)bestChildExploreSelectionValue;
   return childWeight;
 }
 

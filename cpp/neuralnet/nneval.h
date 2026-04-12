@@ -48,6 +48,7 @@ struct NNResultBuf {
   bool hasResult;
   int boardXSizeForServer;
   int boardYSizeForServer;
+  int boardZSizeForServer;
   int rowSpatialSize;
   int rowGlobalSize;
   float* rowSpatial;

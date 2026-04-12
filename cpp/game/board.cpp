@@ -19,10 +19,11 @@ using namespace std;
 //STATIC VARS-----------------------------------------------------------------------------
 bool Board::IS_ZOBRIST_INITALIZED = false;
 Hash128 Board::ZOBRIST_SIZE_X_HASH[MAX_LEN+1];
-Hash128 Board::ZOBRIST_SIZE_Y_HASH[MAX_LEN+1];
-Hash128 Board::ZOBRIST_BOARD_HASH[MAX_ARR_SIZE][NUM_BOARD_COLORS];
+ Hash128 Board::ZOBRIST_SIZE_Y_HASH[MAX_LEN+1];
+Hash128 Board::ZOBRIST_SIZE_Z_HASH[MAX_LEN+1];
+Hash128 Board::ZOBRIST_BOARD_HASH[MAX_PLAY_SIZE][NUM_BOARD_COLORS];
 Hash128 Board::ZOBRIST_STAGENUM_HASH[STAGE_NUM_EACH_PLA];
-Hash128 Board::ZOBRIST_STAGELOC_HASH[MAX_ARR_SIZE][STAGE_NUM_EACH_PLA];
+Hash128 Board::ZOBRIST_STAGELOC_HASH[MAX_EXTENDED_ARR_SIZE][STAGE_NUM_EACH_PLA];
 Hash128 Board::ZOBRIST_NEXTPLA_HASH[4];
 Hash128 Board::ZOBRIST_PLAYER_HASH[4];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
@@ -31,31 +32,55 @@ const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOB
 //LOCATION--------------------------------------------------------------------------------
 Loc Location::getLoc(int x, int y, int x_size)
 {
-  return (x+1) + (y+1)*(x_size+1);
+  return (Loc)(x + y*x_size);
+}
+Loc Location::getLoc(int x, int y, int z, int x_size, int y_size)
+{
+  return (Loc)(x + y*x_size + z*x_size*y_size);
 }
 int Location::getX(Loc loc, int x_size)
 {
-  return (loc % (x_size+1)) - 1;
+  return loc % x_size;
 }
 int Location::getY(Loc loc, int x_size)
 {
-  return (loc / (x_size+1)) - 1;
+  return loc / x_size;
 }
-void Location::getAdjacentOffsets(short adj_offsets[8], int x_size)
+int Location::getY(Loc loc, int x_size, int y_size)
 {
-  adj_offsets[0] = -(x_size+1);
-  adj_offsets[1] = -1;
-  adj_offsets[2] = 1;
-  adj_offsets[3] = (x_size+1);
-  adj_offsets[4] = -(x_size+1)-1;
-  adj_offsets[5] = -(x_size+1)+1;
-  adj_offsets[6] = (x_size+1)-1;
-  adj_offsets[7] = (x_size+1)+1;
+  return (loc / x_size) % y_size;
+}
+int Location::getZ(Loc loc, int x_size, int y_size)
+{
+  return loc / (x_size*y_size);
+}
+int Location::getAdjacentOffsets(short adj_offsets[26], int x_size, int y_size, int z_size)
+{
+  int count = 0;
+  for(int dz = -1; dz <= 1; dz++) {
+    for(int dy = -1; dy <= 1; dy++) {
+      for(int dx = -1; dx <= 1; dx++) {
+        if(dx == 0 && dy == 0 && dz == 0)
+          continue;
+        adj_offsets[count++] = (short)(dx + dy*x_size + dz*x_size*y_size);
+      }
+    }
+  }
+  (void)z_size;
+  return count;
 }
 
 bool Location::isAdjacent(Loc loc0, Loc loc1, int x_size)
 {
-  return loc0 == loc1 - (x_size+1) || loc0 == loc1 - 1 || loc0 == loc1 + 1 || loc0 == loc1 + (x_size+1);
+  return isAdjacent(loc0,loc1,x_size,1,1);
+}
+bool Location::isAdjacent(Loc loc0, Loc loc1, int x_size, int y_size, int z_size)
+{
+  int dx = getX(loc1,x_size) - getX(loc0,x_size);
+  int dy = getY(loc1,x_size,y_size) - getY(loc0,x_size,y_size);
+  int dz = getZ(loc1,x_size,y_size) - getZ(loc0,x_size,y_size);
+  (void)z_size;
+  return std::max({std::abs(dx),std::abs(dy),std::abs(dz)}) == 1;
 }
 
 
@@ -82,12 +107,6 @@ bool Location::isNearCentral(Loc loc, int x_size, int y_size) {
 }
 
 
-#define FOREACHADJ(BLOCK) {int ADJOFFSET = -(x_size+1); {BLOCK}; ADJOFFSET = -1; {BLOCK}; ADJOFFSET = 1; {BLOCK}; ADJOFFSET = x_size+1; {BLOCK}};
-#define ADJ0 (-(x_size+1))
-#define ADJ1 (-1)
-#define ADJ2 (1)
-#define ADJ3 (x_size+1)
-
 //CONSTRUCTORS AND INITIALIZATION----------------------------------------------------------
 
 Board::Board()
@@ -97,7 +116,12 @@ Board::Board()
 
 Board::Board(int x, int y)
 {
-  init(x,y);
+  init(x,y,1);
+}
+
+Board::Board(int x, int y, int z)
+{
+  init(x,y,z);
 }
 
 
@@ -105,12 +129,15 @@ Board::Board(const Board& other)
 {
   x_size = other.x_size;
   y_size = other.y_size;
+  z_size = other.z_size;
+  play_size = other.play_size;
 
-  memcpy(colors, other.colors, sizeof(Color)*MAX_ARR_SIZE);
+  memcpy(colors, other.colors, sizeof(Color)*MAX_PLAY_SIZE);
 
   pos_hash = other.pos_hash;
 
-  memcpy(adj_offsets, other.adj_offsets, sizeof(short) * 8);
+  memcpy(adj_offsets, other.adj_offsets, sizeof(short) * MAX_ADJ_OFFSETS);
+  adj_offset_count = other.adj_offset_count;
 
   nextPla = other.nextPla;
   stage = other.stage;
@@ -119,25 +146,33 @@ Board::Board(const Board& other)
 
 void Board::init(int xS, int yS)
 {
+  init(xS,yS,1);
+}
+
+void Board::init(int xS, int yS, int zS)
+{
   assert(IS_ZOBRIST_INITALIZED);
-  if(xS < 0 || yS < 0 || xS > MAX_LEN || yS > MAX_LEN)
+  if(xS < 0 || yS < 0 || zS < 0 || xS > MAX_LEN || yS > MAX_LEN || zS > MAX_LEN)
     throw StringError("Board::init - invalid board size");
 
   x_size = xS;
   y_size = yS;
+  z_size = zS;
+  play_size = x_size * y_size * z_size;
 
-  for(int i = 0; i < MAX_ARR_SIZE; i++)
+  for(int i = 0; i < MAX_PLAY_SIZE; i++)
     colors[i] = C_WALL;
 
-
-  for(int y = 0; y < y_size; y++)
-  {
-    for(int x = 0; x < x_size; x++)
-    {
-      Loc loc = (x+1) + (y+1)*(x_size+1);
-      colors[loc] = C_EMPTY;
-      // empty_list.add(loc);
+  for(int z = 0; z < z_size; z++) {
+    for(int y = 0; y < y_size; y++) {
+      for(int x = 0; x < x_size; x++) {
+        Loc loc = Location::getLoc(x,y,z,x_size,y_size);
+        colors[loc] = C_EMPTY;
+      }
     }
+  }
+  for(int z = z_size; z < MAX_LEN; z++) {
+    (void)z;
   }
   for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
     midLocs[i] = Board::NULL_LOC;
@@ -145,17 +180,10 @@ void Board::init(int xS, int yS)
   nextPla = C_BLACK;
   stage = 0;
 
-  pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size] ^ ZOBRIST_NEXTPLA_HASH[nextPla] ^
+  pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size] ^ ZOBRIST_SIZE_Z_HASH[z_size] ^ ZOBRIST_NEXTPLA_HASH[nextPla] ^
              ZOBRIST_STAGENUM_HASH[stage];
 
-  Location::getAdjacentOffsets(adj_offsets, x_size);
-
-
-  //initial stones
-  setStone(Location::getLoc(0, 0, x_size), C_BLACK);
-  setStone(Location::getLoc(x_size - 1, y_size - 1, x_size), C_BLACK);
-  setStone(Location::getLoc(0, y_size - 1, x_size), C_WHITE);
-  setStone(Location::getLoc(x_size - 1, 0, x_size), C_WHITE);
+  adj_offset_count = Location::getAdjacentOffsets(adj_offsets, x_size, y_size, z_size);
 }
 
 void Board::initHash()
@@ -175,7 +203,7 @@ void Board::initHash()
 
   //Do this second so that the player and encore hashes are not
   //afffected by the size of the board we compile with.
-  for(int i = 0; i<MAX_ARR_SIZE; i++) {
+  for(int i = 0; i<MAX_PLAY_SIZE; i++) {
     for(Color j = 0; j < NUM_BOARD_COLORS; j++) {
       if(j == C_EMPTY || j == C_WALL)
         ZOBRIST_BOARD_HASH[i][j] = Hash128();
@@ -186,7 +214,7 @@ void Board::initHash()
 
   for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
     ZOBRIST_STAGENUM_HASH[i] = nextHash();
-    for(int j = 0; j < MAX_ARR_SIZE; j++)
+    for(int j = 0; j < MAX_EXTENDED_ARR_SIZE; j++)
       ZOBRIST_STAGELOC_HASH[j][i] = nextHash();
     ZOBRIST_STAGELOC_HASH[Board::NULL_LOC][i] = Hash128();
   }
@@ -204,6 +232,7 @@ void Board::initHash()
   for(int i = 0; i<MAX_LEN+1; i++) {
     ZOBRIST_SIZE_X_HASH[i] = nextHash();
     ZOBRIST_SIZE_Y_HASH[i] = nextHash();
+    ZOBRIST_SIZE_Z_HASH[i] = nextHash();
   }
 
 
@@ -212,7 +241,7 @@ void Board::initHash()
 
 
 bool Board::isOnBoard(Loc loc) const {
-  return loc >= 0 && loc < MAX_ARR_SIZE && colors[loc] != C_WALL;
+  return loc >= 0 && loc < play_size;
 }
 
 //Check if moving here is illegal.
@@ -222,47 +251,46 @@ bool Board::isLegal(Loc loc, Player pla) const
 }
 
 bool Board::isEmpty() const {
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(colors[loc] != C_EMPTY)
-        return false;
-    }
+  for(int loc = 0; loc < play_size; loc++) {
+    if(colors[loc] != C_EMPTY)
+      return false;
   }
   return true;
 }
 
 int Board::numStonesOnBoard() const {
   int num = 0;
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(colors[loc] != C_EMPTY)
-        num += 1;
-    }
+  for(int loc = 0; loc < play_size; loc++) {
+    if(colors[loc] != C_EMPTY)
+      num += 1;
   }
   return num;
 }
 
 int Board::numPlaStonesOnBoard(Player pla) const {
   int num = 0;
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(colors[loc] == pla)
-        num += 1;
-    }
+  for(int loc = 0; loc < play_size; loc++) {
+    if(colors[loc] == pla)
+      num += 1;
   }
   return num;
 }
 
 int Board::boardArea() const {
-  return x_size * y_size - numPlaStonesOnBoard(C_BAN);
+  return play_size - numPlaStonesOnBoard(C_BAN);
+}
+
+int Board::boardVolume() const {
+  return play_size;
+}
+
+bool Board::isCubical() const {
+  return x_size == y_size && y_size == z_size;
 }
 
 bool Board::setStone(Loc loc, Color color)
 {
-  if(loc < 0 || loc >= MAX_ARR_SIZE || colors[loc] == C_WALL)
+  if(loc < 0 || loc >= play_size)
     return false;
 
   Color colorOld = colors[loc];
@@ -303,11 +331,12 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     std::cout << "Error next player ";
   }
 
-
   if(loc == PASS_LOC) {
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
     stage = 0;
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
+    for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
+      pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
+      midLocs[i] = Board::NULL_LOC;
+    }
 
     pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
     nextPla = getOpp(nextPla);
@@ -317,59 +346,23 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
   }
   assert(isOnBoard(loc));
 
-  Player opp = getOpp(pla);
-
-  if(stage == 0)  //choose
-  {
-    if(colors[loc]==C_EMPTY) {
-      setStone(loc, pla);
-      for(int i = 0; i < 8; i++) {
-        Loc loc1 = loc + adj_offsets[i];
-        if(colors[loc1] == opp)
-          setStone(loc1, pla);
-      }
-      pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-      nextPla = getOpp(nextPla);
-      pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-    } 
-    else if(colors[loc] == pla) {
-      stage = 1;
-      pos_hash ^= ZOBRIST_STAGENUM_HASH[0];
-      pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
-
-      midLocs[0] = loc;
-      pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][0];
-    } 
-    else ASSERT_UNREACHABLE;
-  } 
-  else if(stage == 1)  //place
-  {
-    stage = 0;
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
-    pos_hash ^= ZOBRIST_STAGENUM_HASH[0];
-
-    Loc chosenLoc = midLocs[0];
-    setStone(chosenLoc, C_EMPTY);
-    setStone(loc, pla);
-    for(int i = 0; i < 8; i++) {
-      Loc loc1 = loc + adj_offsets[i];
-      if(colors[loc1] == opp)
-        setStone(loc1, pla);
-    }
-
-    for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
-      pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
-      midLocs[i] = Board::NULL_LOC;
-    }
-
-    nextPla = getOpp(nextPla);
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[getOpp(nextPla)];
-    pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-
-  } 
-  else
+  if(colors[loc] != C_EMPTY)
     ASSERT_UNREACHABLE;
 
+  if(stage != 0) {
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
+    stage = 0;
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
+  }
+  for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
+    pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
+    midLocs[i] = Board::NULL_LOC;
+  }
+
+  setStone(loc, pla);
+  pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+  nextPla = getOpp(nextPla);
+  pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
 }
 
 Player Board::nextnextPla() const {
@@ -394,13 +387,13 @@ Hash128 Board::getSitHash(Player pla) const {
 
 int Location::distance(Loc loc0, Loc loc1, int x_size) {
   int dx = getX(loc1,x_size) - getX(loc0,x_size);
-  int dy = (loc1-loc0-dx) / (x_size+1);
-  return (dx >= 0 ? dx : -dx) + (dy >= 0 ? dy : -dy);
+  int dy = getY(loc1,x_size) - getY(loc0,x_size);
+  return std::abs(dx) + std::abs(dy);
 }
 
 int Location::euclideanDistanceSquared(Loc loc0, Loc loc1, int x_size) {
   int dx = getX(loc1,x_size) - getX(loc0,x_size);
-  int dy = (loc1-loc0-dx) / (x_size+1);
+  int dy = getY(loc1,x_size) - getY(loc0,x_size);
   return dx*dx + dy*dy;
 }
 
@@ -412,16 +405,10 @@ void Board::checkConsistency() const {
 
 
   vector<Loc> buf;
-  Hash128 tmp_pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size];
+  Hash128 tmp_pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size] ^ ZOBRIST_SIZE_Z_HASH[z_size];
   int emptyCount = 0;
-  for(Loc loc = 0; loc < MAX_ARR_SIZE; loc++) {
-    int x = Location::getX(loc,x_size);
-    int y = Location::getY(loc,x_size);
-    if(x < 0 || x >= x_size || y < 0 || y >= y_size) {
-      if(colors[loc] != C_WALL)
-        throw StringError(errLabel + "Non-WALL value outside of board legal area");
-    }
-    else {
+  for(Loc loc = 0; loc < MAX_PLAY_SIZE; loc++) {
+    if(loc < play_size) {
       if(colors[loc] == C_EMPTY) {
         emptyCount += 1;
       } 
@@ -431,6 +418,10 @@ void Board::checkConsistency() const {
       }
       else
         throw StringError(errLabel + "C_WALL value within board legal area");
+    }
+    else {
+      if(colors[loc] != C_WALL)
+        throw StringError(errLabel + "Non-WALL value outside of board legal area");
     }
   }
 
@@ -449,9 +440,11 @@ void Board::checkConsistency() const {
 
 
 
-  short tmpAdjOffsets[8];
-  Location::getAdjacentOffsets(tmpAdjOffsets,x_size);
-  for(int i = 0; i<8; i++)
+  short tmpAdjOffsets[MAX_ADJ_OFFSETS];
+  int tmpAdjOffsetCount = Location::getAdjacentOffsets(tmpAdjOffsets,x_size,y_size,z_size);
+  if(tmpAdjOffsetCount != adj_offset_count)
+    throw StringError(errLabel + "Corrupted adj_offset_count");
+  for(int i = 0; i<adj_offset_count; i++)
     if(tmpAdjOffsets[i] != adj_offsets[i])
       throw StringError(errLabel + "Corrupted adj_offsets array");
 }
@@ -463,9 +456,11 @@ bool Board::isEqualForTesting(const Board& other) const {
     return false;
   if(y_size != other.y_size)
     return false;
+  if(z_size != other.z_size)
+    return false;
   if(pos_hash != other.pos_hash)
     return false;
-  for(int i = 0; i<MAX_ARR_SIZE; i++) {
+  for(int i = 0; i<MAX_PLAY_SIZE; i++) {
     if(colors[i] != other.colors[i])
       return false;
   }
@@ -715,6 +710,8 @@ vector<Loc> Location::parseSequence(const string& str, const Board& board) {
 }
 
 bool Board::setFEN(std::string fen, Player nextPlayer) {
+  if(z_size > 1)
+    throw StringError("Board::setFEN only supports z_size == 1");
 
   auto lines = Global::split(fen, '/');
   int newYsize = lines.size();
@@ -779,6 +776,8 @@ bool Board::setFEN(std::string fen, Player nextPlayer) {
 }
 
 std::string Board::getFEN() const {
+  if(z_size > 1)
+    throw StringError("Board::getFEN only supports z_size == 1");
   string fen;
   for(int y = 0; y < y_size; y++) {
     if(y != 0)
@@ -818,55 +817,56 @@ void Board::printBoard(ostream& out, const Board& board, Loc markLoc, const vect
     out << "MoveNum: " << hist->size() << " ";
   out << "HASH: " << board.pos_hash << "\n";
   bool showCoords = board.x_size <= 50 && board.y_size <= 50;
-  if(showCoords) {
-    const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
-    out << "  ";
-    for(int x = 0; x < board.x_size; x++) {
-      if(x <= 24) {
-        out << " ";
-        out << xChar[x];
-      }
-      else {
-        out << "A" << xChar[x-25];
-      }
-    }
-    out << "\n";
-  }
-
-  for(int y = 0; y < board.y_size; y++)
-  {
+  for(int z = 0; z < board.z_size; z++) {
+    if(board.z_size > 1)
+      out << "Layer " << z << "\n";
     if(showCoords) {
-      char buf[16];
-      sprintf(buf,"%2d",board.y_size-y);
-      out << buf << ' ';
-    }
-    for(int x = 0; x < board.x_size; x++)
-    {
-      Loc loc = Location::getLoc(x,y,board.x_size);
-      char s = PlayerIO::colorToChar(board.colors[loc]);
-      if(board.colors[loc] == C_EMPTY && markLoc == loc)
-        out << '@';
-      else
-        out << s;
-
-      bool histMarked = false;
-      if(hist != NULL) {
-        size_t start = hist->size() >= 3 ? hist->size()-3 : 0;
-        for(size_t i = 0; start+i < hist->size(); i++) {
-          if((*hist)[start+i].loc == loc) {
-            out << (1+i);
-            histMarked = true;
-            break;
-          }
+      const char* xChar = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
+      out << "  ";
+      for(int x = 0; x < board.x_size; x++) {
+        if(x <= 24) {
+          out << " ";
+          out << xChar[x];
+        }
+        else {
+          out << "A" << xChar[x-25];
         }
       }
+      out << "\n";
+    }
+    for(int y = 0; y < board.y_size; y++) {
+      if(showCoords) {
+        char buf[16];
+        sprintf(buf,"%2d",board.y_size-y);
+        out << buf << ' ';
+      }
+      for(int x = 0; x < board.x_size; x++) {
+        Loc loc = Location::getLoc(x,y,z,board.x_size,board.y_size);
+        char s = PlayerIO::colorToChar(board.colors[loc]);
+        if(board.colors[loc] == C_EMPTY && markLoc == loc)
+          out << '@';
+        else
+          out << s;
 
-      if(x < board.x_size-1 && !histMarked)
-        out << ' ';
+        bool histMarked = false;
+        if(hist != NULL) {
+          size_t start = hist->size() >= 3 ? hist->size()-3 : 0;
+          for(size_t i = 0; start+i < hist->size(); i++) {
+            if((*hist)[start+i].loc == loc) {
+              out << (1+i);
+              histMarked = true;
+              break;
+            }
+          }
+        }
+
+        if(x < board.x_size-1 && !histMarked)
+          out << ' ';
+      }
+      out << "\n";
     }
     out << "\n";
   }
-  out << "\n";
 }
 
 ostream& operator<<(ostream& out, const Board& board) {
@@ -877,12 +877,16 @@ ostream& operator<<(ostream& out, const Board& board) {
 
 string Board::toStringSimple(const Board& board, char lineDelimiter) {
   string s;
-  for(int y = 0; y < board.y_size; y++) {
-    for(int x = 0; x < board.x_size; x++) {
-      Loc loc = Location::getLoc(x,y,board.x_size);
-      s += PlayerIO::colorToChar(board.colors[loc]);
+  for(int z = 0; z < board.z_size; z++) {
+    if(z > 0)
+      s += lineDelimiter;
+    for(int y = 0; y < board.y_size; y++) {
+      for(int x = 0; x < board.x_size; x++) {
+        Loc loc = Location::getLoc(x,y,z,board.x_size,board.y_size);
+        s += PlayerIO::colorToChar(board.colors[loc]);
+      }
+      s += lineDelimiter;
     }
-    s += lineDelimiter;
   }
   return s;
 }

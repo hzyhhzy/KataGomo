@@ -12,6 +12,7 @@ NNResultBuf::NNResultBuf()
     hasResult(false),
     boardXSizeForServer(0),
     boardYSizeForServer(0),
+    boardZSizeForServer(0),
     rowSpatialSize(0),
     rowGlobalSize(0),
     rowSpatial(NULL),
@@ -469,6 +470,7 @@ void NNEvaluator::serve(
 
         int boardXSize = resultBuf->boardXSizeForServer;
         int boardYSize = resultBuf->boardYSizeForServer;
+        int boardZSize = resultBuf->boardZSizeForServer;
 
         unique_lock<std::mutex> resultLock(resultBuf->resultMutex);
         assert(resultBuf->hasResult == false);
@@ -489,8 +491,10 @@ void NNEvaluator::serve(
         }
         policyProbs[NNPos::locToPos(Board::PASS_LOC,boardXSize,nnXLen,nnYLen)] = (float)rand.nextGaussian();
 
+        resultBuf->result->nnLen = nnXLen * nnYLen;
         resultBuf->result->nnXLen = nnXLen;
         resultBuf->result->nnYLen = nnYLen;
+        resultBuf->result->nnZLen = boardZSize;
      
 
         //These aren't really probabilities. Win/Loss/NoResult will get softmaxed later
@@ -513,8 +517,10 @@ void NNEvaluator::serve(
       for(int row = 0; row<numRows; row++) {
         NNOutput* emptyOutput = new NNOutput();
         assert(buf.resultBufs[row] != NULL);
+        emptyOutput->nnLen = nnXLen * nnYLen;
         emptyOutput->nnXLen = nnXLen;
         emptyOutput->nnYLen = nnYLen;
+        emptyOutput->nnZLen = buf.resultBufs[row]->boardZSizeForServer;
         outputBuf.push_back(emptyOutput);
       }
 
@@ -627,6 +633,7 @@ void NNEvaluator::evaluate(
 
   buf.boardXSizeForServer = board.x_size;
   buf.boardYSizeForServer = board.y_size;
+  buf.boardZSizeForServer = board.z_size;
 
   MiscNNInputParams nnInputParamsWithResultsBeforeNN = nnInputParams;
   nnInputParamsWithResultsBeforeNN.resultsBeforeNN.init(board, history, nextPlayer);

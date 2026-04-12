@@ -12,7 +12,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #ifndef COMPILE_MAX_BOARD_LEN 
-#define COMPILE_MAX_BOARD_LEN 7
+#define COMPILE_MAX_BOARD_LEN 9
 #endif
 
 //how many stages in each move
@@ -54,16 +54,20 @@ namespace PlayerIO {
 }
 
 //Location of a point on the board
-//(x,y) is represented as (x+1) + (y+1)*(x_size+1)
+//For on-board locations, loc is a dense flattened index in [0,boardVolume()).
 typedef short Loc;
 namespace Location
 {
   Loc getLoc(int x, int y, int x_size);
+  Loc getLoc(int x, int y, int z, int x_size, int y_size);
   int getX(Loc loc, int x_size);
   int getY(Loc loc, int x_size);
+  int getY(Loc loc, int x_size, int y_size);
+  int getZ(Loc loc, int x_size, int y_size);
 
-  void getAdjacentOffsets(short adj_offsets[8], int x_size);
+  int getAdjacentOffsets(short adj_offsets[26], int x_size, int y_size, int z_size);
   bool isAdjacent(Loc loc0, Loc loc1, int x_size);
+  bool isAdjacent(Loc loc0, Loc loc1, int x_size, int y_size, int z_size);
   Loc getCenterLoc(int x_size, int y_size);
   Loc getCenterLoc(const Board& b);
   bool isCentral(Loc loc, int x_size, int y_size);
@@ -110,21 +114,25 @@ struct Board
 
   static constexpr int MAX_LEN = COMPILE_MAX_BOARD_LEN;  //Maximum edge length allowed for the board
   static constexpr int DEFAULT_LEN = std::min(MAX_LEN,19); //Default edge length for board if unspecified
-  static constexpr int MAX_PLAY_SIZE = MAX_LEN * MAX_LEN;  //Maximum number of playable spaces
-  static constexpr int MAX_ARR_SIZE = (MAX_LEN+1)*(MAX_LEN+2)+1; //Maximum size of arrays needed
+  static constexpr int MAX_PLAY_SIZE = MAX_LEN * MAX_LEN * MAX_LEN;  //Maximum number of playable spaces
+  static constexpr int MAX_POLICY_SIZE = MAX_PLAY_SIZE + 1;
+  static constexpr int MAX_ARR_SIZE = MAX_PLAY_SIZE;
+  static constexpr int MAX_EXTENDED_ARR_SIZE = MAX_PLAY_SIZE + 2;
+  static constexpr int MAX_ADJ_OFFSETS = 26;
 
   //Location used to indicate an invalid spot on the board.
-  static constexpr Loc NULL_LOC = 0;
+  static constexpr Loc NULL_LOC = MAX_PLAY_SIZE;
   //Location used to indicate a pass move is desired.
-  static constexpr Loc PASS_LOC = 1;
+  static constexpr Loc PASS_LOC = MAX_PLAY_SIZE + 1;
 
   //Zobrist Hashing------------------------------
   static bool IS_ZOBRIST_INITALIZED;
   static Hash128 ZOBRIST_SIZE_X_HASH[MAX_LEN+1];
   static Hash128 ZOBRIST_SIZE_Y_HASH[MAX_LEN+1];
-  static Hash128 ZOBRIST_BOARD_HASH[MAX_ARR_SIZE][NUM_BOARD_COLORS];
+  static Hash128 ZOBRIST_SIZE_Z_HASH[MAX_LEN+1];
+  static Hash128 ZOBRIST_BOARD_HASH[MAX_PLAY_SIZE][NUM_BOARD_COLORS];
   static Hash128 ZOBRIST_STAGENUM_HASH[STAGE_NUM_EACH_PLA];
-  static Hash128 ZOBRIST_STAGELOC_HASH[MAX_ARR_SIZE][STAGE_NUM_EACH_PLA];
+  static Hash128 ZOBRIST_STAGELOC_HASH[MAX_EXTENDED_ARR_SIZE][STAGE_NUM_EACH_PLA];
   static Hash128 ZOBRIST_NEXTPLA_HASH[4];
   static Hash128 ZOBRIST_PLAYER_HASH[4];
   static const Hash128 ZOBRIST_GAME_IS_OVER;
@@ -134,6 +142,7 @@ struct Board
   //Constructors---------------------------------
   Board();  //Create Board of size (DEFAULT_LEN,DEFAULT_LEN)
   Board(int x, int y); //Create Board of size (x,y)
+  Board(int x, int y, int z); //Create Board of size (x,y,z)
   Board(const Board& other);
 
   Board& operator=(const Board&) = default;
@@ -149,6 +158,8 @@ struct Board
   int numStonesOnBoard() const;
   int numPlaStonesOnBoard(Player pla) const;
   int boardArea() const;
+  int boardVolume() const;
+  bool isCubical() const;
 
 
   //Sets the specified stone if possible, including overwriting existing stones.
@@ -197,13 +208,16 @@ struct Board
 
   int x_size;                  //Horizontal size of board
   int y_size;                  //Vertical size of board
-  Color colors[MAX_ARR_SIZE];  //Color of each location on the board.
+  int z_size;                  //Depth size of board
+  int play_size;               //Number of playable locations on the board
+  Color colors[MAX_PLAY_SIZE];  //Color of each location on the board.
 
   /* PointList empty_list; //List of all empty locations on board */
 
   Hash128 pos_hash; //A zobrist hash of the current board position (does not include ko point or player to move)
 
-  short adj_offsets[8]; //Indices 0-3: Offsets to add for adjacent points. Indices 4-7: Offsets for diagonal points. 2 and 3 are +x and +y.
+  short adj_offsets[MAX_ADJ_OFFSETS];
+  int adj_offset_count;
 
   
   //which stage. Normally 0 = choosing piece. 1 = where to place
@@ -212,13 +226,14 @@ struct Board
   //who plays the next move
   Color nextPla;
 
-  //Ò»²½ÄÚÃ¿Ò»½×¶ÎµÄÑ¡µã
-  //ÀýÈç£ºÏóÆåÀàmidLoc[0]ÊÇÑ¡ÔñµÄÆå×Ó£¬midLoc[1]ÊÇÂäµã
+  //Ò»ï¿½ï¿½ï¿½ï¿½Ã¿Ò»ï¿½×¶Îµï¿½Ñ¡ï¿½ï¿½
+  //ï¿½ï¿½ï¿½ç£ºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½midLoc[0]ï¿½ï¿½Ñ¡ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½midLoc[1]ï¿½ï¿½ï¿½ï¿½ï¿½
   Loc midLocs[STAGE_NUM_EACH_PLA];
 
 
   private:
   void init(int xS, int yS);
+  void init(int xS, int yS, int zS);
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 
