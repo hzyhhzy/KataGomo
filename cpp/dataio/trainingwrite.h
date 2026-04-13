@@ -108,7 +108,8 @@ struct TrainingWriteBuffers {
   int numGlobalChannels;
   int dataXLen;
   int dataYLen;
-  int packedBoardArea;
+  int dataZLen;
+  int packedBoardVolume;
 
   int curRows;
   float* binaryInputNCHWUnpacked;
@@ -143,14 +144,14 @@ struct TrainingWriteBuffers {
   //C25 Weight multiplier for row as a whole
 
   //C26: Weight assigned to the policy target
-  //C27: Weight assigned to the final board ownership target and score distr targets. Most training rows will have this be 1, some will be 0.
+  //C27: Unused
   //C28: Weight assigned to the next move policy target
   //C29: Weight assigned to the lead target
   //C30: Policy Surprise (for statistical purposes)
   //C31: Policy Entropy (for statistical purposes)
   //C32: Search Entropy (for statistical purposes)
-  //C33: Weight assigned to the future position targets valueTargetsNCHW C1-C2
-  //C34: Weight assigned to the area/territory target valueTargetsNCHW C4
+  //C33: Unused
+  //C34: Unused
   //C35: Unused
 
   //C36-40: Precomputed mask values indicating if we should use historical moves 1-5, if we desire random history masking.
@@ -191,22 +192,7 @@ struct TrainingWriteBuffers {
 
   NumpyBuffer<float> globalTargetsNC;
 
-  //Score target
-  //Indices correspond to scores, from (-dataXLen*dataYLen-EXTRA_SCORE_DISTR_RADIUS)-0.5 to (dataXLen*dataYLen+EXTRA_SCORE_DISTR_RADIUS)+0.5,
-  //making 2*dataXLen*dataYLen+2*EXTRA_SCORE_DISTR_RADIUS indices in total.
-  //Index of the actual score is labeled with 100, the rest labeled with 0, from the perspective of the player to move.
-  //Except in case of integer komi, the value can be split between two adjacent labels based on value of draw.
-  //Arbitrary if C27 has weight 0.
-  NumpyBuffer<int8_t> scoreDistrN;
-
-  //Spatial value-related targets
-  //C0: Final board ownership [-1,1], from the perspective of the player to move. All 0 if C27 has weight 0.
-  //C1: Difference between ownership and naive area (such as due to seki). All 0 if C27 has weight 0.
-  //C2-3: Future board position a certain number of turns in the future. All 0 if C33 has weight 0.
-  //C4: Final board area/territory [-120,120]. All 0 if C34 has weight 0. Unlike ownership, takes into account group tax and scoring rules.
-  NumpyBuffer<int8_t> valueTargetsNCHW;
-
-  TrainingWriteBuffers(int inputsVersion, int maxRows, int numBinaryChannels, int numGlobalChannels, int dataXLen, int dataYLen);
+  TrainingWriteBuffers(int inputsVersion, int maxRows, int numBinaryChannels, int numGlobalChannels, int dataXLen, int dataYLen, int dataZLen);
   ~TrainingWriteBuffers();
 
   TrainingWriteBuffers(const TrainingWriteBuffers&) = delete;
@@ -242,9 +228,9 @@ struct TrainingWriteBuffers {
 
 class TrainingDataWriter {
  public:
-  TrainingDataWriter(const std::string& outputDir, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, const std::string& randSeed);
-  TrainingDataWriter(std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyWriteEvery, const std::string& randSeed);
-  TrainingDataWriter(const std::string& outputDir, std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyWriteEvery, const std::string& randSeed);
+  TrainingDataWriter(const std::string& outputDir, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int dataZLen, const std::string& randSeed);
+  TrainingDataWriter(std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int dataZLen, int onlyWriteEvery, const std::string& randSeed);
+  TrainingDataWriter(const std::string& outputDir, std::ostream* debugOut, int inputsVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int dataZLen, int onlyWriteEvery, const std::string& randSeed);
   ~TrainingDataWriter();
 
   void writeGame(const FinishedGameData& data);

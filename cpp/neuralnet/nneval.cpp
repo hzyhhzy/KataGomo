@@ -666,7 +666,7 @@ void NNEvaluator::evaluate(
 
     static_assert(NNModelVersion::latestInputsVersionImplemented == 7, "");
     if(inputsVersion == 7)
-      NNInputs::fillRowV7(board, history, nextPlayer, nnInputParamsWithResultsBeforeNN, nnXLen, nnYLen * nnZLen, inputsUseNHWC, buf.rowSpatial, buf.rowGlobal);
+      NNInputs::fillRowV7(board, history, nextPlayer, nnInputParamsWithResultsBeforeNN, nnXLen, nnYLen, nnZLen, inputsUseNHWC, buf.rowSpatial, buf.rowGlobal);
     else
       ASSERT_UNREACHABLE;
   }
@@ -708,8 +708,6 @@ void NNEvaluator::evaluate(
 
     float nnPolicyInvTemperature = 1.0f / nnInputParams.nnPolicyTemperature;
 
-    int xSize = board.x_size;
-    int ySize = board.y_size;
 
     float maxPolicy = -1e25f;
     bool isLegal[NNPos::MAX_NN_POLICY_SIZE];

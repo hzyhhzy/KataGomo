@@ -721,9 +721,9 @@ Hash128 NNInputs::getHash(
 void NNInputs::fillRowV7(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams,
-  int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
+  int nnXLen, int nnYLen, int nnZLen, bool useNHWC, float* rowBin, float* rowGlobal
 ) {
-  int nnLen = nnXLen * nnYLen;
+  int nnLen = nnXLen * nnYLen * nnZLen;
   assert(nnLen <= NNPos::MAX_NN_LEN);
   assert(board.boardVolume() <= nnLen);
   std::fill(rowBin,rowBin+NUM_FEATURES_SPATIAL_V7*nnLen,false);

@@ -946,7 +946,7 @@ int MainCmds::contribute(const vector<string>& args) {
     const int inputsVersion = runParams.inputsVersion;
     const int dataBoardLen = runParams.dataBoardLen;
     TrainingDataWriter* tdataWriter = new TrainingDataWriter(
-      tdataOutputDir, inputsVersion, maxRowsPerTrainFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()));
+      tdataOutputDir, inputsVersion, maxRowsPerTrainFile, firstFileRandMinProp, dataBoardLen, dataBoardLen, dataBoardLen, Global::uint64ToHexString(rand.nextUInt64()));
     TrainingDataWriter* vdataWriter = NULL;
     ofstream* sgfOut = NULL;
 

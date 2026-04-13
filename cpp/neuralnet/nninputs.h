@@ -64,7 +64,7 @@ namespace NNInputs {
 
   void fillRowV7(
     const Board& board, const BoardHistory& boardHistory, Player nextPlayer,
-    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, bool useNHWC, float* rowBin, float* rowGlobal
+    const MiscNNInputParams& nnInputParams, int nnXLen, int nnYLen, int nnZLen, bool useNHWC, float* rowBin, float* rowGlobal
   );
 
 }

@@ -158,26 +158,24 @@ void FinishedGameData::printDebug(ostream& out) const {
 //And update the python code
 static const int POLICY_TARGET_NUM_CHANNELS = 2;
 static const int GLOBAL_TARGET_NUM_CHANNELS = 64;
-static const int VALUE_SPATIAL_TARGET_NUM_CHANNELS = 5;
 
-TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBChannels, int numFChannels, int xLen, int yLen)
+TrainingWriteBuffers::TrainingWriteBuffers(int iVersion, int maxRws, int numBChannels, int numFChannels, int xLen, int yLen, int zLen)
   :inputsVersion(iVersion),
    maxRows(maxRws),
    numBinaryChannels(numBChannels),
    numGlobalChannels(numFChannels),
    dataXLen(xLen),
    dataYLen(yLen),
-   packedBoardArea((xLen*yLen + 7)/8),
+   dataZLen(zLen),
+   packedBoardVolume((xLen*yLen*zLen + 7)/8),
    curRows(0),
    binaryInputNCHWUnpacked(NULL),
-   binaryInputNCHWPacked({maxRws, numBChannels, packedBoardArea}),
+   binaryInputNCHWPacked({maxRws, numBChannels, packedBoardVolume}),
    globalInputNC({maxRws, numFChannels}),
-   policyTargetsNCMove({maxRws, POLICY_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen)}),
-   globalTargetsNC({maxRws, GLOBAL_TARGET_NUM_CHANNELS}),
-   scoreDistrN({maxRws, xLen * yLen * 2 + NNPos::EXTRA_SCORE_DISTR_RADIUS * 2}),
-   valueTargetsNCHW({maxRws, VALUE_SPATIAL_TARGET_NUM_CHANNELS, yLen, xLen})
+   policyTargetsNCMove({maxRws, POLICY_TARGET_NUM_CHANNELS, NNPos::getPolicySize(xLen,yLen,zLen)}),
+   globalTargetsNC({maxRws, GLOBAL_TARGET_NUM_CHANNELS})
 {
-  binaryInputNCHWUnpacked = new float[numBChannels * xLen * yLen];
+  binaryInputNCHWUnpacked = new float[numBChannels * xLen * yLen * zLen];
 }
 
 TrainingWriteBuffers::~TrainingWriteBuffers()
@@ -223,12 +221,12 @@ static void uniformPolicyTarget(int policySize, int16_t* target) {
 }
 
 //Copy playouts into target, expanding out the sparse representation into a full plane.
-static void fillPolicyTarget(const vector<PolicyTargetMove>& policyTargetMoves, int policySize, int dataXLen, int dataYLen, int boardXSize, int16_t* target) {
+static void fillPolicyTarget(const vector<PolicyTargetMove>& policyTargetMoves, int policySize, int dataXLen, int dataYLen, int dataZLen, int boardXSize, int boardYSize, int boardZSize, int16_t* target) {
   zeroPolicyTarget(policySize,target);
   size_t size = policyTargetMoves.size();
   for(size_t i = 0; i<size; i++) {
     const PolicyTargetMove& move = policyTargetMoves[i];
-    int pos = NNPos::locToPos(move.loc, boardXSize, dataXLen, dataYLen);
+    int pos = NNPos::locToPos(move.loc, boardXSize, boardYSize, boardZSize, dataXLen, dataYLen, dataZLen);
     assert(pos >= 0 && pos < policySize);
     target[pos] = move.policyTarget;
   }
@@ -287,11 +285,12 @@ void TrainingWriteBuffers::addRow(
   Rand& rand
 ) {
   (void)finalBoard;
+  (void)posHistForFutureBoards;
   static_assert(NNModelVersion::latestInputsVersionImplemented == 7, "");
   if(inputsVersion < 3 || inputsVersion > 7)
     throw StringError("Training write buffers: Does not support input version: " + Global::intToString(inputsVersion));
 
-  int posArea = dataXLen*dataYLen;
+  int posVolume = dataXLen*dataYLen*dataZLen;
   assert(data.hasFullData);
   assert(curRows < maxRows);
 
@@ -309,15 +308,15 @@ void TrainingWriteBuffers::addRow(
     if(inputsVersion == 7) {
       assert(NNInputs::NUM_FEATURES_SPATIAL_V7 == numBinaryChannels);
       assert(NNInputs::NUM_FEATURES_GLOBAL_V7 == numGlobalChannels);
-      NNInputs::fillRowV7(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, inputsUseNHWC, rowBin, rowGlobal);
+      NNInputs::fillRowV7(board, hist, nextPlayer, nnInputParams, dataXLen, dataYLen, dataZLen, inputsUseNHWC, rowBin, rowGlobal);
     }
     else
       ASSERT_UNREACHABLE;
 
     //Pack bools bitwise into uint8_t
-    uint8_t* rowBinPacked = binaryInputNCHWPacked.data + curRows * numBinaryChannels * packedBoardArea;
+    uint8_t* rowBinPacked = binaryInputNCHWPacked.data + curRows * numBinaryChannels * packedBoardVolume;
     for(int c = 0; c<numBinaryChannels; c++)
-      packBits(rowBin + c * posArea, posArea, rowBinPacked + c * packedBoardArea);
+      packBits(rowBin + c * posVolume, posVolume, rowBinPacked + c * packedBoardVolume);
   }
 
   //Vector for global targets and metadata
@@ -327,11 +326,11 @@ void TrainingWriteBuffers::addRow(
   rowGlobal[25] = targetWeight;
 
   //Fill policy
-  int policySize = NNPos::getPolicySize(dataXLen,dataYLen);
+  int policySize = NNPos::getPolicySize(dataXLen,dataYLen,dataZLen);
   int16_t* rowPolicy = policyTargetsNCMove.data + curRows * POLICY_TARGET_NUM_CHANNELS * policySize;
 
   if(policyTarget0 != NULL) {
-    fillPolicyTarget(*policyTarget0, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 0 * policySize);
+    fillPolicyTarget(*policyTarget0, policySize, dataXLen, dataYLen, dataZLen, board.x_size, board.y_size, board.z_size, rowPolicy + 0 * policySize);
     rowGlobal[26] = 1.0f;
   }
   else {
@@ -340,7 +339,7 @@ void TrainingWriteBuffers::addRow(
   }
 
   if(policyTarget1 != NULL) {
-    fillPolicyTarget(*policyTarget1, policySize, dataXLen, dataYLen, board.x_size, rowPolicy + 1 * policySize);
+    fillPolicyTarget(*policyTarget1, policySize, dataXLen, dataYLen, dataZLen, board.x_size, board.y_size, board.z_size, rowPolicy + 1 * policySize);
     rowGlobal[28] = 1.0f;
   }
   else {
@@ -349,7 +348,7 @@ void TrainingWriteBuffers::addRow(
   }
 
   //Fill td-like value targets
-  int boardArea = board.x_size * board.y_size;
+  int boardArea = board.boardVolume();
   assert(whiteValueTargetsIdx >= 0 && whiteValueTargetsIdx < whiteValueTargets.size());
   fillValueTDTargets(whiteValueTargets, whiteValueTargetsIdx, nextPlayer, 0.0, rowGlobal);
   //These three constants used to be 'nicer' numbers 0.18, 0.06, 0.02, but we screwed up the functional form
@@ -446,66 +445,10 @@ void TrainingWriteBuffers::addRow(
 
   assert(64 == GLOBAL_TARGET_NUM_CHANNELS);
 
-  int scoreDistrLen = posArea*2 + NNPos::EXTRA_SCORE_DISTR_RADIUS*2;
-  //int scoreDistrMid = posArea + NNPos::EXTRA_SCORE_DISTR_RADIUS;
-  int8_t* rowScoreDistr = scoreDistrN.data + curRows * scoreDistrLen;
-  int8_t* rowOwnership = valueTargetsNCHW.data + curRows * VALUE_SPATIAL_TARGET_NUM_CHANNELS * posArea;
-
-
   rowGlobal[27] = 0.0f;
   rowGlobal[20] = 0.0f;
-
-  //Fill with zeros in case the buffers differ in size
-  for(int i = 0; i<posArea*2; i++)
-    rowOwnership[i] = 0;
-
-
-  //Fill score vector "onehot"-like
-  for(int i = 0; i<scoreDistrLen; i++)
-    rowScoreDistr[i] = 0;
-
-  if(posHistForFutureBoards == NULL) {
-    rowGlobal[33] = 0.0f;
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*2] = 0;
-      rowOwnership[i+posArea*3] = 0;
-    }
-  }
-  else {
-    const vector<Board>& boards = *posHistForFutureBoards;
-    assert(boards.size() == whiteValueTargets.size());
-    assert(boards.size() > 0);
-
-    rowGlobal[33] = 1.0f;
-    int endIdx = (int)boards.size()-1;
-    const Board& board2 = boards[std::min(whiteValueTargetsIdx+8,endIdx)];
-    const Board& board3 = boards[std::min(whiteValueTargetsIdx+32,endIdx)];
-    assert(board2.y_size == board.y_size && board2.x_size == board.x_size);
-    assert(board3.y_size == board.y_size && board3.x_size == board.x_size);
-
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*2] = 0;
-      rowOwnership[i+posArea*3] = 0;
-    }
-    Player pla = nextPlayer;
-    Player opp = getOpp(nextPlayer);
-    for(int y = 0; y<board.y_size; y++) {
-      for(int x = 0; x<board.x_size; x++) {
-        int pos = NNPos::xyToPos(x,y,dataXLen);
-        Loc loc = Location::getLoc(x,y,board.x_size);
-        if(board2.colors[loc] == pla) rowOwnership[pos+posArea*2] = 1;
-        else if(board2.colors[loc] == opp) rowOwnership[pos+posArea*2] = -1;
-        if(board3.colors[loc] == pla) rowOwnership[pos+posArea*3] = 1;
-        else if(board3.colors[loc] == opp) rowOwnership[pos+posArea*3] = -1;
-      }
-    }
-  }
-
-
-    rowGlobal[34] = 0.0f;
-    for(int i = 0; i<posArea; i++) {
-      rowOwnership[i+posArea*4] = 0;
-    }
+  rowGlobal[33] = 0.0f;
+  rowGlobal[34] = 0.0f;
 
   curRows++;
 }
@@ -516,7 +459,7 @@ void TrainingWriteBuffers::writeToZipFile(const string& fileName) {
   uint64_t numBytes;
 
   numBytes = binaryInputNCHWPacked.prepareHeaderWithNumRows(curRows);
-  zipFile.writeBuffer("binaryInputNCHWPacked", binaryInputNCHWPacked.dataIncludingHeader, numBytes);
+  zipFile.writeBuffer("binaryInputNCLPacked", binaryInputNCHWPacked.dataIncludingHeader, numBytes);
 
   numBytes = globalInputNC.prepareHeaderWithNumRows(curRows);
   zipFile.writeBuffer("globalInputNC", globalInputNC.dataIncludingHeader, numBytes);
@@ -526,12 +469,6 @@ void TrainingWriteBuffers::writeToZipFile(const string& fileName) {
 
   numBytes = globalTargetsNC.prepareHeaderWithNumRows(curRows);
   zipFile.writeBuffer("globalTargetsNC", globalTargetsNC.dataIncludingHeader, numBytes);
-
-  numBytes = scoreDistrN.prepareHeaderWithNumRows(curRows);
-  zipFile.writeBuffer("scoreDistrN", scoreDistrN.dataIncludingHeader, numBytes);
-
-  numBytes = valueTargetsNCHW.prepareHeaderWithNumRows(curRows);
-  zipFile.writeBuffer("valueTargetsNCHW", valueTargetsNCHW.dataIncludingHeader, numBytes);
 
   zipFile.close();
 }
@@ -548,7 +485,7 @@ void TrainingWriteBuffers::writeToTextOstream(ostream& out) {
     out << endl;
   };
 
-  out << "binaryInputNCHWPacked" << endl;
+  out << "binaryInputNCLPacked" << endl;
   binaryInputNCHWPacked.prepareHeaderWithNumRows(curRows);
   char buf[32];
   printHeader((const char*)binaryInputNCHWPacked.dataIncludingHeader);
@@ -589,38 +526,18 @@ void TrainingWriteBuffers::writeToTextOstream(ostream& out) {
     if((i+1) % (len/curRows) == 0) out << endl;
   }
   out << endl;
-
-  out << "scoreDistrN" << endl;
-  scoreDistrN.prepareHeaderWithNumRows(curRows);
-  printHeader((const char*)scoreDistrN.dataIncludingHeader);
-  len = scoreDistrN.getActualDataLen(curRows);
-  for(int i = 0; i<len; i++) {
-    out << (int)scoreDistrN.data[i] << " ";
-    if((i+1) % (len/curRows) == 0) out << endl;
-  }
-  out << endl;
-
-  out << "valueTargetsNCHW" << endl;
-  valueTargetsNCHW.prepareHeaderWithNumRows(curRows);
-  printHeader((const char*)valueTargetsNCHW.dataIncludingHeader);
-  len = valueTargetsNCHW.getActualDataLen(curRows);
-  for(int i = 0; i<len; i++) {
-    out << (int)valueTargetsNCHW.data[i] << " ";
-    if((i+1) % (len/curRows) == 0) out << endl;
-  }
-  out << endl;
 }
 
 //-------------------------------------------------------------------------------------
 
-TrainingDataWriter::TrainingDataWriter(const string& outDir, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, const string& randSeed)
-  : TrainingDataWriter(outDir,NULL,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,1,randSeed)
+TrainingDataWriter::TrainingDataWriter(const string& outDir, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int dataZLen, const string& randSeed)
+  : TrainingDataWriter(outDir,NULL,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,dataZLen,1,randSeed)
 {}
-TrainingDataWriter::TrainingDataWriter(ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed)
-  : TrainingDataWriter(string(),dbgOut,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,onlyEvery,randSeed)
+TrainingDataWriter::TrainingDataWriter(ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int dataZLen, int onlyEvery, const string& randSeed)
+  : TrainingDataWriter(string(),dbgOut,iVersion,maxRowsPerFile,firstFileMinRandProp,dataXLen,dataYLen,dataZLen,onlyEvery,randSeed)
 {}
 
-TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int onlyEvery, const string& randSeed)
+TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, int iVersion, int maxRowsPerFile, double firstFileMinRandProp, int dataXLen, int dataYLen, int dataZLen, int onlyEvery, const string& randSeed)
   :outputDir(outDir),inputsVersion(iVersion),rand(randSeed),writeBuffers(NULL),debugOut(dbgOut),debugOnlyWriteEvery(onlyEvery),rowCount(0)
 {
   int numBinaryChannels;
@@ -636,7 +553,7 @@ TrainingDataWriter::TrainingDataWriter(const string& outDir, ostream* dbgOut, in
     throw StringError("TrainingDataWriter: Unsupported inputs version: " + Global::intToString(inputsVersion));
   }
 
-  writeBuffers = new TrainingWriteBuffers(inputsVersion, maxRowsPerFile, numBinaryChannels, numGlobalChannels, dataXLen, dataYLen);
+  writeBuffers = new TrainingWriteBuffers(inputsVersion, maxRowsPerFile, numBinaryChannels, numGlobalChannels, dataXLen, dataYLen, dataZLen);
 
   if(firstFileMinRandProp < 0 || firstFileMinRandProp > 1)
     throw StringError("TrainingDataWriter: firstFileMinRandProp not in [0,1]: " + Global::doubleToString(firstFileMinRandProp));
