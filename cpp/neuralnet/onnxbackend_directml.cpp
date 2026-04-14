@@ -346,7 +346,7 @@ void NeuralNet::getOutput(
 
   // Run ONNX inference
   vector<const char*> inputNames = {"input_spatial", "input_global"};
-  vector<const char*> outputNames = {"out_policy", "out_value", "out_miscvalue", "out_moremiscvalue", "out_ownership"};
+  vector<const char*> outputNames = {"out_policy", "out_value", "out_miscvalue", "out_moremiscvalue"};//, "out_ownership"};
 
   // Shapes
   int64_t spatialShape[] = {batchSize, numSpatialFeatures, nnLen};
@@ -416,7 +416,7 @@ void NeuralNet::getOutput(
   copyToBuffer(1, inputBuffers->out_valueResults.get(), inputBuffers->singleout_valueElts * batchSize);
   copyToBuffer(2, inputBuffers->out_miscvalueResults.get(), inputBuffers->singleout_miscvalueElts * batchSize);
   copyToBuffer(3, inputBuffers->out_moremiscvalueResults.get(), inputBuffers->singleout_moremiscvalueElts * batchSize);
-  copyToBuffer(4, inputBuffers->out_ownershipResults.get(), inputBuffers->singleout_ownershipElts * batchSize);
+  //copyToBuffer(4, inputBuffers->out_ownershipResults.get(), inputBuffers->singleout_ownershipElts * batchSize);
 
   for(int row = 0; row < batchSize; row++) {
     NNOutput* output = outputs[row];

@@ -1,9 +1,12 @@
 #include "../neuralnet/nninputs.h"
 
 using namespace std;
-
 int NNPos::xyToPos(int x, int y, int nnXLen) {
+  throw StringError("xyToPos is not supported for 3D boards");
   return y * nnXLen + x;
+}
+int NNPos::xyzToPos(int x, int y, int z, int nnXLen, int nnYLen, int nnZLen) {
+  return x + z * nnXLen * nnYLen + y * nnXLen;
 }
 int NNPos::locToPos(Loc loc, int nnLen) {
   if(loc == Board::PASS_LOC)
@@ -13,6 +16,7 @@ int NNPos::locToPos(Loc loc, int nnLen) {
   return loc;
 }
 int NNPos::locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen) {
+  throw StringError("xyToPos is not supported for 3D boards");
   (void)boardXSize;
   return locToPos(loc, nnXLen * nnYLen);
 }
@@ -35,9 +39,6 @@ Loc NNPos::posToLoc(int pos, int boardVolume, int nnLen) {
     return Board::NULL_LOC;
   return (Loc)pos;
 }
-Loc NNPos::posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen) {
-  return posToLoc(pos, boardXSize * boardYSize, nnXLen * nnYLen);
-}
 Loc NNPos::posToLoc(int pos, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen) {
   int nnLen = nnXLen * nnYLen * nnZLen;
   if(pos == nnLen)
@@ -57,9 +58,6 @@ bool NNPos::isPassPos(int pos, int nnLen) {
   return pos == nnLen;
 }
 
-bool NNPos::isPassPos(int pos, int nnXLen, int nnYLen) {
-  return isPassPos(pos, nnXLen * nnYLen);
-}
 bool NNPos::isPassPos(int pos, int nnXLen, int nnYLen, int nnZLen) {
   return isPassPos(pos, nnXLen * nnYLen * nnZLen);
 }
@@ -68,9 +66,6 @@ int NNPos::getPolicySize(int nnLen) {
   return nnLen + 1;
 }
 
-int NNPos::getPolicySize(int nnXLen, int nnYLen) {
-  return getPolicySize(nnXLen * nnYLen);
-}
 int NNPos::getPolicySize(int nnXLen, int nnYLen, int nnZLen) {
   return getPolicySize(nnXLen * nnYLen * nnZLen);
 }
@@ -796,7 +791,9 @@ void NNInputs::fillRowV7(
     rowGlobal[5] = (float)exp(-t / 10.0);
     rowGlobal[6] = (float)exp(-t / 30.0);
     rowGlobal[7] = (float)exp(-t / 100.0);
-    rowGlobal[8] = (float)(t / volume);
+    rowGlobal[8] = (float)exp(-t / 300.0);
+    rowGlobal[9] = (float)exp(-t / 1000.0);
+    rowGlobal[10] = (float)(t / volume);
   }
 
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is

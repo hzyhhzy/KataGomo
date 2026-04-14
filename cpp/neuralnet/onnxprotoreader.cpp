@@ -169,6 +169,10 @@ void ONNXModelHeader::load(const std::string& onnxFile) {
     throw StringError("ONNX model requires a pos_len_y metadata field");
   else if(!Global::tryStringToInt(allmetadata["pos_len_y"], pos_len_y))
     throw StringError("ONNX model requires a valid pos_len_y metadata field, but got: " + allmetadata["pos_len_y"]);
+  if(!allmetadata.count("pos_len_z"))
+    throw StringError("ONNX model requires a pos_len_z metadata field");
+  else if(!Global::tryStringToInt(allmetadata["pos_len_z"], pos_len_z))
+    throw StringError("ONNX model requires a valid pos_len_z metadata field, but got: " + allmetadata["pos_len_z"]);
 
   
   if(!allmetadata.count("is_qat"))
@@ -212,18 +216,21 @@ void ONNXModelHeader::maybeChangeNNLen(NNEvaluator& nneval) const {
     return; // not onnx, do nothing
 
   if(!has_mask) {
-    if(nneval.nnXLen != pos_len_x || nneval.nnYLen != pos_len_y || !nneval.requireExactNNLen)
+    if(
+      nneval.nnXLen != pos_len_x || nneval.nnYLen != pos_len_y || nneval.nnZLen != pos_len_z ||
+      !nneval.requireExactNNLen)
       throw StringError(
-        "ONNX model requires pos_len_x and pos_len_y metadata fields to match nnXLen and nnYLen if has_mask is false");
+        "ONNX model requires pos_len_x, pos_len_y, and pos_len_z metadata fields to match nnXLen, nnYLen, and nnZLen if has_mask is false");
   } else {
     nneval.requireExactNNLen = false;
-    if(nneval.nnXLen > pos_len_x || nneval.nnYLen > pos_len_y)
+    if(nneval.nnXLen > pos_len_x || nneval.nnYLen > pos_len_y || nneval.nnZLen > pos_len_z)
       throw StringError(
         "ONNX model requires pos_len_x and pos_len_y metadata fields to be at least as large as nnXLen and nnYLen if "
         "has_mask is true");
   }
   nneval.nnXLen = pos_len_x;
   nneval.nnYLen = pos_len_y;
-  nneval.policySize = NNPos::getPolicySize(nneval.nnXLen, nneval.nnYLen);
+  nneval.nnZLen = pos_len_z;
+  nneval.policySize = NNPos::getPolicySize(nneval.nnXLen, nneval.nnYLen, nneval.nnZLen);
 }
 

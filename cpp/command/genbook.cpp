@@ -562,7 +562,7 @@ int MainCmds::genbook(const vector<string>& args) {
         assert(moveLocPolicy >= 0);
         vector<std::pair<Loc,float>> extraMoveLocsToExpand;
         for(int pos = 0; pos<NNPos::MAX_NN_POLICY_SIZE; pos++) {
-          Loc loc = NNPos::posToLoc(pos, board.x_size, board.y_size, result->nnXLen, result->nnYLen);
+          Loc loc = NNPos::posToLoc(pos, board.x_size, board.y_size, board.z_size, result->nnXLen, result->nnYLen, result->nnZLen);
           if(loc == Board::NULL_LOC || loc == moveLoc)
             continue;
           if(policyProbs[pos] > 0.0 && policyProbs[pos] > 1.5 * moveLocPolicy + 0.05f)

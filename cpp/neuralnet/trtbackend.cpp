@@ -1690,7 +1690,7 @@ struct InputBuffers {
     singleFeatureBytes = singleFeatureElts * sizeof(float);
     singleGlobalFeatureElts = m.numInputGlobalChannels;
     singleGlobalFeatureBytes = singleGlobalFeatureElts * sizeof(float);
-    singlePolicyResultElts = isOnnx ? NNPos::getPolicySize(nnXLen, nnYLen, nnZLen) : NNPos::getPolicySize(nnXLen, nnYLen);
+    singlePolicyResultElts = NNPos::getPolicySize(nnXLen, nnYLen, nnZLen);
     singlePolicyResultBytes = singlePolicyResultElts * sizeof(float);
     singleValueResultElts = m.numValueChannels;
     singleValueResultBytes = singleValueResultElts * sizeof(float);

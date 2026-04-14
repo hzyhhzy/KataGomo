@@ -44,6 +44,15 @@ GameInitializer::GameInitializer(ConfigParser& cfg, Logger& logger, const string
 void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   (void)logger;
 
+
+  allowedBasicRuleStrs = cfg.getStrings("basicRules", Rules::basicRuleStrings());
+  for(size_t i = 0; i < allowedBasicRuleStrs.size(); i++)
+    allowedBasicRules.push_back(Rules::parseBasicRule(allowedBasicRuleStrs[i]));
+  if(allowedBasicRules.size() <= 0)
+    throw IOError("basicRules must have at least one value in " + cfg.getFileName());
+  
+  moveLimitProb = cfg.contains("moveLimitProb") ? cfg.getDouble("moveLimitProb", 0.0, 1.0) : 0.0;
+
   randomInitialStonesProb = cfg.contains("randomInitialStonesProb") ? cfg.getDouble("randomInitialStonesProb", 0.0, 1.0) : 0.0;
   banLocProb = cfg.contains("banLocProb") ? cfg.getDouble("banLocProb", 0.0, 1.0) : 0.0;
   banLocAreaPropAvg = cfg.contains("banLocAreaPropAvg") ? cfg.getDouble("banLocAreaPropAvg", 0.0, 1.0) : 0.12;
@@ -296,6 +305,7 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
+  rules.basicRule = allowedBasicRules[rand.nextUInt(allowedBasicRules.size())];
   return rules;
 }
 
@@ -323,7 +333,10 @@ void GameInitializer::createGameSharedUnsynchronized(
   int xSizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
   int ySizeIdx = xSizeIdx;
   if(allowRectangleProb > 0 && rand.nextBool(allowRectangleProb))
-    ySizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(),allowedBSizeRelProbs.size());
+    ySizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(), allowedBSizeRelProbs.size());
+  int zSizeIdx = xSizeIdx;
+  if(allowRectangleProb > 0 && rand.nextBool(allowRectangleProb))
+    zSizeIdx = rand.nextUInt(allowedBSizeRelProbs.data(), allowedBSizeRelProbs.size());
 
   Rules rules = createRulesUnsynchronized();
 
@@ -375,26 +388,29 @@ void GameInitializer::createGameSharedUnsynchronized(
   else {
     int xSize = allowedBSizes[xSizeIdx];
     int ySize = allowedBSizes[ySizeIdx];
-    board = Board(xSize,ySize);
+    int zSize = allowedBSizes[zSizeIdx];
+    board = Board(xSize,ySize,zSize);
 
     if(rand.nextBool(randomInitialStonesProb)) {
       int initialBlackStones = 1 + int(1.0 * rand.nextExponential());
       int initialWhiteStones = 1 + int(1.0 * rand.nextExponential());
-      if(initialWhiteStones + initialBlackStones > board.x_size * board.y_size) {
+      if(initialWhiteStones + initialBlackStones > board.boardVolume()) {
         initialBlackStones = 1;
         initialWhiteStones = 1;
       }
-      for(int y = 0; y < board.y_size; y++)
-        for(int x = 0; x < board.x_size; x++) {
-          Loc loc = Location::getLoc(x, y, board.x_size);
-          board.setStone(loc, C_EMPTY);
-        }
+      for(int z = 0; z < board.z_size; z++)
+        for(int y = 0; y < board.y_size; y++)
+          for(int x = 0; x < board.x_size; x++) {
+            Loc loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
+            board.setStone(loc, C_EMPTY);
+          }
       for(int s = 0; s < initialBlackStones; s++) {
         Loc loc;
         do {
           int x = rand.nextUInt64() % board.x_size;
           int y = rand.nextUInt64() % board.y_size;
-          loc = Location::getLoc(x, y, board.x_size);
+          int z = rand.nextUInt64() % board.z_size;
+          loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
         } while(board.colors[loc] != C_EMPTY);
         board.setStone(loc, C_BLACK);
       }
@@ -403,7 +419,8 @@ void GameInitializer::createGameSharedUnsynchronized(
         do {
           int x = rand.nextUInt64() % board.x_size;
           int y = rand.nextUInt64() % board.y_size;
-          loc = Location::getLoc(x, y, board.x_size);
+          int z = rand.nextUInt64() % board.z_size;
+          loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
         } while(board.colors[loc] != C_EMPTY);
         board.setStone(loc, C_WHITE);
       }
@@ -412,63 +429,37 @@ void GameInitializer::createGameSharedUnsynchronized(
     
 
     //place banned locs
-    if(rand.nextBool(banLocProb)) {
-      if(board.x_size == 7 && board.y_size == 7 && rand.nextBool(0.15)) { //smaller boards
-        if(rand.nextBool(0.8))//6x6 board
-        {
-          for(int y = 0; y < board.y_size; y++)
-            for(int x = 0; x < board.x_size; x++) {
-              Loc loc = Location::getLoc(x, y, board.x_size);
-              if(x == board.x_size - 1 || y == board.y_size - 1)
-                board.setStone(loc, C_BAN);
-              else
-                board.setStone(loc, C_EMPTY);
-            }
-          
-          // initial stones
-          if(rand.nextBool(0.5)) {
-            board.setStone(Location::getLoc(0, 0, board.x_size), C_BLACK);
-            board.setStone(Location::getLoc(board.x_size - 2, board.y_size - 2, board.x_size), C_BLACK);
-            board.setStone(Location::getLoc(0, board.y_size - 2, board.x_size), C_WHITE);
-            board.setStone(Location::getLoc(board.x_size - 2, 0, board.x_size), C_WHITE);
-          } else {
-            board.setStone(Location::getLoc(0, 0, board.x_size), C_WHITE);
-            board.setStone(Location::getLoc(board.x_size - 2, board.y_size - 2, board.x_size), C_WHITE);
-            board.setStone(Location::getLoc(0, board.y_size - 2, board.x_size), C_BLACK);
-            board.setStone(Location::getLoc(board.x_size - 2, 0, board.x_size), C_BLACK);
+    if(rand.nextBool(banLocProb)) { //randomly place several gaps
+      double banLocAreaProp;
+
+      do {
+        banLocAreaProp = banLocAreaPropAvg * rand.nextExponential();
+      } while(banLocAreaProp > banLocAreaPropMax);
+
+      for(int z = 0; z < board.z_size; z++) {
+        for(int y = 0; y < board.y_size; y++) {
+          for(int x = 0; x < board.x_size; x++) {
+            Loc loc = Location::getLoc(x, y, z, board.x_size, board.y_size);
+            if(board.colors[loc] == C_EMPTY && rand.nextBool(banLocAreaProp))
+              board.setStone(loc, C_BAN);
           }
         }
-        else //5x5 board
-        {
-          for(int y = 0; y < board.y_size; y++)
-            for(int x = 0; x < board.x_size; x++) {
-              Loc loc = Location::getLoc(x, y, board.x_size);
-              if(x == board.x_size - 1 || y == board.y_size - 1 || x == 0 || y == 0)
-                board.setStone(loc, C_BAN);
-              else
-                board.setStone(loc, C_EMPTY);
-            }
-
-          // initial stones
-          board.setStone(Location::getLoc(1, 1, board.x_size), C_BLACK);
-          board.setStone(Location::getLoc(board.x_size - 2, board.y_size - 2, board.x_size), C_BLACK);
-          board.setStone(Location::getLoc(1, board.y_size - 2, board.x_size), C_WHITE);
-          board.setStone(Location::getLoc(board.x_size - 2, 1, board.x_size), C_WHITE);
-        }
-      } 
-      else { //randomly place several gaps
-        double banLocAreaProp;
-
-        do {
-          banLocAreaProp = banLocAreaPropAvg * rand.nextExponential();
-        } while(banLocAreaProp > banLocAreaPropMax);
-
-        for(int loc = 0; loc < Board::MAX_ARR_SIZE; loc++) {
-          if(board.colors[loc] == C_EMPTY)
-            if(rand.nextBool(banLocAreaProp))
-              board.setStone(loc, C_BAN);
-        }
       }
+    }
+
+    if(rand.nextBool(moveLimitProb)) {
+      int maxMoves = 0;
+      if(rand.nextBool(0.5))
+        maxMoves = rand.nextExponential() * 40 + 40 - rand.nextExponential() * 5;
+      else if(rand.nextBool(0.8))
+        maxMoves = rand.nextExponential() * 100 + 50 - rand.nextExponential() * 25;
+      else 
+        maxMoves = rand.nextExponential() * 300 + 100 - rand.nextExponential() * 25;
+      if(maxMoves > board.numPlaStonesOnBoard(C_EMPTY) - 10)
+        maxMoves = 0;
+      if(maxMoves < 10)
+        maxMoves = 0;
+      rules.maxMoves = maxMoves;
     }
 
     pla = P_BLACK;
@@ -790,7 +781,7 @@ static void extractPolicyTarget(
   (void)success; //Avoid warning when asserts are disabled
 
   assert(locsBuf.size() == playSelectionValuesBuf.size());
-  assert(locsBuf.size() <= toMoveBot->rootBoard.x_size * toMoveBot->rootBoard.y_size + 1);
+  assert(locsBuf.size() <= toMoveBot->rootBoard.boardVolume() + 1);
 
   //Make sure we don't overflow int16
   double maxValue = 0.0;
@@ -835,7 +826,7 @@ static NNRawStats computeNNRawStats(const Search* bot, const Board& board, const
   nnRawStats.whiteWinLoss = nnOutput.whiteWinProb - nnOutput.whiteLossProb;
   {
     double entropy = 0.0;
-    int policySize = NNPos::getPolicySize(nnOutput.nnXLen,nnOutput.nnYLen);
+    int policySize = NNPos::getPolicySize(nnOutput.nnXLen,nnOutput.nnYLen,nnOutput.nnZLen);
     for(int pos = 0; pos<policySize; pos++) {
       double prob = nnOutput.policyProbs[pos];
       if(prob >= 1e-30)
@@ -1486,7 +1477,7 @@ FinishedGameData* Play::runGame(
     //Check for resignation
     if(allowResign && historicalMctsWinLossValues.size() >= playSettings.resignConsecTurns) {
       //Play at least some moves no matter what
-      int minTurnForResignation = 1 + board.x_size * board.y_size / 5;
+      int minTurnForResignation = 1 + board.boardVolume() / 5;
       if(i >= minTurnForResignation) {
         if(playSettings.resignThreshold > 0 || std::isnan(playSettings.resignThreshold))
           throw StringError("playSettings.resignThreshold > 0 || std::isnan(playSettings.resignThreshold)");
@@ -1515,7 +1506,7 @@ FinishedGameData* Play::runGame(
     // Check for judge draw
     if(judgeDraw && historicalMctsDrawValues.size() >= playSettings.judgeDrawConsecTurns) {
       // Play at least some moves no matter what
-      int minTurnForDraw = 1 + board.x_size * board.y_size / 5;
+      int minTurnForDraw = 1 + board.boardVolume() / 5;
       if(i >= minTurnForDraw) {
         if(std::isnan(playSettings.judgeDrawThreshold))
           throw StringError("std::isnan(playSettings.judgeDrawThreshold)");
@@ -1591,8 +1582,8 @@ FinishedGameData* Play::runGame(
       assert(rawNNValues.size() == gameData->targetWeightByTurn.size());
       valueSurpriseByTurn.resize(rawNNValues.size());
 
-      int boardArea = board.x_size * board.y_size;
-      double nowFactor = 1.0/(1.0 + boardArea * 0.016);
+      int boardVolume = board.boardVolume();
+      double nowFactor = 1.0/(1.0 + boardVolume * 0.016);
 
       double winValue = whiteValueTargetsByTurn[whiteValueTargetsByTurn.size()-1].win;
       double lossValue = whiteValueTargetsByTurn[whiteValueTargetsByTurn.size()-1].loss;

@@ -19,19 +19,16 @@ namespace NNPos {
   constexpr int MAX_NN_POLICY_SIZE = Board::MAX_POLICY_SIZE;
   // Extra score distribution radius, used for writing score in data rows and for the neural net score belief output
   constexpr int EXTRA_SCORE_DISTR_RADIUS = 60;
-
   int xyToPos(int x, int y, int nnXLen);
+  int xyzToPos(int x, int y, int z, int nnXLen, int nnYLen, int nnZLen);
   int locToPos(Loc loc, int nnLen);
   int locToPos(Loc loc, int boardXSize, int nnXLen, int nnYLen);
   int locToPos(Loc loc, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen);
   Loc posToLoc(int pos, int boardVolume, int nnLen);
-  Loc posToLoc(int pos, int boardXSize, int boardYSize, int nnXLen, int nnYLen);
   Loc posToLoc(int pos, int boardXSize, int boardYSize, int boardZSize, int nnXLen, int nnYLen, int nnZLen);
   bool isPassPos(int pos, int nnLen);
-  bool isPassPos(int pos, int nnXLen, int nnYLen);
   bool isPassPos(int pos, int nnXLen, int nnYLen, int nnZLen);
   int getPolicySize(int nnLen);
-  int getPolicySize(int nnXLen, int nnYLen);
   int getPolicySize(int nnXLen, int nnYLen, int nnZLen);
 }
 
