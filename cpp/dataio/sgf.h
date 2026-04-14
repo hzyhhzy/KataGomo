@@ -10,6 +10,7 @@
 
 STRUCT_NAMED_TRIPLE(uint8_t,x,uint8_t,y,Player,pla,MoveNoBSize);
 STRUCT_NAMED_PAIR(int,x,int,y,XYSize);
+STRUCT_NAMED_TRIPLE(int,x,int,y,int,z,XYZSize);
 
 struct SgfNode {
   std::map<std::string,std::vector<std::string>>* props;
@@ -29,8 +30,8 @@ struct SgfNode {
   const std::vector<std::string> getProperties(const char* key) const;
 
   bool hasPlacements() const;
-  void accumPlacements(std::vector<Move>& moves, int xSize, int ySize) const;
-  void accumMoves(std::vector<Move>& moves, int xSize, int ySize) const;
+  void accumPlacements(std::vector<Move>& moves, int xSize, int ySize, int zSize) const;
+  void accumMoves(std::vector<Move>& moves, int xSize, int ySize, int zSize) const;
 
   Color getPLSpecifiedColor() const;
   Rules getRulesFromRUTagOrFail() const;
@@ -58,6 +59,7 @@ struct Sgf {
   static std::vector<Sgf*> loadSgfsFiles(const std::vector<std::string>& files);
 
   XYSize getXYSize() const;
+  XYZSize getXYZSize() const;
   bool hasRules() const;
   Rules getRulesOrFail() const;
   Player getSgfWinner() const;
@@ -66,6 +68,8 @@ struct Sgf {
   int getRank(Player pla) const; //dan ranks are 1d=0, 2d=1,... 9d=8. Kyu ranks are negative.
   std::string getPlayerName(Player pla) const;
 
+  void getPlacements(std::vector<Move>& moves, int xSize, int ySize, int zSize) const;
+  void getMoves(std::vector<Move>& moves, int xSize, int ySize, int zSize) const;
   void getPlacements(std::vector<Move>& moves, int xSize, int ySize) const;
   void getMoves(std::vector<Move>& moves, int xSize, int ySize) const;
 
@@ -132,12 +136,12 @@ struct Sgf {
   static std::set<Hash128> readExcludes(const std::vector<std::string>& files);
 
   private:
-  void getMovesHelper(std::vector<Move>& moves, int xSize, int ySize) const;
+  void getMovesHelper(std::vector<Move>& moves, int xSize, int ySize, int zSize) const;
 
 
   void iterAllUniquePositionsHelper(
     Board& board, BoardHistory& hist, Player nextPla,
-    const Rules& rules, int xSize, int ySize,
+    const Rules& rules, int xSize, int ySize, int zSize,
     PositionSample& sampleBuf,
     int initialTurnNumber,
     std::set<Hash128>& uniqueHashes,
@@ -168,6 +172,7 @@ struct CompactSgf {
   std::vector<Move> moves;
   int xSize;
   int ySize;
+  int zSize;
   int64_t depth;
   Player sgfWinner;
   Hash128 hash;

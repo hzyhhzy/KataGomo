@@ -68,6 +68,80 @@ static int parseSgfCoord(char c) {
   return -1;
 }
 
+static constexpr const char* SGF_3D_SIZE_PROP = "KTSIZE";
+
+static int getSgfViewCols() {
+  return 4;
+}
+
+static int getSgfViewWidth(int xSize, int ySize, int zSize) {
+  (void)ySize;
+  if(zSize <= 1)
+    return xSize;
+  return getSgfViewCols() * xSize;
+}
+
+static int getSgfViewHeight(int xSize, int ySize, int zSize) {
+  if(zSize <= 1)
+    return ySize;
+  int rows = (zSize + getSgfViewCols() - 1) / getSgfViewCols();
+  return rows * xSize;
+}
+
+static bool tryParseSgfNumericCoord(const string& s, int& x, int& y) {
+  vector<string> pieces = Global::split(s,'_');
+  if(pieces.size() != 2)
+    return false;
+  return Global::tryStringToInt(pieces[0],x) && Global::tryStringToInt(pieces[1],y);
+}
+
+static void parseSgfCoordPair(const string& s, int& x, int& y) {
+  if(s.length() == 2) {
+    x = parseSgfCoord(s[0]);
+    y = parseSgfCoord(s[1]);
+    return;
+  }
+  if(tryParseSgfNumericCoord(s,x,y))
+    return;
+  propertyFail("Invalid location: " + s);
+}
+
+static Loc getLocFromSgfViewCoords(int viewX, int viewY, int xSize, int ySize, int zSize) {
+  if(zSize <= 1) {
+    if(viewX < 0 || viewX >= xSize || viewY < 0 || viewY >= ySize)
+      propertyFail("Invalid location");
+    return Location::getLoc(viewX,viewY,xSize);
+  }
+
+  int boardLen = xSize;
+  int tileX = viewX / boardLen;
+  int tileY = viewY / boardLen;
+  int x = viewX % boardLen;
+  int y = viewY % boardLen;
+  int z = tileY * getSgfViewCols() + tileX;
+  if(viewX < 0 || viewX >= getSgfViewWidth(xSize,ySize,zSize) || viewY < 0 || viewY >= getSgfViewHeight(xSize,ySize,zSize))
+    propertyFail("Invalid location");
+  if(x < 0 || x >= xSize || y < 0 || y >= ySize || z < 0 || z >= zSize)
+    propertyFail("Invalid location");
+  return Location::getLoc(x,y,z,xSize,ySize);
+}
+
+static void getSgfViewCoords(Loc loc, int xSize, int ySize, int zSize, int& viewX, int& viewY) {
+  if(zSize <= 1) {
+    viewX = Location::getX(loc,xSize);
+    viewY = Location::getY(loc,xSize,ySize);
+    return;
+  }
+
+  int x = Location::getX(loc,xSize);
+  int y = Location::getY(loc,xSize,ySize);
+  int z = Location::getZ(loc,xSize,ySize);
+  int tileX = z % getSgfViewCols();
+  int tileY = z / getSgfViewCols();
+  viewX = tileX * xSize + x;
+  viewY = tileY * xSize + y;
+}
+
 //MoveNoBSize uses only single bytes
 //If both coords are COORD_MAX, that indicates pass
 static const int COORD_MAX = 128;
@@ -86,35 +160,37 @@ static MoveNoBSize parseSgfLocOrPassNoSize(const string& s, Player pla) {
   return MoveNoBSize(x,y,pla);
 }
 
-static Loc parseSgfLoc(const string& s, int xSize, int ySize) {
-  if(s.length() != 2)
-    propertyFail("Invalid location: " + s);
-
-  int x = parseSgfCoord(s[0]);
-  int y = parseSgfCoord(s[1]);
-
-  if(x < 0 || x >= xSize || y < 0 || y >= ySize)
-    propertyFail("Invalid location: " + s);
-  return Location::getLoc(x,y,xSize);
+static Loc parseSgfLoc(const string& s, int xSize, int ySize, int zSize) {
+  int viewX;
+  int viewY;
+  parseSgfCoordPair(s,viewX,viewY);
+  return getLocFromSgfViewCoords(viewX,viewY,xSize,ySize,zSize);
 }
 
-static void parseSgfLocRectangle(const string& s, int xSize, int ySize, int& x1, int& y1, int& x2, int& y2) {
+static void parseSgfLocRectangle(const string& s, int xSize, int ySize, int zSize, int& x1, int& y1, int& z1, int& x2, int& y2, int& z2) {
   if(contains(s,':')) {
-    if(s.length() != 5 || s[2] != ':')
+    vector<string> pieces = Global::split(s,':');
+    if(pieces.size() != 2)
       propertyFail("Invalid location rect: " + s);
-    x1 = parseSgfCoord(s[0]);
-    y1 = parseSgfCoord(s[1]);
-    x2 = parseSgfCoord(s[3]);
-    y2 = parseSgfCoord(s[4]);
+    Loc loc1 = parseSgfLoc(pieces[0],xSize,ySize,zSize);
+    Loc loc2 = parseSgfLoc(pieces[1],xSize,ySize,zSize);
+    z1 = Location::getZ(loc1,xSize,ySize);
+    z2 = Location::getZ(loc2,xSize,ySize);
+    if(zSize > 1 && z1 != z2)
+      propertyFail("Invalid location rect across z slices: " + s);
+    x1 = Location::getX(loc1,xSize);
+    y1 = Location::getY(loc1,xSize);
+    x2 = Location::getX(loc2,xSize);
+    y2 = Location::getY(loc2,xSize);
   }
   else {
-    if(s.length() != 2)
-      propertyFail("Invalid location: " + s);
-
-    x1 = parseSgfCoord(s[0]);
-    y1 = parseSgfCoord(s[1]);
+    Loc loc = parseSgfLoc(s,xSize,ySize,zSize);
+    x1 = Location::getX(loc,xSize);
+    y1 = Location::getY(loc,xSize);
+    z1 = Location::getZ(loc,xSize,ySize);
     x2 = x1;
     y2 = y1;
+    z2 = z1;
   }
   if(x1 < 0 || x1 >= xSize || y1 < 0 || y1 >= ySize ||
      x2 < 0 || x2 >= xSize || y2 < 0 || y2 >= ySize ||
@@ -122,19 +198,26 @@ static void parseSgfLocRectangle(const string& s, int xSize, int ySize, int& x1,
     propertyFail("Invalid location or location rect: " + s);
 }
 
-static Loc parseSgfLocOrPass(const string& s, int xSize, int ySize) {
+static Loc parseSgfLocOrPass(const string& s, int xSize, int ySize, int zSize) {
   if(s.length() == 0 || (s == "tt" && (xSize <= 19 || ySize <= 19)))
     return Board::PASS_LOC;
-  return parseSgfLoc(s,xSize,ySize);
+  return parseSgfLoc(s,xSize,ySize,zSize);
 }
 
-static void writeSgfLoc(ostream& out, Loc loc, int xSize, int ySize) {
-  if(xSize >= 53 || ySize >= 53)
-    throw StringError("Writing coordinates for SGF files for board sizes >= 53 is not implemented");
+static void writeSgfLoc(ostream& out, Loc loc, int xSize, int ySize, int zSize) {
   if(loc == Board::PASS_LOC || loc == Board::NULL_LOC)
     return;
-  int x = Location::getX(loc,xSize);
-  int y = Location::getY(loc,xSize);
+  int viewWidth = getSgfViewWidth(xSize,ySize,zSize);
+  int viewHeight = getSgfViewHeight(xSize,ySize,zSize);
+  int x;
+  int y;
+  getSgfViewCoords(loc,xSize,ySize,zSize,x,y);
+  assert(x >= 0 && x < viewWidth);
+  assert(y >= 0 && y < viewHeight);
+  if(viewWidth > 52 || viewHeight > 52) {
+    out << x << "_" << y;
+    return;
+  }
   const char* chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
   out << chars[x];
   out << chars[y];
@@ -169,19 +252,20 @@ bool SgfNode::hasPlacements() const {
   return props != NULL && (contains(*props,"AB") || contains(*props,"AW") || contains(*props,"AE"));
 }
 
-void SgfNode::accumPlacements(vector<Move>& moves, int xSize, int ySize) const {
+void SgfNode::accumPlacements(vector<Move>& moves, int xSize, int ySize, int zSize) const {
   if(props == NULL)
     return;
 
   auto handleRectangleList = [&](const vector<string>& elts, Player color) {
     size_t len = elts.size();
     for(size_t i = 0; i<len; i++) {
-      int x1; int y1;
-      int x2; int y2;
-      parseSgfLocRectangle(elts[i],xSize,ySize,x1,y1,x2,y2);
+      int x1; int y1; int z1;
+      int x2; int y2; int z2;
+      parseSgfLocRectangle(elts[i],xSize,ySize,zSize,x1,y1,z1,x2,y2,z2);
+      assert(z1 == z2);
       for(int x = x1; x <= x2; x++) {
         for(int y = y1; y <= y2; y++) {
-          Loc loc = Location::getLoc(x,y,xSize);
+          Loc loc = Location::getLoc(x,y,z1,xSize,ySize);
           moves.push_back(Move(loc,color));
         }
       }
@@ -202,21 +286,20 @@ void SgfNode::accumPlacements(vector<Move>& moves, int xSize, int ySize) const {
   }
 }
 
-void SgfNode::accumMoves(vector<Move>& moves, int xSize, int ySize) const {
+void SgfNode::accumMoves(vector<Move>& moves, int xSize, int ySize, int zSize) const {
   if(move.pla == C_BLACK) {
     if((move.x == COORD_MAX && move.y == COORD_MAX) ||
        (move.x == 19 && move.y == 19 && (xSize <= 19 || ySize <= 19))) //handle "tt"
       moves.push_back(Move(Board::PASS_LOC,move.pla));
     else {
-      if(move.x >= xSize || move.y >= ySize) propertyFail("Move out of bounds: " + Global::intToString(move.x) + "," + Global::intToString(move.y));
-      moves.push_back(Move(Location::getLoc(move.x,move.y,xSize),move.pla));
+      moves.push_back(Move(getLocFromSgfViewCoords(move.x,move.y,xSize,ySize,zSize),move.pla));
     }
   }
   if(props != NULL && contains(*props,"B")) {
     const vector<string>& b = map_get(*props,"B");
     size_t len = b.size();
     for(size_t i = 0; i<len; i++) {
-      Loc loc = parseSgfLocOrPass(b[i],xSize,ySize);
+      Loc loc = parseSgfLocOrPass(b[i],xSize,ySize,zSize);
       moves.push_back(Move(loc,P_BLACK));
     }
   }
@@ -225,15 +308,14 @@ void SgfNode::accumMoves(vector<Move>& moves, int xSize, int ySize) const {
        (move.x == 19 && move.y == 19 && (xSize <= 19 || ySize <= 19))) //handle "tt"
       moves.push_back(Move(Board::PASS_LOC,move.pla));
     else {
-      if(move.x >= xSize || move.y >= ySize) propertyFail("Move out of bounds: " + Global::intToString(move.x) + "," + Global::intToString(move.y));
-      moves.push_back(Move(Location::getLoc(move.x,move.y,xSize),move.pla));
+      moves.push_back(Move(getLocFromSgfViewCoords(move.x,move.y,xSize,ySize,zSize),move.pla));
     }
   }
   if(props != NULL && contains(*props,"W")) {
     const vector<string>& w = map_get(*props,"W");
     size_t len = w.size();
     for(size_t i = 0; i<len; i++) {
-      Loc loc = parseSgfLocOrPass(w[i],xSize,ySize);
+      Loc loc = parseSgfLocOrPass(w[i],xSize,ySize,zSize);
       moves.push_back(Move(loc,P_WHITE));
     }
   }
@@ -317,36 +399,56 @@ static void checkNonEmpty(const vector<SgfNode*>& nodes) {
 }
 
 XYSize Sgf::getXYSize() const {
-  checkNonEmpty(nodes);
-  int xSize = 0; //Initialize to 0 to suppress spurious clang compiler warning.
-  int ySize = 0; //Initialize to 0 to suppress spurious clang compiler warning.
-  if(!nodes[0]->hasProperty("SZ"))
-    return XYSize(19,19); //Some SGF files don't specify, in that case assume 19
+  XYZSize size = getXYZSize();
+  return XYSize(size.x,size.y);
+}
 
-  const string& s = nodes[0]->getSingleProperty("SZ");
-  if(contains(s,':')) {
+XYZSize Sgf::getXYZSize() const {
+  checkNonEmpty(nodes);
+  int xSize = 0;
+  int ySize = 0;
+  int zSize = 1;
+
+  if(nodes[0]->hasProperty(SGF_3D_SIZE_PROP)) {
+    const string& s = nodes[0]->getSingleProperty(SGF_3D_SIZE_PROP);
     vector<string> pieces = Global::split(s,':');
-    if(pieces.size() != 2)
-      propertyFail("Could not parse board size in sgf: " + s);
-    bool suc = Global::tryStringToInt(pieces[0], xSize) && Global::tryStringToInt(pieces[1], ySize);
+    if(pieces.size() != 3)
+      propertyFail("Could not parse 3D board size in sgf: " + s);
+    bool suc =
+      Global::tryStringToInt(pieces[0], xSize) &&
+      Global::tryStringToInt(pieces[1], ySize) &&
+      Global::tryStringToInt(pieces[2], zSize);
     if(!suc)
-      propertyFail("Could not parse board size in sgf: " + s);
+      propertyFail("Could not parse 3D board size in sgf: " + s);
   }
   else {
-    bool suc = Global::tryStringToInt(s, xSize);
-    if(!suc)
-      propertyFail("Could not parse board size in sgf: " + s);
-    ySize = xSize;
+    if(!nodes[0]->hasProperty("SZ"))
+      return XYZSize(19,19,1);
+    const string& s = nodes[0]->getSingleProperty("SZ");
+    if(contains(s,':')) {
+      vector<string> pieces = Global::split(s,':');
+      if(pieces.size() != 2)
+        propertyFail("Could not parse board size in sgf: " + s);
+      bool suc = Global::tryStringToInt(pieces[0], xSize) && Global::tryStringToInt(pieces[1], ySize);
+      if(!suc)
+        propertyFail("Could not parse board size in sgf: " + s);
+    }
+    else {
+      bool suc = Global::tryStringToInt(s, xSize);
+      if(!suc)
+        propertyFail("Could not parse board size in sgf: " + s);
+      ySize = xSize;
+    }
   }
 
-  if(xSize <= 1 || ySize <= 1)
-    propertyFail("Board size in sgf is <= 1: " + s);
-  if(xSize > Board::MAX_LEN || ySize > Board::MAX_LEN)
+  if(xSize <= 1 || ySize <= 1 || zSize <= 0)
+    propertyFail("Board size in sgf is invalid");
+  if(xSize > Board::MAX_LEN || ySize > Board::MAX_LEN || zSize > Board::MAX_LEN)
     propertyFail(
       "Board size in sgf is > Board::MAX_LEN = " + Global::intToString((int)Board::MAX_LEN) +
-      ", if larger sizes are desired, consider increasing and recompiling: " + s
+      ", if larger sizes are desired, consider increasing and recompiling"
     );
-  return XYSize(xSize,ySize);
+  return XYZSize(xSize,ySize,zSize);
 }
 
 bool Sgf::hasRules() const {
@@ -370,11 +472,12 @@ Color Sgf::getFirstPlayerColor() const {
   Color plColor = nodes[0]->getPLSpecifiedColor();
   if(plColor == C_BLACK || plColor == C_WHITE)
     return plColor;
-  XYSize size = getXYSize();
+  XYZSize size = getXYZSize();
   int xSize = size.x;
   int ySize = size.y;
+  int zSize = size.z;
   vector<Move> moves;
-  getMoves(moves,xSize,ySize);
+  getMoves(moves,xSize,ySize,zSize);
   if(moves.size() > 0)
     return moves[0].pla;
   return C_BLACK;
@@ -491,24 +594,32 @@ string Sgf::getPlayerName(Player pla) const {
   return "";
 }
 
-void Sgf::getPlacements(vector<Move>& moves, int xSize, int ySize) const {
+void Sgf::getPlacements(vector<Move>& moves, int xSize, int ySize, int zSize) const {
   moves.clear();
   checkNonEmpty(nodes);
-  nodes[0]->accumPlacements(moves,xSize,ySize);
+  nodes[0]->accumPlacements(moves,xSize,ySize,zSize);
+}
+
+void Sgf::getPlacements(vector<Move>& moves, int xSize, int ySize) const {
+  getPlacements(moves,xSize,ySize,1);
 }
 
 //Gets the longest child if the sgf has branches
-void Sgf::getMoves(vector<Move>& moves, int xSize, int ySize) const {
+void Sgf::getMoves(vector<Move>& moves, int xSize, int ySize, int zSize) const {
   moves.clear();
-  getMovesHelper(moves,xSize,ySize);
+  getMovesHelper(moves,xSize,ySize,zSize);
 }
 
-void Sgf::getMovesHelper(vector<Move>& moves, int xSize, int ySize) const {
+void Sgf::getMoves(vector<Move>& moves, int xSize, int ySize) const {
+  getMoves(moves,xSize,ySize,1);
+}
+
+void Sgf::getMovesHelper(vector<Move>& moves, int xSize, int ySize, int zSize) const {
   checkNonEmpty(nodes);
   for(int i = 0; i<nodes.size(); i++) {
     if(i > 0 && nodes[i]->hasPlacements())
       propertyFail("Found stone placements after the root, game records that are not simply ordinary play not currently supported");
-    nodes[i]->accumMoves(moves,xSize,ySize);
+    nodes[i]->accumMoves(moves,xSize,ySize,zSize);
   }
 
   int64_t maxChildDepth = 0;
@@ -522,7 +633,7 @@ void Sgf::getMovesHelper(vector<Move>& moves, int xSize, int ySize) const {
   }
 
   if(maxChild != NULL) {
-    maxChild->getMovesHelper(moves,xSize,ySize);
+    maxChild->getMovesHelper(moves,xSize,ySize,zSize);
   }
 }
 
@@ -552,11 +663,12 @@ void Sgf::iterAllUniquePositions(
   Rand* rand,
   std::function<void(PositionSample&,const BoardHistory&,const std::string&)> f
 ) const {
-  XYSize size = getXYSize();
+  XYZSize size = getXYZSize();
   int xSize = size.x;
   int ySize = size.y;
+  int zSize = size.z;
 
-  Board board(xSize,ySize);
+  Board board(xSize,ySize,zSize);
   Player nextPla = nodes.size() > 0 ? nodes[0]->getPLSpecifiedColor() : C_EMPTY;
   if(nextPla == C_EMPTY)
     nextPla = C_BLACK;
@@ -565,12 +677,12 @@ void Sgf::iterAllUniquePositions(
 
   PositionSample sampleBuf;
   std::vector<std::pair<int64_t,int64_t>> variationTraceNodesBranch;
-  iterAllUniquePositionsHelper(board,hist,nextPla,rules,xSize,ySize,sampleBuf,0,uniqueHashes,hashComments,hashParent, allowGameOver,rand,variationTraceNodesBranch,f);
+  iterAllUniquePositionsHelper(board,hist,nextPla,rules,xSize,ySize,zSize,sampleBuf,0,uniqueHashes,hashComments,hashParent, allowGameOver,rand,variationTraceNodesBranch,f);
 }
 
 void Sgf::iterAllUniquePositionsHelper(
   Board& board, BoardHistory& hist, Player nextPla,
-  const Rules& rules, int xSize, int ySize,
+  const Rules& rules, int xSize, int ySize, int zSize,
   PositionSample& sampleBuf,
   int initialTurnNumber,
   std::set<Hash128>& uniqueHashes,
@@ -591,7 +703,7 @@ void Sgf::iterAllUniquePositionsHelper(
     //Handle placements
     if(nodes[i]->hasPlacements()) {
       buf.clear();
-      nodes[i]->accumPlacements(buf,xSize,ySize);
+      nodes[i]->accumPlacements(buf,xSize,ySize,zSize);
       if(buf.size() > 0) {
         int netStonesAdded = 0;
         for(size_t j = 0; j<buf.size(); j++) {
@@ -633,7 +745,7 @@ void Sgf::iterAllUniquePositionsHelper(
 
     //Handle actual moves
     buf.clear();
-    nodes[i]->accumMoves(buf,xSize,ySize);
+    nodes[i]->accumMoves(buf,xSize,ySize,zSize);
 
     for(size_t j = 0; j<buf.size(); j++) {
       bool suc = hist.makeBoardMoveTolerant(board,buf[j].loc,buf[j].pla);
@@ -678,7 +790,7 @@ void Sgf::iterAllUniquePositionsHelper(
     std::unique_ptr<BoardHistory> histCopy = std::make_unique<BoardHistory>(hist);
     variationTraceNodesBranch.push_back(std::make_pair((int64_t)nodes.size(),(int64_t)i));
     children[i]->iterAllUniquePositionsHelper(
-      *copy,*histCopy,nextPla,rules,xSize,ySize,sampleBuf,initialTurnNumber,uniqueHashes,hashComments,hashParent,allowGameOver,rand,variationTraceNodesBranch,f
+      *copy,*histCopy,nextPla,rules,xSize,ySize,zSize,sampleBuf,initialTurnNumber,uniqueHashes,hashComments,hashParent,allowGameOver,rand,variationTraceNodesBranch,f
     );
     assert(variationTraceNodesBranch.size() > 0);
     variationTraceNodesBranch.erase(variationTraceNodesBranch.begin()+(variationTraceNodesBranch.size()-1));
@@ -1026,17 +1138,17 @@ static bool maybeParseProperty(SgfNode* node, const string& str, int& pos) {
       break;
     consume(str,pos,newPos);
 
-    if(node->move.pla == C_EMPTY && key == "B") {
-      node->move = parseSgfLocOrPassNoSize(parseTextValue(str,pos),P_BLACK);
+    string value = parseTextValue(str,pos);
+    if(node->move.pla == C_EMPTY && key == "B" && value.length() <= 2) {
+      node->move = parseSgfLocOrPassNoSize(value,P_BLACK);
     }
-    else if(node->move.pla == C_EMPTY && key == "W") {
-      node->move = parseSgfLocOrPassNoSize(parseTextValue(str,pos),P_WHITE);
+    else if(node->move.pla == C_EMPTY && key == "W" && value.length() <= 2) {
+      node->move = parseSgfLocOrPassNoSize(value,P_WHITE);
     }
     else {
       if(node->props == NULL)
         node->props = new map<string,vector<string>>();
       vector<string>& contents = (*(node->props))[key];
-      string value = parseTextValue(str,pos);
       contents.push_back(value);
     }
     if(peekSgfChar(str,pos,newPos) != ']')
@@ -1207,16 +1319,18 @@ CompactSgf::CompactSgf(const Sgf* sgf)
    moves(),
    xSize(),
    ySize(),
+   zSize(),
    depth()
 {
-  XYSize size = sgf->getXYSize();
+  XYZSize size = sgf->getXYZSize();
   xSize = size.x;
   ySize = size.y;
+  zSize = size.z;
   depth = sgf->depth();
   hash = sgf->hash;
 
-  sgf->getPlacements(placements, xSize, ySize);
-  sgf->getMoves(moves, xSize, ySize);
+  sgf->getPlacements(placements, xSize, ySize, zSize);
+  sgf->getMoves(moves, xSize, ySize, zSize);
 
   checkNonEmpty(sgf->nodes);
   rootNode = *(sgf->nodes[0]);
@@ -1231,16 +1345,18 @@ CompactSgf::CompactSgf(Sgf&& sgf)
    moves(),
    xSize(),
    ySize(),
+   zSize(),
    depth()
 {
-  XYSize size = sgf.getXYSize();
+  XYZSize size = sgf.getXYZSize();
   xSize = size.x;
   ySize = size.y;
+  zSize = size.z;
   depth = sgf.depth();
   hash = sgf.hash;
 
-  sgf.getPlacements(placements, xSize, ySize);
-  sgf.getMoves(moves, xSize, ySize);
+  sgf.getPlacements(placements, xSize, ySize, zSize);
+  sgf.getMoves(moves, xSize, ySize, zSize);
 
   fileName = std::move(sgf.fileName);
   checkNonEmpty(sgf.nodes);
@@ -1355,7 +1471,7 @@ void CompactSgf::setupInitialBoardAndHist(const Rules& initialRules, Board& boar
       nextPla = P_BLACK;
   }
 
-  board = Board(xSize,ySize);
+  board = Board(xSize,ySize,zSize);
   bool suc = board.setStones(placements);
   if(!suc)
     throw StringError("setupInitialBoardAndHist: initial board position contains invalid stones or zero-liberty stones");
@@ -1445,11 +1561,16 @@ void WriteSgf::writeSgf(
 
   int xSize = initialBoard.x_size;
   int ySize = initialBoard.y_size;
+  int zSize = initialBoard.z_size;
+  int viewXSize = getSgfViewWidth(xSize,ySize,zSize);
+  int viewYSize = getSgfViewHeight(xSize,ySize,zSize);
   out << "(;FF[4]GM[1]";
-  if(xSize == ySize)
-    out << "SZ[" << xSize << "]";
+  if(viewXSize == viewYSize)
+    out << "SZ[" << viewXSize << "]";
   else
-    out << "SZ[" << xSize << ":" << ySize << "]";
+    out << "SZ[" << viewXSize << ":" << viewYSize << "]";
+  if(zSize > 1)
+    out << SGF_3D_SIZE_PROP << "[" << xSize << ":" << ySize << ":" << zSize << "]";
   out << "PB[" << bName << "]";
   out << "PW[" << wName << "]";
 
@@ -1457,49 +1578,55 @@ void WriteSgf::writeSgf(
   printGameResult(out,endHist);
 
   bool hasAB = false;
-  for(int y = 0; y<ySize; y++) {
-    for(int x = 0; x<xSize; x++) {
-      Loc loc = Location::getLoc(x,y,xSize);
-      if(initialBoard.colors[loc] == C_BLACK) {
-        if(!hasAB) {
-          out << "AB";
-          hasAB = true;
+  for(int z = 0; z<zSize; z++) {
+    for(int y = 0; y<ySize; y++) {
+      for(int x = 0; x<xSize; x++) {
+        Loc loc = Location::getLoc(x,y,z,xSize,ySize);
+        if(initialBoard.colors[loc] == C_BLACK) {
+          if(!hasAB) {
+            out << "AB";
+            hasAB = true;
+          }
+          out << "[";
+          writeSgfLoc(out,loc,xSize,ySize,zSize);
+          out << "]";
         }
-        out << "[";
-        writeSgfLoc(out,loc,xSize,ySize);
-        out << "]";
       }
     }
   }
 
   bool hasAW = false;
-  for(int y = 0; y<ySize; y++) {
-    for(int x = 0; x<xSize; x++) {
-      Loc loc = Location::getLoc(x,y,xSize);
-      if(initialBoard.colors[loc] == C_WHITE) {
-        if(!hasAW) {
-          out << "AW";
-          hasAW = true;
+  for(int z = 0; z<zSize; z++) {
+    for(int y = 0; y<ySize; y++) {
+      for(int x = 0; x<xSize; x++) {
+        Loc loc = Location::getLoc(x,y,z,xSize,ySize);
+        if(initialBoard.colors[loc] == C_WHITE) {
+          if(!hasAW) {
+            out << "AW";
+            hasAW = true;
+          }
+          out << "[";
+          writeSgfLoc(out,loc,xSize,ySize,zSize);
+          out << "]";
         }
-        out << "[";
-        writeSgfLoc(out,loc,xSize,ySize);
-        out << "]";
       }
     }
   }
 
   bool hasAE = false;
-  for(int y = 0; y < ySize; y++) {
-    for(int x = 0; x < xSize; x++) {
-      Loc loc = Location::getLoc(x, y, xSize);
-      if(initialBoard.colors[loc] == C_BAN) {
-        if(!hasAE) {
-          out << "AE";
-          hasAE = true;
+  for(int z = 0; z < zSize; z++) {
+    for(int y = 0; y < ySize; y++) {
+      for(int x = 0; x < xSize; x++) {
+        Loc loc = Location::getLoc(x, y, z, xSize, ySize);
+        if(initialBoard.colors[loc] == C_BAN) {
+          if(!hasAE) {
+            out << "AE";
+            hasAE = true;
+          }
+          out << "[";
+          writeSgfLoc(out, loc, xSize, ySize, zSize);
+          out << "]";
         }
-        out << "[";
-        writeSgfLoc(out, loc, xSize, ySize);
-        out << "]";
       }
     }
   }
@@ -1559,7 +1686,7 @@ void WriteSgf::writeSgf(
       else
         out << "W[";
 
-      writeSgfLoc(out,loc,xSize,ySize);
+      writeSgfLoc(out,loc,xSize,ySize,zSize);
 
       out << "]";
     }
