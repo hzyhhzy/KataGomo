@@ -1820,7 +1820,7 @@ void NeuralNet::getOutput(
     assert(inputBuffers->singlePolicyResultElts == gpuHandle->getBufferRowElts("OutputPolicy"));
     assert(inputBuffers->singleValueResultElts == gpuHandle->getBufferRowElts("OutputValue"));
     assert(inputBuffers->singleScoreValueResultElts == gpuHandle->getBufferRowElts("OutputScoreValue"));
-    assert(inputBuffers->singleOwnershipResultElts == gpuHandle->getBufferRowElts("OutputOwnership"));
+    //assert(inputBuffers->singleOwnershipResultElts == gpuHandle->getBufferRowElts("OutputOwnership"));
 
     assert(inputBuffers->maskInputBufferBytes == gpuHandle->getBufferBytes("InputMask"));
     assert(inputBuffers->featureInputBufferBytes == gpuHandle->getBufferBytes("InputFeature"));
@@ -1828,7 +1828,7 @@ void NeuralNet::getOutput(
     assert(inputBuffers->policyResultBufferBytes == gpuHandle->getBufferBytes("OutputPolicy"));
     assert(inputBuffers->valueResultBufferBytes == gpuHandle->getBufferBytes("OutputValue"));
     assert(inputBuffers->scoreValueResultBufferBytes == gpuHandle->getBufferBytes("OutputScoreValue"));
-    assert(inputBuffers->ownershipResultBufferBytes == gpuHandle->getBufferBytes("OutputOwnership"));
+    //assert(inputBuffers->ownershipResultBufferBytes == gpuHandle->getBufferBytes("OutputOwnership"));
 
     // Transfers from host memory to device memory are asynchronous with respect to the host
     CUDA_ERR(
@@ -1870,7 +1870,7 @@ void NeuralNet::getOutput(
       CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_valueResults.get(), gpuHandle->getBuffer("out_value"), inputBuffers->singleout_valueBytes * batchSize, cudaMemcpyDeviceToHost));
       CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_miscvalueResults.get(), gpuHandle->getBuffer("out_miscvalue"), inputBuffers->singleout_miscvalueBytes * batchSize, cudaMemcpyDeviceToHost));
       CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_moremiscvalueResults.get(), gpuHandle->getBuffer("out_moremiscvalue"), inputBuffers->singleout_moremiscvalueBytes * batchSize, cudaMemcpyDeviceToHost));
-      CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_ownershipResults.get(), gpuHandle->getBuffer("out_ownership"), inputBuffers->singleout_ownershipBytes * batchSize, cudaMemcpyDeviceToHost));
+      //CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_ownershipResults.get(), gpuHandle->getBuffer("out_ownership"), inputBuffers->singleout_ownershipBytes * batchSize, cudaMemcpyDeviceToHost));
   } else {
     CUDA_ERR(
       "getOutput",

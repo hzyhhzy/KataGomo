@@ -92,8 +92,8 @@ static LineInfo getLineInfo(const Board& board, Loc loc, Player pla, int dx, int
 
 static bool isWinningLine(const LineInfo& info, const Rules& rules) {
   if(rules.basicRule == Rules::BASICRULE_STANDARD)
-    return info.total == 5;
-  return info.total >= 5;
+    return info.total == 6;
+  return info.total >= 6;
 }
 
 static bool isWinningMove(const Board& board, const Rules& rules, Player pla, Loc loc) {
@@ -113,7 +113,7 @@ static bool isLiveFourMove(const Board& board, const Rules& rules, Player pla, L
     return false;
   for(const auto& direction: DIRECTIONS) {
     LineInfo info = getLineInfo(board, loc, pla, direction[0], direction[1], direction[2]);
-    if(info.total == 4 && info.openNeg && info.openPos)
+    if(info.total == 5 && info.openNeg && info.openPos)
       return true;
     if(rules.basicRule == Rules::BASICRULE_STANDARD)
       continue;
