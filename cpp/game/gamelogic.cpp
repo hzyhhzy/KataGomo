@@ -42,6 +42,7 @@ struct LineInfo {
 
 static void countDirection(
   const Board& board,
+  Loc loc,
   int x,
   int y,
   int z,
@@ -49,40 +50,39 @@ static void countDirection(
   int dx,
   int dy,
   int dz,
-  int sign,
   int& count,
   bool& openEnd
 ) {
+  int xyStride = board.x_size * board.y_size;
+  int locDelta = dx + dy * board.x_size + dz * xyStride;
   count = 0;
-  int x1 = x + dx * sign;
-  int y1 = y + dy * sign;
-  int z1 = z + dz * sign;
+  int x1 = x + dx;
+  int y1 = y + dy;
+  int z1 = z + dz;
+  Loc loc1 = loc + locDelta;
   while(x1 >= 0 && x1 < board.x_size && y1 >= 0 && y1 < board.y_size && z1 >= 0 && z1 < board.z_size) {
-    Loc loc1 = Location::getLoc(x1,y1,z1,board.x_size,board.y_size);
     if(board.colors[loc1] != pla)
       break;
     count += 1;
-    x1 += dx * sign;
-    y1 += dy * sign;
-    z1 += dz * sign;
+    x1 += dx;
+    y1 += dy;
+    z1 += dz;
+    loc1 += locDelta;
   }
   openEnd =
     x1 >= 0 && x1 < board.x_size &&
     y1 >= 0 && y1 < board.y_size &&
     z1 >= 0 && z1 < board.z_size &&
-    board.colors[Location::getLoc(x1,y1,z1,board.x_size,board.y_size)] == C_EMPTY;
+    board.colors[loc1] == C_EMPTY;
 }
 
-static LineInfo getLineInfo(const Board& board, Loc loc, Player pla, int dx, int dy, int dz) {
-  int x = Location::getX(loc, board.x_size);
-  int y = Location::getY(loc, board.x_size, board.y_size);
-  int z = Location::getZ(loc, board.x_size, board.y_size);
+static LineInfo getLineInfo(const Board& board, Loc loc, int x, int y, int z, Player pla, int dx, int dy, int dz) {
   int negCount;
   int posCount;
   bool openNeg;
   bool openPos;
-  countDirection(board, x, y, z, pla, dx, dy, dz, -1, negCount, openNeg);
-  countDirection(board, x, y, z, pla, dx, dy, dz, 1, posCount, openPos);
+  countDirection(board, loc, x, y, z, pla, -dx, -dy, -dz, negCount, openNeg);
+  countDirection(board, loc, x, y, z, pla, dx, dy, dz, posCount, openPos);
   LineInfo info;
   info.total = negCount + posCount + 1;
   info.openNeg = openNeg;
@@ -96,29 +96,44 @@ static bool isWinningLine(const LineInfo& info, const Rules& rules) {
   return info.total >= 6;
 }
 
-static bool isWinningMove(const Board& board, const Rules& rules, Player pla, Loc loc) {
+struct MovePatternInfo {
+  bool isWinning = false;
+  bool isLiveFour = false;
+};
+
+static MovePatternInfo analyzeMovePatterns(const Board& board, const Rules& rules, Player pla, Loc loc, int x, int y, int z) {
+  MovePatternInfo result;
   if(loc == Board::PASS_LOC || !board.isOnBoard(loc))
-    return false;
+    return result;
   if(board.colors[loc] != C_EMPTY && board.colors[loc] != pla)
-    return false;
+    return result;
+
   for(const auto& direction: DIRECTIONS) {
-    if(isWinningLine(getLineInfo(board, loc, pla, direction[0], direction[1], direction[2]), rules))
-      return true;
+    LineInfo info = getLineInfo(board, loc, x, y, z, pla, direction[0], direction[1], direction[2]);
+    if(!result.isWinning && isWinningLine(info, rules))
+      result.isWinning = true;
+    if(!result.isLiveFour && info.total == 5 && info.openNeg && info.openPos)
+      result.isLiveFour = true;
+    if(result.isWinning && result.isLiveFour)
+      break;
   }
-  return false;
+  return result;
+}
+
+static bool isWinningMove(const Board& board, const Rules& rules, Player pla, Loc loc) {
+  int x = Location::getX(loc, board.x_size);
+  int y = Location::getY(loc, board.x_size, board.y_size);
+  int z = Location::getZ(loc, board.x_size, board.y_size);
+  return analyzeMovePatterns(board, rules, pla, loc, x, y, z).isWinning;
 }
 
 static bool isLiveFourMove(const Board& board, const Rules& rules, Player pla, Loc loc) {
   if(loc == Board::PASS_LOC || !board.isOnBoard(loc) || board.colors[loc] != C_EMPTY)
     return false;
-  for(const auto& direction: DIRECTIONS) {
-    LineInfo info = getLineInfo(board, loc, pla, direction[0], direction[1], direction[2]);
-    if(info.total == 5 && info.openNeg && info.openPos)
-      return true;
-    if(rules.basicRule == Rules::BASICRULE_STANDARD)
-      continue;
-  }
-  return false;
+  int x = Location::getX(loc, board.x_size);
+  int y = Location::getY(loc, board.x_size, board.y_size);
+  int z = Location::getZ(loc, board.x_size, board.y_size);
+  return analyzeMovePatterns(board, rules, pla, loc, x, y, z).isLiveFour;
 }
 
 }
@@ -228,11 +243,17 @@ void GameLogic::ResultsBeforeNN::init(const Board& board, const BoardHistory& hi
     if(board.colors[loc] != C_EMPTY)
       continue;
 
-    if(isWinningMove(board, hist.rules, nextPlayer, loc))
+    int x = Location::getX((Loc)loc, board.x_size);
+    int y = Location::getY((Loc)loc, board.x_size, board.y_size);
+    int z = Location::getZ((Loc)loc, board.x_size, board.y_size);
+    MovePatternInfo myPatterns = analyzeMovePatterns(board, hist.rules, nextPlayer, (Loc)loc, x, y, z);
+    if(myPatterns.isWinning)
       winningMoves.push_back((Loc)loc);
-    if(isWinningMove(board, hist.rules, opp, loc))
+
+    MovePatternInfo oppPatterns = analyzeMovePatterns(board, hist.rules, opp, (Loc)loc, x, y, z);
+    if(oppPatterns.isWinning)
       blockFourMoves.push_back((Loc)loc);
-    if(isLiveFourMove(board, hist.rules, nextPlayer, loc))
+    if(myPatterns.isLiveFour)
       liveFourMoves.push_back((Loc)loc);
   }
 
