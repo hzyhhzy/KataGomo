@@ -779,6 +779,10 @@ void NNInputs::fillRowV7(
     {}
   else if(hist.rules.basicRule == Rules::BASICRULE_STANDARD)
     rowGlobal[3] = 1.0f;
+  else if(hist.rules.basicRule == Rules::BASICRULE_CON7)
+    rowGlobal[11] = 1.0f;
+  else if(hist.rules.basicRule == Rules::BASICRULE_DCON5)
+    rowGlobal[12] = 1.0f;
   else
     ASSERT_UNREACHABLE;
 

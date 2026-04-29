@@ -36,7 +36,7 @@ Rules Rules::getTrompTaylorish() {
 }
 
 set<string> Rules::basicRuleStrings() {
-  return {"FREESTYLE", "STANDARD"};
+  return {"FREESTYLE", "STANDARD", "CON7", "DCON5"};
 }
 
 int Rules::parseBasicRule(const string& s) {
@@ -45,6 +45,10 @@ int Rules::parseBasicRule(const string& s) {
     return BASICRULE_FREESTYLE;
   if(value == "STANDARD")
     return BASICRULE_STANDARD;
+  if(value == "CON7")
+    return BASICRULE_CON7;
+  if(value == "DCON5")
+    return BASICRULE_DCON5;
   throw IOError("Rules::parseBasicRule: Invalid basic rule: " + s);
 }
 
@@ -53,6 +57,10 @@ string Rules::writeBasicRule(int basicRule) {
     return "FREESTYLE";
   if(basicRule == BASICRULE_STANDARD)
     return "STANDARD";
+  if(basicRule == BASICRULE_CON7)
+    return "CON7";
+  if(basicRule == BASICRULE_DCON5)
+    return "DCON5";
   return "UNKNOWN";
 }
 ostream& operator<<(ostream& out, const Rules& rules) {
@@ -109,6 +117,14 @@ static Rules parseRulesHelper(const string& sOrig) {
   }
   else if(lowercased == "standard") {
     rules.basicRule = Rules::BASICRULE_STANDARD;
+    rules.maxMoves = 0;
+  }
+  else if(lowercased == "con7") {
+    rules.basicRule = Rules::BASICRULE_CON7;
+    rules.maxMoves = 0;
+  }
+  else if(lowercased == "dcon5") {
+    rules.basicRule = Rules::BASICRULE_DCON5;
     rules.maxMoves = 0;
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
@@ -191,6 +207,12 @@ static Rules parseRulesHelper(const string& sOrig) {
 string Rules::toStringMaybeNice() const {
   if(*this == parseRulesHelper("freestyle"))
     return "freestyle";
+  if(*this == parseRulesHelper("standard"))
+    return "standard";
+  if(*this == parseRulesHelper("con7"))
+    return "con7";
+  if(*this == parseRulesHelper("dcon5"))
+    return "dcon5";
   return toString();
 }
 
@@ -210,9 +232,11 @@ bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
 
 
 
-const Hash128 Rules::ZOBRIST_BASIC_RULE_HASH[2] = {
+const Hash128 Rules::ZOBRIST_BASIC_RULE_HASH[Rules::NUM_BASIC_RULES] = {
   Hash128(0x72eeccc72c82a5e7ULL, 0x0d1265e413623e2bULL),
   Hash128(0x125bfe48a41042d5ULL, 0x061866b5f2b98a79ULL),
+  Hash128(0xad2e6415c78086c7ULL, 0xe2d49ea6690a385cULL),
+  Hash128(0xdcdaf38baaabd7d9ULL, 0x1197673d4b7593ffULL),
 };
 const Hash128 Rules::ZOBRIST_MAXMOVES_HASH_BASE =
   Hash128(0x8aba00580c378fe8ULL, 0x7f6c1210e74fb440ULL);

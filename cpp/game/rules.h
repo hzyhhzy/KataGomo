@@ -7,9 +7,13 @@
 #include "../external/nlohmann_json/json.hpp"
 
 struct Rules {
-  static const int BASICRULE_FREESTYLE = 0;
-  static const int BASICRULE_STANDARD = 1;
+  static const int BASICRULE_FREESTYLE = 0;  // connect >= 6 to win
+  static const int BASICRULE_STANDARD = 1;  // connect == 6 to win
+  static const int BASICRULE_CON7 = 2;  // connect >= 7 to win
+  static const int BASICRULE_DCON5 = 3;  // axial only, connect >= 5 to win
+  static const int NUM_BASIC_RULES = 4;
   int basicRule;
+
 
   int maxMoves;
 
@@ -42,7 +46,7 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
 
-  static const Hash128 ZOBRIST_BASIC_RULE_HASH[2];
+  static const Hash128 ZOBRIST_BASIC_RULE_HASH[NUM_BASIC_RULES];
   static const Hash128 ZOBRIST_MAXMOVES_HASH_BASE;
 
 };

@@ -34,6 +34,12 @@ static const int DIRECTIONS[][3] = {
   {1,-1,-1},
 };
 
+static const int AXIAL_DIRECTIONS[][3] = {
+  {1,0,0},
+  {0,1,0},
+  {0,0,1},
+};
+
 struct LineInfo {
   int total;
   bool openNeg;
@@ -90,10 +96,23 @@ static LineInfo getLineInfo(const Board& board, Loc loc, int x, int y, int z, Pl
   return info;
 }
 
+static int getWinningLineLength(const Rules& rules) {
+  if(rules.basicRule == Rules::BASICRULE_CON7)
+    return 7;
+  if(rules.basicRule == Rules::BASICRULE_DCON5)
+    return 5;
+  return 6;
+}
+
+static bool usesAxialDirectionsOnly(const Rules& rules) {
+  return rules.basicRule == Rules::BASICRULE_DCON5;
+}
+
 static bool isWinningLine(const LineInfo& info, const Rules& rules) {
+  int winningLineLength = getWinningLineLength(rules);
   if(rules.basicRule == Rules::BASICRULE_STANDARD)
-    return info.total == 6;
-  return info.total >= 6;
+    return info.total == winningLineLength;
+  return info.total >= winningLineLength;
 }
 
 struct MovePatternInfo {
@@ -108,11 +127,15 @@ static MovePatternInfo analyzeMovePatterns(const Board& board, const Rules& rule
   if(board.colors[loc] != C_EMPTY && board.colors[loc] != pla)
     return result;
 
-  for(const auto& direction: DIRECTIONS) {
+  const int (*directions)[3] = usesAxialDirectionsOnly(rules) ? AXIAL_DIRECTIONS : DIRECTIONS;
+  int numDirections = usesAxialDirectionsOnly(rules) ? 3 : 13;
+  int liveFourLength = getWinningLineLength(rules) - 1;
+  for(int i = 0; i < numDirections; i++) {
+    const auto& direction = directions[i];
     LineInfo info = getLineInfo(board, loc, x, y, z, pla, direction[0], direction[1], direction[2]);
     if(!result.isWinning && isWinningLine(info, rules))
       result.isWinning = true;
-    if(!result.isLiveFour && info.total == 5 && info.openNeg && info.openPos)
+    if(!result.isLiveFour && info.total == liveFourLength && info.openNeg && info.openPos)
       result.isLiveFour = true;
     if(result.isWinning && result.isLiveFour)
       break;
