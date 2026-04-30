@@ -433,12 +433,8 @@ vector<SearchParams> Setup::loadParams(
     else if(cfg.contains("lagBuffer"))   params.lagBuffer = cfg.getDouble("lagBuffer",        0.0, 3600.0);
     else                                 params.lagBuffer = 0.0;
 
-#if defined(USE_ONNX_CPU_BACKEND)
-    params.numThreads = 1;  // use "backendNumThreads" instead
-#else
     if(cfg.contains("numSearchThreads"+idxStr)) params.numThreads = cfg.getInt("numSearchThreads"+idxStr, 1, 4096);
     else                                        params.numThreads = cfg.getInt("numSearchThreads",        1, 4096);
-#endif
 
     if(cfg.contains("winLossUtilityFactor"+idxStr)) params.winLossUtilityFactor = cfg.getDouble("winLossUtilityFactor"+idxStr, 0.0, 1.0);
     else if(cfg.contains("winLossUtilityFactor"))   params.winLossUtilityFactor = cfg.getDouble("winLossUtilityFactor",        0.0, 1.0);
