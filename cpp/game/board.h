@@ -273,6 +273,8 @@ struct Board
   static std::string toStringSimple(const Board& board, char lineDelimiter);
   static nlohmann::json toJson(const Board& board);
   static Board ofJson(const nlohmann::json& data);
+  static bool isBoardShapeCompatible(int shape, int xSize, int ySize, std::string& error);
+  static bool applyBoardShape(Board& board, int shape, std::string& error);
 
   //Data--------------------------------------------
 

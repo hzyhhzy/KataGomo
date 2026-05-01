@@ -32,6 +32,7 @@ static const vector<string> knownCommands = {
   //rectangular_boardsize is an alias for boardsize, intended to make it more evident that we have such support
   "boardsize",
   "rectangular_boardsize",
+  "shape",
 
   "clear_board",
   "set_position",
@@ -198,6 +199,7 @@ static bool noWhiteStonesOnBoard(const Board& board) {
   return true;
 }
 
+
 static void updateDynamicPDAHelper(
   const Board& board, const BoardHistory& hist,
   const double dynamicPlayoutDoublingAdvantageCapPerOppLead,
@@ -357,6 +359,7 @@ struct GTPEngine {
   vector<double> recentWinLossValues;
   double lastSearchFactor;
   double desiredDynamicPDAForWhite;
+  int boardShape;
   std::unique_ptr<PatternBonusTable> patternBonusTable;
 
   double delayMoveScale;
@@ -404,6 +407,7 @@ struct GTPEngine {
      recentWinLossValues(),
      lastSearchFactor(1.0),
      desiredDynamicPDAForWhite(0.0),
+     boardShape(4),
      patternBonusTable(std::move(pbTable)),
      delayMoveScale(delayScale),
      delayMoveMax(delayMax),
@@ -437,7 +441,7 @@ struct GTPEngine {
   }
 
   //Specify -1 for the sizes for a default
-  void setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr) {
+  bool setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr, string& error) {
     bool wasDefault = false;
     if(boardXSize == -1 || boardYSize == -1) {
       boardXSize = Board::DEFAULT_LEN;
@@ -519,12 +523,15 @@ struct GTPEngine {
       bot->setCopyOfExternalPatternBonusTable(patternBonusTable);
 
       Board board(boardXSize,boardYSize);
+      if(!Board::applyBoardShape(board,boardShape,error))
+        return false;
       Player pla = P_BLACK;
       BoardHistory hist(board,pla,currentRules);
       vector<Move> newMoveHistory;
       setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
       clearStatsForNewGame();
     }
+    return true;
   }
 
   void setPatternBonusTable(std::unique_ptr<PatternBonusTable>&& pbTable) {
@@ -549,6 +556,10 @@ struct GTPEngine {
     int newXSize = bot->getRootBoard().x_size;
     int newYSize = bot->getRootBoard().y_size;
     Board board(newXSize,newYSize);
+    string shapeError;
+    bool shapeSuc = Board::applyBoardShape(board,boardShape,shapeError);
+    assert(shapeSuc);
+    (void)shapeSuc;
     Player pla = P_BLACK;
     BoardHistory hist(board,pla,currentRules);
     vector<Move> newMoveHistory;
@@ -561,6 +572,9 @@ struct GTPEngine {
     int newXSize = bot->getRootBoard().x_size;
     int newYSize = bot->getRootBoard().y_size;
     Board board(newXSize,newYSize);
+    string shapeError;
+    if(!Board::applyBoardShape(board,boardShape,shapeError))
+      return false;
     bool suc = board.setStonesFailIfNoLibs(initialStones);
     if(!suc)
       return false;
@@ -1226,6 +1240,12 @@ struct GTPEngine {
     int xSize = bot->getRootBoard().x_size;
     int ySize = bot->getRootBoard().y_size;
     Board board(xSize,ySize);
+    string shapeError;
+    if(!Board::applyBoardShape(board,boardShape,shapeError)) {
+      responseIsError = true;
+      response = shapeError;
+      return;
+    }
     try {
       PlayUtils::placeFixedHandicap(board,n);
     }
@@ -1248,7 +1268,7 @@ struct GTPEngine {
     for(int y = 0; y<board.y_size; y++) {
       for(int x = 0; x<board.x_size; x++) {
         Loc loc = Location::getLoc(x,y,board.x_size);
-        if(board.colors[loc] != C_EMPTY) {
+        if(board.colors[loc] == C_BLACK || board.colors[loc] == C_WHITE) {
           response += " " + Location::toString(loc,board);
         }
       }
@@ -1276,6 +1296,12 @@ struct GTPEngine {
     assert(bot->getRootHist().rules == currentRules);
 
     Board board(xSize,ySize);
+    string shapeError;
+    if(!Board::applyBoardShape(board,boardShape,shapeError)) {
+      responseIsError = true;
+      response = shapeError;
+      return;
+    }
     Player pla = P_BLACK;
     BoardHistory hist(board,pla,currentRules);
     double extraBlackTemperature = 0.25;
@@ -1289,7 +1315,7 @@ struct GTPEngine {
     for(int y = 0; y<board.y_size; y++) {
       for(int x = 0; x<board.x_size; x++) {
         Loc loc = Location::getLoc(x,y,board.x_size);
-        if(board.colors[loc] != C_EMPTY) {
+        if(board.colors[loc] == C_BLACK || board.colors[loc] == C_WHITE) {
           response += " " + Location::toString(loc,board);
         }
       }
@@ -1580,6 +1606,32 @@ struct GTPEngine {
       if(!isGenmoveParams)
         bot->setParams(analysisParams);
     }
+  }
+
+  bool setBoardShape(int newBoardShape, string& error) {
+    if(newBoardShape != 3 && newBoardShape != 4 && newBoardShape != 6) {
+      error = "shape must be one of 3, 4, or 6";
+      return false;
+    }
+    if(bot == NULL) {
+      error = "bot not initialized";
+      return false;
+    }
+    int xSize = bot->getRootBoard().x_size;
+    int ySize = bot->getRootBoard().y_size;
+    if(!Board::isBoardShapeCompatible(newBoardShape,xSize,ySize,error))
+      return false;
+    boardShape = newBoardShape;
+    clearBoard();
+    return true;
+  }
+
+  bool isCurrentShapeCompatibleWithSize(int xSize, int ySize, string& error) const {
+    return Board::isBoardShapeCompatible(boardShape,xSize,ySize,error);
+  }
+
+  bool applyCurrentShape(Board& board, string& error) const {
+    return Board::applyBoardShape(board,boardShape,error);
   }
 };
 
@@ -1937,7 +1989,12 @@ int MainCmds::gtp(const vector<string>& args) {
     perspective,analysisPVLen,
     std::move(patternBonusTable)
   );
-  engine->setOrResetBoardSize(cfg,logger,seedRand,defaultBoardXSize,defaultBoardYSize,logger.isLoggingToStderr());
+  {
+    string boardError;
+    bool suc = engine->setOrResetBoardSize(cfg,logger,seedRand,defaultBoardXSize,defaultBoardYSize,logger.isLoggingToStderr(),boardError);
+    if(!suc)
+      throw StringError(boardError);
+  }
 
   auto maybeSaveAvoidPatterns = [&](bool forceSave) {
     if(engine != NULL && autoAvoidPatterns) {
@@ -2184,8 +2241,33 @@ int MainCmds::gtp(const vector<string>& args) {
         responseIsError = true;
         response = Global::strprintf("unacceptable size (Board::MAX_LEN is %d, consider increasing and recompiling)",(int)Board::MAX_LEN);
       }
+      else if(!engine->isCurrentShapeCompatibleWithSize(newXSize,newYSize,response)) {
+        responseIsError = true;
+      }
       else {
-        engine->setOrResetBoardSize(cfg,logger,seedRand,newXSize,newYSize,logger.isLoggingToStderr());
+        bool suc = engine->setOrResetBoardSize(cfg,logger,seedRand,newXSize,newYSize,logger.isLoggingToStderr(),response);
+        if(!suc)
+          responseIsError = true;
+      }
+    }
+
+    else if(command == "shape") {
+      if(pieces.size() != 1) {
+        responseIsError = true;
+        response = "Expected one integer argument for shape but got '" + Global::concat(pieces," ") + "'";
+      }
+      else {
+        int newShape = 0;
+        if(!Global::tryStringToInt(pieces[0],newShape)) {
+          responseIsError = true;
+          response = "Expected one integer argument for shape but got '" + Global::concat(pieces," ") + "'";
+        }
+        else {
+          maybeSaveAvoidPatterns(false);
+          bool suc = engine->setBoardShape(newShape,response);
+          if(!suc)
+            responseIsError = true;
+        }
       }
     }
 
@@ -2994,27 +3076,34 @@ int MainCmds::gtp(const vector<string>& args) {
         int xSize = engine->bot->getRootBoard().x_size;
         int ySize = engine->bot->getRootBoard().y_size;
         Board board(xSize,ySize);
-        for(int i = 0; i<pieces.size(); i++) {
-          Loc loc;
-          bool suc = tryParseLoc(pieces[i],board,loc);
-          if(!suc || loc == Board::PASS_LOC) {
-            responseIsError = true;
-            response = "Invalid handicap location: " + pieces[i];
-          }
-          locs.push_back(Move(loc,P_BLACK));
-        }
-        bool suc = board.setStonesFailIfNoLibs(locs);
-        if(!suc) {
+        if(!engine->applyCurrentShape(board,response)) {
           responseIsError = true;
-          response = "Handicap placement is invalid";
         }
-        else {
-          maybeSaveAvoidPatterns(false);
-          Player pla = P_WHITE;
-          BoardHistory hist(board,pla,engine->getCurrentRules());
-          hist.setInitialTurnNumber(board.numStonesOnBoard()); //Should give more accurate temperaure and time control behavior
-          vector<Move> newMoveHistory;
-          engine->setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
+        if(!responseIsError) {
+          for(int i = 0; i<pieces.size(); i++) {
+            Loc loc;
+            bool suc = tryParseLoc(pieces[i],board,loc);
+            if(!suc || loc == Board::PASS_LOC) {
+              responseIsError = true;
+              response = "Invalid handicap location: " + pieces[i];
+            }
+            locs.push_back(Move(loc,P_BLACK));
+          }
+        }
+        if(!responseIsError) {
+          bool suc = board.setStonesFailIfNoLibs(locs);
+          if(!suc) {
+            responseIsError = true;
+            response = "Handicap placement is invalid";
+          }
+          else {
+            maybeSaveAvoidPatterns(false);
+            Player pla = P_WHITE;
+            BoardHistory hist(board,pla,engine->getCurrentRules());
+            hist.setInitialTurnNumber(board.numStonesOnBoard()); //Should give more accurate temperaure and time control behavior
+            vector<Move> newMoveHistory;
+            engine->setPositionAndRules(pla,board,hist,board,pla,newMoveHistory);
+          }
         }
       }
     }
@@ -3064,7 +3153,7 @@ int MainCmds::gtp(const vector<string>& args) {
             for(int y = 0; y<board.y_size; y++) {
               for(int x = 0; x<board.x_size; x++) {
                 Loc loc = Location::getLoc(x,y,board.x_size);
-                if(board.colors[loc] != C_EMPTY && isAlive[loc])
+                if((board.colors[loc] == C_BLACK || board.colors[loc] == C_WHITE) && isAlive[loc])
                   locsToReport.push_back(loc);
               }
             }
@@ -3073,7 +3162,7 @@ int MainCmds::gtp(const vector<string>& args) {
             for(int y = 0; y<board.y_size; y++) {
               for(int x = 0; x<board.x_size; x++) {
                 Loc loc = Location::getLoc(x,y,board.x_size);
-                if(board.colors[loc] != C_EMPTY && !isAlive[loc])
+                if((board.colors[loc] == C_BLACK || board.colors[loc] == C_WHITE) && !isAlive[loc])
                   locsToReport.push_back(loc);
               }
             }
@@ -3199,8 +3288,13 @@ int MainCmds::gtp(const vector<string>& args) {
                 cerr << out.str() << endl;
             }
             maybeSaveAvoidPatterns(false);
-            engine->setOrResetBoardSize(cfg,logger,seedRand,sgfBoard.x_size,sgfBoard.y_size,logger.isLoggingToStderr());
-            engine->setPositionAndRules(sgfNextPla, sgfBoard, sgfHist, sgfInitialBoard, sgfInitialNextPla, sgfHist.moveHistory);
+            bool resizeSuc = engine->setOrResetBoardSize(cfg,logger,seedRand,sgfBoard.x_size,sgfBoard.y_size,logger.isLoggingToStderr(),response);
+            if(!resizeSuc) {
+              responseIsError = true;
+            }
+            else {
+              engine->setPositionAndRules(sgfNextPla, sgfBoard, sgfHist, sgfInitialBoard, sgfInitialNextPla, sgfHist.moveHistory);
+            }
           }
         }
       }

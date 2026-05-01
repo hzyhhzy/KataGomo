@@ -176,7 +176,7 @@ void Board::initHash()
 
   for(int i = 0; i<MAX_ARR_SIZE; i++) {
     for(Color j = 0; j<4; j++) {
-      if(j == C_EMPTY || j == C_WALL)
+      if(j == C_EMPTY)
         ZOBRIST_BOARD_HASH[i][j] = Hash128();
       else
         ZOBRIST_BOARD_HASH[i][j] = nextHash();
@@ -209,6 +209,82 @@ void Board::initHash()
   }
 
   IS_ZOBRIST_INITALIZED = true;
+}
+
+bool Board::isBoardShapeCompatible(int shape, int xSize, int ySize, string& error) {
+  if(shape == 4)
+    return true;
+  if(shape == 3) {
+    if(xSize != ySize) {
+      error = "shape 3 is not allowed unless xsize == ysize";
+      return false;
+    }
+    return true;
+  }
+  if(shape == 6) {
+    if(xSize != ySize) {
+      error = "shape 6 is not allowed unless xsize == ysize";
+      return false;
+    }
+    if((xSize % 2) == 0) {
+      error = "shape 6 is not allowed unless xsize is odd";
+      return false;
+    }
+    return true;
+  }
+  error = "shape must be one of 3, 4, or 6";
+  return false;
+}
+
+bool Board::applyBoardShape(Board& board, int shape, string& error) {
+  if(!isBoardShapeCompatible(shape,board.x_size,board.y_size,error))
+    return false;
+
+  if(shape == 4)
+    return true;
+
+  int xSize = board.x_size;
+  int ySize = board.y_size;
+  auto setWall = [&board](int x, int y) {
+    Loc loc = Location::getLoc(x,y,board.x_size);
+    if(board.colors[loc] == C_EMPTY) {
+      board.colors[loc] = C_WALL;
+      board.pos_hash ^= Board::ZOBRIST_BOARD_HASH[loc][C_WALL];
+      return true;
+    }
+    if(board.colors[loc] == C_WALL)
+      return true;
+    return false;
+  };
+
+  if(shape == 3) {
+    for(int y = 0; y<ySize; y++) {
+      for(int x = 0; x<xSize; x++) {
+        if(x + y < xSize - 1) {
+          if(!setWall(x,y)) {
+            error = "cannot apply shape to non-empty board";
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  int t = (xSize - 1) / 2;
+  for(int y = 0; y<ySize; y++) {
+    for(int x = 0; x<xSize; x++) {
+      bool isUpperLeftCut = (x + y < t);
+      bool isLowerRightCut = ((xSize - x - 1) + (ySize - y - 1) < t);
+      if(isUpperLeftCut || isLowerRightCut) {
+        if(!setWall(x,y)) {
+          error = "cannot apply shape to non-empty board";
+          return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 Hash128 Board::getSitHashWithSimpleKo(Player pla) const {
@@ -467,7 +543,7 @@ bool Board::isAdjacentToPla(Loc loc, Player pla) const {
 }
 
 bool Board::isAdjacentToChain(Loc loc, Loc chain) const {
-  if(colors[chain] == C_EMPTY)
+  if(colors[chain] != C_BLACK && colors[chain] != C_WHITE)
     return false;
   FOREACHADJ(
     Loc adj = loc + ADJOFFSET;
@@ -482,7 +558,7 @@ bool Board::isEmpty() const {
   for(int y = 0; y < y_size; y++) {
     for(int x = 0; x < x_size; x++) {
       Loc loc = Location::getLoc(x,y,x_size);
-      if(colors[loc] != C_EMPTY)
+      if(colors[loc] == C_BLACK || colors[loc] == C_WHITE)
         return false;
     }
   }
@@ -1179,7 +1255,7 @@ void Board::calculateArea(
     for(int y = 0; y < y_size; y++) {
       for(int x = 0; x < x_size; x++) {
         Loc loc = Location::getLoc(x,y,x_size);
-        if(result[loc] == C_EMPTY)
+        if(result[loc] == C_EMPTY && (colors[loc] == C_BLACK || colors[loc] == C_WHITE))
           result[loc] = colors[loc];
       }
     }
@@ -1204,7 +1280,7 @@ void Board::calculateIndependentLifeArea(
   for(int y = 0; y < y_size; y++) {
     for(int x = 0; x < x_size; x++) {
       Loc loc = Location::getLoc(x,y,x_size);
-      if(basicArea[loc] == C_EMPTY)
+      if(basicArea[loc] == C_EMPTY && (colors[loc] == C_BLACK || colors[loc] == C_WHITE))
         basicArea[loc] = colors[loc];
     }
   }
@@ -1705,6 +1781,8 @@ void Board::checkConsistency() const {
         //   throw StringError(errLabel + "Empty list doesn't contain empty location");
         emptyCount += 1;
       }
+      else if(colors[loc] == C_WALL)
+        tmp_pos_hash ^= ZOBRIST_BOARD_HASH[loc][C_WALL];
       else
         throw StringError(errLabel + "Non-(black,white,empty) value within board legal area");
     }
@@ -2203,7 +2281,10 @@ bool Board::simpleRepetitionBoundGt(Loc loc, int bound) const {
 
   int count = 0;
 
-  if(colors[loc] != C_EMPTY) {
+  if(colors[loc] == C_WALL)
+    return false;
+
+  if(colors[loc] == C_BLACK || colors[loc] == C_WHITE) {
     count += chain_data[chain_head[loc]].num_locs;
     //Fast quitout
     if(count + chain_data[chain_head[loc]].num_liberties > bound)

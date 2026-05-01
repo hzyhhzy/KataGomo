@@ -787,9 +787,9 @@ void Sgf::iterAllPositionsHelper(
       if(buf.size() > 0) {
         int netStonesAdded = 0;
         for(size_t j = 0; j<buf.size(); j++) {
-          if(board.colors[buf[j].loc] != C_EMPTY && buf[j].pla == C_EMPTY)
+          if((board.colors[buf[j].loc] == C_BLACK || board.colors[buf[j].loc] == C_WHITE) && buf[j].pla == C_EMPTY)
             netStonesAdded--;
-          if(board.colors[buf[j].loc] == C_EMPTY && buf[j].pla != C_EMPTY)
+          if(board.colors[buf[j].loc] == C_EMPTY && (buf[j].pla == C_BLACK || buf[j].pla == C_WHITE))
             netStonesAdded++;
         }
         bool suc = board.setStonesFailIfNoLibs(buf);
