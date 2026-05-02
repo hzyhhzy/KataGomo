@@ -883,7 +883,8 @@ void NNInputs::fillRowV7(
       Loc loc = Location::getLoc(x,y,xSize);
 
       //Feature 0 - on board
-      setRowBin(rowBin,pos,0, 1.0f, posStride, featureStride);
+      if(board.isOnBoard(loc))
+        setRowBin(rowBin,pos,0, 1.0f, posStride, featureStride);
 
       Color stone = board.colors[loc];
 

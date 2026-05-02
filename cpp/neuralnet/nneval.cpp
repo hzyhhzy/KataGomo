@@ -72,7 +72,7 @@ NNEvaluator::NNEvaluator(
    modelFileName(mFileName),
    nnXLen(xLen),
    nnYLen(yLen),
-   requireExactNNLen(rExactNNLen),
+   requireExactNNLen(false),//disallow requireExactNNLen because the board can be irregular shape
    policySize(NNPos::getPolicySize(xLen,yLen)),
    inputsUseNHWC(iUseNHWC),
    usingFP16Mode(useFP16Mode),
