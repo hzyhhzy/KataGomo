@@ -132,6 +132,7 @@ class GameInitializer {
   std::vector<bool> allowedMultiStoneSuicideLegals;
 
   std::vector<int> allowedKoRules;
+  std::vector<int> allowedBoardShapes;
 
   std::vector<std::pair<int,int>> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;

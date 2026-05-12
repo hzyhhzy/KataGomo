@@ -24,6 +24,17 @@ InitialPosition::InitialPosition(const Board& b, const BoardHistory& h, Player p
 InitialPosition::~InitialPosition()
 {}
 
+static int parseBoardShape(const string& sOrig) {
+  string s = Global::toLower(Global::trim(sOrig));
+  if(s == "hex")
+    return 6;
+  if(s == "tri")
+    return 3;
+  if(s == "para")
+    return 4;
+  throw IOError("Unknown board shape '" + sOrig + "', boardshapes must contain only hex, para, or tri");
+}
+
 
 ForkData::~ForkData() {
   for(int i = 0; i<forks.size(); i++)
@@ -71,10 +82,23 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   for(size_t i = 0; i < allowedKoRuleStrs.size(); i++)
     allowedKoRules.push_back(Rules::parseKoRule(allowedKoRuleStrs[i]));
 
+  if(cfg.contains("boardshapes")) {
+    vector<string> allowedBoardShapeStrs = cfg.getStringsNonEmptyTrim("boardshapes");
+    if(allowedBoardShapeStrs.size() <= 0)
+      throw IOError("boardshapes must have at least one value in " + cfg.getFileName());
+    for(size_t i = 0; i < allowedBoardShapeStrs.size(); i++)
+      allowedBoardShapes.push_back(parseBoardShape(allowedBoardShapeStrs[i]));
+  }
+  else {
+    allowedBoardShapes.push_back(4);
+  }
+
   if(allowedKoRules.size() <= 0)
     throw IOError("koRules must have at least one value in " + cfg.getFileName());
   if(allowedMultiStoneSuicideLegals.size() <= 0)
     throw IOError("multiStoneSuicideLegals must have at least one value in " + cfg.getFileName());
+  if(allowedBoardShapes.size() <= 0)
+    throw IOError("boardshapes must have at least one value in " + cfg.getFileName());
   
 
   if(cfg.contains("bSizes") == cfg.contains("bSizesXY"))
@@ -517,6 +541,14 @@ void GameInitializer::createGameSharedUnsynchronized(
     int xSize = allowedBSizes[bSizeIdx].first;
     int ySize = allowedBSizes[bSizeIdx].second;
     board = Board(xSize,ySize);
+    int boardShape = allowedBoardShapes[rand.nextUInt((uint32_t)allowedBoardShapes.size())];
+    string boardShapeError;
+    if(!Board::applyBoardShape(board,boardShape,boardShapeError)) {
+      boardShape = 4;
+      boardShapeError.clear();
+      bool suc = Board::applyBoardShape(board,boardShape,boardShapeError);
+      testAssert(suc);
+    }
     pla = P_BLACK;
     hist.clear(board,pla,rules);
 
