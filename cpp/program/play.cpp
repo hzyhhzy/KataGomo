@@ -451,10 +451,22 @@ void GameInitializer::createGameSharedUnsynchronized(
       int maxMoves = 0;
       static_assert(Rules::NUM_BASIC_RULES == 4, "Unexpected number of basic rules for random max moves");
       if(
-        rules.basicRule == Rules::BASICRULE_FREESTYLE || rules.basicRule == Rules::BASICRULE_STANDARD ||
-        rules.basicRule == Rules::BASICRULE_DCON5) {
+        rules.basicRule == Rules::BASICRULE_FREESTYLE || rules.basicRule == Rules::BASICRULE_STANDARD ) {
         if(rand.nextBool(0.7))
           maxMoves = rand.nextExponential() * 30 + 40 - rand.nextExponential() * 5;
+        else if(rand.nextBool(0.8))
+          maxMoves = rand.nextExponential() * 100 + 50 - rand.nextExponential() * 25;
+        else
+          maxMoves = rand.nextExponential() * 300 + 100 - rand.nextExponential() * 25;
+        if(maxMoves > board.numPlaStonesOnBoard(C_EMPTY) - 10)
+          maxMoves = 0;
+        if(maxMoves < 10)
+          maxMoves = 0;
+      }
+      else if(
+        rules.basicRule == Rules::BASICRULE_DCON5) {
+        if(rand.nextBool(0.7))
+          maxMoves = rand.nextExponential() * 40 + 70 - rand.nextExponential() * 10;
         else if(rand.nextBool(0.8))
           maxMoves = rand.nextExponential() * 100 + 50 - rand.nextExponential() * 25;
         else
