@@ -308,7 +308,8 @@ double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
 
 
 bool Search::isAllowedRootMove(Loc moveLoc) const {
-  assert(moveLoc == Board::PASS_LOC || rootBoard.isOnBoard(moveLoc));
+  if(moveLoc != Board::PASS_LOC && !rootBoard.isOnBoard(moveLoc))
+    return false;
 
   //A bad situation that can happen that unnecessarily prolongs training games is where one player
   //repeatedly passes and the other side repeatedly fills the opponent's space and/or suicides over and over.
