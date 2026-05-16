@@ -253,6 +253,8 @@ bool Board::isSuicide(Loc loc, Player pla) const
     return false;
   if(loc < 0 || loc >= MAX_ARR_SIZE || colors[loc] != C_EMPTY)
     return false;
+  if(wouldBeCapture(loc, pla))
+    return false;
 
   Board copy(*this);
   copy.playMoveAssumeLegal(loc, pla);
@@ -262,10 +264,35 @@ bool Board::isSuicide(Loc loc, Player pla) const
 //Check if moving here is would be an illegal self-capture
 bool Board::isIllegalSuicide(Loc loc, Player pla, bool isMultiStoneSuicideLegal) const
 {
-  (void)loc;
-  (void)pla;
-  (void)isMultiStoneSuicideLegal;
-  return false;
+  if(!isSuicide(loc, pla))
+    return false;
+
+  int suicideChainSize = 1;
+  int numHeadsSeen = 0;
+  Loc headsSeen[4];
+  for(int i = 0; i<4; i++) {
+    Loc adj = loc + adj_offsets[i];
+    if(colors[adj] != pla)
+      continue;
+
+    Loc head = chain_head[adj];
+    bool seen = false;
+    for(int j = 0; j<numHeadsSeen; j++) {
+      if(headsSeen[j] == head) {
+        seen = true;
+        break;
+      }
+    }
+    if(seen)
+      continue;
+
+    headsSeen[numHeadsSeen++] = head;
+    suicideChainSize += chain_data[head].num_locs;
+  }
+
+  if(suicideChainSize == 1)
+    return true;
+  return !isMultiStoneSuicideLegal;
 }
 
 //Check if moving here is illegal due to simple ko
