@@ -373,7 +373,7 @@ double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) c
     // * On a spot that the player almost surely owns and it is not adjacent to opponent stones and is not a connection of groups outside owned area.
     //These conditions should still make it so that "cleanup" and dame-filling moves are not discouraged.
     // * When playing button go, very slightly discourage passing - so that if there are an even number of dame, filling a dame is still favored over passing.
-    if(moveLoc != Board::PASS_LOC && rootBoard.ko_loc == Board::NULL_LOC) {
+    if(moveLoc != Board::PASS_LOC && rootBoard.ko_loc == Board::NULL_LOC && rootBoard.ko_loc2 == Board::NULL_LOC) {
       int pos = NNPos::locToPos(moveLoc,rootBoard.x_size,nnXLen,nnYLen);
       double plaOwnership = rootPla == P_WHITE ? whiteOwnerMap[pos] : -whiteOwnerMap[pos];
       if(plaOwnership <= -extreme) {

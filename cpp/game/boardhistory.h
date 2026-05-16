@@ -88,7 +88,7 @@ struct BoardHistory {
   int64_t getCurrentTurnNumber() const;
 
   //For all of the below, rootKoHashTable is optional and if provided will slightly speedup superko searches
-  //This function should behave gracefully so long as it is pseudolegal (board.isLegal, but also still ok if the move is on board.ko_loc)
+  //This function should behave gracefully so long as it is pseudolegal (board.isLegal, but also still ok if the move is on a simple ko loc)
   //even if the move violates superko, or is past when the game is ended.
   //This allows for robustness when this code is being used for analysis or with external data sources.
   void makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player movePla);

@@ -438,6 +438,8 @@ Hash128 BoardHistory::getSituationAndSimpleKoHash(const Board& board, Player nex
   hash ^= Board::ZOBRIST_PLAYER_HASH[nextPlayer];
   if(board.ko_loc != Board::NULL_LOC)
     hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc];
+  if(board.ko_loc2 != Board::NULL_LOC)
+    hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc2];
   return hash;
 }
 
@@ -447,6 +449,8 @@ Hash128 BoardHistory::getSituationAndSimpleKoAndPrevPosHash(const Board& board, 
   hash ^= Board::ZOBRIST_PLAYER_HASH[nextPlayer];
   if(board.ko_loc != Board::NULL_LOC)
     hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc];
+  if(board.ko_loc2 != Board::NULL_LOC)
+    hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc2];
 
   Hash128 mixed;
   mixed.hash1 = Hash::rrmxmx(hash.hash0);
@@ -466,6 +470,8 @@ Hash128 BoardHistory::getSituationRulesAndKoHash(const Board& board, const Board
 
   if(board.ko_loc != Board::NULL_LOC)
     hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc];
+  if(board.ko_loc2 != Board::NULL_LOC)
+    hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc2];
   
 
   float selfKomi = hist.currentSelfKomi(nextPlayer,drawEquivalentWinsForWhite);

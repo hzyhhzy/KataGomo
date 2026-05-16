@@ -119,6 +119,7 @@ Board::Board(const Board& other)
   memcpy(next_in_chain, other.next_in_chain, sizeof(Loc)*MAX_ARR_SIZE);
 
   ko_loc = other.ko_loc;
+  ko_loc2 = other.ko_loc2;
   // empty_list = other.empty_list;
   pos_hash = other.pos_hash;
   numBlackCaptures = other.numBlackCaptures;
@@ -150,6 +151,7 @@ void Board::init(int xS, int yS)
   }
 
   ko_loc = NULL_LOC;
+  ko_loc2 = NULL_LOC;
   pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size];
   numBlackCaptures = 0;
   numWhiteCaptures = 0;
@@ -213,15 +215,27 @@ Hash128 Board::getSitHashWithSimpleKo(Player pla) const {
   Hash128 h = pos_hash;
   if(ko_loc != Board::NULL_LOC)
     h = h ^ Board::ZOBRIST_KO_LOC_HASH[ko_loc];
+  if(ko_loc2 != Board::NULL_LOC)
+    h = h ^ Board::ZOBRIST_KO_LOC_HASH[ko_loc2];
   h ^= Board::ZOBRIST_PLAYER_HASH[pla];
   return h;
 }
 
 void Board::clearSimpleKoLoc() {
   ko_loc = NULL_LOC;
+  ko_loc2 = NULL_LOC;
 }
 void Board::setSimpleKoLoc(Loc loc) {
   ko_loc = loc;
+  ko_loc2 = NULL_LOC;
+}
+void Board::setSimpleKoLocs(Loc loc, Loc loc2) {
+  if(loc == NULL_LOC && loc2 != NULL_LOC)
+    std::swap(loc,loc2);
+  if(loc == loc2)
+    loc2 = NULL_LOC;
+  ko_loc = loc;
+  ko_loc2 = loc2;
 }
 
 
@@ -298,7 +312,7 @@ bool Board::isIllegalSuicide(Loc loc, Player pla, bool isMultiStoneSuicideLegal)
 //Check if moving here is illegal due to simple ko
 bool Board::isKoBanned(Loc loc) const
 {
-  return loc == ko_loc;
+  return loc == ko_loc || loc == ko_loc2;
 }
 
 bool Board::isOnBoard(Loc loc) const {
@@ -549,7 +563,7 @@ bool Board::setStone(Loc loc, Color color)
       playMoveAssumeLegal(loc,color);
   }
 
-  ko_loc = NULL_LOC;
+  clearSimpleKoLoc();
   return true;
 }
 
@@ -560,6 +574,7 @@ bool Board::setStoneFailIfNoLibs(Loc loc, Color color) {
     return false;
 
   Loc oldKoLoc = ko_loc;
+  Loc oldKoLoc2 = ko_loc2;
   if(colors[loc] == color)
   {}
   else if(colors[loc] == C_EMPTY) {
@@ -575,12 +590,13 @@ bool Board::setStoneFailIfNoLibs(Loc loc, Color color) {
     if(isSuicide(loc,color) || wouldBeCapture(loc,color)) {
       playMoveAssumeLegal(loc,getOpp(color));
       ko_loc = oldKoLoc;
+      ko_loc2 = oldKoLoc2;
       return false;
     }
     playMoveAssumeLegal(loc,color);
   }
 
-  ko_loc = NULL_LOC;
+  clearSimpleKoLoc();
   return true;
 }
 
@@ -634,11 +650,12 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
   //Pass?
   if(loc == PASS_LOC)
   {
-    ko_loc = NULL_LOC;
+    clearSimpleKoLoc();
     return;
   }
 
   Player opp = getOpp(pla);
+  Hash128 posHashBeforeMove = pos_hash;
 
   //Add the new stone as an independent group
   colors[loc] = pla;
@@ -652,7 +669,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
 
   //Merge with surrounding friendly chains and capture any necessary opp chains
   int num_captured = 0; //Number of stones captured
-  Loc possible_ko_loc = NULL_LOC;  //What location a ko ban might become possible in
+  Loc possible_ko_loc = NULL_LOC;  //If exactly one stone was captured, its location.
   int num_opps_seen = 0;  //How many opp chains we have seen so far
   Loc opp_heads_seen[4];   //Heads of the opp chains seen so far
 
@@ -699,35 +716,67 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     }
   }
 
-  //We have a simple ko if exactly one stone was captured, and immediately recapturing
-  //on that point would reduce the capturing group below the two-liberty survival threshold.
-  if(
-    num_captured == 1 &&
-    colors[loc] == pla &&
-    chain_data[chain_head[loc]].num_liberties == 2 &&
-    possible_ko_loc != NULL_LOC &&
-    isLibertyOf(possible_ko_loc, chain_head[loc])
-  )
-    ko_loc = possible_ko_loc;
-  else
-    ko_loc = NULL_LOC;
-
   if(pla == P_BLACK)
     numWhiteCaptures += num_captured;
   else
     numBlackCaptures += num_captured;
 
   //Handle suicide and any own group left below the two-liberty survival threshold.
+  int num_suicided = 0;
   if(colors[loc] == pla && getNumLiberties(loc) <= 1) {
-    int numSuicided = chain_data[chain_head[loc]].num_locs;
+    num_suicided = chain_data[chain_head[loc]].num_locs;
     removeChain(loc);
-    ko_loc = NULL_LOC;
 
     if(pla == P_BLACK)
-      numBlackCaptures += numSuicided;
+      numBlackCaptures += num_suicided;
     else
-      numWhiteCaptures += numSuicided;
+      numWhiteCaptures += num_suicided;
   }
+
+  Loc newKoLoc = NULL_LOC;
+  Loc newKoLoc2 = NULL_LOC;
+  auto addKoLoc = [&newKoLoc,&newKoLoc2](Loc koLoc) {
+    if(koLoc == NULL_LOC)
+      return;
+    if(newKoLoc == NULL_LOC)
+      newKoLoc = koLoc;
+    else if(newKoLoc != koLoc && newKoLoc2 == NULL_LOC)
+      newKoLoc2 = koLoc;
+  };
+
+  //We have a simple ko if exactly one stone was captured, and immediately recapturing
+  //on that point would reduce the capturing group below the two-liberty survival threshold.
+  if(num_captured == 1 && possible_ko_loc != NULL_LOC) {
+    if(
+      num_suicided == 0 &&
+      colors[loc] == pla &&
+      chain_data[chain_head[loc]].num_liberties == 2 &&
+      isLibertyOf(possible_ko_loc, chain_head[loc])
+    )
+      addKoLoc(possible_ko_loc);
+    //Special two-liberty ko: this move captured one opposing stone and then its own single stone
+    //also died, so the captured point is the immediate repetition point.
+    else if(num_suicided == 1)
+      addKoLoc(possible_ko_loc);
+  }
+  //Special two-liberty ko from the non-capturing side: a newly played isolated stone with
+  //exactly two liberties may have one or two liberties where the opponent would capture it
+  //and then immediately self-capture only the newly played opposing stone.
+  else if(num_captured == 0 && num_suicided == 0 && colors[loc] == pla) {
+    Loc head = chain_head[loc];
+    if(chain_data[head].num_locs == 1 && chain_data[head].num_liberties == 2) {
+      for(int i = 0; i<4; i++) {
+        Loc adj = loc + adj_offsets[i];
+        if(colors[adj] == C_EMPTY) {
+          Board copy(*this);
+          copy.playMoveAssumeLegal(adj, opp);
+          if(copy.pos_hash == posHashBeforeMove)
+            addKoLoc(adj);
+        }
+      }
+    }
+  }
+  setSimpleKoLocs(newKoLoc,newKoLoc2);
 }
 
 int Board::getNumImmediateLiberties(Loc loc) const
@@ -1298,14 +1347,20 @@ void Board::checkConsistency() const {
   //     throw StringError(errLabel + "Empty list index for loc in index i is not i");
   // }
 
-  if(ko_loc != NULL_LOC) {
-    int x = Location::getX(ko_loc,x_size);
-    int y = Location::getY(ko_loc,x_size);
+  auto checkKoLoc = [this,&errLabel](Loc loc) {
+    if(loc == NULL_LOC)
+      return;
+    int x = Location::getX(loc,x_size);
+    int y = Location::getY(loc,x_size);
     if(x < 0 || x >= x_size || y < 0 || y >= y_size)
       throw StringError(errLabel + "Invalid simple ko loc");
-    if(colors[ko_loc] != C_EMPTY)
+    if(colors[loc] != C_EMPTY)
       throw StringError(errLabel + "Simple ko loc is not empty");
-  }
+  };
+  checkKoLoc(ko_loc);
+  checkKoLoc(ko_loc2);
+  if(ko_loc != NULL_LOC && ko_loc == ko_loc2)
+    throw StringError(errLabel + "Duplicate simple ko locs");
 
   short tmpAdjOffsets[8];
   Location::getAdjacentOffsets(tmpAdjOffsets,x_size);
@@ -1321,7 +1376,7 @@ bool Board::isEqualForTesting(const Board& other, bool checkNumCaptures, bool ch
     return false;
   if(y_size != other.y_size)
     return false;
-  if(checkSimpleKo && ko_loc != other.ko_loc)
+  if(checkSimpleKo && (ko_loc != other.ko_loc || ko_loc2 != other.ko_loc2))
     return false;
   if(checkNumCaptures && numBlackCaptures != other.numBlackCaptures)
     return false;
@@ -1686,6 +1741,7 @@ nlohmann::json Board::toJson(const Board& board) {
   data["ySize"] = board.y_size;
   data["stones"] = Board::toStringSimple(board,'|');
   data["koLoc"] = Location::toString(board.ko_loc,board);
+  data["koLoc2"] = Location::toString(board.ko_loc2,board);
   data["numBlackCaptures"] = board.numBlackCaptures;
   data["numWhiteCaptures"] = board.numWhiteCaptures;
   return data;
@@ -1695,7 +1751,9 @@ Board Board::ofJson(const nlohmann::json& data) {
   int xSize = data["xSize"].get<int>();
   int ySize = data["ySize"].get<int>();
   Board board = Board::parseBoard(xSize,ySize,data["stones"].get<string>(),'|');
-  board.setSimpleKoLoc(Location::ofStringAllowNull(data["koLoc"].get<string>(),board));
+  Loc koLoc = Location::ofStringAllowNull(data["koLoc"].get<string>(),board);
+  Loc koLoc2 = data.find("koLoc2") == data.end() ? Board::NULL_LOC : Location::ofStringAllowNull(data["koLoc2"].get<string>(),board);
+  board.setSimpleKoLocs(koLoc,koLoc2);
   board.numBlackCaptures = data["numBlackCaptures"].get<int>();
   board.numWhiteCaptures = data["numWhiteCaptures"].get<int>();
   return board;

@@ -904,6 +904,8 @@ void Sgf::samplePositionHelper(
   situationHash ^= Board::ZOBRIST_PLAYER_HASH[nextPla];
   if(board.ko_loc != Board::NULL_LOC)
     situationHash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc];
+  if(board.ko_loc2 != Board::NULL_LOC)
+    situationHash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc2];
 
   if(hashComments)
     situationHash.hash0 += Hash::simpleHash(comments.c_str());
@@ -915,6 +917,8 @@ void Sgf::samplePositionHelper(
       parentHash = prevBoard.pos_hash;
       if(prevBoard.ko_loc != Board::NULL_LOC)
         parentHash ^= Board::ZOBRIST_KO_LOC_HASH[prevBoard.ko_loc];
+      if(prevBoard.ko_loc2 != Board::NULL_LOC)
+        parentHash ^= Board::ZOBRIST_KO_LOC_HASH[prevBoard.ko_loc2];
     }
     //Mix in a blended up hash of the previous board state to avoid zobrist cancellation, also swapping halves
     Hash128 mixed = Hash128(Hash::murmurMix(parentHash.hash1),Hash::splitMix64(parentHash.hash0));

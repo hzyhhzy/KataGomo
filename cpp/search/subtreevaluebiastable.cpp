@@ -66,6 +66,9 @@ std::shared_ptr<SubtreeValueBiasEntry> SubtreeValueBiasTable::get(Player pla, Lo
   if(prevBoard.ko_loc != Board::NULL_LOC) {
     hash ^= ZOBRIST_KO_BAN[prevBoard.ko_loc];
   }
+  if(prevBoard.ko_loc2 != Board::NULL_LOC) {
+    hash ^= ZOBRIST_KO_BAN[prevBoard.ko_loc2];
+  }
 
   uint32_t subMapIdx = (uint32_t)(hash.hash0 % entries.size());
 

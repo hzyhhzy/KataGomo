@@ -622,6 +622,7 @@ Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
     transpose ? board.x_size : board.y_size
   );
   Loc symKoLoc = Board::NULL_LOC;
+  Loc symKoLoc2 = Board::NULL_LOC;
   for(int y = 0; y<board.y_size; y++) {
     for(int x = 0; x<board.x_size; x++) {
       Loc loc = Location::getLoc(x,y,board.x_size);
@@ -635,11 +636,13 @@ Board SymmetryHelpers::getSymBoard(const Board& board, int symmetry) {
       (void)suc;
       if(loc == board.ko_loc)
         symKoLoc = symLoc;
+      if(loc == board.ko_loc2)
+        symKoLoc2 = symLoc;
     }
   }
   //Set only at the end because otherwise setStoneFailIfNoLibs clears it.
-  if(symKoLoc != Board::NULL_LOC)
-    symBoard.setSimpleKoLoc(symKoLoc);
+  if(symKoLoc != Board::NULL_LOC || symKoLoc2 != Board::NULL_LOC)
+    symBoard.setSimpleKoLocs(symKoLoc,symKoLoc2);
   return symBoard;
 }
 
@@ -657,7 +660,7 @@ void SymmetryHelpers::markDuplicateMoveLocs(
   validSymmetries.push_back(0);
 
   //The board should never be considered symmetric if any moves are banned by ko or superko
-  if(board.ko_loc != Board::NULL_LOC)
+  if(board.ko_loc != Board::NULL_LOC || board.ko_loc2 != Board::NULL_LOC)
     return;
   
 
@@ -903,6 +906,10 @@ void NNInputs::fillRowV7(
   
   if(board.ko_loc != Board::NULL_LOC) {
     int pos = NNPos::locToPos(board.ko_loc,xSize,nnXLen,nnYLen);
+    setRowBin(rowBin,pos,6, 1.0f, posStride, featureStride);
+  }
+  if(board.ko_loc2 != Board::NULL_LOC) {
+    int pos = NNPos::locToPos(board.ko_loc2,xSize,nnXLen,nnYLen);
     setRowBin(rowBin,pos,6, 1.0f, posStride, featureStride);
   }
   

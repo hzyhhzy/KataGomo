@@ -203,6 +203,7 @@ struct Board
   //Directly set that there is a simple ko prohibition on this location. Note that this is not necessarily safe
   //when also using a BoardHistory, since the BoardHistory may not know about this change, or the game could be in cleanup phase, etc.
   void setSimpleKoLoc(Loc loc);
+  void setSimpleKoLocs(Loc loc, Loc loc2);
 
   //Sets the specified stone if possible, including overwriting existing stones.
   //Resolves any captures and/or suicides that result from setting that stone, including deletions of the stone itself.
@@ -286,7 +287,8 @@ struct Board
   Loc chain_head[MAX_ARR_SIZE];       //Where is the head of this chain? Undefined if EMPTY or WALL
   Loc next_in_chain[MAX_ARR_SIZE];    //Location of next stone in chain. Circular linked list. Undefined if EMPTY or WALL
 
-  Loc ko_loc;   //A simple ko capture was made here, making it illegal to replay here next move
+  Loc ko_loc;   //Simple ko bans making it illegal to replay here next move
+  Loc ko_loc2;
 
   /* PointList empty_list; //List of all empty locations on board */
 
