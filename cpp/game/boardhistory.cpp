@@ -336,16 +336,17 @@ bool BoardHistory::passWouldEndGame(const Board& board, Player movePla) const {
 }
 
 bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const {
-  bool multiStoneSuicideLegal = true; //Tolerate suicide regardless of rules
   if(board.isKoBanned(moveLoc))
+    return false;
+  bool multiStoneSuicideLegal = true; //Tolerate multi-stone suicide regardless of rules
+  if(!board.isLegalIgnoringKo(moveLoc,movePla,multiStoneSuicideLegal))
     return false;
   return true;
 }
 bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla) {
-  bool multiStoneSuicideLegal = true; //Tolerate suicide regardless of rules
-  if(board.isKoBanned(moveLoc))
+  if(!isLegalTolerant(board,moveLoc,movePla))
     return false;
-  
+
   makeBoardMoveAssumeLegal(board,moveLoc,movePla);
   return true;
 }
