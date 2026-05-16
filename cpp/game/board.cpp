@@ -438,28 +438,28 @@ bool Board::isAdjacentToChain(Loc loc, Loc chain) const {
 }
 
 
-//Does this connect two pla distinct groups that are not both pass-alive and not within opponent pass-alive area either?
-bool Board::isNonPassAliveSelfConnection(Loc loc, Player pla, Color* passAliveArea) const {
-  if(colors[loc] != C_EMPTY || passAliveArea[loc] == pla)
+//Does this connect two pla distinct groups outside pla's already-owned area?
+bool Board::isSelfConnectionOutsideArea(Loc loc, Player pla, Color* area) const {
+  if(colors[loc] != C_EMPTY || area[loc] == pla)
     return false;
 
-  Loc nonPassAliveAdjHead = NULL_LOC;
+  Loc outsideAreaAdjHead = NULL_LOC;
   for(int i = 0; i < 4; i++)
   {
     Loc adj = loc + adj_offsets[i];
-    if(colors[adj] == pla && passAliveArea[adj] == C_EMPTY) {
-      nonPassAliveAdjHead = chain_head[adj];
+    if(colors[adj] == pla && area[adj] == C_EMPTY) {
+      outsideAreaAdjHead = chain_head[adj];
       break;
     }
   }
 
-  if(nonPassAliveAdjHead == NULL_LOC)
+  if(outsideAreaAdjHead == NULL_LOC)
     return false;
 
   for(int i = 0; i < 4; i++)
   {
     Loc adj = loc + adj_offsets[i];
-    if(colors[adj] == pla && chain_head[adj] != nonPassAliveAdjHead)
+    if(colors[adj] == pla && chain_head[adj] != outsideAreaAdjHead)
       return true;
   }
 
@@ -672,9 +672,15 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     }
   }
 
-  //We have a ko if 1 stone was captured and the capturing move is one isolated stone
-  //And the capturing move itself now only has one liberty
-  if(num_captured == 1 && chain_data[chain_head[loc]].num_locs == 1 && chain_data[chain_head[loc]].num_liberties == 1)
+  //We have a simple ko if exactly one stone was captured, and immediately recapturing
+  //on that point would reduce the capturing group below the two-liberty survival threshold.
+  if(
+    num_captured == 1 &&
+    colors[loc] == pla &&
+    chain_data[chain_head[loc]].num_liberties == 2 &&
+    possible_ko_loc != NULL_LOC &&
+    isLibertyOf(possible_ko_loc, chain_head[loc])
+  )
     ko_loc = possible_ko_loc;
   else
     ko_loc = NULL_LOC;
@@ -1060,22 +1066,71 @@ int Board::findLiberties(Loc loc, vector<Loc>& buf, int bufStart, int bufIdx) co
 
 void Board::calculateArea(
   Color* result,
-  bool nonPassAliveStones,
-  bool safeBigTerritories,
-  bool unsafeBigTerritories,
+  bool legacyAreaParam0,
+  bool legacyAreaParam1,
+  bool legacyAreaParam2,
   bool isMultiStoneSuicideLegal
 ) const {
-  std::fill(result,result+MAX_ARR_SIZE,C_EMPTY);
-  calculateAreaForPla(P_BLACK,safeBigTerritories,unsafeBigTerritories,isMultiStoneSuicideLegal,result);
-  calculateAreaForPla(P_WHITE,safeBigTerritories,unsafeBigTerritories,isMultiStoneSuicideLegal,result);
+  (void)legacyAreaParam0;
+  (void)legacyAreaParam1;
+  (void)legacyAreaParam2;
+  (void)isMultiStoneSuicideLegal;
 
-  //TODO can we merge this in to calculate area for pla?
-  if(nonPassAliveStones) {
-    for(int y = 0; y < y_size; y++) {
-      for(int x = 0; x < x_size; x++) {
-        Loc loc = Location::getLoc(x,y,x_size);
-        if(result[loc] == C_EMPTY)
-          result[loc] = colors[loc];
+  std::fill(result,result+MAX_ARR_SIZE,C_EMPTY);
+
+  bool visited[MAX_ARR_SIZE];
+  std::fill(visited,visited+MAX_ARR_SIZE,false);
+  Loc queue[MAX_ARR_SIZE];
+
+  for(int y = 0; y < y_size; y++) {
+    for(int x = 0; x < x_size; x++) {
+      Loc loc = Location::getLoc(x,y,x_size);
+      if(colors[loc] == C_BLACK || colors[loc] == C_WHITE) {
+        result[loc] = colors[loc];
+        visited[loc] = true;
+      }
+    }
+  }
+
+  for(int y = 0; y < y_size; y++) {
+    for(int x = 0; x < x_size; x++) {
+      Loc loc = Location::getLoc(x,y,x_size);
+      if(colors[loc] != C_EMPTY || visited[loc])
+        continue;
+
+      bool touchesBlack = false;
+      bool touchesWhite = false;
+      int queueHead = 0;
+      int queueTail = 0;
+      visited[loc] = true;
+      queue[queueTail++] = loc;
+
+      while(queueHead != queueTail) {
+        Loc cur = queue[queueHead++];
+        for(int i = 0; i<4; i++) {
+          Loc adj = cur + adj_offsets[i];
+          if(colors[adj] == C_EMPTY) {
+            if(!visited[adj]) {
+              visited[adj] = true;
+              queue[queueTail++] = adj;
+            }
+          }
+          else if(colors[adj] == C_BLACK)
+            touchesBlack = true;
+          else if(colors[adj] == C_WHITE)
+            touchesWhite = true;
+        }
+      }
+
+      Color owner = C_EMPTY;
+      if(touchesBlack && !touchesWhite)
+        owner = C_BLACK;
+      else if(touchesWhite && !touchesBlack)
+        owner = C_WHITE;
+
+      if(owner != C_EMPTY) {
+        for(int i = 0; i<queueTail; i++)
+          result[queue[i]] = owner;
       }
     }
   }
@@ -1088,23 +1143,13 @@ void Board::calculateIndependentLifeArea(
   bool keepStones,
   bool isMultiStoneSuicideLegal
 ) const {
-  //First, just compute basic area.
+  (void)isMultiStoneSuicideLegal;
+
   Color basicArea[MAX_ARR_SIZE];
   std::fill(result,result+MAX_ARR_SIZE,C_EMPTY);
-  std::fill(basicArea,basicArea+MAX_ARR_SIZE,C_EMPTY);
-  calculateAreaForPla(P_BLACK,true,true,isMultiStoneSuicideLegal,basicArea);
-  calculateAreaForPla(P_WHITE,true,true,isMultiStoneSuicideLegal,basicArea);
+  calculateArea(basicArea,true,true,true,isMultiStoneSuicideLegal);
 
-  //TODO can we merge this in to calculate area for pla?
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(basicArea[loc] == C_EMPTY)
-        basicArea[loc] = colors[loc];
-    }
-  }
-
-  calculateIndependentLifeAreaHelper(basicArea,result,whiteMinusBlackIndependentLifeRegionCount);
+  whiteMinusBlackIndependentLifeRegionCount = 0;
 
   if(keepTerritories) {
     for(int y = 0; y < y_size; y++) {
@@ -1126,398 +1171,6 @@ void Board::calculateIndependentLifeArea(
   }
 
 }
-
-//This marks pass-alive stones, pass-alive territory always.
-//If safeBigTerritories, marks empty regions bordered by pla stones and no opp stones, where all pla stones are pass-alive.
-//If unsafeBigTerritories, marks empty regions bordered by pla stones and no opp stones, but ONLY on locations in result that are C_EMPTY.
-//The reason for this is to avoid overwriting the opponent's pass-alive territory in situations like this:
-// .ox.x.x
-// oxxxxxx
-// xx.....
-//The top left corner is black's pass-alive territory. It's also an empty region bordered only by white, but we should not mark
-//it as white's unsafeBigTerritory because it's already marked as black's pass alive territory.
-
-void Board::calculateAreaForPla(
-  Player pla,
-  bool safeBigTerritories,
-  bool unsafeBigTerritories,
-  bool isMultiStoneSuicideLegal,
-  Color* result
-) const {
-  Color opp = getOpp(pla);
-
-  //https://senseis.xmp.net/?BensonsAlgorithm
-  //https://zhuanlan.zhihu.com/p/110998764
-  //First compute all empty-or-opp regions
-
-  //For each loc, if it's empty or opp, the index of the region
-  int16_t regionIdxByLoc[MAX_ARR_SIZE];
-  //For each loc, if it's empty or opp, the next empty or opp belonging to the same region
-  Loc nextEmptyOrOpp[MAX_ARR_SIZE];
-  //Does this border a pla group that has been marked as not pass alive?
-  bool bordersNonPassAlivePlaByHead[MAX_ARR_SIZE];
-
-  //Set to initial values. Faster than std::fill in O2 optimization by compiler, might be similar when use O3.
-  //This code assumes twos complement. Memset only sets bytes, so we are relying on the concatenation of two -1 bytes
-  //being the same as (int16_t)(-1). Technically C++ doesn't mandate twos-complement, but everything in practice uses it.
-  memset(regionIdxByLoc, -1, sizeof(regionIdxByLoc[0])*MAX_ARR_SIZE);
-  //This memset is only safe because Board::NULL_LOC is 0. If it were a nonzero value, setting adjacent bytes to that
-  //value is NOT equivalent to setting each Loc (2 bytes) to that value.
-  static_assert(Board::NULL_LOC == 0, "Memset in Board::calculateAreaForPla relies on Board::NULL_LOC == 0");
-  memset(nextEmptyOrOpp, NULL_LOC, sizeof(nextEmptyOrOpp[0])*MAX_ARR_SIZE);
-  memset(bordersNonPassAlivePlaByHead, false, sizeof(bordersNonPassAlivePlaByHead[0])*MAX_ARR_SIZE);
-
-  //A list for each region head, indicating which pla group heads the region is vital for.
-  //A region is vital for a pla group if all its spaces are adjacent to that pla group.
-  //All lists are concatenated together, the most we can have is bounded by (MAX_LEN * MAX_LEN+1) / 2
-  //independent regions, each one vital for at most 4 pla groups, add some extra just in case.
-  static constexpr int maxRegions = (MAX_LEN * MAX_LEN + 1)/2 + 1;
-  static constexpr int vitalForPlaHeadsListsMaxLen = maxRegions * 4;
-  Loc vitalForPlaHeadsLists[vitalForPlaHeadsListsMaxLen];
-  int vitalForPlaHeadsListsTotal = 0;
-
-  //A list of region heads
-  int numRegions = 0;
-  Loc regionHeads[maxRegions];
-  //Start indices and list lengths in vitalForPlaHeadsLists
-  uint16_t vitalStart[maxRegions];
-  uint16_t vitalLen[maxRegions];
-  //For each region, are there 0, 1, or 2+ spaces of that region not bordering any pla?
-  uint8_t numInternalSpacesMax2[maxRegions];
-  bool containsOpp[maxRegions];
-
-  //Breadth-first-search trace maximal non-pla regions of the board and record their properties and join them into a
-  //linked list through nextEmptyOrOpp.
-  //Takes as input the location serving as the head, the tip node of the linked list so far, the next loc, and the
-  //numeric index of the region
-  //Returns the loc serving as the current tip node ("tailTarget") of the linked list.
-
-  Loc buildRegionQueue[MAX_ARR_SIZE];
-
-  auto buildRegion = [
-    pla,opp,isMultiStoneSuicideLegal,
-    &regionIdxByLoc,
-    &vitalForPlaHeadsLists,
-    &vitalStart,&vitalLen,&numInternalSpacesMax2,&containsOpp,
-    &buildRegionQueue,
-    this,
-    &nextEmptyOrOpp](Loc initialLoc, int regionIdx) -> Loc {
-
-    //Commented out - we don't check if this region is already built or not, but carefully rely on the caller to ensure it is not.
-    //if(regionIdxByLoc[initialLoc] != -1)
-    //  return tailTarget;
-
-    //This code use a queue to build regions. We use the initial provided location as the beginning of the tail of the linkedlist
-    Loc tailTarget = initialLoc;
-
-    bool isVlenNonZero = vitalLen[regionIdx] > 0;
-    int buildRegionQueueHead = 0;
-    int buildRegionQueueTail = 1;
-    buildRegionQueue[0] = initialLoc;
-    regionIdxByLoc[initialLoc] = regionIdx;
-
-    while(buildRegionQueueHead != buildRegionQueueTail) {
-      //Pop next location off queue
-      Loc loc = buildRegionQueue[buildRegionQueueHead];
-      buildRegionQueueHead += 1;
-
-      //First, filter out any pla heads it turns out we're not vital for because we're not adjacent to them
-      //In the case where suicide is disallowed, we only do this filtering on intersections that are actually empty
-      {
-        if(isVlenNonZero && (isMultiStoneSuicideLegal || colors[loc] == C_EMPTY)) {
-          uint16_t vStart = vitalStart[regionIdx];
-          uint16_t oldVLen = vitalLen[regionIdx];
-          uint16_t newVLen = 0;
-          for(uint16_t i = 0; i<oldVLen; i++) {
-            if(isAdjacentToPlaHead(pla, loc, vitalForPlaHeadsLists[vStart+i])) {
-              vitalForPlaHeadsLists[vStart+newVLen] = vitalForPlaHeadsLists[vStart+i];
-              newVLen += 1;
-            }
-          }
-          vitalLen[regionIdx] = newVLen;
-          isVlenNonZero = (newVLen > 0);
-        }
-      }
-
-      //Determine if this point is internal, unless we already have many internal points
-      if(numInternalSpacesMax2[regionIdx] < 2 && !isAdjacentToPla(loc,pla)){
-        numInternalSpacesMax2[regionIdx] += 1;
-      }
-
-      if(colors[loc] == opp)
-        containsOpp[regionIdx] = true;
-
-      nextEmptyOrOpp[loc] = tailTarget;
-      tailTarget = loc;
-
-      //Push adjacent locations on to queue.
-      FOREACHADJ(
-        Loc adj = loc + ADJOFFSET;
-        if((colors[adj] == C_EMPTY || colors[adj] == opp) && regionIdxByLoc[adj] == -1) {
-          buildRegionQueue[buildRegionQueueTail] = adj;
-          buildRegionQueueTail += 1;
-          regionIdxByLoc[adj] = regionIdx;
-        }
-      );
-    }
-
-    assert(buildRegionQueueTail < MAX_ARR_SIZE);
-    return tailTarget;
-  };
-
-  bool atLeastOnePla = false;
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(regionIdxByLoc[loc] != -1)
-        continue;
-      if(colors[loc] != C_EMPTY) {
-        atLeastOnePla |= (colors[loc] == pla);
-        continue;
-      }
-      int16_t regionIdx = numRegions;
-      numRegions++;
-      assert(numRegions <= maxRegions);
-
-      //Initialize region metadata
-      regionHeads[regionIdx] = loc; //Use loc itself as the head
-      vitalStart[regionIdx] = vitalForPlaHeadsListsTotal;
-      vitalLen[regionIdx] = 0;
-      numInternalSpacesMax2[regionIdx] = 0;
-      containsOpp[regionIdx] = false;
-
-      //Fill in all adjacent pla heads as vital, which will get filtered during buildRegion
-      {
-        uint16_t vStart = vitalStart[regionIdx];
-        assert(vStart + 4 <= vitalForPlaHeadsListsMaxLen);
-        uint16_t initialVLen = 0;
-        for(int i = 0; i<4; i++) {
-          Loc adj = loc + adj_offsets[i];
-          if(colors[adj] == pla) {
-            Loc plaHead = chain_head[adj];
-            bool alreadyPresent = false;
-            for(int j = 0; j<initialVLen; j++) {
-              if(vitalForPlaHeadsLists[vStart+j] == plaHead) {
-                alreadyPresent = true;
-                break;
-              }
-            }
-            if(!alreadyPresent) {
-              vitalForPlaHeadsLists[vStart+initialVLen] = plaHead;
-              initialVLen += 1;
-            }
-          }
-        }
-        vitalLen[regionIdx] = initialVLen;
-      }
-      Loc tailTarget = buildRegion(loc,regionIdx); //buildRegion uses loc itself as the head
-      nextEmptyOrOpp[loc] = tailTarget; //Close the circular linked list - loc points to buildRegion's tailTarget
-
-      vitalForPlaHeadsListsTotal += vitalLen[regionIdx];
-
-      // for(int k = 0; k<vitalLen[regionIdx]; k++)
-      //   cout << Location::toString(head,x_size) << "is vital for" << Location::toString(vitalForPlaHeadsLists[vitalStart[regionIdx]+k],x_size) << endl;
-    }
-  }
-
-  //Also accumulate all player heads
-  int numPlaHeads = 0;
-  Loc allPlaHeads[MAX_PLAY_SIZE];
-  for(Loc loc = 0; loc < MAX_ARR_SIZE; loc++) {
-    if(colors[loc] == pla && chain_head[loc] == loc)
-      allPlaHeads[numPlaHeads++] = loc;
-  }
-
-  bool plaHasBeenKilled[MAX_PLAY_SIZE];
-  memset(plaHasBeenKilled, false, sizeof(plaHasBeenKilled[0])*numPlaHeads);
-
-  //Zero out vital liberties by head
-  uint16_t vitalCountByPlaHead[MAX_ARR_SIZE];
-  for(int i = 0; i<numPlaHeads; i++)
-    vitalCountByPlaHead[allPlaHeads[i]] = 0;
-
-  //Walk all regions and accumulate a vital liberty to each pla it is vital for.
-  for(int i = 0; i<numRegions; i++) {
-    int vStart = vitalStart[i];
-    int vLen = vitalLen[i];
-    for(int j = 0; j<vLen; j++) {
-      Loc plaHead = vitalForPlaHeadsLists[vStart+j];
-      vitalCountByPlaHead[plaHead] += 1;
-    }
-  }
-
-  //Now, we can begin the benson iteration
-  while(true) {
-    //Walk all player heads and kill them if they haven't accumulated at least 2 vital liberties
-    bool killedAnything = false;
-    for(int i = 0; i<numPlaHeads; i++) {
-      //Already killed - skip
-      if(plaHasBeenKilled[i])
-        continue;
-
-      Loc plaHead = allPlaHeads[i];
-      if(vitalCountByPlaHead[plaHead] < 2) {
-        plaHasBeenKilled[i] = true;
-        killedAnything = true;
-        //Walk the pla chain to update bordering regions
-        Loc cur = plaHead;
-        do {
-          for(int j = 0; j<4; j++) {
-            Loc adj = cur + adj_offsets[j];
-            int16_t regionIdx = regionIdxByLoc[adj];
-            //Mark regions as no longer vital
-            if(regionIdx >= 0 && !bordersNonPassAlivePlaByHead[regionHeads[regionIdx]] && (colors[adj] == C_EMPTY || colors[adj] == opp)) {
-              bordersNonPassAlivePlaByHead[regionHeads[regionIdx]] = true;
-              //Decrement vitality for all pla chains that it was vital for.
-              int vStart = vitalStart[regionIdx];
-              int vLen = vitalLen[regionIdx];
-              for(int k = 0; k<vLen; k++) {
-                Loc plaH = vitalForPlaHeadsLists[vStart+k];
-                vitalCountByPlaHead[plaH] -= 1;
-              }
-            }
-          }
-          cur = next_in_chain[cur];
-        } while (cur != plaHead);
-      }
-    }
-    if(!killedAnything)
-      break;
-  }
-
-  //Debug - Make sure nothing overflowed
-  // for(int i = 0; i<numPlaHeads; i++)
-  //  assert(vitalCountByPlaHead[allPlaHeads[i]] >= 0 && vitalCountByPlaHead[allPlaHeads[i]] < 1000);
-
-  //Mark result with pass-alive groups
-  for(int i = 0; i<numPlaHeads; i++) {
-    if(!plaHasBeenKilled[i]) {
-      Loc plaHead = allPlaHeads[i];
-      Loc cur = plaHead;
-      do {
-        result[cur] = pla;
-        cur = next_in_chain[cur];
-      } while (cur != plaHead);
-    }
-  }
-
-  //Mark result with territory
-  for(int i = 0; i<numRegions; i++) {
-    Loc head = regionHeads[i];
-
-    //Mark pass alive territory and pass-alive stones and large empty regions bordered only own pass-alive stones unconditionally
-    //These should be mutually exclusive with these same regions but for the opponent, so this is safe.
-    //We need to mark unconditionally since we WILL sometimes overwrite points of the opponent's color marked earlier, in the
-    //case that the opponent was marking unsafeBigTerritories and marked an empty spot surrounded by a pass-dead group.
-    bool shouldMark = numInternalSpacesMax2[i] <= 1 && !bordersNonPassAlivePlaByHead[head] && atLeastOnePla; //internal space can be 2
-    shouldMark = shouldMark || (safeBigTerritories && !containsOpp[i] && !bordersNonPassAlivePlaByHead[head] && atLeastOnePla);
-    if(shouldMark) {
-      Loc cur = head;
-      do {
-        result[cur] = pla;
-        cur = nextEmptyOrOpp[cur];
-      } while (cur != head);
-    }
-    else {
-      //Mark unsafeBigTerritories only if the opponent didn't already claim the very stones we're using to surround it as
-      //pass-dead and therefore the whole thing as pass-alive-territory.
-      bool shouldMarkIfEmpty = (unsafeBigTerritories && !containsOpp[i] && atLeastOnePla);
-      if(shouldMarkIfEmpty) {
-        Loc cur = head;
-        do {
-          if(result[cur] == C_EMPTY)
-            result[cur] = pla;
-          cur = nextEmptyOrOpp[cur];
-        } while (cur != head);
-      }
-    }
-  }
-}
-
-
-void Board::calculateIndependentLifeAreaHelper(
-  const Color* basicArea,
-  Color* result,
-  int& whiteMinusBlackIndependentLifeRegionCount
-) const {
-  Loc queue[MAX_ARR_SIZE];
-  whiteMinusBlackIndependentLifeRegionCount = 0;
-
-  //Iterate through all the regions that players own via area scoring and mark
-  //all the ones that are touching dame OR that contain an atari stone
-  bool isSeki[MAX_ARR_SIZE];
-  for(int i = 0; i<MAX_ARR_SIZE; i++)
-    isSeki[i] = false;
-
-  int queueHead = 0;
-  int queueTail = 0;
-
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(basicArea[loc] != C_EMPTY && !isSeki[loc]) {
-        if(
-          //Stone of player owning the area is in atari? Treat as seki.
-          (colors[loc] == basicArea[loc] && getNumLiberties(loc) == 1) ||
-          //Touches dame? Treat as seki
-          ((colors[loc+ADJ0] == C_EMPTY && basicArea[loc+ADJ0] == C_EMPTY) ||
-           (colors[loc+ADJ1] == C_EMPTY && basicArea[loc+ADJ1] == C_EMPTY) ||
-           (colors[loc+ADJ2] == C_EMPTY && basicArea[loc+ADJ2] == C_EMPTY) ||
-           (colors[loc+ADJ3] == C_EMPTY && basicArea[loc+ADJ3] == C_EMPTY))
-        ) {
-          Player pla = basicArea[loc];
-          isSeki[loc] = true;
-          queue[queueTail++] = loc;
-          while(queueHead != queueTail) {
-            //Pop next location off queue
-            Loc nextLoc = queue[queueHead++];
-
-            //Look all around it, floodfill
-            FOREACHADJ(
-              Loc adj = nextLoc + ADJOFFSET;
-              if(basicArea[adj] == pla && !isSeki[adj]) {
-                isSeki[adj] = true;
-                queue[queueTail++] = adj;
-              }
-            );
-          }
-        }
-      }
-    }
-  }
-
-  queueHead = 0;
-  queueTail = 0;
-
-  //Now, walk through and copy all non-seki-touching basic areas into the result counting
-  //how many there are.
-  for(int y = 0; y < y_size; y++) {
-    for(int x = 0; x < x_size; x++) {
-      Loc loc = Location::getLoc(x,y,x_size);
-      if(basicArea[loc] != C_EMPTY && !isSeki[loc] && result[loc] != basicArea[loc]) {
-        Player pla = basicArea[loc];
-        whiteMinusBlackIndependentLifeRegionCount += (pla == P_WHITE ? 1 : -1);
-        result[loc] = basicArea[loc];
-        queue[queueTail++] = loc;
-        while(queueHead != queueTail) {
-          //Pop next location off queue
-          Loc nextLoc = queue[queueHead++];
-
-          //Look all around it, floodfill
-          FOREACHADJ(
-            Loc adj = nextLoc + ADJOFFSET;
-            if(basicArea[adj] == pla && result[adj] != basicArea[adj]) {
-              result[adj] = basicArea[adj];
-              queue[queueTail++] = adj;
-            }
-          );
-        }
-      }
-    }
-  }
-}
-
-
 
 void Board::checkConsistency() const {
   const string errLabel = string("Board::checkConsistency(): ");
@@ -1623,8 +1276,8 @@ void Board::checkConsistency() const {
     int y = Location::getY(ko_loc,x_size);
     if(x < 0 || x >= x_size || y < 0 || y >= y_size)
       throw StringError(errLabel + "Invalid simple ko loc");
-    if(getNumImmediateLiberties(ko_loc) != 0)
-      throw StringError(errLabel + "Simple ko loc has immediate liberties");
+    if(colors[ko_loc] != C_EMPTY)
+      throw StringError(errLabel + "Simple ko loc is not empty");
   }
 
   short tmpAdjOffsets[8];
@@ -2021,15 +1674,6 @@ Board Board::ofJson(const nlohmann::json& data) {
   return board;
 }
 
-
-bool Board::isAdjacentToPlaHead(Player pla, Loc loc, Loc plaHead) const {
-  FOREACHADJ(
-    Loc adj = loc + ADJOFFSET;
-    if(colors[adj] == pla && chain_head[adj] == plaHead)
-      return true;
-  );
-  return false;
-}
 
 //Count empty spaces in the connected empty region containing initialLoc (which must be empty)
 //not counting where emptyCounted == true, incrementing count each time and marking emptyCounted.

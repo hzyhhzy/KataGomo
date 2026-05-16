@@ -313,7 +313,7 @@ bool Search::isAllowedRootMove(Loc moveLoc) const {
   //A bad situation that can happen that unnecessarily prolongs training games is where one player
   //repeatedly passes and the other side repeatedly fills the opponent's space and/or suicides over and over.
   //To mitigate some of this and save computation, we make it so that at the root, if the last four moves by the opponent
-  //were passes, we will never play a move in either player's pass-alive area. In theory this could prune
+    //were passes, we will never play a move in either player's already-owned area. In theory this could prune
   //a good move in situations like https://senseis.xmp.net/?1EyeFlaw, but this should be extraordinarly rare,
   if(searchParams.rootPruneUselessMoves &&
      rootHistory.moveHistory.size() > 0 &&
@@ -370,7 +370,7 @@ double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) c
     //Areaish scoring - in an effort to keep the game short and slightly discourage pointless territory filling at the end
     //discourage any move that, except in case of ko, is either:
     // * On a spot that the opponent almost surely owns, unless it captures stones.
-    // * On a spot that the player almost surely owns and it is not adjacent to opponent stones and is not a connection of non-pass-alive groups.
+    // * On a spot that the player almost surely owns and it is not adjacent to opponent stones and is not a connection of groups outside owned area.
     //These conditions should still make it so that "cleanup" and dame-filling moves are not discouraged.
     // * When playing button go, very slightly discourage passing - so that if there are an even number of dame, filling a dame is still favored over passing.
     if(moveLoc != Board::PASS_LOC && rootBoard.ko_loc == Board::NULL_LOC) {
@@ -382,7 +382,7 @@ double Search::getEndingWhiteScoreBonus(const SearchNode& parent, Loc moveLoc) c
       }
       else if(plaOwnership >= extreme) {
         if(!rootBoard.isAdjacentToPla(moveLoc,getOpp(rootPla)) &&
-           !rootBoard.isNonPassAliveSelfConnection(moveLoc,rootPla,rootSafeArea)) {
+           !rootBoard.isSelfConnectionOutsideArea(moveLoc,rootPla,rootSafeArea)) {
           extraRootPoints -= searchParams.rootEndingBonusPoints * ((plaOwnership - extreme) / tail);
         }
       }

@@ -914,10 +914,10 @@ void NNInputs::fillRowV7(
   int groupTaxAdjustmentForPla = 0;
   if(true) {
     hasAreaFeature = true;
-    bool nonPassAliveStones = true;
-    bool safeBigTerritories = true;
-    bool unsafeBigTerritories = true;
-    board.calculateArea(area,nonPassAliveStones,safeBigTerritories,unsafeBigTerritories,hist.rules.multiStoneSuicideLegal);
+    bool legacyAreaParam0 = true;
+    bool legacyAreaParam1 = true;
+    bool legacyAreaParam2 = true;
+    board.calculateArea(area,legacyAreaParam0,legacyAreaParam1,legacyAreaParam2,hist.rules.multiStoneSuicideLegal);
   }
 
   bool finalPhaseAndGameEndWouldNotBeWin = false;

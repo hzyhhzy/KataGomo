@@ -100,7 +100,7 @@ struct Search {
   std::vector<int> rootSymmetries;
   std::vector<int> rootPruneOnlySymmetries;
 
-  //Strictly pass-alive areas in the root board position
+  //Tromp-Taylor areas in the root board position
   Color* rootSafeArea;
   //Used to center for dynamic scorevalue
   double recentScoreCenter;

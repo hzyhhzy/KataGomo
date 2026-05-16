@@ -993,16 +993,13 @@ void Search::recursivelyRecomputeStats(SearchNode& n) {
 
 
 void Search::computeRootValues() {
-  //rootSafeArea is strictly pass-alive groups and strictly safe territory.
-  bool nonPassAliveStones = false;
-  bool safeBigTerritories = false;
-  bool unsafeBigTerritories = false;
+  //rootSafeArea now uses the current Tromp-Taylor area map. The legacy arguments are ignored.
   bool isMultiStoneSuicideLegal = rootHistory.rules.multiStoneSuicideLegal;
   rootBoard.calculateArea(
     rootSafeArea,
-    nonPassAliveStones,
-    safeBigTerritories,
-    unsafeBigTerritories,
+    false,
+    false,
+    false,
     isMultiStoneSuicideLegal
   );
 

@@ -696,7 +696,7 @@ vector<double> PlayUtils::computeOwnership(
   return ownerships;
 }
 
-//Tromp-taylor-like scoring, except recognizes pass-dead stones.
+//Tromp-Taylor scoring: all stones still on the board are alive.
 vector<bool> PlayUtils::computeAnticipatedStatusesSimple(
   const Board& board,
   const BoardHistory& hist
@@ -713,7 +713,7 @@ vector<bool> PlayUtils::computeAnticipatedStatusesSimple(
       }
     }
   }
-  //Else use Tromp-taylorlike scoring, except recognizing pass-dead stones.
+  //Else use Tromp-Taylor scoring.
   else {
     Color area[Board::MAX_ARR_SIZE];
     BoardHistory histCopy = hist;

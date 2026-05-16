@@ -187,8 +187,8 @@ struct Board
   bool isAdjacentOrDiagonalToPla(Loc loc, Player pla) const;
   //Check if this location is adjacent a given chain.
   bool isAdjacentToChain(Loc loc, Loc chain) const;
-  //Does this connect two pla distinct groups that are not both pass-alive and not within opponent pass-alive area either?
-  bool isNonPassAliveSelfConnection(Loc loc, Player pla, Color* passAliveArea) const;
+  //Does this connect two pla distinct groups outside pla's already-owned area?
+  bool isSelfConnectionOutsideArea(Loc loc, Player pla, Color* area) const;
   //Is this board empty?
   bool isEmpty() const;
   //Count the number of stones on the board
@@ -237,27 +237,23 @@ struct Board
   //Get a random legal move that does not fill a simple eye.
   /* Loc getRandomMCLegal(Player pla); */
 
-  //If a point is a pass-alive stone or pass-alive territory for a color, mark it that color.
-  //If nonPassAliveStones, also marks non-pass-alive stones that are not part of the opposing pass-alive territory.
-  //If safeBigTerritories, also marks for each pla empty regions bordered by pla stones and no opp stones, where all pla stones are pass-alive.
-  //If unsafeBigTerritories, also marks for each pla empty regions bordered by pla stones and no opp stones, regardless.
-  //All other points are marked as C_EMPTY.
+  //Tromp-Taylor area: stones on board are alive and count for their color.
+  //Empty regions surrounded by exactly one color count for that color, and dame are C_EMPTY.
+  //Legacy area-mode arguments are ignored.
   //[result] must be a buffer of size MAX_ARR_SIZE and will get filled with the result
   void calculateArea(
     Color* result,
-    bool nonPassAliveStones,
-    bool safeBigTerritories,
-    bool unsafeBigTerritories,
+    bool legacyAreaParam0,
+    bool legacyAreaParam1,
+    bool legacyAreaParam2,
     bool isMultiStoneSuicideLegal
   ) const;
 
 
-  //Calculates the area (including non pass alive stones, safe and unsafe big territories)
-  //However, strips out any "seki" regions.
-  //Seki regions are that are adjacent to any remaining empty regions.
-  //If keepTerritories, then keeps the surrounded territories in seki regions, only strips points for stones.
-  //If keepStones, then keeps the stones, only strips points for surrounded territories.
-  //whiteMinusBlackIndependentLifeRegionCount - multiply this by two for a group tax.
+  //Calculates Tromp-Taylor area, optionally filtering to territory points or stone points.
+  //Independent-life region count is zero under this ruleset.
+  //If keepTerritories, then keeps surrounded territories.
+  //If keepStones, then keeps stones.
   void calculateIndependentLifeArea(
     Color* result,
     int& whiteMinusBlackIndependentLifeRegionCount,
@@ -317,22 +313,6 @@ struct Board
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 
   int findLiberties(Loc loc, std::vector<Loc>& buf, int bufStart, int bufIdx) const;
-  void calculateAreaForPla(
-    Player pla,
-    bool safeBigTerritories,
-    bool unsafeBigTerritories,
-    bool isMultiStoneSuicideLegal,
-    Color* result
-  ) const;
-
-  bool isAdjacentToPlaHead(Player pla, Loc loc, Loc plaHead) const;
-
-  void calculateIndependentLifeAreaHelper(
-    const Color* basicArea,
-    Color* result,
-    int& whiteMinusBlackIndependentLifeRegionCount
-  ) const;
-
   bool countEmptyHelper(bool* emptyCounted, Loc initialLoc, int& count, int bound) const;
 
   //static void monteCarloOwner(Player player, Board* board, int mc_counts[]);
