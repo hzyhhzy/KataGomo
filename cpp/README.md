@@ -6,7 +6,7 @@ Summary of source folders, in approximate dependency order, from lowest level to
 * `core` - Low-level utilities, sort of a layer on top of the standard library. Hashing, portable rand, string formatting and parsing, filesystem helpers, etc.
 * `game` - Board representation and rules.
   * `rules.{cpp,h}` - Lightweight struct representing all the combinations of rules KataGo supports.
-  * `board.{cpp,h}` - Raw board implementation, without move history. Helper functions for Benson's algorithm and ladder search.
+  * `board.{cpp,h}` - Raw board implementation, without move history. Helper functions for Benson's algorithm.
   * `boardhistory.{cpp,h}` - Datastructure that does include move history - handles superko, passing, game end, final scoring, komi, handicap detection, etc.
 * `neuralnet` - Neural net GPU implementation and interface. Contains both OpenCL and CUDA backends them.
   * `desc.{cpp.h}` - Data structure holding neural net structure and weights.

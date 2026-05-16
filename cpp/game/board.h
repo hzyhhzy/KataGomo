@@ -145,14 +145,6 @@ struct Board
   /*   int size_; */
   /* }; */
 
-  //Move data passed back when moves are made to allow for undos
-  struct MoveRecord {
-    Player pla;
-    Loc loc;
-    Loc ko_loc;
-    uint8_t capDirs; //First 4 bits indicate directions of capture, fifth bit indicates suicide
-  };
-
   //Constructors---------------------------------
   Board();  //Create Board of size (DEFAULT_LEN,DEFAULT_LEN)
   Board(int x, int y); //Create Board of size (x,y)
@@ -168,10 +160,6 @@ struct Board
   int getChainSize(Loc loc) const;
   //Gets the number of liberties of the chain at loc. Precondition: location must be black or white.
   int getNumLiberties(Loc loc) const;
-  //Returns the number of liberties a new stone placed here would have, or max if it would be >= max.
-  int getNumLibertiesAfterPlay(Loc loc, Player pla, int max) const;
-  //Returns a fast lower and upper bound on the number of liberties a new stone placed here would have
-  void getBoundNumLibertiesAfterPlay(Loc loc, Player pla, int& lowerBound, int& upperBound) const;
   //Gets the number of empty spaces directly adjacent to this location
   int getNumImmediateLiberties(Loc loc) const;
 
@@ -237,14 +225,6 @@ struct Board
   //Plays the specified move, assuming it is legal.
   void playMoveAssumeLegal(Loc loc, Player pla);
 
-  //Plays the specified move, assuming it is legal, and returns a MoveRecord for the move
-  MoveRecord playMoveRecorded(Loc loc, Player pla);
-
-  //Undo the move given by record. Moves MUST be undone in the order they were made.
-  //Undos will NOT typically restore the precise representation in the board to the way it was. The heads of chains
-  //might change, the order of the circular lists might change, etc.
-  void undo(MoveRecord record);
-
   //Get what the position hash would be if we were to play this move and resolve captures and suicides.
   //Assumes the move is on an empty location.
   Hash128 getPosHashAfterMove(Loc loc, Player pla) const;
@@ -256,11 +236,6 @@ struct Board
 
   //Get a random legal move that does not fill a simple eye.
   /* Loc getRandomMCLegal(Player pla); */
-
-  //Check if the given stone is in unescapable atari or can be put into unescapable atari.
-  //WILL perform a mutable search - may alter the linked lists or heads, etc.
-  bool searchIsLadderCaptured(Loc loc, bool defenderFirst, std::vector<Loc>& buf);
-  bool searchIsLadderCapturedAttackerFirst2Libs(Loc loc, std::vector<Loc>& buf, std::vector<Loc>& workingMoves);
 
   //If a point is a pass-alive stone or pass-alive territory for a color, mark it that color.
   //If nonPassAliveStones, also marks non-pass-alive stones that are not part of the opposing pass-alive territory.
@@ -328,7 +303,6 @@ struct Board
 
   private:
   void init(int xS, int yS);
-  int countHeuristicConnectionLibertiesX2(Loc loc, Player pla) const;
   bool isLibertyOf(Loc loc, Loc head) const;
   void mergeChains(Loc loc1, Loc loc2);
   int removeChain(Loc loc);
@@ -343,9 +317,6 @@ struct Board
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 
   int findLiberties(Loc loc, std::vector<Loc>& buf, int bufStart, int bufIdx) const;
-  int findLibertyGainingCaptures(Loc loc, std::vector<Loc>& buf, int bufStart, int bufIdx) const;
-  bool hasLibertyGainingCaptures(Loc loc) const;
-
   void calculateAreaForPla(
     Player pla,
     bool safeBigTerritories,
