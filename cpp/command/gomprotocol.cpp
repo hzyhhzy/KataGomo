@@ -1448,10 +1448,10 @@ int MainCmds::gomprotocol(const vector<string>& args) {
   logger.write("GTP ready, beginning main protocol loop");
   // Also check loggingToStderr so that we don't duplicate the message from the log file
   cout << "MESSAGE QQ:2658628026" << endl;
-  cout << "MESSAGE Source code: (https://github.com/hzyhhzy/KataGomo/tree/Gom2024)" << endl;
+  cout << "MESSAGE Source code: (https://github.com/hzyhhzy/KataGomo/tree/Gom2026)" << endl;
 #ifdef FORGOMOCUP
   cout << "MESSAGE This is a special version for Gomocup. It works only on CPU. If you want full strength version, please "
-          "download it on https://github.com/hzyhhzy/KataGomo/releases.  "
+          "download it on https://github.com/hzyhhzy/KataGomo/releases or http://www.zhizigomoku.cn/.  "
        << endl;
 
 #endif
