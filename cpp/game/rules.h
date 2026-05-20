@@ -7,20 +7,19 @@
 #include "../external/nlohmann_json/json.hpp"
 
 struct Rules {
-  static const int BASICRULE_FREESTYLE = 0;  // connect >= 6 to win
-  static const int BASICRULE_STANDARD = 1;  // connect == 6 to win
-  static const int BASICRULE_CON7 = 2;  // connect >= 7 to win
-  static const int BASICRULE_DCON5 = 3;  // axial only, connect >= 5 to win
-  static const int NUM_BASIC_RULES = 4;
+  static const int BASICRULE_DEFAULT = 0;
+  static const int NUM_BASIC_RULES = 1;
   int basicRule;
 
+  float komi;
 
-  int maxMoves;
+  static constexpr float MIN_USER_KOMI = -750.0f;
+  static constexpr float MAX_USER_KOMI = 750.0f;
 
   Rules();
   Rules(
     int basicRule,
-    int maxMoves
+    float komi
   );
   ~Rules();
 
@@ -33,6 +32,7 @@ struct Rules {
   static std::set<std::string> basicRuleStrings();
   static int parseBasicRule(const std::string& s);
   static std::string writeBasicRule(int basicRule);
+  static bool komiIsIntOrHalfInt(float komi);
 
 
   static Rules parseRules(const std::string& str);
@@ -47,7 +47,7 @@ struct Rules {
   nlohmann::json toJson() const;
 
   static const Hash128 ZOBRIST_BASIC_RULE_HASH[NUM_BASIC_RULES];
-  static const Hash128 ZOBRIST_MAXMOVES_HASH_BASE;
+  static const Hash128 ZOBRIST_KOMI_HASH_BASE;
 
 };
 

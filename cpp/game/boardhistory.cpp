@@ -17,6 +17,7 @@ BoardHistory::BoardHistory()
    currentRecentBoardIdx(0),
    presumedNextMovePla(P_BLACK),
    isGameFinished(false),winner(C_EMPTY),
+   finalWhiteMinusBlackScore(0.0),isScored(false),
    isNoResult(false),isResignation(false)
 {
 }
@@ -35,6 +36,7 @@ BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
    currentRecentBoardIdx(0),
    presumedNextMovePla(pla),
    isGameFinished(false),winner(C_EMPTY),
+   finalWhiteMinusBlackScore(0.0),isScored(false),
    isNoResult(false),isResignation(false)
 {
 
@@ -52,6 +54,7 @@ BoardHistory::BoardHistory(const BoardHistory& other)
    currentRecentBoardIdx(other.currentRecentBoardIdx),
    presumedNextMovePla(other.presumedNextMovePla),
    isGameFinished(other.isGameFinished),winner(other.winner),
+   finalWhiteMinusBlackScore(other.finalWhiteMinusBlackScore),isScored(other.isScored),
    isNoResult(other.isNoResult),isResignation(other.isResignation)
 {
   std::copy(other.recentBoards, other.recentBoards+NUM_RECENT_BOARDS, recentBoards);
@@ -73,6 +76,8 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
   presumedNextMovePla = other.presumedNextMovePla;
   isGameFinished = other.isGameFinished;
   winner = other.winner;
+  finalWhiteMinusBlackScore = other.finalWhiteMinusBlackScore;
+  isScored = other.isScored;
   isNoResult = other.isNoResult;
   isResignation = other.isResignation;
 
@@ -90,6 +95,7 @@ BoardHistory::BoardHistory(BoardHistory&& other) noexcept
   currentRecentBoardIdx(other.currentRecentBoardIdx),
   presumedNextMovePla(other.presumedNextMovePla),
   isGameFinished(other.isGameFinished),winner(other.winner),
+  finalWhiteMinusBlackScore(other.finalWhiteMinusBlackScore),isScored(other.isScored),
   isNoResult(other.isNoResult),isResignation(other.isResignation)
 {
   std::copy(other.recentBoards, other.recentBoards+NUM_RECENT_BOARDS, recentBoards);
@@ -108,6 +114,8 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
   presumedNextMovePla = other.presumedNextMovePla;
   isGameFinished = other.isGameFinished;
   winner = other.winner;
+  finalWhiteMinusBlackScore = other.finalWhiteMinusBlackScore;
+  isScored = other.isScored;
   isNoResult = other.isNoResult;
   isResignation = other.isResignation;
 
@@ -134,6 +142,8 @@ void BoardHistory::clear(const Board& board, Player pla, const Rules& r) {
 
   isGameFinished = false;
   winner = C_EMPTY;
+  finalWhiteMinusBlackScore = 0.0;
+  isScored = false;
   isNoResult = false;
   isResignation = false;
 
@@ -161,7 +171,7 @@ void BoardHistory::printDebugInfo(ostream& out, const Board& board) const {
   out << "Rules " << rules << endl;
   out << "Presumed next pla " << PlayerIO::playerToString(presumedNextMovePla) << endl;
   out << "Game result " << isGameFinished << " " << PlayerIO::playerToString(winner) << " "
-      << isNoResult << " " << isResignation << endl;
+      << finalWhiteMinusBlackScore << " " << isScored << " " << isNoResult << " " << isResignation << endl;
   out << "Last moves ";
   for(int i = 0; i<moveHistory.size(); i++)
     out << Location::toString(moveHistory[i].loc,board) << " ";
@@ -181,19 +191,34 @@ const Board& BoardHistory::getRecentBoard(int numMovesAgo) const {
 
 void BoardHistory::setWinnerByResignation(Player pla) {
   isGameFinished = true;
+  isScored = false;
   isNoResult = false;
   isResignation = true;
   winner = pla;
+  finalWhiteMinusBlackScore = 0.0;
 }
 
 void BoardHistory::setWinner(Player pla) {
   isGameFinished = true;
+  isScored = false;
   isNoResult = false;
   isResignation = false;
   winner = pla;
+  finalWhiteMinusBlackScore = 0.0;
+}
+
+void BoardHistory::setNoResult() {
+  isGameFinished = true;
+  isScored = false;
+  isNoResult = true;
+  isResignation = false;
+  winner = C_EMPTY;
+  finalWhiteMinusBlackScore = 0.0;
 }
 
 bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) const {
+  if(board.isKoBanned(moveLoc))
+    return false;
   if(!board.isLegal(moveLoc,movePla))
     return false;
 
@@ -204,9 +229,13 @@ bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) cons
 
 
 bool BoardHistory::isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const {
+  if(board.isKoBanned(moveLoc))
+    return false;
   return board.isLegal(moveLoc, movePla);
 }
 bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla) {
+  if(board.isKoBanned(moveLoc))
+    return false;
   if(!board.isLegal(moveLoc,movePla))
     return false;
   makeBoardMoveAssumeLegal(board,moveLoc,movePla);
@@ -219,15 +248,10 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   //If somehow we're making a move after the game was ended, just clear those values and continue
   isGameFinished = false;
   winner = C_EMPTY;
+  finalWhiteMinusBlackScore = 0.0;
+  isScored = false;
   isNoResult = false;
   isResignation = false;
-
-  
-  int hashCountBeforePlay = posHashHistoryCount.count(board.pos_hash);
-  bool isCopyStone = board.stage == 0 && board.colors[moveLoc]==C_EMPTY;
-
-  if(isCopyStone || hashCountBeforePlay>=2)
-    posHashHistoryCount.clear();
 
   bool isLegalPass = moveLoc == Board::PASS_LOC && board.stage == 0;
 
@@ -250,6 +274,8 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc,isLegalPass);
   if(maybeWinner!=C_WALL) { //game finished
     setWinner(maybeWinner);
+    finalWhiteMinusBlackScore = board.calculateAreaScoreWhiteMinusBlack(rules.komi);
+    isScored = true;
   }
 
 }
@@ -259,12 +285,11 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
 Hash128 BoardHistory::getRulesHash() const {
   Hash128 hash = Hash128();
   hash ^= Rules::ZOBRIST_BASIC_RULE_HASH[rules.basicRule];
-  if(rules.maxMoves != 0) {
-    hash ^= Hash128(
-      Hash::murmurMix(Rules::ZOBRIST_MAXMOVES_HASH_BASE.hash0 + (uint64_t)rules.maxMoves),
-      Hash::nasam(Rules::ZOBRIST_MAXMOVES_HASH_BASE.hash1 - (uint64_t)rules.maxMoves)
-    );
-  }
+  int64_t komiDiscretized = (int64_t)(rules.komi * 256.0f);
+  hash ^= Hash128(
+    Hash::murmurMix(Rules::ZOBRIST_KOMI_HASH_BASE.hash0 + (uint64_t)komiDiscretized),
+    Hash::nasam(Rules::ZOBRIST_KOMI_HASH_BASE.hash1 - (uint64_t)komiDiscretized)
+  );
   return hash;
 }
 
@@ -272,6 +297,8 @@ Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHisto
  //Note that board.pos_hash also incorporates the size of the board.
   Hash128 hash = board.pos_hash;
   hash ^= Board::ZOBRIST_PLAYER_HASH[nextPlayer];
+  if(board.ko_loc != Board::NULL_LOC)
+    hash ^= Board::ZOBRIST_KO_LOC_HASH[board.ko_loc];
 
   hash ^= hist.getRulesHash();
   return hash;

@@ -45,14 +45,6 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   (void)logger;
 
 
-  allowedBasicRuleStrs = cfg.getStrings("basicRules", Rules::basicRuleStrings());
-  for(size_t i = 0; i < allowedBasicRuleStrs.size(); i++)
-    allowedBasicRules.push_back(Rules::parseBasicRule(allowedBasicRuleStrs[i]));
-  if(allowedBasicRules.size() <= 0)
-    throw IOError("basicRules must have at least one value in " + cfg.getFileName());
-  
-  moveLimitProb = cfg.contains("moveLimitProb") ? cfg.getDouble("moveLimitProb", 0.0, 1.0) : 0.0;
-
   randomInitialStonesProb = cfg.contains("randomInitialStonesProb") ? cfg.getDouble("randomInitialStonesProb", 0.0, 1.0) : 0.0;
   banLocProb = cfg.contains("banLocProb") ? cfg.getDouble("banLocProb", 0.0, 1.0) : 0.0;
   banLocAreaPropAvg = cfg.contains("banLocAreaPropAvg") ? cfg.getDouble("banLocAreaPropAvg", 0.0, 1.0) : 0.12;
@@ -305,7 +297,6 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
-  rules.basicRule = allowedBasicRules[rand.nextUInt(allowedBasicRules.size())];
   return rules;
 }
 
@@ -445,49 +436,6 @@ void GameInitializer::createGameSharedUnsynchronized(
           }
         }
       }
-    }
-
-    if(rand.nextBool(moveLimitProb)) {
-      int maxMoves = 0;
-      static_assert(Rules::NUM_BASIC_RULES == 4, "Unexpected number of basic rules for random max moves");
-      if(
-        rules.basicRule == Rules::BASICRULE_FREESTYLE || rules.basicRule == Rules::BASICRULE_STANDARD ) {
-        if(rand.nextBool(0.7))
-          maxMoves = rand.nextExponential() * 30 + 40 - rand.nextExponential() * 5;
-        else if(rand.nextBool(0.8))
-          maxMoves = rand.nextExponential() * 100 + 50 - rand.nextExponential() * 25;
-        else
-          maxMoves = rand.nextExponential() * 300 + 100 - rand.nextExponential() * 25;
-        if(maxMoves > board.numPlaStonesOnBoard(C_EMPTY) - 10)
-          maxMoves = 0;
-        if(maxMoves < 10)
-          maxMoves = 0;
-      }
-      else if(
-        rules.basicRule == Rules::BASICRULE_DCON5) {
-        if(rand.nextBool(0.7))
-          maxMoves = rand.nextExponential() * 40 + 70 - rand.nextExponential() * 10;
-        else if(rand.nextBool(0.8))
-          maxMoves = rand.nextExponential() * 100 + 50 - rand.nextExponential() * 25;
-        else
-          maxMoves = rand.nextExponential() * 300 + 100 - rand.nextExponential() * 25;
-        if(maxMoves > board.numPlaStonesOnBoard(C_EMPTY) - 10)
-          maxMoves = 0;
-        if(maxMoves < 10)
-          maxMoves = 0;
-      }
-      else if (rules.basicRule == Rules::BASICRULE_CON7) {
-        if(rand.nextBool(0.8))
-          maxMoves = rand.nextExponential() * 100 + 70 - rand.nextExponential() * 25;
-        else
-          maxMoves = rand.nextExponential() * 300 + 100 - rand.nextExponential() * 25;
-        if(maxMoves > board.numPlaStonesOnBoard(C_EMPTY) - 10)
-          maxMoves = 0;
-        if(maxMoves < 10)
-          maxMoves = 0;
-
-      }
-      rules.maxMoves = maxMoves;
     }
 
     pla = P_BLACK;
@@ -1501,6 +1449,8 @@ FinishedGameData* Play::runGame(
     //And make the move on our copy of the board
     assert(hist.isLegal(board,loc,pla));
     hist.makeBoardMoveAssumeLegal(board,loc,pla);
+    if(!hist.isGameFinished && hist.moveHistory.size() >= (size_t)(board.boardArea() * 3))
+      hist.setNoResult();
 
     //Check for resignation
     if(allowResign && historicalMctsWinLossValues.size() >= playSettings.resignConsecTurns) {

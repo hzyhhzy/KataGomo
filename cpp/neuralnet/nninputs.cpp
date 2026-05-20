@@ -775,30 +775,8 @@ void NNInputs::fillRowV7(
   } else
     ASSERT_UNREACHABLE;
 
-  if(hist.rules.basicRule == Rules::BASICRULE_FREESTYLE)
-    {}
-  else if(hist.rules.basicRule == Rules::BASICRULE_STANDARD)
-    rowGlobal[3] = 1.0f;
-  else if(hist.rules.basicRule == Rules::BASICRULE_CON7)
-    rowGlobal[11] = 1.0f;
-  else if(hist.rules.basicRule == Rules::BASICRULE_DCON5)
-    rowGlobal[12] = 1.0f;
-  else
-    ASSERT_UNREACHABLE;
-
-  if(hist.rules.maxMoves > 0) {
-    double t = hist.rules.maxMoves - hist.initialTurnNumber - (int)hist.moveHistory.size();
-    if(t < 0.0)
-      t = 0.0;
-    double volume = board.boardVolume();
-    rowGlobal[4] = (float)exp(-t / 3.0);
-    rowGlobal[5] = (float)exp(-t / 10.0);
-    rowGlobal[6] = (float)exp(-t / 30.0);
-    rowGlobal[7] = (float)exp(-t / 100.0);
-    rowGlobal[8] = (float)exp(-t / 300.0);
-    rowGlobal[9] = (float)exp(-t / 1000.0);
-    rowGlobal[10] = (float)(t / volume);
-  }
+  float selfKomi = pla == C_WHITE ? hist.rules.komi : -hist.rules.komi;
+  rowGlobal[4] = selfKomi / 20.0f;
 
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.

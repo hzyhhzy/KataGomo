@@ -2,72 +2,68 @@
 
 #include "../external/nlohmann_json/json.hpp"
 
+#include <cmath>
 #include <sstream>
 
 using namespace std;
 using json = nlohmann::json;
 
 Rules::Rules() {
-  basicRule = BASICRULE_FREESTYLE;
-  maxMoves = 0;
+  basicRule = BASICRULE_DEFAULT;
+  komi = 7.5f;
 }
 
 Rules::Rules(
-  int basicRule,
-  int maxMoves
+  int bRule,
+  float km
 )
-  :basicRule(basicRule), maxMoves(maxMoves) {}
+  :basicRule(bRule),
+   komi(km)
+{}
 
 Rules::~Rules() {
 }
 
 bool Rules::operator==(const Rules& other) const {
-  return basicRule == other.basicRule && maxMoves == other.maxMoves;
+  return basicRule == other.basicRule && komi == other.komi;
 }
 
 bool Rules::operator!=(const Rules& other) const {
   return !(*this == other);
 }
 
-
 Rules Rules::getTrompTaylorish() {
   Rules rules;
+  rules.basicRule = BASICRULE_DEFAULT;
+  rules.komi = 7.5f;
   return rules;
 }
 
 set<string> Rules::basicRuleStrings() {
-  return {"FREESTYLE", "STANDARD", "CON7", "DCON5"};
+  return {"DEFAULT"};
 }
 
 int Rules::parseBasicRule(const string& s) {
   string value = Global::toUpper(s);
-  if(value == "FREESTYLE")
-    return BASICRULE_FREESTYLE;
-  if(value == "STANDARD")
-    return BASICRULE_STANDARD;
-  if(value == "CON7")
-    return BASICRULE_CON7;
-  if(value == "DCON5")
-    return BASICRULE_DCON5;
+  if(value == "DEFAULT" || value == "BASICRULE_DEFAULT")
+    return BASICRULE_DEFAULT;
   throw IOError("Rules::parseBasicRule: Invalid basic rule: " + s);
 }
 
 string Rules::writeBasicRule(int basicRule) {
-  if(basicRule == BASICRULE_FREESTYLE)
-    return "FREESTYLE";
-  if(basicRule == BASICRULE_STANDARD)
-    return "STANDARD";
-  if(basicRule == BASICRULE_CON7)
-    return "CON7";
-  if(basicRule == BASICRULE_DCON5)
-    return "DCON5";
+  if(basicRule == BASICRULE_DEFAULT)
+    return "DEFAULT";
   return "UNKNOWN";
 }
-ostream& operator<<(ostream& out, const Rules& rules) {
-  out << "basicrule" << Rules::writeBasicRule(rules.basicRule) << "maxmoves" << rules.maxMoves;
-  return out;
+
+bool Rules::komiIsIntOrHalfInt(float komi) {
+  return std::isfinite(komi) && komi * 2 == (int)(komi * 2);
 }
 
+ostream& operator<<(ostream& out, const Rules& rules) {
+  out << "basicrule" << Rules::writeBasicRule(rules.basicRule) << "komi" << rules.komi;
+  return out;
+}
 
 string Rules::toString() const {
   ostringstream out;
@@ -79,15 +75,12 @@ string Rules::toJsonString() const {
   return toJson().dump();
 }
 
-//omitDefaults: Takes up a lot of string space to include stuff, so omit some less common things if matches tromp-taylor rules
-//which is the default for parsing and if not otherwise specified
 json Rules::toJson() const {
   json ret;
   ret["basicrule"] = writeBasicRule(basicRule);
-  ret["maxmoves"] = maxMoves;
+  ret["komi"] = komi;
   return ret;
 }
-
 
 Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   Rules rules = oldRules;
@@ -95,40 +88,28 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   string value = Global::trim(Global::toUpper(v));
   if(key == "basicrule" || key == "basicrules")
     rules.basicRule = Rules::parseBasicRule(value);
-  else if(key == "maxmoves") {
-    int newMaxMoves = oldRules.maxMoves;
-    bool suc = Global::tryStringToInt(value, newMaxMoves);
-    if(suc && newMaxMoves >= 0)
-      rules.maxMoves = newMaxMoves;
+  else if(key == "komi") {
+    float newKomi = oldRules.komi;
+    bool suc = Global::tryStringToFloat(value, newKomi);
+    if(suc && newKomi >= MIN_USER_KOMI && newKomi <= MAX_USER_KOMI && komiIsIntOrHalfInt(newKomi))
+      rules.komi = newKomi;
     else
-      throw IOError("Wrong maxmoves: " + value + ", maxmoves should be a non-negative integer");
-  } else
+      throw IOError("Wrong komi: " + value + ", komi should be a half-integer in the supported range");
+  }
+  else
     throw IOError("Unknown rules option: " + key);
   return rules;
 }
 
 static Rules parseRulesHelper(const string& sOrig) {
-  Rules rules;
+  Rules rules = Rules::getTrompTaylorish();
   string lowercased = Global::trim(Global::toLower(sOrig));
 
-  if(lowercased == "freestyle") {
-    rules.basicRule = Rules::BASICRULE_FREESTYLE;
-    rules.maxMoves = 0;
-  }
-  else if(lowercased == "standard") {
-    rules.basicRule = Rules::BASICRULE_STANDARD;
-    rules.maxMoves = 0;
-  }
-  else if(lowercased == "con7") {
-    rules.basicRule = Rules::BASICRULE_CON7;
-    rules.maxMoves = 0;
-  }
-  else if(lowercased == "dcon5") {
-    rules.basicRule = Rules::BASICRULE_DCON5;
-    rules.maxMoves = 0;
+  if(lowercased == "default" || lowercased == "tromp-taylor" || lowercased == "tromp_taylor" ||
+     lowercased == "tromp taylor" || lowercased == "tromptaylor") {
+    return rules;
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
-    rules = Rules::getTrompTaylorish();
     try {
       json input = json::parse(sOrig);
       for(json::iterator iter = input.begin(); iter != input.end(); ++iter) {
@@ -141,8 +122,6 @@ static Rules parseRulesHelper(const string& sOrig) {
       throw IOError("Could not parse rules: " + sOrig);
     }
   }
-
-  //This is more of a legacy internal format, not recommended for users to provide
   else {
     auto startsWithAndStrip = [](string& str, const string& prefix) {
       bool matches = str.length() >= prefix.length() && str.substr(0,prefix.length()) == prefix;
@@ -152,13 +131,7 @@ static Rules parseRulesHelper(const string& sOrig) {
       return matches;
     };
 
-    //Default if not specified
-    rules = Rules::getTrompTaylorish();
-
-    string s = sOrig;
-    s = Global::trim(s);
-
-    //But don't allow the empty string
+    string s = Global::trim(sOrig);
     if(s.length() <= 0)
       throw IOError("Could not parse rules: " + sOrig);
 
@@ -167,37 +140,27 @@ static Rules parseRulesHelper(const string& sOrig) {
         break;
 
       if(startsWithAndStrip(s,"basicrule")) {
-        auto ruleSet = Rules::basicRuleStrings();
-        bool found = false;
-        for(const string& rule : ruleSet) {
-          if(startsWithAndStrip(s, Global::toLower(rule))) {
-            rules.basicRule = Rules::parseBasicRule(rule);
-            found = true;
-            break;
-          }
-        }
-        if(!found)
+        if(startsWithAndStrip(s,"default"))
+          rules.basicRule = Rules::BASICRULE_DEFAULT;
+        else
           throw IOError("Could not parse rules: " + sOrig);
         continue;
       }
-      if(startsWithAndStrip(s, "maxmoves")) {
+      if(startsWithAndStrip(s,"komi")) {
         int endIdx = 0;
-        while(endIdx < s.length() && Global::isDigit(s[endIdx]))
+        while(endIdx < s.length() && !Global::isAlpha(s[endIdx]) && !Global::isWhitespace(s[endIdx]))
           endIdx++;
-        int maxMoves;
-        bool suc = Global::tryStringToInt(s.substr(0, endIdx), maxMoves);
-        if(!suc)
+        float komi;
+        bool suc = Global::tryStringToFloat(s.substr(0,endIdx), komi);
+        if(!suc || !std::isfinite(komi) || komi > Rules::MAX_USER_KOMI || komi < Rules::MIN_USER_KOMI || !Rules::komiIsIntOrHalfInt(komi))
           throw IOError("Could not parse rules: " + sOrig);
-        if(maxMoves < 0 || maxMoves > 100000000)
-          throw IOError("Could not parse rules: " + sOrig);
-        rules.maxMoves = maxMoves;
+        rules.komi = komi;
         s = s.substr(endIdx);
         s = Global::trim(s);
         continue;
       }
 
-      //Unknown rules format
-      else throw IOError("Could not parse rules: " + sOrig);
+      throw IOError("Could not parse rules: " + sOrig);
     }
   }
 
@@ -205,21 +168,14 @@ static Rules parseRulesHelper(const string& sOrig) {
 }
 
 string Rules::toStringMaybeNice() const {
-  if(*this == parseRulesHelper("freestyle"))
-    return "freestyle";
-  if(*this == parseRulesHelper("standard"))
-    return "standard";
-  if(*this == parseRulesHelper("con7"))
-    return "con7";
-  if(*this == parseRulesHelper("dcon5"))
-    return "dcon5";
+  if(*this == parseRulesHelper("tromp-taylor"))
+    return "tromp-taylor";
   return toString();
 }
 
 Rules Rules::parseRules(const string& sOrig) {
   return parseRulesHelper(sOrig);
 }
-
 
 bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
   Rules rules;
@@ -229,14 +185,9 @@ bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
   return true;
 }
 
-
-
-
 const Hash128 Rules::ZOBRIST_BASIC_RULE_HASH[Rules::NUM_BASIC_RULES] = {
   Hash128(0x72eeccc72c82a5e7ULL, 0x0d1265e413623e2bULL),
-  Hash128(0x125bfe48a41042d5ULL, 0x061866b5f2b98a79ULL),
-  Hash128(0xad2e6415c78086c7ULL, 0xe2d49ea6690a385cULL),
-  Hash128(0xdcdaf38baaabd7d9ULL, 0x1197673d4b7593ffULL),
 };
-const Hash128 Rules::ZOBRIST_MAXMOVES_HASH_BASE =
+
+const Hash128 Rules::ZOBRIST_KOMI_HASH_BASE =
   Hash128(0x8aba00580c378fe8ULL, 0x7f6c1210e74fb440ULL);

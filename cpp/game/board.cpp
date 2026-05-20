@@ -26,6 +26,7 @@ Hash128 Board::ZOBRIST_STAGENUM_HASH[STAGE_NUM_EACH_PLA];
 Hash128 Board::ZOBRIST_STAGELOC_HASH[MAX_EXTENDED_ARR_SIZE][STAGE_NUM_EACH_PLA];
 Hash128 Board::ZOBRIST_NEXTPLA_HASH[4];
 Hash128 Board::ZOBRIST_PLAYER_HASH[4];
+Hash128 Board::ZOBRIST_KO_LOC_HASH[MAX_EXTENDED_ARR_SIZE];
 const Hash128 Board::ZOBRIST_GAME_IS_OVER = //Based on sha256 hash of Board::ZOBRIST_GAME_IS_OVER
   Hash128(0xb6f9e465597a77eeULL, 0xf1d583d960a4ce7fULL);
 
@@ -57,16 +58,14 @@ int Location::getZ(Loc loc, int x_size, int y_size)
 int Location::getAdjacentOffsets(short adj_offsets[26], int x_size, int y_size, int z_size)
 {
   int count = 0;
-  for(int dz = -1; dz <= 1; dz++) {
-    for(int dy = -1; dy <= 1; dy++) {
-      for(int dx = -1; dx <= 1; dx++) {
-        if(dx == 0 && dy == 0 && dz == 0)
-          continue;
-        adj_offsets[count++] = (short)(dx + dy*x_size + dz*x_size*y_size);
-      }
-    }
+  adj_offsets[count++] = (short)1;
+  adj_offsets[count++] = (short)-1;
+  adj_offsets[count++] = (short)x_size;
+  adj_offsets[count++] = (short)-x_size;
+  if(z_size > 1) {
+    adj_offsets[count++] = (short)(x_size*y_size);
+    adj_offsets[count++] = (short)(-x_size*y_size);
   }
-  (void)z_size;
   return count;
 }
 
@@ -80,7 +79,7 @@ bool Location::isAdjacent(Loc loc0, Loc loc1, int x_size, int y_size, int z_size
   int dy = getY(loc1,x_size,y_size) - getY(loc0,x_size,y_size);
   int dz = getZ(loc1,x_size,y_size) - getZ(loc0,x_size,y_size);
   (void)z_size;
-  return std::max({std::abs(dx),std::abs(dy),std::abs(dz)}) == 1;
+  return std::abs(dx) + std::abs(dy) + std::abs(dz) == 1;
 }
 
 
@@ -140,6 +139,7 @@ Board::Board(const Board& other)
   adj_offset_count = other.adj_offset_count;
 
   nextPla = other.nextPla;
+  ko_loc = other.ko_loc;
   stage = other.stage;
   memcpy(midLocs, other.midLocs, sizeof(Loc) * STAGE_NUM_EACH_PLA);
 }
@@ -178,6 +178,7 @@ void Board::init(int xS, int yS, int zS)
     midLocs[i] = Board::NULL_LOC;
   }
   nextPla = C_BLACK;
+  ko_loc = Board::NULL_LOC;
   stage = 0;
 
   pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size] ^ ZOBRIST_SIZE_Z_HASH[z_size] ^ ZOBRIST_NEXTPLA_HASH[nextPla] ^
@@ -223,6 +224,11 @@ void Board::initHash()
   for(Color j = 0; j < 4; j++) {
     ZOBRIST_NEXTPLA_HASH[j] = nextHash();
   }
+
+  for(int i = 0; i < MAX_EXTENDED_ARR_SIZE; i++) {
+    ZOBRIST_KO_LOC_HASH[i] = nextHash();
+  }
+  ZOBRIST_KO_LOC_HASH[Board::NULL_LOC] = Hash128();
 
 
 
@@ -288,6 +294,147 @@ bool Board::isCubical() const {
   return x_size == y_size && y_size == z_size;
 }
 
+static void getAdjacentLocs(const Board& board, Loc loc, Loc* adjs, int& numAdjs) {
+  numAdjs = 0;
+  int x = Location::getX(loc, board.x_size);
+  int y = Location::getY(loc, board.x_size, board.y_size);
+  int z = Location::getZ(loc, board.x_size, board.y_size);
+  if(x > 0)
+    adjs[numAdjs++] = Location::getLoc(x-1,y,z,board.x_size,board.y_size);
+  if(x+1 < board.x_size)
+    adjs[numAdjs++] = Location::getLoc(x+1,y,z,board.x_size,board.y_size);
+  if(y > 0)
+    adjs[numAdjs++] = Location::getLoc(x,y-1,z,board.x_size,board.y_size);
+  if(y+1 < board.y_size)
+    adjs[numAdjs++] = Location::getLoc(x,y+1,z,board.x_size,board.y_size);
+  if(z > 0)
+    adjs[numAdjs++] = Location::getLoc(x,y,z-1,board.x_size,board.y_size);
+  if(z+1 < board.z_size)
+    adjs[numAdjs++] = Location::getLoc(x,y,z+1,board.x_size,board.y_size);
+}
+
+static void collectGroup(const Board& board, Loc loc, vector<Loc>& stones, bool* visited) {
+  stones.clear();
+  Color pla = board.colors[loc];
+  if(pla != C_BLACK && pla != C_WHITE)
+    return;
+  vector<Loc> stack;
+  stack.push_back(loc);
+  visited[loc] = true;
+  while(!stack.empty()) {
+    Loc cur = stack.back();
+    stack.pop_back();
+    stones.push_back(cur);
+    Loc adjs[6];
+    int numAdjs = 0;
+    getAdjacentLocs(board, cur, adjs, numAdjs);
+    for(int i = 0; i < numAdjs; i++) {
+      Loc adj = adjs[i];
+      if(!visited[adj] && board.colors[adj] == pla) {
+        visited[adj] = true;
+        stack.push_back(adj);
+      }
+    }
+  }
+}
+
+static int countGroupLiberties(const Board& board, const vector<Loc>& stones) {
+  bool seenLibs[Board::MAX_PLAY_SIZE];
+  std::fill(seenLibs, seenLibs + Board::MAX_PLAY_SIZE, false);
+  int numLibs = 0;
+  for(Loc stone: stones) {
+    Loc adjs[6];
+    int numAdjs = 0;
+    getAdjacentLocs(board, stone, adjs, numAdjs);
+    for(int i = 0; i < numAdjs; i++) {
+      Loc adj = adjs[i];
+      if(board.colors[adj] == C_EMPTY && !seenLibs[adj]) {
+        seenLibs[adj] = true;
+        numLibs += 1;
+      }
+    }
+  }
+  return numLibs;
+}
+
+bool Board::isKoBanned(Loc loc) const {
+  return loc == ko_loc;
+}
+
+int Board::countLiberties(Loc loc) const {
+  if(!isOnBoard(loc) || (colors[loc] != C_BLACK && colors[loc] != C_WHITE))
+    return 0;
+  bool visited[MAX_PLAY_SIZE];
+  std::fill(visited, visited + MAX_PLAY_SIZE, false);
+  vector<Loc> stones;
+  collectGroup(*this, loc, stones, visited);
+  return countGroupLiberties(*this, stones);
+}
+
+int Board::getChainSize(Loc loc) const {
+  if(!isOnBoard(loc) || (colors[loc] != C_BLACK && colors[loc] != C_WHITE))
+    return 0;
+  bool visited[MAX_PLAY_SIZE];
+  std::fill(visited, visited + MAX_PLAY_SIZE, false);
+  vector<Loc> stones;
+  collectGroup(*this, loc, stones, visited);
+  return (int)stones.size();
+}
+
+double Board::calculateAreaScoreWhiteMinusBlack(float komi) const {
+  double whiteScore = komi;
+  double blackScore = 0.0;
+  bool visited[MAX_PLAY_SIZE];
+  std::fill(visited, visited + MAX_PLAY_SIZE, false);
+
+  for(Loc loc = 0; loc < play_size; loc++) {
+    if(colors[loc] == C_WHITE) {
+      whiteScore += 1.0;
+      continue;
+    }
+    if(colors[loc] == C_BLACK) {
+      blackScore += 1.0;
+      continue;
+    }
+    if(colors[loc] != C_EMPTY || visited[loc])
+      continue;
+
+    vector<Loc> region;
+    vector<Loc> stack;
+    stack.push_back(loc);
+    visited[loc] = true;
+    bool touchesBlack = false;
+    bool touchesWhite = false;
+    while(!stack.empty()) {
+      Loc cur = stack.back();
+      stack.pop_back();
+      region.push_back(cur);
+
+      Loc adjs[6];
+      int numAdjs = 0;
+      getAdjacentLocs(*this, cur, adjs, numAdjs);
+      for(int i = 0; i < numAdjs; i++) {
+        Loc adj = adjs[i];
+        if(colors[adj] == C_EMPTY && !visited[adj]) {
+          visited[adj] = true;
+          stack.push_back(adj);
+        }
+        else if(colors[adj] == C_BLACK)
+          touchesBlack = true;
+        else if(colors[adj] == C_WHITE)
+          touchesWhite = true;
+      }
+    }
+
+    if(touchesBlack && !touchesWhite)
+      blackScore += (double)region.size();
+    else if(touchesWhite && !touchesBlack)
+      whiteScore += (double)region.size();
+  }
+
+  return whiteScore - blackScore;
+}
+
 bool Board::setStone(Loc loc, Color color)
 {
   if(loc < 0 || loc >= play_size)
@@ -332,6 +479,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
   }
 
   if(loc == PASS_LOC) {
+    ko_loc = Board::NULL_LOC;
     stage = 0;
     for(int i = 0; i < STAGE_NUM_EACH_PLA; i++) {
       pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
@@ -360,6 +508,46 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
   }
 
   setStone(loc, pla);
+
+  Player opp = getOpp(pla);
+  int numCaptured = 0;
+  Loc possibleKoLoc = Board::NULL_LOC;
+  Loc adjs[6];
+  int numAdjs = 0;
+  getAdjacentLocs(*this, loc, adjs, numAdjs);
+  for(int i = 0; i < numAdjs; i++) {
+    Loc adj = adjs[i];
+    if(colors[adj] != opp)
+      continue;
+    bool visited[MAX_PLAY_SIZE];
+    std::fill(visited, visited + MAX_PLAY_SIZE, false);
+    vector<Loc> oppStones;
+    collectGroup(*this, adj, oppStones, visited);
+    if(countGroupLiberties(*this, oppStones) == 0) {
+      for(Loc stone: oppStones)
+        setStone(stone, C_EMPTY);
+      numCaptured += (int)oppStones.size();
+      if(oppStones.size() == 1)
+        possibleKoLoc = oppStones[0];
+    }
+  }
+
+  {
+    bool visited[MAX_PLAY_SIZE];
+    std::fill(visited, visited + MAX_PLAY_SIZE, false);
+    vector<Loc> ownStones;
+    collectGroup(*this, loc, ownStones, visited);
+    if(!ownStones.empty() && countGroupLiberties(*this, ownStones) == 0) {
+      for(Loc stone: ownStones)
+        setStone(stone, C_EMPTY);
+      ko_loc = Board::NULL_LOC;
+    }
+    else if(numCaptured == 1 && ownStones.size() == 1 && countGroupLiberties(*this, ownStones) == 1)
+      ko_loc = possibleKoLoc;
+    else
+      ko_loc = Board::NULL_LOC;
+  }
+
   pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
   nextPla = getOpp(nextPla);
   pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
@@ -436,6 +624,13 @@ void Board::checkConsistency() const {
   if(pos_hash != tmp_pos_hash) {
     std::cout << "Stage=" << stage << ",NextPla=" << int(nextPla) << std::endl;
     throw StringError(errLabel + "Pos hash does not match expected");
+  }
+
+  if(ko_loc != Board::NULL_LOC) {
+    if(!isOnBoard(ko_loc))
+      throw StringError(errLabel + "Invalid ko loc");
+    if(colors[ko_loc] != C_EMPTY)
+      throw StringError(errLabel + "Ko loc is not empty");
   }
 
 

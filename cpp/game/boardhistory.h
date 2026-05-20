@@ -36,6 +36,8 @@ struct BoardHistory {
   bool isGameFinished;
   //Winner of the game if the game is supposed to have ended now, C_EMPTY if it is a draw or isNoResult.
   Player winner;
+  double finalWhiteMinusBlackScore;
+  bool isScored;
   //True if this game is supposed to be ended but there is no result
   bool isNoResult;
   //True if this game is supposed to be ended but it was by resignation rather than an actual end position
@@ -83,6 +85,7 @@ struct BoardHistory {
 
   void setWinnerByResignation(Player pla);
   void setWinner(Color pla);
+  void setNoResult();
 
   void printBasicInfo(std::ostream& out, const Board& board) const;
   void printDebugInfo(std::ostream& out, const Board& board) const;

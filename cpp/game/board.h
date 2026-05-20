@@ -135,6 +135,7 @@ struct Board
   static Hash128 ZOBRIST_STAGELOC_HASH[MAX_EXTENDED_ARR_SIZE][STAGE_NUM_EACH_PLA];
   static Hash128 ZOBRIST_NEXTPLA_HASH[4];
   static Hash128 ZOBRIST_PLAYER_HASH[4];
+  static Hash128 ZOBRIST_KO_LOC_HASH[MAX_EXTENDED_ARR_SIZE];
   static const Hash128 ZOBRIST_GAME_IS_OVER;
 
   //Structs---------------------------------------
@@ -177,6 +178,10 @@ struct Board
 
   //Plays the specified move, assuming it is legal.
   void playMoveAssumeLegal(Loc loc, Player pla);
+  bool isKoBanned(Loc loc) const;
+  int countLiberties(Loc loc) const;
+  int getChainSize(Loc loc) const;
+  double calculateAreaScoreWhiteMinusBlack(float komi) const;
 
   // who plays the next next move
   Player nextnextPla() const;
@@ -225,6 +230,8 @@ struct Board
 
   //who plays the next move
   Color nextPla;
+
+  Loc ko_loc;
 
   //һ����ÿһ�׶ε�ѡ��
   //���磺������midLoc[0]��ѡ������ӣ�midLoc[1]�����

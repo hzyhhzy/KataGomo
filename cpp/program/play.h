@@ -102,10 +102,6 @@ class GameInitializer {
   std::vector<int> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
 
-  std::vector<std::string> allowedBasicRuleStrs;
-  std::vector<int> allowedBasicRules;
-  double moveLimitProb;
-  
   double randomInitialStonesProb;
   double banLocProb;
   double banLocAreaPropAvg;

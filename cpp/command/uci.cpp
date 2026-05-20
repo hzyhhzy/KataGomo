@@ -428,6 +428,12 @@ struct UCIEngine {
     bot->setParams(params);
     bot->clearSearch();
   }
+  void setKomi(float komi) {
+    Board board = bot->getRootBoard();
+    BoardHistory hist = bot->getRootHist();
+    hist.rules.komi = komi;
+    setPositionAndRules(board.nextPla, board, hist, initialBoard, initialPla, moveHistory);
+  }
   void setNumSearchThreads(int numThreads) {
     params.numThreads = numThreads;
     bot->setParams(params);
@@ -1371,12 +1377,12 @@ int MainCmds::uci(const vector<string>& args) {
         responseIsError = true;
         response = "Expected single float argument for komi but got '" + Global::concat(pieces," ") + "'";
       } 
-      else if(isnan(newKomif)) {
+      else if(isnan(newKomif) || newKomif < Rules::MIN_USER_KOMI || newKomif > Rules::MAX_USER_KOMI || !Rules::komiIsIntOrHalfInt(newKomif)) {
         responseIsError = true;
         response = "unacceptable komi";
       } 
       else {
-        engine->setNoResultUtilityForWhite(newKomif * 0.1f);
+        engine->setKomi(newKomif);
         // In case the controller tells us komi every move, restart pondering afterward.
         maybeStartPondering = engine->bot->getRootHist().moveHistory.size() > 0;
       }
