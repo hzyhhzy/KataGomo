@@ -12,7 +12,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #ifndef COMPILE_MAX_BOARD_LEN 
-#define COMPILE_MAX_BOARD_LEN 13
+#define COMPILE_MAX_BOARD_LEN 7
 #endif
 
 //how many stages in each move
@@ -180,6 +180,7 @@ struct Board
   void playMoveAssumeLegal(Loc loc, Player pla);
   bool isKoBanned(Loc loc) const;
   bool isSingleStoneSuicide(Loc loc, Player pla) const;
+  bool isIllegalSuicide(Loc loc, Player pla, bool multiStoneSuicideLegal) const;
   bool isInOneLibertyGroup(Loc loc) const;
   int countLiberties(Loc loc) const;
   int getChainSize(Loc loc) const;

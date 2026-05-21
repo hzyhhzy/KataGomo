@@ -755,6 +755,9 @@ void NNInputs::fillRowV7(
     else if(stone == C_BAN)
       setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
 
+    if(board.ko_loc == (Loc)loc)
+      setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
+
     if(board.isInOneLibertyGroup((Loc)loc))
       setRowBin(rowBin, pos, 5, 1.0f, posStride, featureStride);
   }

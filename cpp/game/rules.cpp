@@ -10,14 +10,17 @@ using json = nlohmann::json;
 
 Rules::Rules() {
   basicRule = BASICRULE_DEFAULT;
+  multiStoneSuicideLegal = true;
   komi = 7.5f;
 }
 
 Rules::Rules(
   int bRule,
+  bool suic,
   float km
 )
   :basicRule(bRule),
+   multiStoneSuicideLegal(suic),
    komi(km)
 {}
 
@@ -25,7 +28,10 @@ Rules::~Rules() {
 }
 
 bool Rules::operator==(const Rules& other) const {
-  return basicRule == other.basicRule && komi == other.komi;
+  return
+    basicRule == other.basicRule &&
+    multiStoneSuicideLegal == other.multiStoneSuicideLegal &&
+    komi == other.komi;
 }
 
 bool Rules::operator!=(const Rules& other) const {
@@ -35,6 +41,7 @@ bool Rules::operator!=(const Rules& other) const {
 Rules Rules::getTrompTaylorish() {
   Rules rules;
   rules.basicRule = BASICRULE_DEFAULT;
+  rules.multiStoneSuicideLegal = true;
   rules.komi = 7.5f;
   return rules;
 }
@@ -61,7 +68,9 @@ bool Rules::komiIsIntOrHalfInt(float komi) {
 }
 
 ostream& operator<<(ostream& out, const Rules& rules) {
-  out << "basicrule" << Rules::writeBasicRule(rules.basicRule) << "komi" << rules.komi;
+  out << "basicrule" << Rules::writeBasicRule(rules.basicRule)
+      << "sui" << rules.multiStoneSuicideLegal
+      << "komi" << rules.komi;
   return out;
 }
 
@@ -78,6 +87,7 @@ string Rules::toJsonString() const {
 json Rules::toJson() const {
   json ret;
   ret["basicrule"] = writeBasicRule(basicRule);
+  ret["suicide"] = multiStoneSuicideLegal;
   ret["komi"] = komi;
   return ret;
 }
@@ -88,6 +98,8 @@ Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   string value = Global::trim(Global::toUpper(v));
   if(key == "basicrule" || key == "basicrules")
     rules.basicRule = Rules::parseBasicRule(value);
+  else if(key == "suicide" || key == "multistonesuicidelegal")
+    rules.multiStoneSuicideLegal = Global::stringToBool(value);
   else if(key == "komi") {
     float newKomi = oldRules.komi;
     bool suc = Global::tryStringToFloat(value, newKomi);
@@ -159,6 +171,15 @@ static Rules parseRulesHelper(const string& sOrig) {
         s = Global::trim(s);
         continue;
       }
+      if(startsWithAndStrip(s,"sui")) {
+        if(startsWithAndStrip(s,"1"))
+          rules.multiStoneSuicideLegal = true;
+        else if(startsWithAndStrip(s,"0"))
+          rules.multiStoneSuicideLegal = false;
+        else
+          throw IOError("Could not parse rules: " + sOrig);
+        continue;
+      }
 
       throw IOError("Could not parse rules: " + sOrig);
     }
@@ -188,6 +209,9 @@ bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
 const Hash128 Rules::ZOBRIST_BASIC_RULE_HASH[Rules::NUM_BASIC_RULES] = {
   Hash128(0x72eeccc72c82a5e7ULL, 0x0d1265e413623e2bULL),
 };
+
+const Hash128 Rules::ZOBRIST_MULTI_STONE_SUICIDE_HASH =
+  Hash128(0xe95b8d8de573742fULL, 0xed23c0fc3c814fb4ULL);
 
 const Hash128 Rules::ZOBRIST_KOMI_HASH_BASE =
   Hash128(0x8aba00580c378fe8ULL, 0x7f6c1210e74fb440ULL);

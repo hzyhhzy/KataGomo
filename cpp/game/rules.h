@@ -11,6 +11,7 @@ struct Rules {
   static const int NUM_BASIC_RULES = 1;
   int basicRule;
 
+  bool multiStoneSuicideLegal;
   float komi;
 
   static constexpr float MIN_USER_KOMI = -750.0f;
@@ -19,6 +20,7 @@ struct Rules {
   Rules();
   Rules(
     int basicRule,
+    bool multiStoneSuicideLegal,
     float komi
   );
   ~Rules();
@@ -47,6 +49,7 @@ struct Rules {
   nlohmann::json toJson() const;
 
   static const Hash128 ZOBRIST_BASIC_RULE_HASH[NUM_BASIC_RULES];
+  static const Hash128 ZOBRIST_MULTI_STONE_SUICIDE_HASH;
   static const Hash128 ZOBRIST_KOMI_HASH_BASE;
 
 };

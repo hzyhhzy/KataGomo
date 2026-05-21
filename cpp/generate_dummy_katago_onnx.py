@@ -9,10 +9,10 @@ from onnx import TensorProto, checker, helper
 
 
 SPATIAL_FEATURES_BY_VERSION = {
-    8: 22,
-    9: 22,
-    10: 22,
-    11: 22,
+    8: 6,
+    9: 6,
+    10: 6,
+    11: 6,
 }
 
 GLOBAL_FEATURES_BY_VERSION = {
@@ -226,6 +226,7 @@ def build_model(name, model_version, nn_len, has_mask):
             "has_mask": "true" if has_mask else "false",
             "pos_len_x": str(cube_side),
             "pos_len_y": str(cube_side),
+            "pos_len_z": str(cube_side),
             "is_qat": "false",
             "is_simplified": "false",
             "is_int8": "false",
@@ -272,8 +273,8 @@ def run_self_test(model_path, model_version, nn_len, batch_size):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path,default="dummy_model.onnx")
-    parser.add_argument("--len", type=int,  dest="nn_len",default=729)
+    parser.add_argument("--output", type=Path,default="dummy_343.onnx")
+    parser.add_argument("--len", type=int,  dest="nn_len",default=343)
     parser.add_argument("--model-version", type=int, default=11, choices=sorted(SPATIAL_FEATURES_BY_VERSION))
     parser.add_argument("--name", default="dummy_model")
     parser.add_argument("--has-mask", action="store_true")

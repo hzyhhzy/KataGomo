@@ -221,6 +221,8 @@ bool BoardHistory::isLegal(const Board& board, Loc moveLoc, Player movePla) cons
     return false;
   if(!board.isLegal(moveLoc,movePla))
     return false;
+  if(board.isIllegalSuicide(moveLoc, movePla, rules.multiStoneSuicideLegal))
+    return false;
 
   return true;
 }
@@ -285,6 +287,8 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
 Hash128 BoardHistory::getRulesHash() const {
   Hash128 hash = Hash128();
   hash ^= Rules::ZOBRIST_BASIC_RULE_HASH[rules.basicRule];
+  if(rules.multiStoneSuicideLegal)
+    hash ^= Rules::ZOBRIST_MULTI_STONE_SUICIDE_HASH;
   int64_t komiDiscretized = (int64_t)(rules.komi * 256.0f);
   hash ^= Hash128(
     Hash::murmurMix(Rules::ZOBRIST_KOMI_HASH_BASE.hash0 + (uint64_t)komiDiscretized),

@@ -431,6 +431,10 @@ bool Board::isInOneLibertyGroup(Loc loc) const {
 }
 
 bool Board::isSingleStoneSuicide(Loc loc, Player pla) const {
+  return isIllegalSuicide(loc, pla, true);
+}
+
+bool Board::isIllegalSuicide(Loc loc, Player pla, bool multiStoneSuicideLegal) const {
   if(pla != C_BLACK && pla != C_WHITE)
     return false;
   if(!isOnBoard(loc) || colors[loc] != C_EMPTY)
@@ -441,7 +445,9 @@ bool Board::isSingleStoneSuicide(Loc loc, Player pla) const {
   getAdjacentLocs(*this, loc, adjs, numAdjs);
   for(int i = 0; i < numAdjs; i++) {
     Color adjColor = colors[adjs[i]];
-    if(adjColor == C_EMPTY || adjColor == pla)
+    if(adjColor == C_EMPTY)
+      return false;
+    if(adjColor == pla && (multiStoneSuicideLegal || !isInOneLibertyGroup(adjs[i])))
       return false;
     if(adjColor == getOpp(pla) && isInOneLibertyGroup(adjs[i]))
       return false;

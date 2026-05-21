@@ -12,6 +12,8 @@
 
 #include "../core/test.h"
 
+#include <cmath>
+
 using namespace std;
 
 //----------------------------------------------------------------------------------------------------------
@@ -53,8 +55,15 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
 
   allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
   allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
+  allowedMultiStoneSuicideLegals =
+    cfg.contains("multiStoneSuicideLegals") ? cfg.getBools("multiStoneSuicideLegals") : vector<bool>{true};
 
   allowRectangleProb = cfg.contains("allowRectangleProb") ? cfg.getDouble("allowRectangleProb",0.0,1.0) : 0.0;
+
+  komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean",Rules::MIN_USER_KOMI,Rules::MAX_USER_KOMI) : 7.5f;
+  komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev",0.0f,60.0f) : 0.0f;
+  komiBigStdevProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb",0.0,1.0) : 0.0;
+  komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev",0.0f,60.0f) : 10.0f;
 
   auto generateCumProbs = [](const vector<Sgf::PositionSample> poses, double lambda, double& effectiveSampleSize) {
     int minInitialTurnNumber = 0;
@@ -203,6 +212,8 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
     throw IOError("bSizes must have at least one value in " + cfg.getFileName());
   if(allowedBSizes.size() != allowedBSizeRelProbs.size())
     throw IOError("bSizes and bSizeRelProbs must have same number of values in " + cfg.getFileName());
+  if(allowedMultiStoneSuicideLegals.size() <= 0)
+    throw IOError("multiStoneSuicideLegals must have at least one value in " + cfg.getFileName());
 
   minBoardXSize = allowedBSizes[0];
   minBoardYSize = allowedBSizes[0];
@@ -297,6 +308,27 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
+  rules.multiStoneSuicideLegal =
+    allowedMultiStoneSuicideLegals[rand.nextUInt((uint32_t)allowedMultiStoneSuicideLegals.size())];
+
+  float komi = komiMean;
+  float stdevToUse = komiStdev;
+  if(komiBigStdev > 0.0f && rand.nextBool(komiBigStdevProb))
+    stdevToUse = komiBigStdev;
+  if(stdevToUse > 0.0f)
+    komi += stdevToUse * (float)rand.nextGaussianTruncated(3.0);
+
+  float lower = floor(komi * 2.0f) / 2.0f;
+  float upper = ceil(komi * 2.0f) / 2.0f;
+  if(lower == upper)
+    komi = lower;
+  else if(rand.nextDouble() < (komi - lower) / (upper - lower))
+    komi = upper;
+  else
+    komi = lower;
+
+  komi = std::max(Rules::MIN_USER_KOMI, std::min(Rules::MAX_USER_KOMI, komi));
+  rules.komi = komi;
   return rules;
 }
 

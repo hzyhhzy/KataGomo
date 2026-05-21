@@ -101,6 +101,7 @@ class GameInitializer {
 
   std::vector<int> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
+  std::vector<bool> allowedMultiStoneSuicideLegals;
 
   double randomInitialStonesProb;
   double banLocProb;
@@ -110,6 +111,10 @@ class GameInitializer {
 
   double allowRectangleProb;
 
+  float komiMean;
+  float komiStdev;
+  double komiBigStdevProb;
+  float komiBigStdev;
 
   double noResultRandRadius;
 

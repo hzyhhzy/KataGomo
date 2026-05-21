@@ -720,8 +720,8 @@ Rules Setup::loadSingleRules(
   Rules rules;
 
   if(cfg.contains("rules")) {
-    if(cfg.contains("basicRule") || cfg.contains("basicRules") || cfg.contains("komi"))
-      throw StringError("Cannot both specify 'rules' and individual rules like basicRule or komi");
+    if(cfg.contains("basicRule") || cfg.contains("basicRules") || cfg.contains("multiStoneSuicideLegal") || cfg.contains("komi"))
+      throw StringError("Cannot both specify 'rules' and individual rules like basicRule, multiStoneSuicideLegal, or komi");
     rules = Rules::parseRules(cfg.getString("rules"));
   }
   else {
@@ -729,6 +729,8 @@ Rules Setup::loadSingleRules(
       rules.basicRule = Rules::parseBasicRule(cfg.getString("basicRule", Rules::basicRuleStrings()));
     else if(cfg.contains("basicRules"))
       rules.basicRule = Rules::parseBasicRule(cfg.getString("basicRules", Rules::basicRuleStrings()));
+    if(cfg.contains("multiStoneSuicideLegal"))
+      rules.multiStoneSuicideLegal = cfg.getBool("multiStoneSuicideLegal");
     if(cfg.contains("komi")) {
       rules.komi = cfg.getFloat("komi", Rules::MIN_USER_KOMI, Rules::MAX_USER_KOMI);
       if(!Rules::komiIsIntOrHalfInt(rules.komi))

@@ -715,22 +715,18 @@ void NNEvaluator::evaluate(
 
     GameLogic::ResultsBeforeNN resultsBeforeNN = nnInputParamsWithResultsBeforeNN.resultsBeforeNN;
     if(resultsBeforeNN.myOnlyLoc == Board::NULL_LOC) {
-      bool hasLegalMoveExceptPass = false;
       for(int i = 0; i < policySize; i++) {
         Loc loc = NNPos::posToLoc(i, board.boardVolume(), nnXLen * nnYLen * nnZLen);
         isLegal[i] = history.isLegal(board, loc, nextPlayer);
-        if(isLegal[i] && loc != Board::PASS_LOC)
-          hasLegalMoveExceptPass = true;
       }
-      if(hasLegalMoveExceptPass)
-        isLegal[NNPos::locToPos(Board::PASS_LOC, nnXLen * nnYLen * nnZLen)] = false;
     } 
     else  // assume all other moves are illegal
     {
       for(int i = 0; i < policySize; i++) {
         isLegal[i] = false;
       }
-      isLegal[NNPos::locToPos(Board::PASS_LOC, nnXLen * nnYLen * nnZLen)] = false;
+      isLegal[NNPos::locToPos(Board::PASS_LOC, nnXLen * nnYLen * nnZLen)] =
+        history.isLegal(board, Board::PASS_LOC, nextPlayer);
       isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, nnXLen * nnYLen * nnZLen)] = true;
     }
 
