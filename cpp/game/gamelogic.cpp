@@ -21,6 +21,8 @@ bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
     return false;
   if(board.colors[loc] != C_EMPTY)
     return false;
+  if(board.isSingleStoneSuicide(loc, pla))
+    return false;
   return true;
 }
 
@@ -46,7 +48,7 @@ bool GameLogic::hasLegalMoveAssumeStage0(const Board& board) {
   if(board.stage != 0)
     return false;
   for(int loc = 0; loc < board.boardVolume(); loc++) {
-    if(board.colors[loc] == C_EMPTY && !board.isKoBanned((Loc)loc))
+    if(board.colors[loc] == C_EMPTY && !board.isKoBanned((Loc)loc) && !board.isSingleStoneSuicide((Loc)loc, board.nextPla))
       return true;
   }
   return false;

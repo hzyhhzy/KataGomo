@@ -179,6 +179,8 @@ struct Board
   //Plays the specified move, assuming it is legal.
   void playMoveAssumeLegal(Loc loc, Player pla);
   bool isKoBanned(Loc loc) const;
+  bool isSingleStoneSuicide(Loc loc, Player pla) const;
+  bool isInOneLibertyGroup(Loc loc) const;
   int countLiberties(Loc loc) const;
   int getChainSize(Loc loc) const;
   double calculateAreaScoreWhiteMinusBlack(float komi) const;
@@ -216,6 +218,7 @@ struct Board
   int z_size;                  //Depth size of board
   int play_size;               //Number of playable locations on the board
   Color colors[MAX_PLAY_SIZE];  //Color of each location on the board.
+  bool oneLibertyStones[MAX_PLAY_SIZE]; //True for stones whose group currently has exactly one liberty.
 
   /* PointList empty_list; //List of all empty locations on board */
 
@@ -241,6 +244,8 @@ struct Board
   private:
   void init(int xS, int yS);
   void init(int xS, int yS, int zS);
+  bool setStoneInternal(Loc loc, Color color, bool rebuildOneLiberty);
+  void rebuildOneLibertyTable();
 
   friend std::ostream& operator<<(std::ostream& out, const Board& board);
 

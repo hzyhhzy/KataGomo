@@ -132,6 +132,7 @@ Board::Board(const Board& other)
   play_size = other.play_size;
 
   memcpy(colors, other.colors, sizeof(Color)*MAX_PLAY_SIZE);
+  memcpy(oneLibertyStones, other.oneLibertyStones, sizeof(bool)*MAX_PLAY_SIZE);
 
   pos_hash = other.pos_hash;
 
@@ -162,6 +163,8 @@ void Board::init(int xS, int yS, int zS)
 
   for(int i = 0; i < MAX_PLAY_SIZE; i++)
     colors[i] = C_WALL;
+  for(int i = 0; i < MAX_PLAY_SIZE; i++)
+    oneLibertyStones[i] = false;
 
   for(int z = 0; z < z_size; z++) {
     for(int y = 0; y < y_size; y++) {
@@ -185,6 +188,7 @@ void Board::init(int xS, int yS, int zS)
              ZOBRIST_STAGENUM_HASH[stage];
 
   adj_offset_count = Location::getAdjacentOffsets(adj_offsets, x_size, y_size, z_size);
+  rebuildOneLibertyTable();
 }
 
 void Board::initHash()
@@ -357,8 +361,92 @@ static int countGroupLiberties(const Board& board, const vector<Loc>& stones) {
   return numLibs;
 }
 
+static int collectGroupAndCountLibertiesUpTo(const Board& board, Loc loc, vector<Loc>& stones, bool* visited, int libertyLimit, bool stopWhenReachedLimit) {
+  stones.clear();
+  Color pla = board.colors[loc];
+  if(pla != C_BLACK && pla != C_WHITE)
+    return 0;
+
+  bool seenLibs[Board::MAX_PLAY_SIZE];
+  std::fill(seenLibs, seenLibs + Board::MAX_PLAY_SIZE, false);
+  int numLibs = 0;
+
+  vector<Loc> stack;
+  stack.push_back(loc);
+  visited[loc] = true;
+  while(!stack.empty()) {
+    Loc cur = stack.back();
+    stack.pop_back();
+    stones.push_back(cur);
+
+    Loc adjs[6];
+    int numAdjs = 0;
+    getAdjacentLocs(board, cur, adjs, numAdjs);
+    for(int i = 0; i < numAdjs; i++) {
+      Loc adj = adjs[i];
+      if(board.colors[adj] == pla && !visited[adj]) {
+        visited[adj] = true;
+        stack.push_back(adj);
+      }
+      else if(board.colors[adj] == C_EMPTY && numLibs < libertyLimit && !seenLibs[adj]) {
+        seenLibs[adj] = true;
+        numLibs += 1;
+        if(stopWhenReachedLimit && numLibs >= libertyLimit)
+          return numLibs;
+      }
+    }
+  }
+  return numLibs;
+}
+
+void Board::rebuildOneLibertyTable() {
+  for(int loc = 0; loc < MAX_PLAY_SIZE; loc++)
+    oneLibertyStones[loc] = false;
+
+  bool visited[MAX_PLAY_SIZE];
+  std::fill(visited, visited + MAX_PLAY_SIZE, false);
+  vector<Loc> stones;
+  for(Loc loc = 0; loc < play_size; loc++) {
+    Color pla = colors[loc];
+    if((pla == C_BLACK || pla == C_WHITE) && !visited[loc]) {
+      int numLibs = collectGroupAndCountLibertiesUpTo(*this, loc, stones, visited, 2, false);
+      if(numLibs == 1) {
+        for(Loc stone: stones)
+          oneLibertyStones[stone] = true;
+      }
+    }
+  }
+}
+
 bool Board::isKoBanned(Loc loc) const {
   return loc == ko_loc;
+}
+
+bool Board::isInOneLibertyGroup(Loc loc) const {
+  if(!isOnBoard(loc))
+    return false;
+  if(colors[loc] != C_BLACK && colors[loc] != C_WHITE)
+    return false;
+  return oneLibertyStones[loc];
+}
+
+bool Board::isSingleStoneSuicide(Loc loc, Player pla) const {
+  if(pla != C_BLACK && pla != C_WHITE)
+    return false;
+  if(!isOnBoard(loc) || colors[loc] != C_EMPTY)
+    return false;
+
+  Loc adjs[6];
+  int numAdjs = 0;
+  getAdjacentLocs(*this, loc, adjs, numAdjs);
+  for(int i = 0; i < numAdjs; i++) {
+    Color adjColor = colors[adjs[i]];
+    if(adjColor == C_EMPTY || adjColor == pla)
+      return false;
+    if(adjColor == getOpp(pla) && isInOneLibertyGroup(adjs[i]))
+      return false;
+  }
+  return true;
 }
 
 int Board::countLiberties(Loc loc) const {
@@ -435,7 +523,7 @@ double Board::calculateAreaScoreWhiteMinusBlack(float komi) const {
   return whiteScore - blackScore;
 }
 
-bool Board::setStone(Loc loc, Color color)
+bool Board::setStoneInternal(Loc loc, Color color, bool rebuildOneLiberty)
 {
   if(loc < 0 || loc >= play_size)
     return false;
@@ -445,9 +533,17 @@ bool Board::setStone(Loc loc, Color color)
   pos_hash ^= ZOBRIST_BOARD_HASH[loc][colorOld];
   pos_hash ^= ZOBRIST_BOARD_HASH[loc][color];
 
+  if(rebuildOneLiberty)
+    rebuildOneLibertyTable();
 
   return true;
 }
+
+bool Board::setStone(Loc loc, Color color)
+{
+  return setStoneInternal(loc, color, true);
+}
+
 bool Board::setStones(std::vector<Move> placements) {
   std::set<Loc> locs;
   for(const Move& placement: placements) {
@@ -458,16 +554,17 @@ bool Board::setStones(std::vector<Move> placements) {
   // First empty out all locations that we plan to set.
   // This guarantees avoiding any intermediate liberty issues.
   for(const Move& placement: placements) {
-    bool suc = setStone(placement.loc, C_EMPTY);
+    bool suc = setStoneInternal(placement.loc, C_EMPTY, false);
     if(!suc)
       return false;
   }
   // Now set all the stones we wanted.
   for(const Move& placement: placements) {
-    bool suc = setStone(placement.loc, placement.pla);
+    bool suc = setStoneInternal(placement.loc, placement.pla, false);
     if(!suc)
       return false;
   }
+  rebuildOneLibertyTable();
   return true;
 }
 
@@ -507,7 +604,7 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     midLocs[i] = Board::NULL_LOC;
   }
 
-  setStone(loc, pla);
+  setStoneInternal(loc, pla, false);
 
   Player opp = getOpp(pla);
   int numCaptured = 0;
@@ -522,10 +619,10 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     bool visited[MAX_PLAY_SIZE];
     std::fill(visited, visited + MAX_PLAY_SIZE, false);
     vector<Loc> oppStones;
-    collectGroup(*this, adj, oppStones, visited);
-    if(countGroupLiberties(*this, oppStones) == 0) {
+    int oppLiberties = collectGroupAndCountLibertiesUpTo(*this, adj, oppStones, visited, 1, true);
+    if(oppLiberties == 0) {
       for(Loc stone: oppStones)
-        setStone(stone, C_EMPTY);
+        setStoneInternal(stone, C_EMPTY, false);
       numCaptured += (int)oppStones.size();
       if(oppStones.size() == 1)
         possibleKoLoc = oppStones[0];
@@ -536,17 +633,19 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     bool visited[MAX_PLAY_SIZE];
     std::fill(visited, visited + MAX_PLAY_SIZE, false);
     vector<Loc> ownStones;
-    collectGroup(*this, loc, ownStones, visited);
-    if(!ownStones.empty() && countGroupLiberties(*this, ownStones) == 0) {
+    int ownLiberties = collectGroupAndCountLibertiesUpTo(*this, loc, ownStones, visited, 2, true);
+    if(!ownStones.empty() && ownLiberties == 0) {
       for(Loc stone: ownStones)
-        setStone(stone, C_EMPTY);
+        setStoneInternal(stone, C_EMPTY, false);
       ko_loc = Board::NULL_LOC;
     }
-    else if(numCaptured == 1 && ownStones.size() == 1 && countGroupLiberties(*this, ownStones) == 1)
+    else if(numCaptured == 1 && ownStones.size() == 1 && ownLiberties == 1)
       ko_loc = possibleKoLoc;
     else
       ko_loc = Board::NULL_LOC;
   }
+
+  rebuildOneLibertyTable();
 
   pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
   nextPla = getOpp(nextPla);
@@ -631,6 +730,29 @@ void Board::checkConsistency() const {
       throw StringError(errLabel + "Invalid ko loc");
     if(colors[ko_loc] != C_EMPTY)
       throw StringError(errLabel + "Ko loc is not empty");
+  }
+
+  bool expectedOneLibertyStones[MAX_PLAY_SIZE];
+  for(int loc = 0; loc < MAX_PLAY_SIZE; loc++)
+    expectedOneLibertyStones[loc] = false;
+  bool visited[MAX_PLAY_SIZE];
+  std::fill(visited, visited + MAX_PLAY_SIZE, false);
+  vector<Loc> stones;
+  for(Loc loc = 0; loc < play_size; loc++) {
+    Color pla = colors[loc];
+    if((pla == C_BLACK || pla == C_WHITE) && !visited[loc]) {
+      int numLibs = collectGroupAndCountLibertiesUpTo(*this, loc, stones, visited, 2, false);
+      if(numLibs == 0)
+        throw StringError(errLabel + "Zero-liberty group on board");
+      if(numLibs == 1) {
+        for(Loc stone: stones)
+          expectedOneLibertyStones[stone] = true;
+      }
+    }
+  }
+  for(Loc loc = 0; loc < MAX_PLAY_SIZE; loc++) {
+    if(oneLibertyStones[loc] != expectedOneLibertyStones[loc])
+      throw StringError(errLabel + "oneLibertyStones does not match expected");
   }
 
 
