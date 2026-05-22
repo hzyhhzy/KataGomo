@@ -141,7 +141,7 @@ NNEvaluator::NNEvaluator(
     logger->write(
       "Initializing neural net buffer to be size " +
       Global::intToString(nnXLen) + " * " + Global::intToString(nnYLen) + " * " + Global::intToString(nnZLen) +
-      (requireExactNNLen ? " exactly" : " allowing smaller boards")
+      " with exact board-size evaluation required"
     );
   }
 
@@ -488,6 +488,7 @@ void NNEvaluator::serve(
         //At this point, these aren't probabilities, since this is before the postprocessing
         //that happens for each result. These just need to be unnormalized log probabilities.
         //Illegal move filtering happens later.
+        // TODO: Fill policy by dimensioned NN positions here before allowing padded NN buffers again.
         int boardVolume = boardXSize * boardYSize * boardZSize;
         for(int pos = 0; pos < boardVolume; pos++) {
           policyProbs[pos] = (float)rand.nextGaussian();
@@ -615,18 +616,13 @@ void NNEvaluator::evaluate(
   buf.hasResult = false;
  
 
-  if(board.x_size > nnXLen || board.y_size > nnYLen || board.z_size > nnZLen)
+  if(board.x_size != nnXLen || board.y_size != nnYLen || board.z_size != nnZLen)
     throw StringError("NNEvaluator was configured with nnXLen = " + Global::intToString(nnXLen) +
                       " nnYLen = " + Global::intToString(nnYLen) +
                       " nnZLen = " + Global::intToString(nnZLen) +
-                      " but was asked to evaluate board with larger x or y or z size");
-  if(requireExactNNLen) {
-    if(board.x_size != nnXLen || board.y_size != nnYLen || board.z_size != nnZLen)
-      throw StringError("NNEvaluator was configured with nnXLen = " + Global::intToString(nnXLen) +
-                        " nnYLen = " + Global::intToString(nnYLen) +
-                        " nnZLen = " + Global::intToString(nnZLen) +
-                        " and requireExactNNLen, but was asked to evaluate board with different x or y or z size");
-  }
+                      " but was asked to evaluate board with x_size = " + Global::intToString(board.x_size) +
+                      " y_size = " + Global::intToString(board.y_size) +
+                      " z_size = " + Global::intToString(board.z_size));
 
   Hash128 nnHash = NNInputs::getHash(board, history, nextPlayer, nnInputParams);
 
@@ -716,6 +712,7 @@ void NNEvaluator::evaluate(
     GameLogic::ResultsBeforeNN resultsBeforeNN = nnInputParamsWithResultsBeforeNN.resultsBeforeNN;
     if(resultsBeforeNN.myOnlyLoc == Board::NULL_LOC) {
       for(int i = 0; i < policySize; i++) {
+        // TODO: Use the dimensioned posToLoc overload here before allowing padded NN buffers again.
         Loc loc = NNPos::posToLoc(i, board.boardVolume(), nnXLen * nnYLen * nnZLen);
         isLegal[i] = history.isLegal(board, loc, nextPlayer);
       }
@@ -727,6 +724,7 @@ void NNEvaluator::evaluate(
       }
       isLegal[NNPos::locToPos(Board::PASS_LOC, nnXLen * nnYLen * nnZLen)] =
         history.isLegal(board, Board::PASS_LOC, nextPlayer);
+      // TODO: Use the dimensioned locToPos overload here before allowing padded NN buffers again.
       isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, nnXLen * nnYLen * nnZLen)] = true;
     }
 

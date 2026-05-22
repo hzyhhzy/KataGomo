@@ -8,6 +8,8 @@ int NNPos::xyToPos(int x, int y, int nnXLen) {
 int NNPos::xyzToPos(int x, int y, int z, int nnXLen, int nnYLen, int nnZLen) {
   return x + z * nnXLen * nnYLen + y * nnXLen;
 }
+// TODO: This compact loc-to-pos mapping assumes the board dimensions exactly match the NN buffer dimensions.
+// Use the dimensioned overload below if smaller boards are ever allowed inside a padded NN buffer again.
 int NNPos::locToPos(Loc loc, int nnLen) {
   if(loc == Board::PASS_LOC)
     return nnLen;
@@ -32,6 +34,8 @@ int NNPos::locToPos(Loc loc, int boardXSize, int boardYSize, int boardZSize, int
   (void)boardZSize;
   return x + y * nnXLen + z * nnXLen * nnYLen;
 }
+// TODO: This compact pos-to-loc mapping assumes the board dimensions exactly match the NN buffer dimensions.
+// Use the dimensioned overload below if smaller boards are ever allowed inside a padded NN buffer again.
 Loc NNPos::posToLoc(int pos, int boardVolume, int nnLen) {
   if(pos == nnLen)
     return Board::PASS_LOC;
@@ -235,6 +239,7 @@ void NNOutput::debugPrint(ostream& out, const Board& board) {
       out << "Layer " << z << endl;
     for(int y = 0; y<board.y_size; y++) {
       for(int x = 0; x<board.x_size; x++) {
+        // TODO: Switch to the dimensioned locToPos overload if NNOutput debug printing supports padded NN buffers.
         int pos = NNPos::locToPos(Location::getLoc(x,y,z,board.x_size,board.y_size), nnLen);
         float prob = policyProbs[pos];
         if(prob < 0)
@@ -720,7 +725,13 @@ void NNInputs::fillRowV7(
 ) {
   int nnLen = nnXLen * nnYLen * nnZLen;
   assert(nnLen <= NNPos::MAX_NN_LEN);
-  assert(board.boardVolume() <= nnLen);
+  if(board.x_size != nnXLen || board.y_size != nnYLen || board.z_size != nnZLen)
+    throw StringError(
+      "NNInputs::fillRowV7 board size does not match NN buffer size: board " +
+      Global::intToString(board.x_size) + "x" + Global::intToString(board.y_size) + "x" + Global::intToString(board.z_size) +
+      ", NN " +
+      Global::intToString(nnXLen) + "x" + Global::intToString(nnYLen) + "x" + Global::intToString(nnZLen)
+    );
   std::fill(rowBin,rowBin+NUM_FEATURES_SPATIAL_V7*nnLen,false);
   std::fill(rowGlobal,rowGlobal+NUM_FEATURES_GLOBAL_V7,0.0f);
 
@@ -743,6 +754,7 @@ void NNInputs::fillRowV7(
     resultsBeforeNN.init(board, hist, nextPlayer);
   }
 
+  // TODO: Switch these input positions to the dimensioned locToPos overload before allowing padded NN buffers.
   for(int loc = 0; loc < board.boardVolume(); loc++) {
     int pos = NNPos::locToPos((Loc)loc, nnLen);
     setRowBin(rowBin,pos,0, 1.0f, posStride, featureStride);
@@ -775,6 +787,7 @@ void NNInputs::fillRowV7(
     if(!board.isOnBoard(chosenMove)) {
       std::cout << "nninput: chosen move not on board ";
     } else {
+      // TODO: Switch to the dimensioned locToPos overload before allowing padded NN buffers.
       int pos = NNPos::locToPos(chosenMove, nnLen);
       setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
     }

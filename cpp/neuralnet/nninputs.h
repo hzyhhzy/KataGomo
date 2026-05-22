@@ -107,6 +107,7 @@ struct NNOutput {
   inline float* getPolicyProbsMaybeNoised() { return noisedPolicyProbs != NULL ? noisedPolicyProbs : policyProbs; }
   inline const float* getPolicyProbsMaybeNoised() const { return noisedPolicyProbs != NULL ? noisedPolicyProbs : policyProbs; }
   void debugPrint(std::ostream& out, const Board& board);
+  // TODO: Use the board dimensions here before allowing padded NN buffers again.
   inline int getPos(Loc loc, const Board& board) const { (void)board; return NNPos::locToPos(loc, nnLen); }
 };
 
