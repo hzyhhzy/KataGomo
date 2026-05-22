@@ -141,7 +141,7 @@ NNEvaluator::NNEvaluator(
     logger->write(
       "Initializing neural net buffer to be size " +
       Global::intToString(nnXLen) + " * " + Global::intToString(nnYLen) + " * " + Global::intToString(nnZLen) +
-      " with exact board-size evaluation required"
+      (requireExactNNLen ? " exactly" : " allowing smaller boards")
     );
   }
 
@@ -616,13 +616,18 @@ void NNEvaluator::evaluate(
   buf.hasResult = false;
  
 
-  if(board.x_size != nnXLen || board.y_size != nnYLen || board.z_size != nnZLen)
+  if(board.x_size > nnXLen || board.y_size > nnYLen || board.z_size > nnZLen)
     throw StringError("NNEvaluator was configured with nnXLen = " + Global::intToString(nnXLen) +
                       " nnYLen = " + Global::intToString(nnYLen) +
                       " nnZLen = " + Global::intToString(nnZLen) +
-                      " but was asked to evaluate board with x_size = " + Global::intToString(board.x_size) +
-                      " y_size = " + Global::intToString(board.y_size) +
-                      " z_size = " + Global::intToString(board.z_size));
+                      " but was asked to evaluate board with larger x or y or z size");
+  if(requireExactNNLen) {
+    if(board.x_size != nnXLen || board.y_size != nnYLen || board.z_size != nnZLen)
+      throw StringError("NNEvaluator was configured with nnXLen = " + Global::intToString(nnXLen) +
+                        " nnYLen = " + Global::intToString(nnYLen) +
+                        " nnZLen = " + Global::intToString(nnZLen) +
+                        " and requireExactNNLen, but was asked to evaluate board with different x or y or z size");
+  }
 
   Hash128 nnHash = NNInputs::getHash(board, history, nextPlayer, nnInputParams);
 
