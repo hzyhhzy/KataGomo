@@ -81,6 +81,8 @@ const Hash128 MiscNNInputParams::ZOBRIST_PLAYOUT_DOUBLINGS =
   Hash128(0xa5e6114d380bfc1dULL, 0x4160557f1222f4adULL);
 const Hash128 MiscNNInputParams::ZOBRIST_NN_POLICY_TEMP =
   Hash128(0xebcbdfeec6f4334bULL, 0xb85e43ee243b5ad2ULL);
+const Hash128 MiscNNInputParams::ZOBRIST_LAST_MOVE_PASS =
+  Hash128(0x6bc0419ac4c4ebbfULL, 0xd8e56b186472ef8cULL);
 
 //-----------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------
@@ -673,7 +675,11 @@ static void setRowBin(float* rowBin, int pos, int feature, float value, int posS
   rowBin[pos * posStride + feature * featureStride] = value;
 }
 
-//Currently does NOT depend on history (except for marking ko-illegal spots)
+static bool lastMoveWasPass(const BoardHistory& hist) {
+  return hist.moveHistory.size() > 0 && hist.moveHistory.back().loc == Board::PASS_LOC;
+}
+
+//Currently depends on history only for the previous move pass feature.
 Hash128 NNInputs::getHash(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams
@@ -686,6 +692,9 @@ Hash128 NNInputs::getHash(
   //If the history is in a weird prolonged state, also treat it similarly.
   if(hist.isGameFinished )
     hash ^= Board::ZOBRIST_GAME_IS_OVER;
+
+  if(lastMoveWasPass(hist))
+    hash ^= MiscNNInputParams::ZOBRIST_LAST_MOVE_PASS;
 
   //Fold in asymmetric playout indicator
   if(nnInputParams.playoutDoublingAdvantage != 0) {
@@ -793,6 +802,18 @@ void NNInputs::fillRowV7(
     }
   } else
     ASSERT_UNREACHABLE;
+
+  bool wasPass = lastMoveWasPass(hist);
+  // Previous move was pass.
+  rowGlobal[2] = wasPass ? 1.0f : 0.0f;
+  // Result from the current player's perspective if the current move is pass after a pass.
+  if(wasPass) {
+    double score = board.calculateAreaScoreWhiteMinusBlack(hist.rules.komi);
+    if(score != 0.0) {
+      Player winner = score > 0.0 ? P_WHITE : P_BLACK;
+      rowGlobal[3] = winner == nextPlayer ? 1.0f : -1.0f;
+    }
+  }
 
   float selfKomi = pla == C_WHITE ? hist.rules.komi : -hist.rules.komi;
   rowGlobal[4] = selfKomi / 20.0f;
