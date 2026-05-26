@@ -18,16 +18,26 @@ namespace PlayUtils {
     double temperature,
     Rand& gameRand
   );
+  //Place extra black stones uniformly at random over the board's legal area.
+  //Does NOT switch the initial player of the board history to white
+  void playRandomExtraBlack(
+    int numExtraBlack,
+    Board& board,
+    BoardHistory& hist,
+    Rand& gameRand
+  );
 
   //Set board to empty and place fixed handicap stones, raising an exception if invalid
   void placeFixedHandicap(Board& board, int n);
+
+  int getLegalArea(const Board& board);
 
   ExtraBlackAndKomi chooseExtraBlackAndKomi(
     float base, float stdev, double allowIntegerProb,
     double handicapProb, int numExtraBlackFixed,
     double bigStdevProb, float bigStdev,
     double biggerStdevProb, float biggerStdev,
-    double sqrtBoardArea, Rand& rand
+    double sqrtBoardArea, int legalArea, Rand& rand
   );
   void setKomiWithoutNoise(const ExtraBlackAndKomi& extraBlackAndKomi, BoardHistory& hist); //Also ignores allowInteger
   void setKomiWithNoise(const ExtraBlackAndKomi& extraBlackAndKomi, BoardHistory& hist, Rand& rand);

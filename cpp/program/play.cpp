@@ -453,7 +453,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), rand
+      sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
     );
     assert(extraBlackAndKomi.extraBlack == 0);
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
@@ -521,7 +521,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), rand
+      sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -557,7 +557,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       handicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), rand
+      sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -1254,9 +1254,7 @@ FinishedGameData* Play::runGame(
     PlayUtils::setKomiWithNoise(extraBlackAndKomi,hist,gameRand);
   }
   if(extraBlackAndKomi.extraBlack > 0) {
-    double extraBlackTemperature = playSettings.handicapTemperature;
-    assert(extraBlackTemperature > 0.0 && extraBlackTemperature < 10.0);
-    PlayUtils::playExtraBlack(botB,extraBlackAndKomi.extraBlack,board,hist,extraBlackTemperature,gameRand);
+    PlayUtils::playRandomExtraBlack(extraBlackAndKomi.extraBlack,board,hist,gameRand);
     assert(hist.moveHistory.size() == 0);
   }
   if(extraBlackAndKomi.makeGameFair) {

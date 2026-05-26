@@ -7,18 +7,16 @@
 
 using namespace std;
 
-static int getDefaultMaxExtraBlack(double sqrtBoardArea) {
-  if(sqrtBoardArea <= 10.00001)
-    return 0;
-  if(sqrtBoardArea <= 14.00001)
-    return 1;
-  if(sqrtBoardArea <= 16.00001)
-    return 2;
-  if(sqrtBoardArea <= 17.00001)
-    return 3;
-  if(sqrtBoardArea <= 18.00001)
-    return 4;
-  return 5;
+int PlayUtils::getLegalArea(const Board& board) {
+  int area = 0;
+  for(int y = 0; y < board.y_size; y++) {
+    for(int x = 0; x < board.x_size; x++) {
+      Loc loc = Location::getLoc(x,y,board.x_size);
+      if(board.colors[loc] != C_WALL)
+        area += 1;
+    }
+  }
+  return area;
 }
 
 ExtraBlackAndKomi PlayUtils::chooseExtraBlackAndKomi(
@@ -26,10 +24,11 @@ ExtraBlackAndKomi PlayUtils::chooseExtraBlackAndKomi(
   double handicapProb, int numExtraBlackFixed,
   double bigStdevProb, float bigStdev,
   double biggerStdevProb, float biggerStdev,
-  double sqrtBoardArea, Rand& rand
+  double sqrtBoardArea, int legalArea, Rand& rand
 ) {
   int extraBlack = 0;
   float komi = base;
+  (void)numExtraBlackFixed;
 
   float stdevToUse = 0.0f;
   if(stdev > 0.0f)
@@ -42,12 +41,12 @@ ExtraBlackAndKomi PlayUtils::chooseExtraBlackAndKomi(
   stdevToUse = stdevToUse * (float)(sqrtBoardArea / 19.0);
 
   //Add handicap stones
-  int defaultMaxExtraBlack = getDefaultMaxExtraBlack(sqrtBoardArea);
-  if((numExtraBlackFixed > 0 || defaultMaxExtraBlack > 0) && rand.nextBool(handicapProb)) {
-    if(numExtraBlackFixed > 0)
-      extraBlack = numExtraBlackFixed;
-    else
-      extraBlack += 1+rand.nextUInt(defaultMaxExtraBlack);
+  if(legalArea > 0 && rand.nextBool(handicapProb)) {
+    double meanExtraBlack = 0.015 * legalArea;
+    extraBlack = (int)floor(rand.nextExponential() * meanExtraBlack);
+    int maxExtraBlack = legalArea / 2;
+    if(extraBlack > maxExtraBlack)
+      extraBlack = maxExtraBlack;
   }
 
   bool allowInteger = rand.nextBool(allowIntegerProb);
@@ -278,6 +277,32 @@ void PlayUtils::playExtraBlack(
   }
 
   bot->setPosition(pla,board,hist);
+}
+
+void PlayUtils::playRandomExtraBlack(
+  int numExtraBlack,
+  Board& board,
+  BoardHistory& hist,
+  Rand& gameRand
+) {
+  Player pla = P_BLACK;
+
+  for(int i = 0; i<numExtraBlack; i++) {
+    Loc locs[Board::MAX_ARR_SIZE];
+    int numLegalLocs = 0;
+    for(Loc loc = 0; loc < Board::MAX_ARR_SIZE; loc++) {
+      if(loc != Board::PASS_LOC && hist.isLegal(board,loc,pla)) {
+        locs[numLegalLocs] = loc;
+        numLegalLocs += 1;
+      }
+    }
+    if(numLegalLocs <= 0)
+      break;
+
+    Loc loc = locs[gameRand.nextUInt(numLegalLocs)];
+    hist.makeBoardMoveAssumeLegal(board,loc,pla);
+    hist.clear(board,pla,hist.rules);
+  }
 }
 
 void PlayUtils::placeFixedHandicap(Board& board, int n) {
