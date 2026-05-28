@@ -361,8 +361,8 @@ double PlayUtils::getHackedLCBForWinrate(const Search* search, const AnalysisDat
 }
 
 float PlayUtils::roundAndClipKomi(double unrounded, const Board& board) {
-  //Just in case, make sure komi is reasonable
-  float range = NNPos::KOMI_CLIP_RADIUS + board.x_size * board.y_size;
+  //Keep self-play komis within the score range of the current playable board.
+  float range = std::max(0.0f, (float)PlayUtils::getLegalArea(board) - 0.5f);
   if(unrounded < -range)
     unrounded = -range;
   if(unrounded > range)

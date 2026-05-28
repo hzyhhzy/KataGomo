@@ -35,6 +35,119 @@ static int parseBoardShape(const string& sOrig) {
   throw IOError("Unknown board shape '" + sOrig + "', boardshapes must contain only hex, para, or tri");
 }
 
+static bool isEmptyParaBoard(const Board& board) {
+  if(!board.isEmpty())
+    return false;
+  for(int y = 0; y<board.y_size; y++) {
+    for(int x = 0; x<board.x_size; x++) {
+      Loc loc = Location::getLoc(x,y,board.x_size);
+      if(board.colors[loc] != C_EMPTY)
+        return false;
+    }
+  }
+  return true;
+}
+
+static bool trySetStoneNoLibs(Board& board, Loc loc, Player pla) {
+  if(board.colors[loc] != C_EMPTY)
+    return false;
+  return board.setStoneFailIfNoLibs(loc,pla);
+}
+
+static void addRandomSpecifiedOpeningWhiteStonesForPara(Board& board, Rand& rand) {
+  double p = 0.05 + rand.nextExponential() * 0.1;
+  for(int y = 0; y<board.y_size; y++) {
+    for(int x = 0; x<board.x_size; x++) {
+      Loc loc = Location::getLoc(x,y,board.x_size);
+      if(board.colors[loc] != C_EMPTY)
+        continue;
+      double dx = x;
+      double dy = y - (board.y_size - 1);
+      double d = sqrt(dx * dx + dy * dy);
+      double prob = std::min(0.15, p * exp(-d / 3.0));
+      if(rand.nextBool(prob))
+        trySetStoneNoLibs(board,loc,P_WHITE);
+    }
+  }
+}
+
+static bool tryApplyRandomSpecifiedOpening(Board& board, Player& nextPla, Rand& rand) {
+  int opening = rand.nextUInt(3);
+  int shape = opening == 2 ? 6 : 4;
+
+  Board candidate(board.x_size,board.y_size);
+  string boardShapeError;
+  if(!Board::applyBoardShape(candidate,shape,boardShapeError))
+    return false;
+
+  if(opening == 0 || opening == 1) {
+    assert(isEmptyParaBoard(candidate));
+    int blackY = opening == 0 ? 0 : 1;
+    int blackX = opening == 0 ? candidate.x_size - 1 : candidate.x_size - 2;
+    if(blackY < 0 || blackY >= candidate.y_size || blackX < 0 || blackX >= candidate.x_size)
+      return false;
+
+    for(int x = 0; x<candidate.x_size; x++) {
+      Loc loc = Location::getLoc(x,blackY,candidate.x_size);
+      if(!trySetStoneNoLibs(candidate,loc,P_BLACK))
+        return false;
+    }
+    for(int y = 0; y<candidate.y_size; y++) {
+      Loc loc = Location::getLoc(blackX,y,candidate.x_size);
+      if(candidate.colors[loc] == C_EMPTY && !trySetStoneNoLibs(candidate,loc,P_BLACK))
+        return false;
+    }
+
+    addRandomSpecifiedOpeningWhiteStonesForPara(candidate,rand);
+    board = candidate;
+    nextPla = P_WHITE;
+    return true;
+  }
+
+  int emptyArea = 0;
+  for(int y = 0; y<candidate.y_size; y++) {
+    for(int x = 0; x<candidate.x_size; x++) {
+      Loc loc = Location::getLoc(x,y,candidate.x_size);
+      if(candidate.colors[loc] == C_EMPTY) {
+        bool isOuter = false;
+        for(int i = 0; i<6; i++) {
+          Loc adj = loc + candidate.adj_offsets[i];
+          if(candidate.colors[adj] == C_WALL) {
+            isOuter = true;
+            break;
+          }
+        }
+        if(isOuter) {
+          if(!trySetStoneNoLibs(candidate,loc,P_BLACK))
+            return false;
+        }
+      }
+    }
+  }
+  for(int y = 0; y<candidate.y_size; y++) {
+    for(int x = 0; x<candidate.x_size; x++) {
+      Loc loc = Location::getLoc(x,y,candidate.x_size);
+      if(candidate.colors[loc] == C_EMPTY)
+        emptyArea += 1;
+    }
+  }
+  if(emptyArea <= 0)
+    return false;
+
+  double whiteProb = std::min(0.25, (10.0 + rand.nextExponential() * 10.0) / emptyArea);
+  for(int y = 0; y<candidate.y_size; y++) {
+    for(int x = 0; x<candidate.x_size; x++) {
+      Loc loc = Location::getLoc(x,y,candidate.x_size);
+      if(candidate.colors[loc] == C_EMPTY && rand.nextBool(whiteProb))
+        trySetStoneNoLibs(candidate,loc,P_WHITE);
+    }
+  }
+
+  board = candidate;
+  nextPla = rand.nextBool(0.5) ? P_BLACK : P_WHITE;
+  return true;
+}
+
 
 ForkData::~ForkData() {
   for(int i = 0; i<forks.size(); i++)
@@ -164,6 +277,8 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean",Rules::MIN_USER_KOMI,Rules::MAX_USER_KOMI) : 7.5f;
   komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev",0.0f,60.0f) : 0.0f;
   handicapProb = cfg.contains("handicapProb") ? cfg.getDouble("handicapProb",0.0,1.0) : 0.0;
+  randomInitialBoardProb = cfg.contains("randomInitialBoardProb") ? cfg.getDouble("randomInitialBoardProb",0.0,1.0) : 0.0;
+  randomInitialBoardCompensateKomiProb = cfg.contains("randomInitialBoardCompensateKomiProb") ? cfg.getDouble("randomInitialBoardCompensateKomiProb",0.0,1.0) : 1.0;
   handicapCompensateKomiProb = cfg.contains("handicapCompensateKomiProb") ? cfg.getDouble("handicapCompensateKomiProb",0.0,1.0) : 0.0;
   komiBigStdevProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb",0.0,1.0) : 0.0;
   komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev",0.0f,60.0f) : 10.0f;
@@ -541,20 +656,28 @@ void GameInitializer::createGameSharedUnsynchronized(
     int xSize = allowedBSizes[bSizeIdx].first;
     int ySize = allowedBSizes[bSizeIdx].second;
     board = Board(xSize,ySize);
-    int boardShape = allowedBoardShapes[rand.nextUInt((uint32_t)allowedBoardShapes.size())];
-    string boardShapeError;
-    if(!Board::applyBoardShape(board,boardShape,boardShapeError)) {
-      boardShape = 4;
-      boardShapeError.clear();
-      bool suc = Board::applyBoardShape(board,boardShape,boardShapeError);
-      testAssert(suc);
-    }
     pla = P_BLACK;
+    bool usedRandomInitialBoard =
+      randomInitialBoardProb > 0.0 &&
+      rand.nextBool(randomInitialBoardProb) &&
+      tryApplyRandomSpecifiedOpening(board,pla,rand);
+    if(!usedRandomInitialBoard) {
+      int boardShape = allowedBoardShapes[rand.nextUInt((uint32_t)allowedBoardShapes.size())];
+      string boardShapeError;
+      if(!Board::applyBoardShape(board,boardShape,boardShapeError)) {
+        boardShape = 4;
+        boardShapeError.clear();
+        bool suc = Board::applyBoardShape(board,boardShape,boardShapeError);
+        testAssert(suc);
+      }
+    }
     hist.clear(board,pla,rules);
+    if(usedRandomInitialBoard)
+      hist.setInitialTurnNumber(board.numStonesOnBoard());
 
     extraBlackAndKomi = PlayUtils::chooseExtraBlackAndKomi(
       komiMean, komiStdev, komiAllowIntegerProb,
-      handicapProb, numExtraBlackFixed,
+      usedRandomInitialBoard ? 0.0 : handicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
       sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
@@ -569,8 +692,11 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.hintLoc = Board::NULL_LOC;
     otherGameProps.hintTurn = -1;
     otherGameProps.trainingWeight = 1.0;
-    makeGameFairProb = extraBlackAndKomi.extraBlack > 0 ? handicapCompensateKomiProb : 0.0;
-    extraBlackAndKomi.interpZero = (handicapKomiInterpZeroProb > 0 && extraBlackAndKomi.extraBlack > 0) ? rand.nextBool(handicapKomiInterpZeroProb) : false;
+    makeGameFairProb =
+      usedRandomInitialBoard ? randomInitialBoardCompensateKomiProb :
+      extraBlackAndKomi.extraBlack > 0 ? handicapCompensateKomiProb :
+      0.0;
+    extraBlackAndKomi.interpZero = (!usedRandomInitialBoard && handicapKomiInterpZeroProb > 0 && extraBlackAndKomi.extraBlack > 0) ? rand.nextBool(handicapKomiInterpZeroProb) : false;
   }
 
   double asymmetricProb = (extraBlackAndKomi.extraBlack > 0) ? playSettings.handicapAsymmetricPlayoutProb : playSettings.normalAsymmetricPlayoutProb;

@@ -141,6 +141,8 @@ class GameInitializer {
   float komiStdev;
   double komiAllowIntegerProb;
   double handicapProb;
+  double randomInitialBoardProb;
+  double randomInitialBoardCompensateKomiProb;
   double handicapCompensateKomiProb;
   double forkCompensateKomiProb;
   double sgfCompensateKomiProb;
