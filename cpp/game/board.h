@@ -14,7 +14,7 @@
 static const bool LIZZIE_LOC = true;//y1=2*y+1, x1=2*x+y+1 
 
 #ifndef COMPILE_MAX_BOARD_LEN
-#define COMPILE_MAX_BOARD_LEN 19
+#define COMPILE_MAX_BOARD_LEN 25
 #endif
 
 //TYPES AND CONSTANTS-----------------------------------------------------------------
@@ -186,6 +186,7 @@ struct Board
   //Is this board empty?
   bool isEmpty() const;
   //Count the number of stones on the board
+  int numLegalArea() const;
   int numStonesOnBoard() const;
   int numPlaStonesOnBoard(Player pla) const;
 

@@ -30,8 +30,6 @@ namespace PlayUtils {
   //Set board to empty and place fixed handicap stones, raising an exception if invalid
   void placeFixedHandicap(Board& board, int n);
 
-  int getLegalArea(const Board& board);
-
   ExtraBlackAndKomi chooseExtraBlackAndKomi(
     float base, float stdev, double allowIntegerProb,
     double handicapProb, int numExtraBlackFixed,

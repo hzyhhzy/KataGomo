@@ -565,6 +565,18 @@ bool Board::isEmpty() const {
   return true;
 }
 
+int Board::numLegalArea() const {
+  int area = 0;
+  for(int y = 0; y < y_size; y++) {
+    for(int x = 0; x < x_size; x++) {
+      Loc loc = Location::getLoc(x,y,x_size);
+      if(colors[loc] != C_WALL)
+        area += 1;
+    }
+  }
+  return area;
+}
+
 int Board::numStonesOnBoard() const {
   int num = 0;
   for(int y = 0; y < y_size; y++) {

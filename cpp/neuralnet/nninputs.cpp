@@ -1041,13 +1041,27 @@ void NNInputs::fillRowV7(
 
   //Komi and any score adjustments
   float selfKomi = hist.currentSelfKomi(nextPlayer,nnInputParams.drawEquivalentWinsForWhite);
-  float bArea = (float)(xSize * ySize);
+  float bArea = (float)(board.numLegalArea());
+  if (selfKomi >= bArea || selfKomi <= -bArea)
+  {
+    std::cout << "Error: Komi " << selfKomi
+              << " is outside of the range of possible scores on this board, which is (" << -bArea << ","
+              << bArea << ").." << std::endl;
+    assert(false);
+  }
   //Bound komi just in case
   if(selfKomi > bArea+NNPos::KOMI_CLIP_RADIUS)
     selfKomi = bArea+NNPos::KOMI_CLIP_RADIUS;
   if(selfKomi < -bArea-NNPos::KOMI_CLIP_RADIUS)
     selfKomi = -bArea-NNPos::KOMI_CLIP_RADIUS;
-  rowGlobal[5] = selfKomi/20.0f;
+
+
+  rowGlobal[5] = selfKomi / 20.0f;
+  rowGlobal[6] = selfKomi / bArea;  
+  if(rowGlobal[5] >= 361.0f / 20.0f)
+    rowGlobal[5] = 361.0f / 20.0f;
+  else if(rowGlobal[5] <= -361.0f / 20.0f)
+    rowGlobal[5] = -361.0f / 20.0f;
 
   //Ko rule
   if(hist.rules.koRule == Rules::KO_SIMPLE) {}

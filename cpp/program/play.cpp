@@ -568,7 +568,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
+      sqrt(board.x_size*board.y_size), board.numLegalArea(), rand
     );
     assert(extraBlackAndKomi.extraBlack == 0);
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
@@ -636,7 +636,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       thisHandicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
+      sqrt(board.x_size*board.y_size), board.numLegalArea(), rand
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 
@@ -680,7 +680,7 @@ void GameInitializer::createGameSharedUnsynchronized(
       usedRandomInitialBoard ? 0.0 : handicapProb, numExtraBlackFixed,
       komiBigStdevProb, komiBigStdev,
       komiBiggerStdevProb, komiBiggerStdev,
-      sqrt(board.x_size*board.y_size), PlayUtils::getLegalArea(board), rand
+      sqrt(board.x_size*board.y_size), board.numLegalArea(), rand
     );
     PlayUtils::setKomiWithNoise(extraBlackAndKomi, hist, rand);
 

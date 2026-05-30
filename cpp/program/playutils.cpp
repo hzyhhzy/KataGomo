@@ -7,18 +7,6 @@
 
 using namespace std;
 
-int PlayUtils::getLegalArea(const Board& board) {
-  int area = 0;
-  for(int y = 0; y < board.y_size; y++) {
-    for(int x = 0; x < board.x_size; x++) {
-      Loc loc = Location::getLoc(x,y,board.x_size);
-      if(board.colors[loc] != C_WALL)
-        area += 1;
-    }
-  }
-  return area;
-}
-
 ExtraBlackAndKomi PlayUtils::chooseExtraBlackAndKomi(
   float base, float stdev, double allowIntegerProb,
   double handicapProb, int numExtraBlackFixed,
@@ -362,7 +350,7 @@ double PlayUtils::getHackedLCBForWinrate(const Search* search, const AnalysisDat
 
 float PlayUtils::roundAndClipKomi(double unrounded, const Board& board) {
   //Keep self-play komis within the score range of the current playable board.
-  float range = std::max(0.0f, (float)PlayUtils::getLegalArea(board) - 0.5f);
+  float range = std::max(0.0f, (float)board.numLegalArea() - 0.5f);
   if(unrounded < -range)
     unrounded = -range;
   if(unrounded > range)
