@@ -1767,6 +1767,11 @@ void NeuralNet::getOutput(
     output->whiteWinProb = valueData[row * numValueChannels];
     output->whiteLossProb = valueData[row * numValueChannels + 1];
     output->whiteNoResultProb = valueData[row * numValueChannels + 2];
+    for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+      output->whiteWinProbByHead[head] = output->whiteWinProb;
+      output->whiteLossProbByHead[head] = output->whiteLossProb;
+      output->whiteNoResultProbByHead[head] = output->whiteNoResultProb;
+    }
 
     if(version >= 9) {
       int numScoreValueChannels = computeHandle->model.numScoreValueChannels;

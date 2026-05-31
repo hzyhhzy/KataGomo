@@ -39,6 +39,37 @@ ReportedSearchValues::ReportedSearchValues(
   visits = totalVisits;
 }
 
+ReportedSearchValues::ReportedSearchValues(
+  const Search& search,
+  double winValueAvg,
+  double lossValueAvg,
+  double noResultValueAvg,
+  double utilityAvg,
+  double totalWeight,
+  int64_t totalVisits,
+  bool valuesAreProbabilities
+) {
+  (void)search;
+  (void)valuesAreProbabilities;
+  winValue = winValueAvg;
+  lossValue = lossValueAvg;
+  noResultValue = noResultValueAvg;
+  utility = utilityAvg;
+
+  if(winValue < 0.0) winValue = 0.0;
+  if(winValue > 1.0) winValue = 1.0;
+  if(lossValue < 0.0) lossValue = 0.0;
+  if(lossValue > 1.0) lossValue = 1.0;
+  if(noResultValue < 0.0) noResultValue = 0.0;
+  if(noResultValue > 1.0) noResultValue = 1.0;
+
+  winLossValue = winValue - lossValue;
+  if(winLossValue < -1.0) winLossValue = -1.0;
+  if(winLossValue > 1.0) winLossValue = 1.0;
+
+  weight = totalWeight;
+  visits = totalVisits;
+}
 std::ostream& operator<<(std::ostream& out, const ReportedSearchValues& values) {
   out << "winValue " << values.winValue << "\n";
   out << "lossValue " << values.lossValue << "\n";

@@ -161,12 +161,12 @@ struct ComputeHandle {
 
   vector<const char*> inputNames;
   vector<const char*> outputNames;
-  
+
   // Buffers are managed by InputBuffers, but we need to know shapes.
-  
+
   ComputeHandle(ComputeContext* context, const LoadedModel* loadedModel, int maxBatchSz)
-    : ctx(context), 
-      maxBatchSize(maxBatchSz), 
+    : ctx(context),
+      maxBatchSize(maxBatchSz),
       modelVersion(loadedModel->modelDesc.version),
       env(ORT_LOGGING_LEVEL_WARNING, "KataGo"),
       memoryInfo(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
@@ -206,7 +206,7 @@ struct ComputeHandle {
       auto name = session->GetInputNameAllocated(i, allocator);
       inputNames.push_back(strdup(name.get()));
     }
-    
+
     size_t numOutputNodes = session->GetOutputCount();
     for(size_t i = 0; i < numOutputNodes; i++) {
       auto name = session->GetOutputNameAllocated(i, allocator);
@@ -233,10 +233,10 @@ ComputeHandle* NeuralNet::createComputeHandle(
 ) {
   (void)numThreads;
   if(inputsUseNHWC) throw StringError("ONNX backend: inputsUseNHWC = false required");
-  
+
   // We ignore gpuIdxForThisThread for CPU backend, and use 0 for DirectML (implied).
   // If we wanted to support multiple GPUs with DirectML, we'd need to pass gpuIdx to SessionOptionsAppendExecutionProvider_DML.
-  
+
   return new ComputeHandle(context, loadedModel, maxBatchSize);
 }
 
@@ -261,10 +261,10 @@ void NeuralNet::printDevices() {
 
 struct InputBuffers {
   int maxBatchSize;
-  
+
   size_t singleInputElts;
   size_t singleInputGlobalElts;
-  
+
   // Outputs
   size_t singleout_policyHeadElts;
   size_t singleout_valueHeadElts;
@@ -280,7 +280,7 @@ struct InputBuffers {
 
   unique_ptr<float[]> spatialInputs;
   unique_ptr<float[]> globalInputs;
-  
+
   unique_ptr<float[]> out_policyResults;
   unique_ptr<float[]> out_valueResults;
   unique_ptr<float[]> out_miscvalueResults;
@@ -293,7 +293,7 @@ struct InputBuffers {
 
     singleInputElts = m.numInputChannels * nnXLen * nnYLen;
     singleInputGlobalElts = m.numInputGlobalChannels;
-    
+
     // Output sizes - following trtbackend.cpp logic for ONNX
     int policyNum = (m.version >= 12 && m.version <= 99) ? 6 : 4;
     if(m.version >= 12 && m.version <= 99)
@@ -312,7 +312,7 @@ struct InputBuffers {
 
     spatialInputs = make_unique<float[]>(maxBatchSize * singleInputElts);
     globalInputs = make_unique<float[]>(maxBatchSize * singleInputGlobalElts);
-    
+
     out_policyResults = make_unique<float[]>(maxBatchSize * singleout_policyElts);
     out_valueResults = make_unique<float[]>(maxBatchSize * singleout_valueElts);
     out_miscvalueResults = make_unique<float[]>(maxBatchSize * singleout_miscvalueElts);
@@ -352,7 +352,7 @@ void NeuralNet::getOutput(
 
     const float* rowGlobal = inputBufs[nIdx]->rowGlobal;
     const float* rowSpatial = inputBufs[nIdx]->rowSpatial;
-    
+
     copy(rowGlobal, rowGlobal + numGlobalFeatures, rowGlobalInput);
     SymmetryHelpers::copyInputsWithSymmetry(
       rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
@@ -374,13 +374,13 @@ void NeuralNet::getOutput(
 
   // Output shapes and tensors
   // We use the buffers directly
-  int64_t policyShape[] = {batchSize, (int64_t)inputBuffers->singleout_policyElts}; 
+  int64_t policyShape[] = {batchSize, (int64_t)inputBuffers->singleout_policyElts};
   int64_t valueShape[] = {batchSize, (int64_t)inputBuffers->singleout_valueElts};
   int64_t miscShape[] = {batchSize, (int64_t)inputBuffers->singleout_miscvalueElts};
   int64_t moremiscShape[] = {batchSize, (int64_t)inputBuffers->singleout_moremiscvalueElts};
   int64_t ownShape[] = {batchSize, (int64_t)inputBuffers->singleout_ownershipElts};
-  
-  // Note: The ONNX model output shapes might be slightly different (e.g. including 1s), 
+
+  // Note: The ONNX model output shapes might be slightly different (e.g. including 1s),
   // but CreateTensor with user buffer assumes we know the shape we want to view it as, or we should use what the model expects.
   // Ideally we should match model output shapes.
   // However, Ort::Session::Run will allocate outputs if we don't provide them, OR we provide pre-allocated values.
@@ -388,36 +388,36 @@ void NeuralNet::getOutput(
   // For simplicity, let's let ORT allocate and then copy? No, we want to avoid copy.
   // But we reused InputBuffers buffers.
   // Let's assume the shapes match what we computed.
-  
+
   // Actually, for "out_policy", trtbackend says "1 * policyNum * (nnXLen * nnYLen + 1)".
   // The shape in ONNX might be [batch, policyNum, nnYLen * nnXLen + 1] or similar.
   // We should probably check `handle->session->GetOutputTypeInfo`.
   // But for now let's try to pass the flat buffers if possible, or correct shapes.
-  
+
   // To be safe, we can let ORT allocate and copy to our buffers.
   // But wait, we want performance.
   // Let's rely on the fact that trtbackend.cpp defines these sizes based on what the ONNX model produces.
-  
+
   vector<Ort::Value> outputTensors;
   // We need correct shapes.
   // Re-reading trtbackend.cpp:
   // "profile->setDimensions("input_spatial", ... Dims4(1, spatialC, ctx->nnYLen, ctx->nnXLen));"
   // So input shapes are correct.
-  
+
   // Output shapes?
   // We don't have them hardcoded in trtbackend.cpp other than total size.
   // But we can query them from the session in ComputeHandle constructor and store them!
-  
+
   // For this implementation, I will just let ORT allocate outputs and copy them. It's safer and easier.
   // Performance hit is small compared to inference.
-  
-  auto outputValues = handle->session->Run(Ort::RunOptions{nullptr}, 
-    inputNames.data(), inputTensors.data(), inputNames.size(), 
+
+  auto outputValues = handle->session->Run(Ort::RunOptions{nullptr},
+    inputNames.data(), inputTensors.data(), inputNames.size(),
     outputNames.data(), outputNames.size());
 
   // Copy outputs to buffers
   // Assumes output order matches outputNames
-  
+
   auto copyToBuffer = [&](size_t idx, float* dest, size_t size) {
     const float* src = outputValues[idx].GetTensorData<float>();
     size_t count = outputValues[idx].GetTensorTypeAndShapeInfo().GetElementCount();
@@ -455,14 +455,21 @@ void NeuralNet::getOutput(
     policyProbs[nnXLen * nnYLen] = policySrcBuf[nnXLen * nnYLen];
 
     // Value
-    const float* valueSrcBuf =
+    const float* valueBaseBuf =
       &inputBuffers->out_valueResults[
-        row * inputBuffers->singleout_valueElts +
-        getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_valueHeadElts, modelVersion)
+        row * inputBuffers->singleout_valueElts
       ];
-    output->whiteWinProb = valueSrcBuf[0];
-    output->whiteLossProb = valueSrcBuf[1];
-    output->whiteNoResultProb = valueSrcBuf[2];
+    int valueHeadCount = getOnnxOutputHeadCount(modelVersion);
+    for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+      int srcHead = head < valueHeadCount ? head : 0;
+      const float* valueSrcBuf = valueBaseBuf + (size_t)srcHead * inputBuffers->singleout_valueHeadElts;
+      output->whiteWinProbByHead[head] = valueSrcBuf[0];
+      output->whiteLossProbByHead[head] = valueSrcBuf[1];
+      output->whiteNoResultProbByHead[head] = valueSrcBuf[2];
+    }
+    output->whiteWinProb = output->whiteWinProbByHead[0];
+    output->whiteLossProb = output->whiteLossProbByHead[0];
+    output->whiteNoResultProb = output->whiteNoResultProbByHead[0];
 
     // Misc Value
     const float* miscValueSrcBuf =

@@ -426,6 +426,11 @@ void NeuralNet::getOutput(
     output->whiteWinProb = inputBuffers->out_valueResults[row * numValueChannels];
     output->whiteLossProb = inputBuffers->out_valueResults[row * numValueChannels + 1];
     output->whiteNoResultProb = inputBuffers->out_valueResults[row * numValueChannels + 2];
+    for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+      output->whiteWinProbByHead[head] = output->whiteWinProb;
+      output->whiteLossProbByHead[head] = output->whiteLossProb;
+      output->whiteNoResultProbByHead[head] = output->whiteNoResultProb;
+    }
     
     // Ownership
     if(output->whiteOwnerMap != NULL) {

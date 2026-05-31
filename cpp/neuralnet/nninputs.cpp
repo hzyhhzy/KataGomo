@@ -69,6 +69,9 @@ NNOutput::NNOutput(const NNOutput& other) {
   whiteWinProb = other.whiteWinProb;
   whiteLossProb = other.whiteLossProb;
   whiteNoResultProb = other.whiteNoResultProb;
+  std::copy(other.whiteWinProbByHead, other.whiteWinProbByHead + NNOutput::NUM_VALUE_HEADS, whiteWinProbByHead);
+  std::copy(other.whiteLossProbByHead, other.whiteLossProbByHead + NNOutput::NUM_VALUE_HEADS, whiteLossProbByHead);
+  std::copy(other.whiteNoResultProbByHead, other.whiteNoResultProbByHead + NNOutput::NUM_VALUE_HEADS, whiteNoResultProbByHead);
   varTimeLeft = other.varTimeLeft;
   shorttermWinlossError = other.shorttermWinlossError;
 
@@ -98,6 +101,9 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
   whiteWinProb = 0.0f;
   whiteLossProb = 0.0f;
   whiteNoResultProb = 0.0f;
+  std::fill(whiteWinProbByHead, whiteWinProbByHead + NNOutput::NUM_VALUE_HEADS, 0.0f);
+  std::fill(whiteLossProbByHead, whiteLossProbByHead + NNOutput::NUM_VALUE_HEADS, 0.0f);
+  std::fill(whiteNoResultProbByHead, whiteNoResultProbByHead + NNOutput::NUM_VALUE_HEADS, 0.0f);
   varTimeLeft = 0.0f;
   shorttermWinlossError = 0.0f;
   for(int i = 0; i<len; i++) {
@@ -105,12 +111,22 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
     whiteWinProb += other.whiteWinProb;
     whiteLossProb += other.whiteLossProb;
     whiteNoResultProb += other.whiteNoResultProb;
+    for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+      whiteWinProbByHead[head] += other.whiteWinProbByHead[head];
+      whiteLossProbByHead[head] += other.whiteLossProbByHead[head];
+      whiteNoResultProbByHead[head] += other.whiteNoResultProbByHead[head];
+    }
     varTimeLeft += other.varTimeLeft;
     shorttermWinlossError += other.shorttermWinlossError;
   }
   whiteWinProb /= floatLen;
   whiteLossProb /= floatLen;
   whiteNoResultProb /= floatLen;
+  for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+    whiteWinProbByHead[head] /= floatLen;
+    whiteLossProbByHead[head] /= floatLen;
+    whiteNoResultProbByHead[head] /= floatLen;
+  }
   varTimeLeft /= floatLen;
   shorttermWinlossError /= floatLen;
 
@@ -156,6 +172,9 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   whiteWinProb = other.whiteWinProb;
   whiteLossProb = other.whiteLossProb;
   whiteNoResultProb = other.whiteNoResultProb;
+  std::copy(other.whiteWinProbByHead, other.whiteWinProbByHead + NNOutput::NUM_VALUE_HEADS, whiteWinProbByHead);
+  std::copy(other.whiteLossProbByHead, other.whiteLossProbByHead + NNOutput::NUM_VALUE_HEADS, whiteLossProbByHead);
+  std::copy(other.whiteNoResultProbByHead, other.whiteNoResultProbByHead + NNOutput::NUM_VALUE_HEADS, whiteNoResultProbByHead);
   varTimeLeft = other.varTimeLeft;
   shorttermWinlossError = other.shorttermWinlossError;
 
@@ -189,6 +208,11 @@ void NNOutput::debugPrint(ostream& out, const Board& board) {
   out << "Win " << Global::strprintf("%.2fc",whiteWinProb*100) << endl;
   out << "Loss " << Global::strprintf("%.2fc",whiteLossProb*100) << endl;
   out << "NoResult " << Global::strprintf("%.2fc",whiteNoResultProb*100) << endl;
+  for(int head = 1; head<NNOutput::NUM_VALUE_HEADS; head++) {
+    out << "Head" << head << " Win " << Global::strprintf("%.2fc",whiteWinProbByHead[head]*100)
+        << " Loss " << Global::strprintf("%.2fc",whiteLossProbByHead[head]*100)
+        << " NoResult " << Global::strprintf("%.2fc",whiteNoResultProbByHead[head]*100) << endl;
+  }
   out << "VarTimeLeft " << Global::strprintf("%.1f",varTimeLeft) << endl;
   out << "STWinlossError " << Global::strprintf("%.3f",shorttermWinlossError) << endl;
 

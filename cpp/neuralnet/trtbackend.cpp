@@ -1963,15 +1963,21 @@ void NeuralNet::getOutput(
       policyProbs[nnXLen * nnYLen] = policySrcBuf[nnXLen * nnYLen];
       
 
-      const float* valueSrcBuf =
+      const float* valueBaseBuf =
         &inputBuffers->out_valueResults[
-          row * inputBuffers->singleout_valueElts +
-          getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_valueHeadElts, version)
+          row * inputBuffers->singleout_valueElts
         ];
-      output->whiteWinProb = valueSrcBuf[0];
-      output->whiteLossProb = valueSrcBuf[1];
-      output->whiteNoResultProb = valueSrcBuf[2];
-
+      int valueHeadCount = getOnnxOutputHeadCount(version);
+      for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+        int srcHead = head < valueHeadCount ? head : 0;
+        const float* valueSrcBuf = valueBaseBuf + (size_t)srcHead * inputBuffers->singleout_valueHeadElts;
+        output->whiteWinProbByHead[head] = valueSrcBuf[0];
+        output->whiteLossProbByHead[head] = valueSrcBuf[1];
+        output->whiteNoResultProbByHead[head] = valueSrcBuf[2];
+      }
+      output->whiteWinProb = output->whiteWinProbByHead[0];
+      output->whiteLossProb = output->whiteLossProbByHead[0];
+      output->whiteNoResultProb = output->whiteNoResultProbByHead[0];
 
       const float* miscValueSrcBuf =
         &inputBuffers->out_miscvalueResults[
@@ -2006,6 +2012,11 @@ void NeuralNet::getOutput(
       output->whiteWinProb = inputBuffers->valueResults[row * numValueChannels];
       output->whiteLossProb = inputBuffers->valueResults[row * numValueChannels + 1];
       output->whiteNoResultProb = inputBuffers->valueResults[row * numValueChannels + 2];
+      for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+        output->whiteWinProbByHead[head] = output->whiteWinProb;
+        output->whiteLossProbByHead[head] = output->whiteLossProb;
+        output->whiteNoResultProbByHead[head] = output->whiteNoResultProb;
+      }
 
       int numScoreValueChannels = inputBuffers->singleScoreValueResultElts;
       if(version >= 9) {

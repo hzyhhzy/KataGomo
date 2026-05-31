@@ -15,10 +15,20 @@ struct NodeStatsAtomic {
   std::atomic<int64_t> visits;
   std::atomic<double> winLossValueAvg;
   std::atomic<double> noResultValueAvg;
+  std::atomic<double> whiteWinProbAvg;
+  std::atomic<double> blackWinProbAvg;
   std::atomic<double> utilityAvg;
   std::atomic<double> utilitySqAvg;
   std::atomic<double> weightSum;
   std::atomic<double> weightSqSum;
+  std::atomic<double> whiteWinUtilityAvg;
+  std::atomic<double> whiteWinUtilitySqAvg;
+  std::atomic<double> whiteWinWeightSum;
+  std::atomic<double> whiteWinWeightSqSum;
+  std::atomic<double> blackWinUtilityInvAvg;
+  std::atomic<double> blackWinUtilityInvSqAvg;
+  std::atomic<double> blackWinWeightSum;
+  std::atomic<double> blackWinWeightSqSum;
 
   NodeStatsAtomic();
   explicit NodeStatsAtomic(const NodeStatsAtomic& other);
@@ -32,16 +42,30 @@ struct NodeStatsAtomic {
   double getChildWeight(int64_t edgeVisits, int64_t childVisits) const;
   double getChildWeightSq(int64_t edgeVisits) const;
   double getChildWeightSq(int64_t edgeVisits, int64_t childVisits) const;
+  double getChildWhiteWinWeight(int64_t edgeVisits) const;
+  double getChildWhiteWinWeight(int64_t edgeVisits, int64_t childVisits) const;
+  double getChildBlackWinWeight(int64_t edgeVisits) const;
+  double getChildBlackWinWeight(int64_t edgeVisits, int64_t childVisits) const;
 };
 
 struct NodeStats {
   int64_t visits;
   double winLossValueAvg;
   double noResultValueAvg;
+  double whiteWinProbAvg;
+  double blackWinProbAvg;
   double utilityAvg;
   double utilitySqAvg;
   double weightSum;
   double weightSqSum;
+  double whiteWinUtilityAvg;
+  double whiteWinUtilitySqAvg;
+  double whiteWinWeightSum;
+  double whiteWinWeightSqSum;
+  double blackWinUtilityInvAvg;
+  double blackWinUtilityInvSqAvg;
+  double blackWinWeightSum;
+  double blackWinWeightSqSum;
 
   NodeStats();
   explicit NodeStats(const NodeStatsAtomic& other);
@@ -61,6 +85,12 @@ struct NodeStats {
   double getChildWeight(int64_t edgeVisits) {
     return childWeight(edgeVisits, visits, weightSum);
   }
+  double getChildWhiteWinWeight(int64_t edgeVisits) {
+    return childWeight(edgeVisits, visits, whiteWinWeightSum);
+  }
+  double getChildBlackWinWeight(int64_t edgeVisits) {
+    return childWeight(edgeVisits, visits, blackWinWeightSum);
+  }
 };
 
 inline double NodeStatsAtomic::getChildWeight(int64_t edgeVisits) const {
@@ -75,12 +105,28 @@ inline double NodeStatsAtomic::getChildWeightSq(int64_t edgeVisits) const {
 inline double NodeStatsAtomic::getChildWeightSq(int64_t edgeVisits, int64_t childVisits) const {
   return NodeStats::childWeightSq(edgeVisits, childVisits, weightSqSum.load(std::memory_order_acquire));
 }
+inline double NodeStatsAtomic::getChildWhiteWinWeight(int64_t edgeVisits) const {
+  return NodeStats::childWeight(edgeVisits, visits.load(std::memory_order_acquire), whiteWinWeightSum.load(std::memory_order_acquire));
+}
+inline double NodeStatsAtomic::getChildWhiteWinWeight(int64_t edgeVisits, int64_t childVisits) const {
+  return NodeStats::childWeight(edgeVisits, childVisits, whiteWinWeightSum.load(std::memory_order_acquire));
+}
+inline double NodeStatsAtomic::getChildBlackWinWeight(int64_t edgeVisits) const {
+  return NodeStats::childWeight(edgeVisits, visits.load(std::memory_order_acquire), blackWinWeightSum.load(std::memory_order_acquire));
+}
+inline double NodeStatsAtomic::getChildBlackWinWeight(int64_t edgeVisits, int64_t childVisits) const {
+  return NodeStats::childWeight(edgeVisits, childVisits, blackWinWeightSum.load(std::memory_order_acquire));
+}
 
 
 struct MoreNodeStats {
   NodeStats stats;
   double selfUtility;
   double weightAdjusted;
+  double whiteWinSelfUtility;
+  double whiteWinWeightAdjusted;
+  double blackWinSelfUtility;
+  double blackWinWeightAdjusted;
   Loc prevMoveLoc;
 
   MoreNodeStats();

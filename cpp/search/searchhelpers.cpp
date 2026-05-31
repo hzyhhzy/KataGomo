@@ -238,11 +238,47 @@ double Search::getResultUtilityFromNN(const NNOutput& nnOutput) const {
 }
 
 
-double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
-  double resultUtility = getResultUtilityFromNN(nnOutput);
-  return resultUtility;
+double Search::getWhiteWinProbFromNN(const NNOutput& nnOutput) const {
+  double c = searchParams.multiValueHeadUtilityMix;
+  return (1.0 - c) * nnOutput.whiteWinProbByHead[0] + c * nnOutput.whiteWinProbByHead[3];
 }
 
+
+double Search::getBlackWinProbFromNN(const NNOutput& nnOutput) const {
+  double c = searchParams.multiValueHeadUtilityMix;
+  return (1.0 - c) * nnOutput.whiteLossProbByHead[0] + c * nnOutput.whiteLossProbByHead[2];
+}
+
+
+double Search::getWhiteWinUtility(double legacyUtility, double whiteWinProb) const {
+  double c = searchParams.multiValueHeadUtilityMix;
+  return (1.0 - c) * legacyUtility + c * (2.0 * whiteWinProb - 1.0);
+}
+
+
+double Search::getBlackWinUtilityInv(double legacyUtility, double blackWinProb) const {
+  double c = searchParams.multiValueHeadUtilityMix;
+  return (1.0 - c) * legacyUtility + c * (1.0 - 2.0 * blackWinProb);
+}
+
+
+double Search::getWhiteWinUtilityFromNN(const NNOutput& nnOutput) const {
+  double legacyUtility = getResultUtilityFromNN(nnOutput);
+  return getWhiteWinUtility(legacyUtility, getWhiteWinProbFromNN(nnOutput));
+}
+
+
+double Search::getBlackWinUtilityInvFromNN(const NNOutput& nnOutput) const {
+  double legacyUtility = getResultUtilityFromNN(nnOutput);
+  return getBlackWinUtilityInv(legacyUtility, getBlackWinProbFromNN(nnOutput));
+}
+
+
+double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
+  double whiteWinUtility = getWhiteWinUtilityFromNN(nnOutput);
+  double blackWinUtilityInv = getBlackWinUtilityInvFromNN(nnOutput);
+  return 0.5 * (whiteWinUtility + blackWinUtilityInv);
+}
 
 bool Search::isAllowedRootMove(Loc moveLoc) const {
   assert(moveLoc == Board::PASS_LOC || rootBoard.isOnBoard(moveLoc));

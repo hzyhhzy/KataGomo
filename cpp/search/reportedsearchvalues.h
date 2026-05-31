@@ -23,6 +23,16 @@ struct ReportedSearchValues {
     double totalWeight,
     int64_t totalVisits
   );
+  ReportedSearchValues(
+    const Search& search,
+    double winValueAvg,
+    double lossValueAvg,
+    double noResultValueAvg,
+    double utilityAvg,
+    double totalWeight,
+    int64_t totalVisits,
+    bool valuesAreProbabilities
+  );
   ~ReportedSearchValues();
 
   friend std::ostream& operator<<(std::ostream& out, const ReportedSearchValues& values);

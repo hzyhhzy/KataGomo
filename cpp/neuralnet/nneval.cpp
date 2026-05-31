@@ -502,6 +502,11 @@ void NNEvaluator::serve(
         resultBuf->result->whiteWinProb = (float)whiteWinProb;
         resultBuf->result->whiteLossProb = (float)whiteLossProb;
         resultBuf->result->whiteNoResultProb = (float)whiteNoResultProb;
+        for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+          resultBuf->result->whiteWinProbByHead[head] = (float)whiteWinProb;
+          resultBuf->result->whiteLossProbByHead[head] = (float)whiteLossProb;
+          resultBuf->result->whiteNoResultProbByHead[head] = (float)whiteNoResultProb;
+        }
         resultBuf->result->varTimeLeft = (float)varTimeLeft;
         resultBuf->result->shorttermWinlossError = 0.0f;
         resultBuf->hasResult = true;
@@ -804,84 +809,81 @@ void NNEvaluator::evaluate(
     //of the player so we need to negate that to make it the white value.
     static_assert(NNModelVersion::latestModelVersionImplemented == 112, "");
     if((modelVersion >= 4 && modelVersion <= 103) || modelVersion == 112) {
-      double winProb;
-      double lossProb;
-      double noResultProb;
       double varTimeLeft;
       double shorttermWinlossError;
-      {
-        double winLogits = buf.result->whiteWinProb;
-        double lossLogits = buf.result->whiteLossProb;
-        double noResultLogits = buf.result->whiteNoResultProb;
-        double varTimeLeftPreSoftplus = buf.result->varTimeLeft;
-        double shorttermWinlossErrorPreSoftplus = buf.result->shorttermWinlossError;
+      double varTimeLeftPreSoftplus = buf.result->varTimeLeft;
+      double shorttermWinlossErrorPreSoftplus = buf.result->shorttermWinlossError;
 
-        
+      for(int head = 0; head<NNOutput::NUM_VALUE_HEADS; head++) {
+        double winLogits = modelVersion == 112 ? buf.result->whiteWinProbByHead[head] : buf.result->whiteWinProb;
+        double lossLogits = modelVersion == 112 ? buf.result->whiteLossProbByHead[head] : buf.result->whiteLossProb;
+        double noResultLogits = modelVersion == 112 ? buf.result->whiteNoResultProbByHead[head] : buf.result->whiteNoResultProb;
+
+        double winProb;
+        double lossProb;
+        double noResultProb;
         if(resultsBeforeNN.winner == C_EMPTY) {  // draw
           winProb = 0.0;
           lossProb = 0.0;
           noResultProb = 1.0;
           ASSERT_UNREACHABLE;
-        } 
+        }
         else if(resultsBeforeNN.winner == nextPlayer) {  // next player win
           winProb = 1.0;
           lossProb = 0.0;
           noResultProb = 0.0;
-        } 
+        }
         else if(resultsBeforeNN.winner == getOpp(nextPlayer)) {  // opp win
           winProb = 0.0;
           lossProb = 1.0;
           noResultProb = 0.0;
-        } 
+        }
         else { //no sure results
-          // Softmax
           double maxLogits = std::max(std::max(winLogits, lossLogits), noResultLogits);
           winProb = exp(winLogits - maxLogits);
           lossProb = exp(lossLogits - maxLogits);
           noResultProb = exp(noResultLogits - maxLogits);
+        }
 
-        } 
-       
         double probSum = winProb + lossProb + noResultProb;
         winProb /= probSum;
         lossProb /= probSum;
         noResultProb /= probSum;
 
-
-
-        varTimeLeft = softPlus(varTimeLeftPreSoftplus) * 40.0;
-
-
-        if(modelVersion >= 10) {
-          shorttermWinlossError = sqrt(softPlus(shorttermWinlossErrorPreSoftplus) * 0.25);
-        }
-        else {
-          shorttermWinlossError = softPlus(shorttermWinlossErrorPreSoftplus);
-        }
-
-        if(
-          !isfinite(probSum) ||
-          !isfinite(varTimeLeft) ||
-          !isfinite(shorttermWinlossError) 
-        ) {
+        if(!isfinite(probSum)) {
           cout << "Got nonfinite for nneval value" << endl;
-          cout << winLogits << " " << lossLogits << " " << noResultLogits
-               << " " << varTimeLeft
-               << " " << shorttermWinlossError 
-               << endl;
+          cout << winLogits << " " << lossLogits << " " << noResultLogits << endl;
           throw StringError("Got nonfinite for nneval value");
         }
+
+        if(nextPlayer == P_WHITE) {
+          buf.result->whiteWinProbByHead[head] = (float)winProb;
+          buf.result->whiteLossProbByHead[head] = (float)lossProb;
+          buf.result->whiteNoResultProbByHead[head] = (float)noResultProb;
+        }
+        else {
+          buf.result->whiteWinProbByHead[head] = (float)lossProb;
+          buf.result->whiteLossProbByHead[head] = (float)winProb;
+          buf.result->whiteNoResultProbByHead[head] = (float)noResultProb;
+        }
       }
 
-      if(nextPlayer == P_WHITE) {
-        buf.result->whiteWinProb = (float)winProb;
-        buf.result->whiteLossProb = (float)lossProb;
-        buf.result->whiteNoResultProb = (float)noResultProb;
+      buf.result->whiteWinProb = buf.result->whiteWinProbByHead[0];
+      buf.result->whiteLossProb = buf.result->whiteLossProbByHead[0];
+      buf.result->whiteNoResultProb = buf.result->whiteNoResultProbByHead[0];
+
+      varTimeLeft = softPlus(varTimeLeftPreSoftplus) * 40.0;
+      if(modelVersion >= 10) {
+        shorttermWinlossError = sqrt(softPlus(shorttermWinlossErrorPreSoftplus) * 0.25);
       }
       else {
-        buf.result->whiteWinProb = (float)lossProb;
-        buf.result->whiteLossProb = (float)winProb;
-        buf.result->whiteNoResultProb = (float)noResultProb;
+        shorttermWinlossError = softPlus(shorttermWinlossErrorPreSoftplus);
+      }
+
+      if(!isfinite(varTimeLeft) || !isfinite(shorttermWinlossError)) {
+        cout << "Got nonfinite for nneval value" << endl;
+        cout << varTimeLeft << " " << shorttermWinlossError << endl;
+        throw StringError("Got nonfinite for nneval value");
       }
 
       if(modelVersion >= 9) {
@@ -896,8 +898,7 @@ void NNEvaluator::evaluate(
     else {
       throw StringError("NNEval value postprocessing not implemented for model version");
     }
-  
-  //copy policy
+    //copy policy
     for(int i = 0; i < NNPos::MAX_NN_POLICY_SIZE; i++)
       buf.result->policyProbsQuantized[i] = NNOutput::policyQuant(policy[i]);
 

@@ -372,6 +372,12 @@ private:
   //----------------------------------------------------------------------------------------
   double getResultUtility(double winlossValue, double noResultValue) const;
   double getResultUtilityFromNN(const NNOutput& nnOutput) const;
+  double getWhiteWinProbFromNN(const NNOutput& nnOutput) const;
+  double getBlackWinProbFromNN(const NNOutput& nnOutput) const;
+  double getWhiteWinUtility(double legacyUtility, double whiteWinProb) const;
+  double getBlackWinUtilityInv(double legacyUtility, double blackWinProb) const;
+  double getWhiteWinUtilityFromNN(const NNOutput& nnOutput) const;
+  double getBlackWinUtilityInvFromNN(const NNOutput& nnOutput) const;
   double getUtilityFromNN(const NNOutput& nnOutput) const;
 
   //----------------------------------------------------------------------------------------
@@ -481,6 +487,11 @@ private:
     const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
     double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
   ) const;
+  double getFpuValueForChildrenAssumeVisitedByStats(
+    const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
+    double weightSum, double utilityAvg, double utilitySqAvg, double nnUtility,
+    double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
+  ) const;
 
   void selectBestChildToDescend(
     SearchThread& thread, const SearchNode& node, int nodeState,
@@ -496,15 +507,23 @@ private:
 
   void addLeafValue(
     SearchNode& node,
-    double winLossValue,
+    double whiteWinProb,
+    double blackWinProb,
     double noResultValue,
+    double legacyUtility,
+    double whiteWinUtility,
+    double blackWinUtilityInv,
     double weight,
+    double whiteWinWeight,
+    double blackWinWeight,
     bool isTerminal,
     bool assumeNoExistingWeight
   );
   void addCurrentNNOutputAsLeafValue(SearchNode& node, bool assumeNoExistingWeight);
 
   double computeWeightFromNNOutput(const NNOutput* nnOutput) const;
+  double computeWhiteWinWeightFromNNOutput(const NNOutput* nnOutput) const;
+  double computeBlackWinWeightFromNNOutput(const NNOutput* nnOutput) const;
 
   void updateStatsAfterPlayout(SearchNode& node, SearchThread& thread, bool isRoot);
   void recomputeNodeStats(SearchNode& node, SearchThread& thread, int32_t numVisitsToAdd, bool isRoot);

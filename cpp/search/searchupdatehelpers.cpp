@@ -11,14 +11,19 @@
 
 void Search::addLeafValue(
   SearchNode& node,
-  double winLossValue,
+  double whiteWinProb,
+  double blackWinProb,
   double noResultValue,
+  double legacyUtility,
+  double whiteWinUtility,
+  double blackWinUtilityInv,
   double weight,
+  double whiteWinWeight,
+  double blackWinWeight,
   bool isTerminal,
   bool assumeNoExistingWeight
 ) {
-  double utility =
-    getResultUtility(winLossValue, noResultValue);
+  double winLossValue = whiteWinProb - blackWinProb;
 
   if(searchParams.subtreeValueBiasFactor != 0 && !isTerminal && node.subtreeValueBiasTableEntry != nullptr) {
     SubtreeValueBiasEntry& entry = *(node.subtreeValueBiasTableEntry);
@@ -28,23 +33,45 @@ void Search::addLeafValue(
     entry.entryLock.clear(std::memory_order_release);
     //This is the amount of the direct evaluation of this node that we are going to bias towards the table entry
     const double biasFactor = searchParams.subtreeValueBiasFactor;
-    if(newEntryWeightSum > 0.001)
-      utility += biasFactor * newEntryDeltaUtilitySum / newEntryWeightSum;
+    if(newEntryWeightSum > 0.001) {
+      double utilityBias = biasFactor * newEntryDeltaUtilitySum / newEntryWeightSum;
+      legacyUtility += utilityBias;
+      whiteWinUtility += utilityBias;
+      blackWinUtilityInv += utilityBias;
+    }
   }
 
-  utility += getPatternBonus(node.patternBonusHash,getOpp(node.nextPla));
+  double patternBonus = getPatternBonus(node.patternBonusHash,getOpp(node.nextPla));
+  legacyUtility += patternBonus;
+  whiteWinUtility += patternBonus;
+  blackWinUtilityInv += patternBonus;
 
+  double utility = 0.5 * (whiteWinUtility + blackWinUtilityInv);
   double utilitySq = utility * utility;
   double weightSq = weight * weight;
+  double whiteWinUtilitySq = whiteWinUtility * whiteWinUtility;
+  double blackWinUtilityInvSq = blackWinUtilityInv * blackWinUtilityInv;
+  double whiteWinWeightSq = whiteWinWeight * whiteWinWeight;
+  double blackWinWeightSq = blackWinWeight * blackWinWeight;
 
   if(assumeNoExistingWeight) {
     while(node.statsLock.test_and_set(std::memory_order_acquire));
     node.stats.winLossValueAvg.store(winLossValue,std::memory_order_release);
     node.stats.noResultValueAvg.store(noResultValue,std::memory_order_release);
+    node.stats.whiteWinProbAvg.store(whiteWinProb,std::memory_order_release);
+    node.stats.blackWinProbAvg.store(blackWinProb,std::memory_order_release);
     node.stats.utilityAvg.store(utility,std::memory_order_release);
     node.stats.utilitySqAvg.store(utilitySq,std::memory_order_release);
     node.stats.weightSqSum.store(weightSq,std::memory_order_release);
     node.stats.weightSum.store(weight,std::memory_order_release);
+    node.stats.whiteWinUtilityAvg.store(whiteWinUtility,std::memory_order_release);
+    node.stats.whiteWinUtilitySqAvg.store(whiteWinUtilitySq,std::memory_order_release);
+    node.stats.whiteWinWeightSqSum.store(whiteWinWeightSq,std::memory_order_release);
+    node.stats.whiteWinWeightSum.store(whiteWinWeight,std::memory_order_release);
+    node.stats.blackWinUtilityInvAvg.store(blackWinUtilityInv,std::memory_order_release);
+    node.stats.blackWinUtilityInvSqAvg.store(blackWinUtilityInvSq,std::memory_order_release);
+    node.stats.blackWinWeightSqSum.store(blackWinWeightSq,std::memory_order_release);
+    node.stats.blackWinWeightSum.store(blackWinWeight,std::memory_order_release);
     int64_t oldVisits = node.stats.visits.fetch_add(1,std::memory_order_release);
     node.statsLock.clear(std::memory_order_release);
     // This should only be possible in the extremely rare case that we transpose to a terminal node from a non-terminal node probably due to
@@ -59,13 +86,28 @@ void Search::addLeafValue(
     while(node.statsLock.test_and_set(std::memory_order_acquire));
     double oldWeightSum = node.stats.weightSum.load(std::memory_order_relaxed);
     double newWeightSum = oldWeightSum + weight;
+    double oldWhiteWinWeightSum = node.stats.whiteWinWeightSum.load(std::memory_order_relaxed);
+    double newWhiteWinWeightSum = oldWhiteWinWeightSum + whiteWinWeight;
+    double oldBlackWinWeightSum = node.stats.blackWinWeightSum.load(std::memory_order_relaxed);
+    double newBlackWinWeightSum = oldBlackWinWeightSum + blackWinWeight;
 
-    node.stats.winLossValueAvg.store((node.stats.winLossValueAvg.load(std::memory_order_relaxed) * oldWeightSum + winLossValue * weight)/newWeightSum,std::memory_order_release);
+    node.stats.whiteWinProbAvg.store((node.stats.whiteWinProbAvg.load(std::memory_order_relaxed) * oldWhiteWinWeightSum + whiteWinProb * whiteWinWeight)/newWhiteWinWeightSum,std::memory_order_release);
+    node.stats.blackWinProbAvg.store((node.stats.blackWinProbAvg.load(std::memory_order_relaxed) * oldBlackWinWeightSum + blackWinProb * blackWinWeight)/newBlackWinWeightSum,std::memory_order_release);
+    double newWinLossValueAvg = node.stats.whiteWinProbAvg.load(std::memory_order_relaxed) - node.stats.blackWinProbAvg.load(std::memory_order_relaxed);
+    node.stats.winLossValueAvg.store(newWinLossValueAvg,std::memory_order_release);
     node.stats.noResultValueAvg.store((node.stats.noResultValueAvg.load(std::memory_order_relaxed) * oldWeightSum + noResultValue * weight)/newWeightSum,std::memory_order_release);
     node.stats.utilityAvg.store((node.stats.utilityAvg.load(std::memory_order_relaxed) * oldWeightSum + utility * weight)/newWeightSum,std::memory_order_release);
     node.stats.utilitySqAvg.store((node.stats.utilitySqAvg.load(std::memory_order_relaxed) * oldWeightSum + utilitySq * weight)/newWeightSum,std::memory_order_release);
     node.stats.weightSqSum.store(node.stats.weightSqSum.load(std::memory_order_relaxed) + weightSq,std::memory_order_release);
     node.stats.weightSum.store(newWeightSum,std::memory_order_release);
+    node.stats.whiteWinUtilityAvg.store((node.stats.whiteWinUtilityAvg.load(std::memory_order_relaxed) * oldWhiteWinWeightSum + whiteWinUtility * whiteWinWeight)/newWhiteWinWeightSum,std::memory_order_release);
+    node.stats.whiteWinUtilitySqAvg.store((node.stats.whiteWinUtilitySqAvg.load(std::memory_order_relaxed) * oldWhiteWinWeightSum + whiteWinUtilitySq * whiteWinWeight)/newWhiteWinWeightSum,std::memory_order_release);
+    node.stats.whiteWinWeightSqSum.store(node.stats.whiteWinWeightSqSum.load(std::memory_order_relaxed) + whiteWinWeightSq,std::memory_order_release);
+    node.stats.whiteWinWeightSum.store(newWhiteWinWeightSum,std::memory_order_release);
+    node.stats.blackWinUtilityInvAvg.store((node.stats.blackWinUtilityInvAvg.load(std::memory_order_relaxed) * oldBlackWinWeightSum + blackWinUtilityInv * blackWinWeight)/newBlackWinWeightSum,std::memory_order_release);
+    node.stats.blackWinUtilityInvSqAvg.store((node.stats.blackWinUtilityInvSqAvg.load(std::memory_order_relaxed) * oldBlackWinWeightSum + blackWinUtilityInvSq * blackWinWeight)/newBlackWinWeightSum,std::memory_order_release);
+    node.stats.blackWinWeightSqSum.store(node.stats.blackWinWeightSqSum.load(std::memory_order_relaxed) + blackWinWeightSq,std::memory_order_release);
+    node.stats.blackWinWeightSum.store(newBlackWinWeightSum,std::memory_order_release);
     node.stats.visits.fetch_add(1,std::memory_order_release);
     node.statsLock.clear(std::memory_order_release);
   }
@@ -75,11 +117,16 @@ void Search::addCurrentNNOutputAsLeafValue(SearchNode& node, bool assumeNoExisti
   const NNOutput* nnOutput = node.getNNOutput();
   assert(nnOutput != NULL);
   //Values in the search are from the perspective of white positive always
-  double winProb = (double)nnOutput->whiteWinProb;
-  double lossProb = (double)nnOutput->whiteLossProb;
+  double whiteWinProb = getWhiteWinProbFromNN(*nnOutput);
+  double blackWinProb = getBlackWinProbFromNN(*nnOutput);
   double noResultProb = (double)nnOutput->whiteNoResultProb;
+  double legacyUtility = getResultUtilityFromNN(*nnOutput);
+  double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
+  double blackWinUtilityInv = getBlackWinUtilityInv(legacyUtility, blackWinProb);
   double weight = computeWeightFromNNOutput(nnOutput);
-  addLeafValue(node,winProb-lossProb,noResultProb,weight,false,assumeNoExistingWeight);
+  double whiteWinWeight = computeWhiteWinWeightFromNNOutput(nnOutput);
+  double blackWinWeight = computeBlackWinWeightFromNNOutput(nnOutput);
+  addLeafValue(node,whiteWinProb,blackWinProb,noResultProb,legacyUtility,whiteWinUtility,blackWinUtilityInv,weight,whiteWinWeight,blackWinWeight,false,assumeNoExistingWeight);
 }
 
 double Search::computeWeightFromNNOutput(const NNOutput* nnOutput) const {
@@ -104,6 +151,15 @@ double Search::computeWeightFromNNOutput(const NNOutput* nnOutput) const {
   return weight;
 }
 
+
+double Search::computeWhiteWinWeightFromNNOutput(const NNOutput* nnOutput) const {
+  return computeWeightFromNNOutput(nnOutput);
+}
+
+
+double Search::computeBlackWinWeightFromNNOutput(const NNOutput* nnOutput) const {
+  return computeWeightFromNNOutput(nnOutput);
+}
 
 void Search::updateStatsAfterPlayout(SearchNode& node, SearchThread& thread, bool isRoot) {
   //The thread that grabs a 0 from this peforms the recomputation of stats.
@@ -141,6 +197,8 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
   int childrenCapacity;
   const SearchChildPointer* children = node.getChildren(childrenCapacity);
   double origTotalChildWeight = 0.0;
+  double origTotalWhiteWinChildWeight = 0.0;
+  double origTotalBlackWinChildWeight = 0.0;
   for(int i = 0; i<childrenCapacity; i++) {
     const SearchNode* child = children[i].getIfAllocated();
     if(child == NULL)
@@ -157,74 +215,147 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
     double childUtility = stats.stats.utilityAvg;
     stats.selfUtility = node.nextPla == P_WHITE ? childUtility : -childUtility;
     stats.weightAdjusted = stats.stats.getChildWeight(edgeVisits);
+    stats.whiteWinSelfUtility = node.nextPla == P_WHITE ? stats.stats.whiteWinUtilityAvg : -stats.stats.whiteWinUtilityAvg;
+    stats.whiteWinWeightAdjusted = stats.stats.getChildWhiteWinWeight(edgeVisits);
+    stats.blackWinSelfUtility = node.nextPla == P_WHITE ? stats.stats.blackWinUtilityInvAvg : -stats.stats.blackWinUtilityInvAvg;
+    stats.blackWinWeightAdjusted = stats.stats.getChildBlackWinWeight(edgeVisits);
     stats.prevMoveLoc = moveLoc;
 
+    if(stats.whiteWinWeightAdjusted <= 0.0)
+      stats.whiteWinWeightAdjusted = stats.weightAdjusted;
+    if(stats.blackWinWeightAdjusted <= 0.0)
+      stats.blackWinWeightAdjusted = stats.weightAdjusted;
+
     origTotalChildWeight += stats.weightAdjusted;
+    origTotalWhiteWinChildWeight += stats.whiteWinWeightAdjusted;
+    origTotalBlackWinChildWeight += stats.blackWinWeightAdjusted;
     numGoodChildren++;
   }
 
-  //Always tracks the sum of statsBuf[i].weightAdjusted across the children.
-  double currentTotalChildWeight = origTotalChildWeight;
+  const NNOutput* nodeNNOutput = node.getNNOutput();
+  assert(nodeNNOutput != NULL);
 
-  if(searchParams.useNoisePruning && numGoodChildren > 0) {
-    double policyProbsBuf[NNPos::MAX_NN_POLICY_SIZE];
-    {
-      const NNOutput* nnOutput = node.getNNOutput();
-      assert(nnOutput != NULL);
+  auto adjustObjectiveWeights = [&](int objective, double origTotalWeight) {
+    double currentTotalWeight = origTotalWeight;
+    for(int i = 0; i<numGoodChildren; i++) {
+      if(objective == 0) {
+        statsBuf[i].selfUtility = node.nextPla == P_WHITE ? statsBuf[i].stats.utilityAvg : -statsBuf[i].stats.utilityAvg;
+      }
+      else if(objective == 1) {
+        statsBuf[i].selfUtility = statsBuf[i].whiteWinSelfUtility;
+        statsBuf[i].weightAdjusted = statsBuf[i].whiteWinWeightAdjusted;
+      }
+      else {
+        statsBuf[i].selfUtility = statsBuf[i].blackWinSelfUtility;
+        statsBuf[i].weightAdjusted = statsBuf[i].blackWinWeightAdjusted;
+      }
+    }
+
+    if(searchParams.useNoisePruning && numGoodChildren > 0) {
+      double policyProbsBuf[NNPos::MAX_NN_POLICY_SIZE];
       for(int i = 0; i<numGoodChildren; i++)
         policyProbsBuf[i] =
-          std::max(1e-30, (double)nnOutput->getPolicyProbMaybeNoised(getPos(statsBuf[i].prevMoveLoc)));
+          std::max(1e-30, (double)nodeNNOutput->getPolicyProbMaybeNoised(getPos(statsBuf[i].prevMoveLoc)));
+      currentTotalWeight = pruneNoiseWeight(statsBuf, numGoodChildren, currentTotalWeight, policyProbsBuf);
     }
-    currentTotalChildWeight = pruneNoiseWeight(statsBuf, numGoodChildren, currentTotalChildWeight, policyProbsBuf);
-  }
 
-  {
-    double amountToSubtract = 0.0;
-    double amountToPrune = 0.0;
-    if(isRoot && searchParams.rootNoiseEnabled && !searchParams.useNoisePruning) {
-      double maxChildWeight = 0.0;
-      for(int i = 0; i<numGoodChildren; i++) {
-        if(statsBuf[i].weightAdjusted > maxChildWeight)
-          maxChildWeight = statsBuf[i].weightAdjusted;
+    {
+      double amountToSubtract = 0.0;
+      double amountToPrune = 0.0;
+      if(isRoot && searchParams.rootNoiseEnabled && !searchParams.useNoisePruning) {
+        double maxChildWeight = 0.0;
+        for(int i = 0; i<numGoodChildren; i++) {
+          if(statsBuf[i].weightAdjusted > maxChildWeight)
+            maxChildWeight = statsBuf[i].weightAdjusted;
+        }
+        amountToSubtract = std::min(searchParams.chosenMoveSubtract, maxChildWeight/64.0);
+        amountToPrune = std::min(searchParams.chosenMovePrune, maxChildWeight/64.0);
       }
-      amountToSubtract = std::min(searchParams.chosenMoveSubtract, maxChildWeight/64.0);
-      amountToPrune = std::min(searchParams.chosenMovePrune, maxChildWeight/64.0);
+
+      downweightBadChildrenAndNormalizeWeight(
+        numGoodChildren, currentTotalWeight, currentTotalWeight,
+        amountToSubtract, amountToPrune, statsBuf
+      );
     }
 
-    downweightBadChildrenAndNormalizeWeight(
-      numGoodChildren, currentTotalChildWeight, currentTotalChildWeight,
-      amountToSubtract, amountToPrune, statsBuf
-    );
+    for(int i = 0; i<numGoodChildren; i++) {
+      if(objective == 1)
+        statsBuf[i].whiteWinWeightAdjusted = statsBuf[i].weightAdjusted;
+      else if(objective == 2)
+        statsBuf[i].blackWinWeightAdjusted = statsBuf[i].weightAdjusted;
+    }
+    return currentTotalWeight;
+  };
+
+  double currentTotalChildWeight = adjustObjectiveWeights(0, origTotalChildWeight);
+  double legacyWeightAdjustedBuf[NNPos::MAX_NN_POLICY_SIZE];
+  for(int i = 0; i<numGoodChildren; i++)
+    legacyWeightAdjustedBuf[i] = statsBuf[i].weightAdjusted;
+  double currentTotalWhiteWinChildWeight;
+  double currentTotalBlackWinChildWeight;
+  if(searchParams.multiValueHeadUtilityMix == 0.0) {
+    currentTotalWhiteWinChildWeight = currentTotalChildWeight;
+    currentTotalBlackWinChildWeight = currentTotalChildWeight;
+    for(int i = 0; i<numGoodChildren; i++) {
+      statsBuf[i].whiteWinWeightAdjusted = legacyWeightAdjustedBuf[i];
+      statsBuf[i].blackWinWeightAdjusted = legacyWeightAdjustedBuf[i];
+    }
+  }
+  else {
+    currentTotalWhiteWinChildWeight = adjustObjectiveWeights(1, origTotalWhiteWinChildWeight);
+    currentTotalBlackWinChildWeight = adjustObjectiveWeights(2, origTotalBlackWinChildWeight);
   }
 
-  double winLossValueSum = 0.0;
+  double whiteWinProbSum = 0.0;
+  double blackWinProbSum = 0.0;
   double noResultValueSum = 0.0;
   double utilitySum = 0.0;
   double utilitySqSum = 0.0;
   double weightSqSum = 0.0;
   double weightSum = currentTotalChildWeight;
+  double whiteWinUtilitySum = 0.0;
+  double whiteWinUtilitySqSum = 0.0;
+  double whiteWinWeightSqSum = 0.0;
+  double whiteWinWeightSum = currentTotalWhiteWinChildWeight;
+  double blackWinUtilityInvSum = 0.0;
+  double blackWinUtilityInvSqSum = 0.0;
+  double blackWinWeightSqSum = 0.0;
+  double blackWinWeightSum = currentTotalBlackWinChildWeight;
+
   for(int i = 0; i<numGoodChildren; i++) {
     const NodeStats& stats = statsBuf[i].stats;
 
-    double desiredWeight = statsBuf[i].weightAdjusted;
+    double desiredWeight = legacyWeightAdjustedBuf[i];
     double weightScaling = desiredWeight / stats.weightSum;
-
-    winLossValueSum += desiredWeight * stats.winLossValueAvg;
     noResultValueSum += desiredWeight * stats.noResultValueAvg;
     utilitySum += desiredWeight * stats.utilityAvg;
     utilitySqSum += desiredWeight * stats.utilitySqAvg;
     weightSqSum += weightScaling * weightScaling * stats.weightSqSum;
+
+    double desiredWhiteWinWeight = statsBuf[i].whiteWinWeightAdjusted;
+    double whiteWinWeightScaling = desiredWhiteWinWeight / stats.whiteWinWeightSum;
+    whiteWinProbSum += desiredWhiteWinWeight * stats.whiteWinProbAvg;
+    whiteWinUtilitySum += desiredWhiteWinWeight * stats.whiteWinUtilityAvg;
+    whiteWinUtilitySqSum += desiredWhiteWinWeight * stats.whiteWinUtilitySqAvg;
+    whiteWinWeightSqSum += whiteWinWeightScaling * whiteWinWeightScaling * stats.whiteWinWeightSqSum;
+
+    double desiredBlackWinWeight = statsBuf[i].blackWinWeightAdjusted;
+    double blackWinWeightScaling = desiredBlackWinWeight / stats.blackWinWeightSum;
+    blackWinProbSum += desiredBlackWinWeight * stats.blackWinProbAvg;
+    blackWinUtilityInvSum += desiredBlackWinWeight * stats.blackWinUtilityInvAvg;
+    blackWinUtilityInvSqSum += desiredBlackWinWeight * stats.blackWinUtilityInvSqAvg;
+    blackWinWeightSqSum += blackWinWeightScaling * blackWinWeightScaling * stats.blackWinWeightSqSum;
   }
 
   //Also add in the direct evaluation of this node.
   {
-    const NNOutput* nnOutput = node.getNNOutput();
-    assert(nnOutput != NULL);
-    double winProb = (double)nnOutput->whiteWinProb;
-    double lossProb = (double)nnOutput->whiteLossProb;
-    double noResultProb = (double)nnOutput->whiteNoResultProb;
-    double utility =
-      getResultUtility(winProb-lossProb, noResultProb);
+    double whiteWinProb = getWhiteWinProbFromNN(*nodeNNOutput);
+    double blackWinProb = getBlackWinProbFromNN(*nodeNNOutput);
+    double noResultProb = (double)nodeNNOutput->whiteNoResultProb;
+    double legacyUtility = getResultUtilityFromNN(*nodeNNOutput);
+    double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
+    double blackWinUtilityInv = getBlackWinUtilityInv(legacyUtility, blackWinProb);
+    double utility = 0.5 * (whiteWinUtility + blackWinUtilityInv);
 
     if(searchParams.subtreeValueBiasFactor != 0 && node.subtreeValueBiasTableEntry != nullptr) {
       SubtreeValueBiasEntry& entry = *(node.subtreeValueBiasTableEntry);
@@ -255,44 +386,80 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
 
       //This is the amount of the direct evaluation of this node that we are going to bias towards the table entry
       const double biasFactor = searchParams.subtreeValueBiasFactor;
-      if(newEntryWeightSum > 0.001)
-        utility += biasFactor * newEntryDeltaUtilitySum / newEntryWeightSum;
-      //This is the amount by which we need to scale desiredSelfWeight such that if the table entry were actually equal to
-      //the current difference between the direct eval and the children, we would perform a no-op... unless a noop is actually impossible
-      //Then we just take what we can get.
-      //desiredSelfWeight *= weightSum / (1.0-biasFactor) / std::max(0.001, (weightSum + desiredSelfWeight - desiredSelfWeight / (1.0-biasFactor)));
+      if(newEntryWeightSum > 0.001) {
+        double utilityBias = biasFactor * newEntryDeltaUtilitySum / newEntryWeightSum;
+        legacyUtility += utilityBias;
+        whiteWinUtility += utilityBias;
+        blackWinUtilityInv += utilityBias;
+        utility += utilityBias;
+      }
     }
 
-    double weight = computeWeightFromNNOutput(nnOutput);
-    winLossValueSum += (winProb - lossProb) * weight;
+    double weight = computeWeightFromNNOutput(nodeNNOutput);
+    double whiteWinWeight = computeWhiteWinWeightFromNNOutput(nodeNNOutput);
+    double blackWinWeight = computeBlackWinWeightFromNNOutput(nodeNNOutput);
+    whiteWinProbSum += whiteWinProb * whiteWinWeight;
+    blackWinProbSum += blackWinProb * blackWinWeight;
     noResultValueSum += noResultProb * weight;
     utilitySum += utility * weight;
     utilitySqSum += utility * utility * weight;
     weightSqSum += weight * weight;
     weightSum += weight;
+    whiteWinUtilitySum += whiteWinUtility * whiteWinWeight;
+    whiteWinUtilitySqSum += whiteWinUtility * whiteWinUtility * whiteWinWeight;
+    whiteWinWeightSqSum += whiteWinWeight * whiteWinWeight;
+    whiteWinWeightSum += whiteWinWeight;
+    blackWinUtilityInvSum += blackWinUtilityInv * blackWinWeight;
+    blackWinUtilityInvSqSum += blackWinUtilityInv * blackWinUtilityInv * blackWinWeight;
+    blackWinWeightSqSum += blackWinWeight * blackWinWeight;
+    blackWinWeightSum += blackWinWeight;
   }
 
-  double winLossValueAvg = winLossValueSum / weightSum;
+  double whiteWinProbAvg = whiteWinProbSum / whiteWinWeightSum;
+  double blackWinProbAvg = blackWinProbSum / blackWinWeightSum;
+  double winLossValueAvg = whiteWinProbAvg - blackWinProbAvg;
   double noResultValueAvg = noResultValueSum / weightSum;
   double utilityAvg = utilitySum / weightSum;
   double utilitySqAvg = utilitySqSum / weightSum;
+  double whiteWinUtilityAvg = whiteWinUtilitySum / whiteWinWeightSum;
+  double whiteWinUtilitySqAvg = whiteWinUtilitySqSum / whiteWinWeightSum;
+  double blackWinUtilityInvAvg = blackWinUtilityInvSum / blackWinWeightSum;
+  double blackWinUtilityInvSqAvg = blackWinUtilityInvSqSum / blackWinWeightSum;
 
+  double patternBonus = getPatternBonus(node.patternBonusHash,getOpp(node.nextPla));
   double oldUtilityAvg = utilityAvg;
-  utilityAvg += getPatternBonus(node.patternBonusHash,getOpp(node.nextPla));
+  utilityAvg += patternBonus;
   utilitySqAvg = utilitySqAvg + (utilityAvg * utilityAvg - oldUtilityAvg * oldUtilityAvg);
+
+  double oldWhiteWinUtilityAvg = whiteWinUtilityAvg;
+  whiteWinUtilityAvg += patternBonus;
+  whiteWinUtilitySqAvg = whiteWinUtilitySqAvg + (whiteWinUtilityAvg * whiteWinUtilityAvg - oldWhiteWinUtilityAvg * oldWhiteWinUtilityAvg);
+
+  double oldBlackWinUtilityInvAvg = blackWinUtilityInvAvg;
+  blackWinUtilityInvAvg += patternBonus;
+  blackWinUtilityInvSqAvg = blackWinUtilityInvSqAvg + (blackWinUtilityInvAvg * blackWinUtilityInvAvg - oldBlackWinUtilityInvAvg * oldBlackWinUtilityInvAvg);
 
   //TODO statslock may be unnecessary now with the dirtyCounter mechanism?
   while(node.statsLock.test_and_set(std::memory_order_acquire));
   node.stats.winLossValueAvg.store(winLossValueAvg,std::memory_order_release);
   node.stats.noResultValueAvg.store(noResultValueAvg,std::memory_order_release);
+  node.stats.whiteWinProbAvg.store(whiteWinProbAvg,std::memory_order_release);
+  node.stats.blackWinProbAvg.store(blackWinProbAvg,std::memory_order_release);
   node.stats.utilityAvg.store(utilityAvg,std::memory_order_release);
   node.stats.utilitySqAvg.store(utilitySqAvg,std::memory_order_release);
   node.stats.weightSqSum.store(weightSqSum,std::memory_order_release);
   node.stats.weightSum.store(weightSum,std::memory_order_release);
+  node.stats.whiteWinUtilityAvg.store(whiteWinUtilityAvg,std::memory_order_release);
+  node.stats.whiteWinUtilitySqAvg.store(whiteWinUtilitySqAvg,std::memory_order_release);
+  node.stats.whiteWinWeightSqSum.store(whiteWinWeightSqSum,std::memory_order_release);
+  node.stats.whiteWinWeightSum.store(whiteWinWeightSum,std::memory_order_release);
+  node.stats.blackWinUtilityInvAvg.store(blackWinUtilityInvAvg,std::memory_order_release);
+  node.stats.blackWinUtilityInvSqAvg.store(blackWinUtilityInvSqAvg,std::memory_order_release);
+  node.stats.blackWinWeightSqSum.store(blackWinWeightSqSum,std::memory_order_release);
+  node.stats.blackWinWeightSum.store(blackWinWeightSum,std::memory_order_release);
   node.stats.visits.fetch_add(numVisitsToAdd,std::memory_order_release);
   node.statsLock.clear(std::memory_order_release);
 }
-
 void Search::downweightBadChildrenAndNormalizeWeight(
   int numChildren,
   double currentTotalWeight, //The current sum of statsBuf[i].weightAdjusted

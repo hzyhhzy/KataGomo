@@ -64,6 +64,11 @@ SearchThread::~SearchThread() {
 
 static const double VALUE_WEIGHT_DEGREES_OF_FREEDOM = 3.0;
 
+static void failIfInvalidMultiValueHeadParams(const SearchParams& params) {
+  if(params.multiValueHeadUtilityMix != 0.0 && params.noResultUtilityReduce != 0.0)
+    throw StringError("multiValueHeadUtilityMix requires noResultUtilityReduce to be 0");
+}
+
 Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const string& rSeed)
   :rootPla(P_BLACK),
    rootBoard(),
@@ -99,6 +104,7 @@ Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const strin
    oldNNOutputsToCleanUp()
 {
   assert(logger != NULL);
+  failIfInvalidMultiValueHeadParams(searchParams);
   nnXLen = nnEval->getNNXLen();
   nnYLen = nnEval->getNNYLen();
   assert(nnXLen > 0 && nnXLen <= NNPos::MAX_BOARD_LEN);
@@ -212,11 +218,13 @@ void Search::setRootSymmetryPruningOnly(const std::vector<int>& v) {
 
 
 void Search::setParams(SearchParams params) {
+  failIfInvalidMultiValueHeadParams(params);
   clearSearch();
   searchParams = params;
 }
 
 void Search::setParamsNoClearing(SearchParams params) {
+  failIfInvalidMultiValueHeadParams(params);
   searchParams = params;
 }
 
@@ -917,13 +925,23 @@ void Search::recursivelyRecomputeStats(SearchNode& n) {
       }
       else {
         double resultUtility = getResultUtility(winLossValueAvg, noResultValueAvg);
-        double newUtilityAvg = resultUtility;
-        newUtilityAvg += getPatternBonus(node->patternBonusHash,getOpp(node->nextPla));
+        double whiteWinProbAvg = node->stats.whiteWinProbAvg.load(std::memory_order_acquire);
+        double blackWinProbAvg = node->stats.blackWinProbAvg.load(std::memory_order_acquire);
+        double newWhiteWinUtilityAvg = getWhiteWinUtility(resultUtility, whiteWinProbAvg);
+        double newBlackWinUtilityInvAvg = getBlackWinUtilityInv(resultUtility, blackWinProbAvg);
+        double patternBonus = getPatternBonus(node->patternBonusHash,getOpp(node->nextPla));
+        newWhiteWinUtilityAvg += patternBonus;
+        newBlackWinUtilityInvAvg += patternBonus;
+        double newUtilityAvg = 0.5 * (newWhiteWinUtilityAvg + newBlackWinUtilityInvAvg);
         double newUtilitySqAvg = newUtilityAvg * newUtilityAvg;
 
         while(node->statsLock.test_and_set(std::memory_order_acquire));
         node->stats.utilityAvg.store(newUtilityAvg,std::memory_order_release);
         node->stats.utilitySqAvg.store(newUtilitySqAvg,std::memory_order_release);
+        node->stats.whiteWinUtilityAvg.store(newWhiteWinUtilityAvg,std::memory_order_release);
+        node->stats.whiteWinUtilitySqAvg.store(newWhiteWinUtilityAvg * newWhiteWinUtilityAvg,std::memory_order_release);
+        node->stats.blackWinUtilityInvAvg.store(newBlackWinUtilityInvAvg,std::memory_order_release);
+        node->stats.blackWinUtilityInvSqAvg.store(newBlackWinUtilityInvAvg * newBlackWinUtilityInvAvg,std::memory_order_release);
         node->statsLock.clear(std::memory_order_release);
       }
     }
@@ -981,10 +999,14 @@ bool Search::playoutDescend(
     
     nnEvaluator->waitForNextNNEvalIfAny();
    
-      double winLossValue = thread.history.winner == C_WHITE ? 1.0 : thread.history.winner == C_BLACK ? -1.0 : 0.0;
+      double whiteWinProb = thread.history.winner == C_WHITE ? 1.0 : 0.0;
+      double blackWinProb = thread.history.winner == C_BLACK ? 1.0 : 0.0;
       double noResultValue = thread.history.winner == C_EMPTY ? 1.0 : 0.0;
+      double legacyUtility = getResultUtility(whiteWinProb - blackWinProb, noResultValue);
+      double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
+      double blackWinUtilityInv = getBlackWinUtilityInv(legacyUtility, blackWinProb);
       double weight = (searchParams.useUncertainty && nnEvaluator->supportsShorttermError()) ? searchParams.uncertaintyMaxWeight : 1.0;
-      addLeafValue(node, winLossValue, noResultValue, weight, true, false);
+      addLeafValue(node, whiteWinProb, blackWinProb, noResultValue, legacyUtility, whiteWinUtility, blackWinUtilityInv, weight, weight, weight, true, false);
       return true;
     
   }

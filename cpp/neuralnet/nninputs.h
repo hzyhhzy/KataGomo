@@ -92,6 +92,8 @@ namespace NNInputs {
 }
 
 struct NNOutput {
+  static constexpr int NUM_VALUE_HEADS = 6;
+
   static inline uint8_t policyQuant(float p) {
     if(p < 0)
       return 0;
@@ -162,6 +164,9 @@ struct NNOutput {
   float whiteWinProb;
   float whiteLossProb;
   float whiteNoResultProb;
+  float whiteWinProbByHead[NUM_VALUE_HEADS];
+  float whiteLossProbByHead[NUM_VALUE_HEADS];
+  float whiteNoResultProbByHead[NUM_VALUE_HEADS];
 
   //Expected arrival time of remaining game variance, in turns, weighted by variance, only when modelVersion >= 9
   float varTimeLeft;

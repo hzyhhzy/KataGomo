@@ -325,8 +325,8 @@ bool Search::getNodeRawNNValues(const SearchNode& node, ReportedSearchValues& va
   if(nnOutput == NULL)
     return false;
 
-  values.winValue = nnOutput->whiteWinProb;
-  values.lossValue = nnOutput->whiteLossProb;
+  values.winValue = getWhiteWinProbFromNN(*nnOutput);
+  values.lossValue = getBlackWinProbFromNN(*nnOutput);
   values.noResultValue = nnOutput->whiteNoResultProb;
 
 
@@ -334,13 +334,13 @@ bool Search::getNodeRawNNValues(const SearchNode& node, ReportedSearchValues& va
   assert(values.winValue >= 0.0);
   assert(values.lossValue >= 0.0);
   assert(values.noResultValue >= 0.0);
-  assert(values.winValue + values.lossValue + values.noResultValue < 1.001);
 
   double winLossValue = values.winValue - values.lossValue;
   if(winLossValue > 1.0) winLossValue = 1.0;
   if(winLossValue < -1.0) winLossValue = -1.0;
   values.winLossValue = winLossValue;
 
+  values.utility = getUtilityFromNN(*nnOutput);
   values.weight = computeWeightFromNNOutput(nnOutput);
   values.visits = 1;
 
@@ -353,9 +353,10 @@ bool Search::getNodeValues(const SearchNode* node, ReportedSearchValues& values)
     return false;
   int64_t visits = node->stats.visits.load(std::memory_order_acquire);
   double weightSum = node->stats.weightSum.load(std::memory_order_acquire);
-  double winLossValueAvg = node->stats.winLossValueAvg.load(std::memory_order_acquire);
   double noResultValueAvg = node->stats.noResultValueAvg.load(std::memory_order_acquire);
   double utilityAvg = node->stats.utilityAvg.load(std::memory_order_acquire);
+  double whiteWinProbAvg = node->stats.whiteWinProbAvg.load(std::memory_order_acquire);
+  double blackWinProbAvg = node->stats.blackWinProbAvg.load(std::memory_order_acquire);
 
   if(weightSum <= 0.0)
     return false;
@@ -371,11 +372,13 @@ bool Search::getNodeValues(const SearchNode* node, ReportedSearchValues& values)
 
   values = ReportedSearchValues(
     *this,
-    winLossValueAvg,
+    whiteWinProbAvg,
+    blackWinProbAvg,
     noResultValueAvg,
     utilityAvg,
     weightSum,
-    visits
+    visits,
+    true
   );
   return true;
 }
@@ -1309,6 +1312,8 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     return getNodeValues(nodePtr,values);
   }
 
+  double whiteWinProbSum = 0.0;
+  double blackWinProbSum = 0.0;
   double winLossValueSum = 0.0;
   double noResultValueSum = 0.0;
   double utilitySum = 0.0;
@@ -1326,6 +1331,8 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
       continue;
     double weight = playSelectionValues[i];
     double weightScaling = weight / stats.weightSum;
+    whiteWinProbSum += weight * stats.whiteWinProbAvg;
+    blackWinProbSum += weight * stats.blackWinProbAvg;
     winLossValueSum += weight * stats.winLossValueAvg;
     noResultValueSum += weight * stats.noResultValueAvg;
     utilitySum += weight * stats.utilityAvg;
@@ -1340,12 +1347,14 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     //If somehow the nnOutput is still null here, skip
     if(nnOutput == NULL)
       return false;
-    double winProb = (double)nnOutput->whiteWinProb;
-    double lossProb = (double)nnOutput->whiteLossProb;
+    double winProb = getWhiteWinProbFromNN(*nnOutput);
+    double lossProb = getBlackWinProbFromNN(*nnOutput);
     double noResultProb = (double)nnOutput->whiteNoResultProb;
-    double utility = getResultUtility(winProb - lossProb, noResultProb);
+    double utility = getUtilityFromNN(*nnOutput);
 
     double weight = computeWeightFromNNOutput(nnOutput);
+    whiteWinProbSum += winProb * weight;
+    blackWinProbSum += lossProb * weight;
     winLossValueSum += (winProb - lossProb) * weight;
     noResultValueSum += noResultProb * weight;
     utilitySum += utility * weight;
@@ -1355,11 +1364,13 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
   }
   values = ReportedSearchValues(
     *this,
-    winLossValueSum / weightSum,
+    whiteWinProbSum / weightSum,
+    blackWinProbSum / weightSum,
     noResultValueSum / weightSum,
     utilitySum / weightSum,
     node.stats.weightSum.load(std::memory_order_acquire),
-    node.stats.visits.load(std::memory_order_acquire)
+    node.stats.visits.load(std::memory_order_acquire),
+    true
   );
   return true;
 }

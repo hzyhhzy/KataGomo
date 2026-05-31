@@ -239,14 +239,12 @@ double Search::getReducedPlaySelectionWeight(
   return childWeight;
 }
 
-double Search::getFpuValueForChildrenAssumeVisited(
+double Search::getFpuValueForChildrenAssumeVisitedByStats(
   const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
+  double weightSum, double utilityAvg, double utilitySqAvg, double nnUtility,
   double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
 ) const {
   int64_t visits = node.stats.visits.load(std::memory_order_acquire);
-  double weightSum = node.stats.weightSum.load(std::memory_order_acquire);
-  double utilityAvg = node.stats.utilityAvg.load(std::memory_order_acquire);
-  double utilitySqAvg = node.stats.utilitySqAvg.load(std::memory_order_acquire);
 
   assert(visits > 0);
   assert(weightSum > 0.0);
@@ -276,17 +274,17 @@ double Search::getFpuValueForChildrenAssumeVisited(
   double parentUtilityForFPU = parentUtility;
   if(searchParams.fpuParentWeightByVisitedPolicy) {
     double avgWeight = std::min(1.0, pow(policyProbMassVisited, searchParams.fpuParentWeightByVisitedPolicyPow));
-    parentUtilityForFPU = avgWeight * parentUtility + (1.0 - avgWeight) * getUtilityFromNN(*(node.getNNOutput()));
+    parentUtilityForFPU = avgWeight * parentUtility + (1.0 - avgWeight) * nnUtility;
   }
   else if(searchParams.fpuParentWeight > 0.0) {
-    parentUtilityForFPU = searchParams.fpuParentWeight * getUtilityFromNN(*(node.getNNOutput())) + (1.0 - searchParams.fpuParentWeight) * parentUtility;
+    parentUtilityForFPU = searchParams.fpuParentWeight * nnUtility + (1.0 - searchParams.fpuParentWeight) * parentUtility;
   }
 
   double fpuValue;
   {
     double fpuReductionMax = isRoot ? searchParams.rootFpuReductionMax : searchParams.fpuReductionMax;
     double fpuLossProp = isRoot ? searchParams.rootFpuLossProp : searchParams.fpuLossProp;
-    double utilityRadius = searchParams.winLossUtilityFactor;
+    double utilityRadius = searchParams.multiValueHeadUtilityMix == 0.0 ? searchParams.winLossUtilityFactor : 1.0;
 
     double reduction = fpuReductionMax * sqrt(policyProbMassVisited);
     fpuValue = pla == P_WHITE ? parentUtilityForFPU - reduction : parentUtilityForFPU + reduction;
@@ -297,6 +295,20 @@ double Search::getFpuValueForChildrenAssumeVisited(
   return fpuValue;
 }
 
+
+double Search::getFpuValueForChildrenAssumeVisited(
+  const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
+  double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
+) const {
+  double weightSum = node.stats.weightSum.load(std::memory_order_acquire);
+  double utilityAvg = node.stats.utilityAvg.load(std::memory_order_acquire);
+  double utilitySqAvg = node.stats.utilitySqAvg.load(std::memory_order_acquire);
+  return getFpuValueForChildrenAssumeVisitedByStats(
+    node, pla, isRoot, policyProbMassVisited,
+    weightSum, utilityAvg, utilitySqAvg, getUtilityFromNN(*(node.getNNOutput())),
+    parentUtility, parentWeightPerVisit, parentUtilityStdevFactor
+  );
+}
 
 void Search::selectBestChildToDescend(
   SearchThread& thread, const SearchNode& node, int nodeState,
@@ -316,6 +328,10 @@ void Search::selectBestChildToDescend(
   double policyProbMassVisited = 0.0;
   double maxChildWeight = 0.0;
   double totalChildWeight = 0.0;
+  double maxWhiteWinChildWeight = 0.0;
+  double totalWhiteWinChildWeight = 0.0;
+  double maxBlackWinChildWeight = 0.0;
+  double totalBlackWinChildWeight = 0.0;
   const NNOutput* nnOutput = node.getNNOutput();
   assert(nnOutput != NULL);
   for(int i = 0; i<childrenCapacity; i++) {
@@ -331,10 +347,18 @@ void Search::selectBestChildToDescend(
 
     int64_t edgeVisits = children[i].getEdgeVisits();
     double childWeight = child->stats.getChildWeight(edgeVisits);
+    double whiteWinChildWeight = child->stats.getChildWhiteWinWeight(edgeVisits);
+    double blackWinChildWeight = child->stats.getChildBlackWinWeight(edgeVisits);
 
     totalChildWeight += childWeight;
     if(childWeight > maxChildWeight)
       maxChildWeight = childWeight;
+    totalWhiteWinChildWeight += whiteWinChildWeight;
+    if(whiteWinChildWeight > maxWhiteWinChildWeight)
+      maxWhiteWinChildWeight = whiteWinChildWeight;
+    totalBlackWinChildWeight += blackWinChildWeight;
+    if(blackWinChildWeight > maxBlackWinChildWeight)
+      maxBlackWinChildWeight = blackWinChildWeight;
   }
   //Probability mass should not sum to more than 1, giving a generous allowance
   //for floating point error.
@@ -351,9 +375,125 @@ void Search::selectBestChildToDescend(
     parentUtility, parentWeightPerVisit, parentUtilityStdevFactor
   );
 
+  bool useMultiValueHeads = searchParams.multiValueHeadUtilityMix != 0.0;
+  double whiteWinParentUtility = parentUtility;
+  double whiteWinParentWeightPerVisit = parentWeightPerVisit;
+  double whiteWinParentUtilityStdevFactor = parentUtilityStdevFactor;
+  double whiteWinFpuValue = fpuValue;
+  double blackWinParentUtility = parentUtility;
+  double blackWinParentWeightPerVisit = parentWeightPerVisit;
+  double blackWinParentUtilityStdevFactor = parentUtilityStdevFactor;
+  double blackWinFpuValue = fpuValue;
+  if(useMultiValueHeads) {
+    double whiteWinWeightSum = node.stats.whiteWinWeightSum.load(std::memory_order_acquire);
+    double whiteWinUtilityAvg = node.stats.whiteWinUtilityAvg.load(std::memory_order_acquire);
+    double whiteWinUtilitySqAvg = node.stats.whiteWinUtilitySqAvg.load(std::memory_order_acquire);
+    if(whiteWinWeightSum > 0.0) {
+      whiteWinFpuValue = getFpuValueForChildrenAssumeVisitedByStats(
+        node, thread.pla, isRoot, policyProbMassVisited,
+        whiteWinWeightSum, whiteWinUtilityAvg, whiteWinUtilitySqAvg, getWhiteWinUtilityFromNN(*nnOutput),
+        whiteWinParentUtility, whiteWinParentWeightPerVisit, whiteWinParentUtilityStdevFactor
+      );
+    }
+
+    double blackWinWeightSum = node.stats.blackWinWeightSum.load(std::memory_order_acquire);
+    double blackWinUtilityInvAvg = node.stats.blackWinUtilityInvAvg.load(std::memory_order_acquire);
+    double blackWinUtilityInvSqAvg = node.stats.blackWinUtilityInvSqAvg.load(std::memory_order_acquire);
+    if(blackWinWeightSum > 0.0) {
+      blackWinFpuValue = getFpuValueForChildrenAssumeVisitedByStats(
+        node, thread.pla, isRoot, policyProbMassVisited,
+        blackWinWeightSum, blackWinUtilityInvAvg, blackWinUtilityInvSqAvg, getBlackWinUtilityInvFromNN(*nnOutput),
+        blackWinParentUtility, blackWinParentWeightPerVisit, blackWinParentUtilityStdevFactor
+      );
+    }
+  }
+
   std::fill(posesWithChildBuf,posesWithChildBuf+NNPos::MAX_NN_POLICY_SIZE,false);
 
   double exploreScaling = getExploreScaling(totalChildWeight, parentUtilityStdevFactor);
+  double whiteWinExploreScaling = getExploreScaling(totalWhiteWinChildWeight, whiteWinParentUtilityStdevFactor);
+  double blackWinExploreScaling = getExploreScaling(totalBlackWinChildWeight, blackWinParentUtilityStdevFactor);
+
+  auto getSelectionValueForObjective = [&](float nnPolicyProb, const SearchNode* child, Loc moveLoc,
+                                           int64_t childEdgeVisits, double childWeight,
+                                           double childUtilityAvgWhitePerspective, double exploreScalingForObjective,
+                                           double totalChildWeightForObjective, double fpuValueForObjective,
+                                           double parentWeightPerVisitForObjective, double maxChildWeightForObjective) {
+    int32_t childVirtualLosses = child->virtualLosses.load(std::memory_order_acquire);
+    int64_t childVisits = child->stats.visits.load(std::memory_order_acquire);
+
+    double childUtility;
+    if(childVisits <= 0 || childWeight <= 0.0)
+      childUtility = fpuValueForObjective;
+    else
+      childUtility = childUtilityAvgWhitePerspective;
+
+    //Virtual losses to direct threads down different paths
+    if(childVirtualLosses > 0) {
+      double virtualLossWeight = childVirtualLosses * searchParams.numVirtualLossesPerThread;
+
+      double utilityRadius = searchParams.multiValueHeadUtilityMix == 0.0 ? searchParams.winLossUtilityFactor : 1.0;
+      double virtualLossUtility = (node.nextPla == P_WHITE ? -utilityRadius : utilityRadius);
+      double virtualLossWeightFrac = (double)virtualLossWeight / (virtualLossWeight + std::max(0.25,childWeight));
+      childUtility = childUtility + (virtualLossUtility - childUtility) * virtualLossWeightFrac;
+      childWeight += virtualLossWeight;
+    }
+
+    if(isRoot) {
+      if(searchParams.futileVisitsThreshold > 0) {
+        double requiredWeight = searchParams.futileVisitsThreshold * maxChildWeightForObjective;
+        double averageVisitsPerWeight = (childEdgeVisits + 1.0) / (childWeight + parentWeightPerVisitForObjective);
+        double estimatedRequiredVisits = requiredWeight * averageVisitsPerWeight;
+        if(childVisits + thread.upperBoundVisitsLeft < estimatedRequiredVisits)
+          return FUTILE_VISITS_PRUNE_VALUE;
+      }
+      if(searchParams.rootDesiredPerChildVisitsCoeff > 0.0) {
+        if(nnPolicyProb > 0 && childWeight < sqrt(nnPolicyProb * totalChildWeightForObjective * searchParams.rootDesiredPerChildVisitsCoeff)) {
+          return 1e20;
+        }
+      }
+      if(rootHintLoc != Board::NULL_LOC && moveLoc == rootHintLoc) {
+        double averageWeightPerVisit = (childWeight + parentWeightPerVisitForObjective) / (childVisits + 1.0);
+        int hintChildrenCapacity;
+        const SearchChildPointer* hintChildren = node.getChildren(hintChildrenCapacity);
+        for(int i = 0; i<hintChildrenCapacity; i++) {
+          const SearchNode* c = hintChildren[i].getIfAllocated();
+          if(c == NULL)
+            break;
+          int64_t cEdgeVisits = hintChildren[i].getEdgeVisits();
+          double cWeight = c->stats.getChildWeight(cEdgeVisits);
+          if(childWeight + averageWeightPerVisit < cWeight * 0.8)
+            return 1e20;
+        }
+      }
+
+      if(searchParams.wideRootNoise > 0.0 && nnPolicyProb >= 0) {
+        maybeApplyWideRootNoise(childUtility, nnPolicyProb, searchParams, &thread, node);
+      }
+    }
+
+    return getExploreSelectionValue(exploreScalingForObjective,nnPolicyProb,childWeight,childUtility,node.nextPla);
+  };
+
+  auto getNewSelectionValueForObjective = [&](float nnPolicyProb, double exploreScalingForObjective,
+                                              double fpuValueForObjective, double parentWeightPerVisitForObjective,
+                                              double maxChildWeightForObjective) {
+    double childWeight = 0;
+    double childUtility = fpuValueForObjective;
+    if(&node == rootNode) {
+      if(searchParams.futileVisitsThreshold > 0) {
+        double averageVisitsPerWeight = 1.0 / parentWeightPerVisitForObjective;
+        double requiredWeight = searchParams.futileVisitsThreshold * maxChildWeightForObjective;
+        double estimatedRequiredVisits = requiredWeight * averageVisitsPerWeight;
+        if(thread.upperBoundVisitsLeft < estimatedRequiredVisits)
+          return FUTILE_VISITS_PRUNE_VALUE;
+      }
+      if(searchParams.wideRootNoise > 0.0) {
+        maybeApplyWideRootNoise(childUtility, nnPolicyProb, searchParams, &thread, node);
+      }
+    }
+    return getExploreSelectionValue(exploreScalingForObjective,nnPolicyProb,childWeight,childUtility,node.nextPla);
+  };
 
   //Try all existing children
   //Also count how many children we actually find
@@ -367,23 +507,39 @@ void Search::selectBestChildToDescend(
 
     Loc moveLoc = children[i].getMoveLocRelaxed();
     bool isDuringSearch = true;
-    double selectionValue = getExploreSelectionValueOfChild(
-      node,
-      nnOutput->getPolicyProbMaybeNoised(getPos(moveLoc)),
-      child,
-      moveLoc,
-      exploreScaling,
-      totalChildWeight,childEdgeVisits,fpuValue,
-      parentUtility,parentWeightPerVisit,
-      isDuringSearch,maxChildWeight,&thread
-    );
+    double selectionValue;
+    if(!useMultiValueHeads) {
+      selectionValue = getExploreSelectionValueOfChild(
+        node,
+        nnOutput->getPolicyProbMaybeNoised(getPos(moveLoc)),
+        child,
+        moveLoc,
+        exploreScaling,
+        totalChildWeight,childEdgeVisits,fpuValue,
+        parentUtility,parentWeightPerVisit,
+        isDuringSearch,maxChildWeight,&thread
+      );
+    }
+    else {
+      float nnPolicyProb = nnOutput->getPolicyProbMaybeNoised(getPos(moveLoc));
+      int64_t childVisits = child->stats.visits.load(std::memory_order_acquire);
+      double whiteWinChildWeight = child->stats.getChildWhiteWinWeight(childEdgeVisits,childVisits);
+      double blackWinChildWeight = child->stats.getChildBlackWinWeight(childEdgeVisits,childVisits);
+      double whiteWinUtility = child->stats.whiteWinUtilityAvg.load(std::memory_order_acquire);
+      double blackWinUtilityInvAsWhite = child->stats.blackWinUtilityInvAvg.load(std::memory_order_acquire);
+      double whiteWinSelectionValue = getSelectionValueForObjective(
+        nnPolicyProb, child, moveLoc, childEdgeVisits, whiteWinChildWeight, whiteWinUtility,
+        whiteWinExploreScaling, totalWhiteWinChildWeight, whiteWinFpuValue,
+        whiteWinParentWeightPerVisit, maxWhiteWinChildWeight
+      );
+      double blackWinSelectionValue = getSelectionValueForObjective(
+        nnPolicyProb, child, moveLoc, childEdgeVisits, blackWinChildWeight, blackWinUtilityInvAsWhite,
+        blackWinExploreScaling, totalBlackWinChildWeight, blackWinFpuValue,
+        blackWinParentWeightPerVisit, maxBlackWinChildWeight
+      );
+      selectionValue = 0.5 * (whiteWinSelectionValue + blackWinSelectionValue);
+    }
     if(selectionValue > maxSelectionValue) {
-      // if(child->state.load(std::memory_order_seq_cst) == SearchNode::STATE_EVALUATING) {
-      //   selectionValue -= EVALUATING_SELECTION_VALUE_PENALTY;
-      //   if(isRoot && child->prevMoveLoc == Location::ofString("K4",thread.board)) {
-      //     out << "ouch" << "\n";
-      //   }
-      // }
       maxSelectionValue = selectionValue;
       bestChildIdx = i;
       bestChildMoveLoc = moveLoc;
@@ -432,13 +588,27 @@ void Search::selectBestChildToDescend(
     }
   }
   if(bestNewMoveLoc != Board::NULL_LOC) {
-    double selectionValue = getNewExploreSelectionValue(
-      node,
-      exploreScaling,
-      bestNewNNPolicyProb,fpuValue,
-      parentWeightPerVisit,
-      maxChildWeight,&thread
-    );
+    double selectionValue;
+    if(!useMultiValueHeads) {
+      selectionValue = getNewExploreSelectionValue(
+        node,
+        exploreScaling,
+        bestNewNNPolicyProb,fpuValue,
+        parentWeightPerVisit,
+        maxChildWeight,&thread
+      );
+    }
+    else {
+      double whiteWinSelectionValue = getNewSelectionValueForObjective(
+        bestNewNNPolicyProb, whiteWinExploreScaling, whiteWinFpuValue,
+        whiteWinParentWeightPerVisit, maxWhiteWinChildWeight
+      );
+      double blackWinSelectionValue = getNewSelectionValueForObjective(
+        bestNewNNPolicyProb, blackWinExploreScaling, blackWinFpuValue,
+        blackWinParentWeightPerVisit, maxBlackWinChildWeight
+      );
+      selectionValue = 0.5 * (whiteWinSelectionValue + blackWinSelectionValue);
+    }
     if(selectionValue > maxSelectionValue) {
       maxSelectionValue = selectionValue;
       bestChildIdx = numChildrenFound;

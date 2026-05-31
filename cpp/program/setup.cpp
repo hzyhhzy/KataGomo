@@ -447,9 +447,14 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("noResultUtilityForWhite"+idxStr)) params.noResultUtilityForWhite = cfg.getDouble("noResultUtilityForWhite"+idxStr, -1.0, 1.0);
     else if(cfg.contains("noResultUtilityForWhite"))   params.noResultUtilityForWhite = cfg.getDouble("noResultUtilityForWhite",        -1.0, 1.0);
     else                                               params.noResultUtilityForWhite = 0.0;
+    if(cfg.contains("multiValueHeadUtilityMix"+idxStr)) params.multiValueHeadUtilityMix = cfg.getDouble("multiValueHeadUtilityMix"+idxStr, 0.0, 1.0);
+    else if(cfg.contains("multiValueHeadUtilityMix"))   params.multiValueHeadUtilityMix = cfg.getDouble("multiValueHeadUtilityMix",        0.0, 1.0);
+    else                                                params.multiValueHeadUtilityMix = 0.0;
     if(cfg.contains("noResultUtilityReduce"+idxStr)) params.noResultUtilityReduce = cfg.getDouble("noResultUtilityReduce"+idxStr, -5.0, 5.0);
     else if(cfg.contains("noResultUtilityReduce"))   params.noResultUtilityReduce = cfg.getDouble("noResultUtilityReduce",        -5.0, 5.0);
     else      params.noResultUtilityReduce=0.0;
+    if(params.multiValueHeadUtilityMix != 0.0 && params.noResultUtilityReduce != 0.0)
+      throw StringError("multiValueHeadUtilityMix requires noResultUtilityReduce to be 0");
 
     if(cfg.contains("cpuctExploration"+idxStr)) params.cpuctExploration = cfg.getDouble("cpuctExploration"+idxStr, 0.0, 10.0);
     else if(cfg.contains("cpuctExploration"))   params.cpuctExploration = cfg.getDouble("cpuctExploration",        0.0, 10.0);

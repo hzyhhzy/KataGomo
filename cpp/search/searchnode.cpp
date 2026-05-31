@@ -6,19 +6,39 @@ NodeStatsAtomic::NodeStatsAtomic()
   :visits(0),
    winLossValueAvg(0.0),
    noResultValueAvg(0.0),
+   whiteWinProbAvg(0.0),
+   blackWinProbAvg(0.0),
    utilityAvg(0.0),
    utilitySqAvg(0.0),
    weightSum(0.0),
-   weightSqSum(0.0)
+   weightSqSum(0.0),
+   whiteWinUtilityAvg(0.0),
+   whiteWinUtilitySqAvg(0.0),
+   whiteWinWeightSum(0.0),
+   whiteWinWeightSqSum(0.0),
+   blackWinUtilityInvAvg(0.0),
+   blackWinUtilityInvSqAvg(0.0),
+   blackWinWeightSum(0.0),
+   blackWinWeightSqSum(0.0)
 {}
 NodeStatsAtomic::NodeStatsAtomic(const NodeStatsAtomic& other)
   :visits(other.visits.load(std::memory_order_acquire)),
    winLossValueAvg(other.winLossValueAvg.load(std::memory_order_acquire)),
    noResultValueAvg(other.noResultValueAvg.load(std::memory_order_acquire)),
+   whiteWinProbAvg(other.whiteWinProbAvg.load(std::memory_order_acquire)),
+   blackWinProbAvg(other.blackWinProbAvg.load(std::memory_order_acquire)),
    utilityAvg(other.utilityAvg.load(std::memory_order_acquire)),
    utilitySqAvg(other.utilitySqAvg.load(std::memory_order_acquire)),
    weightSum(other.weightSum.load(std::memory_order_acquire)),
-   weightSqSum(other.weightSqSum.load(std::memory_order_acquire))
+   weightSqSum(other.weightSqSum.load(std::memory_order_acquire)),
+   whiteWinUtilityAvg(other.whiteWinUtilityAvg.load(std::memory_order_acquire)),
+   whiteWinUtilitySqAvg(other.whiteWinUtilitySqAvg.load(std::memory_order_acquire)),
+   whiteWinWeightSum(other.whiteWinWeightSum.load(std::memory_order_acquire)),
+   whiteWinWeightSqSum(other.whiteWinWeightSqSum.load(std::memory_order_acquire)),
+   blackWinUtilityInvAvg(other.blackWinUtilityInvAvg.load(std::memory_order_acquire)),
+   blackWinUtilityInvSqAvg(other.blackWinUtilityInvSqAvg.load(std::memory_order_acquire)),
+   blackWinWeightSum(other.blackWinWeightSum.load(std::memory_order_acquire)),
+   blackWinWeightSqSum(other.blackWinWeightSqSum.load(std::memory_order_acquire))
 {}
 NodeStatsAtomic::~NodeStatsAtomic()
 {}
@@ -27,19 +47,39 @@ NodeStats::NodeStats()
   :visits(0),
    winLossValueAvg(0.0),
    noResultValueAvg(0.0),
+   whiteWinProbAvg(0.0),
+   blackWinProbAvg(0.0),
    utilityAvg(0.0),
    utilitySqAvg(0.0),
    weightSum(0.0),
-   weightSqSum(0.0)
+   weightSqSum(0.0),
+   whiteWinUtilityAvg(0.0),
+   whiteWinUtilitySqAvg(0.0),
+   whiteWinWeightSum(0.0),
+   whiteWinWeightSqSum(0.0),
+   blackWinUtilityInvAvg(0.0),
+   blackWinUtilityInvSqAvg(0.0),
+   blackWinWeightSum(0.0),
+   blackWinWeightSqSum(0.0)
 {}
 NodeStats::NodeStats(const NodeStatsAtomic& other)
   :visits(other.visits.load(std::memory_order_acquire)),
    winLossValueAvg(other.winLossValueAvg.load(std::memory_order_acquire)),
    noResultValueAvg(other.noResultValueAvg.load(std::memory_order_acquire)),
+   whiteWinProbAvg(other.whiteWinProbAvg.load(std::memory_order_acquire)),
+   blackWinProbAvg(other.blackWinProbAvg.load(std::memory_order_acquire)),
    utilityAvg(other.utilityAvg.load(std::memory_order_acquire)),
    utilitySqAvg(other.utilitySqAvg.load(std::memory_order_acquire)),
    weightSum(other.weightSum.load(std::memory_order_acquire)),
-   weightSqSum(other.weightSqSum.load(std::memory_order_acquire))
+   weightSqSum(other.weightSqSum.load(std::memory_order_acquire)),
+   whiteWinUtilityAvg(other.whiteWinUtilityAvg.load(std::memory_order_acquire)),
+   whiteWinUtilitySqAvg(other.whiteWinUtilitySqAvg.load(std::memory_order_acquire)),
+   whiteWinWeightSum(other.whiteWinWeightSum.load(std::memory_order_acquire)),
+   whiteWinWeightSqSum(other.whiteWinWeightSqSum.load(std::memory_order_acquire)),
+   blackWinUtilityInvAvg(other.blackWinUtilityInvAvg.load(std::memory_order_acquire)),
+   blackWinUtilityInvSqAvg(other.blackWinUtilityInvSqAvg.load(std::memory_order_acquire)),
+   blackWinWeightSum(other.blackWinWeightSum.load(std::memory_order_acquire)),
+   blackWinWeightSqSum(other.blackWinWeightSqSum.load(std::memory_order_acquire))
 {}
 NodeStats::~NodeStats()
 {}
@@ -52,6 +92,10 @@ MoreNodeStats::MoreNodeStats()
   :stats(),
    selfUtility(0.0),
    weightAdjusted(0.0),
+   whiteWinSelfUtility(0.0),
+   whiteWinWeightAdjusted(0.0),
+   blackWinSelfUtility(0.0),
+   blackWinWeightAdjusted(0.0),
    prevMoveLoc(Board::NULL_LOC)
 {}
 MoreNodeStats::~MoreNodeStats()
