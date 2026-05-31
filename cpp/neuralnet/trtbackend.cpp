@@ -36,6 +36,20 @@ static void checkCudaError(const cudaError_t status, const char* opName, const c
 #define CUDA_ERR(opName, x) \
   { checkCudaError((x), opName, __FILE__, #x, __LINE__); }
 
+static constexpr int ONNX_V112_OUTPUT_HEADS = 6;
+static constexpr int ONNX_SELECTED_OUTPUT_HEAD = 0;
+
+static int getOnnxOutputHeadCount(int modelVersion) {
+  return modelVersion == 112 ? ONNX_V112_OUTPUT_HEADS : 1;
+}
+
+static size_t getSelectedOnnxOutputHeadOffset(size_t singleHeadElts, int modelVersion) {
+  int headCount = getOnnxOutputHeadCount(modelVersion);
+  assert(ONNX_SELECTED_OUTPUT_HEAD >= 0 && ONNX_SELECTED_OUTPUT_HEAD < headCount);
+  (void)headCount;
+  return (size_t)ONNX_SELECTED_OUTPUT_HEAD * singleHeadElts;
+}
+
 void NeuralNet::globalInitialize() {
   // Empty for TensorRT backend
 }
@@ -76,6 +90,8 @@ struct LoadedModel {
     } else {
       isOnnx = false;
       ModelDesc::loadFromFileMaybeGZipped(fileName, modelDesc, expectedSha256);
+      if(modelDesc.version == 112)
+        throw StringError("TensorRT backend: model version 112 is only supported for ONNX models");
     }
   }
 
@@ -1627,6 +1643,12 @@ struct InputBuffers {
   size_t singleOwnershipResultBytes;
 
   // ONNX specific
+  size_t singleout_policyHeadElts;
+  size_t singleout_valueHeadElts;
+  size_t singleout_miscvalueHeadElts;
+  size_t singleout_moremiscvalueHeadElts;
+  size_t singleout_ownershipHeadElts;
+
   size_t singleout_policyElts;
   size_t singleout_policyBytes;
   size_t singleout_valueElts;
@@ -1696,20 +1718,25 @@ struct InputBuffers {
     if (isOnnx) {
         int policyNum = (m.version >= 12 && m.version <= 99) ? 6 : 4;
         if(m.version != 11 && m.version != 12 && m.version != 13 && m.version != 14 && m.version != 15 
-          && m.version != 102)
+          && m.version != 102 && m.version != 112)
         {
-          std::cout << "version: " << m.version << " is not supported in ONNX" << std::endl;
-          assert(false);
+          throw StringError("TensorRT backend: model version " + Global::intToString(m.version) + " is not supported in ONNX");
         }
-        singleout_policyElts = 1 * policyNum * (nnXLen * nnYLen + 1);
+        int outputHeadCount = getOnnxOutputHeadCount(m.version);
+        singleout_policyHeadElts = (size_t)policyNum * (nnXLen * nnYLen + 1);
+        singleout_valueHeadElts = 3;
+        singleout_miscvalueHeadElts = 10;
+        singleout_moremiscvalueHeadElts = 8;
+        singleout_ownershipHeadElts = (size_t)nnXLen * nnYLen;
+        singleout_policyElts = (size_t)outputHeadCount * singleout_policyHeadElts;
         singleout_policyBytes = singleout_policyElts * sizeof(float);
-        singleout_valueElts = 3;
+        singleout_valueElts = (size_t)outputHeadCount * singleout_valueHeadElts;
         singleout_valueBytes = singleout_valueElts * sizeof(float);
-        singleout_miscvalueElts = 10;
+        singleout_miscvalueElts = (size_t)outputHeadCount * singleout_miscvalueHeadElts;
         singleout_miscvalueBytes = singleout_miscvalueElts * sizeof(float);
-        singleout_moremiscvalueElts = 8;
+        singleout_moremiscvalueElts = (size_t)outputHeadCount * singleout_moremiscvalueHeadElts;
         singleout_moremiscvalueBytes = singleout_moremiscvalueElts * sizeof(float);
-        singleout_ownershipElts = 1 * nnXLen * nnYLen;
+        singleout_ownershipElts = (size_t)outputHeadCount * singleout_ownershipHeadElts;
         singleout_ownershipBytes = singleout_ownershipElts * sizeof(float);
 
         out_policyBufferBytes = maxBatchSize * singleout_policyBytes;
@@ -1859,6 +1886,21 @@ void NeuralNet::getOutput(
 
   // Get outputs
   if (isOnnx) {
+      auto checkOutputElts = [&](const char* name, size_t expected) {
+        size_t actual = gpuHandle->getBufferRowElts(name);
+        if(actual != expected) {
+          throw StringError(
+            "TensorRT backend: output " + string(name) + " element count (" +
+            Global::uint64ToString((uint64_t)actual) + ") did not match expected (" +
+            Global::uint64ToString((uint64_t)expected) + ")");
+        }
+      };
+      checkOutputElts("out_policy", inputBuffers->singleout_policyElts);
+      checkOutputElts("out_value", inputBuffers->singleout_valueElts);
+      checkOutputElts("out_miscvalue", inputBuffers->singleout_miscvalueElts);
+      checkOutputElts("out_moremiscvalue", inputBuffers->singleout_moremiscvalueElts);
+      checkOutputElts("out_ownership", inputBuffers->singleout_ownershipElts);
+
       CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_policyResults.get(), gpuHandle->getBuffer("out_policy"), inputBuffers->singleout_policyBytes * batchSize, cudaMemcpyDeviceToHost));
       CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_valueResults.get(), gpuHandle->getBuffer("out_value"), inputBuffers->singleout_valueBytes * batchSize, cudaMemcpyDeviceToHost));
       CUDA_ERR("getOutput", cudaMemcpy(inputBuffers->out_miscvalueResults.get(), gpuHandle->getBuffer("out_miscvalue"), inputBuffers->singleout_miscvalueBytes * batchSize, cudaMemcpyDeviceToHost));
@@ -1907,7 +1949,11 @@ void NeuralNet::getOutput(
     assert(output->nnYLen == nnYLen);
 
     if(isOnnx) {
-      const float* policySrcBuf = &inputBuffers->out_policyResults[row * inputBuffers->singleout_policyElts];
+      const float* policySrcBuf =
+        &inputBuffers->out_policyResults[
+          row * inputBuffers->singleout_policyElts +
+          getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_policyHeadElts, version)
+        ];
       //float* policyProbs = output->policyProbs;
       float* policyProbs = outputPolicys + row * NNPos::MAX_NN_POLICY_SIZE;
 
@@ -1917,18 +1963,29 @@ void NeuralNet::getOutput(
       policyProbs[nnXLen * nnYLen] = policySrcBuf[nnXLen * nnYLen];
       
 
-      int numValueChannels = inputBuffers->singleout_valueElts;
-      assert(numValueChannels == 3);
-      output->whiteWinProb = inputBuffers->out_valueResults[row * numValueChannels];
-      output->whiteLossProb = inputBuffers->out_valueResults[row * numValueChannels + 1];
-      output->whiteNoResultProb = inputBuffers->out_valueResults[row * numValueChannels + 2];
+      const float* valueSrcBuf =
+        &inputBuffers->out_valueResults[
+          row * inputBuffers->singleout_valueElts +
+          getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_valueHeadElts, version)
+        ];
+      output->whiteWinProb = valueSrcBuf[0];
+      output->whiteLossProb = valueSrcBuf[1];
+      output->whiteNoResultProb = valueSrcBuf[2];
 
 
-      int numScoreValueChannels = inputBuffers->singleout_miscvalueElts;
-      int numMoreValueChannels = inputBuffers->singleout_moremiscvalueElts;
+      const float* miscValueSrcBuf =
+        &inputBuffers->out_miscvalueResults[
+          row * inputBuffers->singleout_miscvalueElts +
+          getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_miscvalueHeadElts, version)
+        ];
+      const float* moreMiscValueSrcBuf =
+        &inputBuffers->out_moremiscvalueResults[
+          row * inputBuffers->singleout_moremiscvalueElts +
+          getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_moremiscvalueHeadElts, version)
+        ];
       if(version >= 9) {
-        output->varTimeLeft = inputBuffers->out_miscvalueResults[row * numScoreValueChannels + 3];
-        output->shorttermWinlossError = inputBuffers->out_moremiscvalueResults[row * numMoreValueChannels];
+        output->varTimeLeft = miscValueSrcBuf[3];
+        output->shorttermWinlossError = moreMiscValueSrcBuf[0];
       } else {
         std::cout << "version: " << version << " is not supported in ONNX" << std::endl;
         assert(false);

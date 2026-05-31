@@ -30,6 +30,20 @@ static void checkOrtStatus(OrtStatus* status) {
   }
 }
 
+static constexpr int ONNX_V112_OUTPUT_HEADS = 6;
+static constexpr int ONNX_SELECTED_OUTPUT_HEAD = 0;
+
+static int getOnnxOutputHeadCount(int modelVersion) {
+  return modelVersion == 112 ? ONNX_V112_OUTPUT_HEADS : 1;
+}
+
+static size_t getSelectedOnnxOutputHeadOffset(size_t singleHeadElts, int modelVersion) {
+  int headCount = getOnnxOutputHeadCount(modelVersion);
+  assert(ONNX_SELECTED_OUTPUT_HEAD >= 0 && ONNX_SELECTED_OUTPUT_HEAD < headCount);
+  (void)headCount;
+  return (size_t)ONNX_SELECTED_OUTPUT_HEAD * singleHeadElts;
+}
+
 //---------------------------------------------------------------------------------------------------------
 
 void NeuralNet::globalInitialize() {
@@ -215,6 +229,12 @@ struct InputBuffers {
   size_t singleInputGlobalElts;
   
   // Outputs
+  size_t singleout_policyHeadElts;
+  size_t singleout_valueHeadElts;
+  size_t singleout_miscvalueHeadElts;
+  size_t singleout_moremiscvalueHeadElts;
+  size_t singleout_ownershipHeadElts;
+
   size_t singleout_policyElts;
   size_t singleout_valueElts;
   size_t singleout_miscvalueElts;
@@ -239,11 +259,17 @@ struct InputBuffers {
     
     // Output sizes - following trtbackend.cpp logic for ONNX
     int policyNum = (m.version >= 12 && m.version <= 99) ? 6 : 4;
-    singleout_policyElts = 1 * policyNum * (nnXLen * nnYLen + 1);
-    singleout_valueElts = 3;
-    singleout_miscvalueElts = 10;
-    singleout_moremiscvalueElts = 8;
-    singleout_ownershipElts = 1 * nnXLen * nnYLen;
+    int outputHeadCount = getOnnxOutputHeadCount(m.version);
+    singleout_policyHeadElts = (size_t)policyNum * (nnXLen * nnYLen + 1);
+    singleout_valueHeadElts = 3;
+    singleout_miscvalueHeadElts = 10;
+    singleout_moremiscvalueHeadElts = 8;
+    singleout_ownershipHeadElts = (size_t)nnXLen * nnYLen;
+    singleout_policyElts = (size_t)outputHeadCount * singleout_policyHeadElts;
+    singleout_valueElts = (size_t)outputHeadCount * singleout_valueHeadElts;
+    singleout_miscvalueElts = (size_t)outputHeadCount * singleout_miscvalueHeadElts;
+    singleout_moremiscvalueElts = (size_t)outputHeadCount * singleout_moremiscvalueHeadElts;
+    singleout_ownershipElts = (size_t)outputHeadCount * singleout_ownershipHeadElts;
 
     spatialInputs = make_unique<float[]>(maxBatchSize * singleInputElts);
     globalInputs = make_unique<float[]>(maxBatchSize * singleInputGlobalElts);
@@ -355,9 +381,13 @@ void NeuralNet::getOutput(
   
   auto copyToBuffer = [&](size_t idx, float* dest, size_t size) {
     const float* src = outputValues[idx].GetTensorData<float>();
-    // Check size?
-    // size_t count = outputValues[idx].GetTensorTypeAndShapeInfo().GetElementCount();
-    // assert(count == size);
+    size_t count = outputValues[idx].GetTensorTypeAndShapeInfo().GetElementCount();
+    if(count != size) {
+      throw StringError(
+        "ONNX backend: output " + string(outputNames[idx]) + " element count (" +
+        Global::uint64ToString((uint64_t)count) + ") did not match expected (" +
+        Global::uint64ToString((uint64_t)size) + ")");
+    }
     copy(src, src + size, dest);
   };
 
@@ -372,7 +402,11 @@ void NeuralNet::getOutput(
     NNOutput* output = outputs[row];
     
     // Policy
-    const float* policySrcBuf = &inputBuffers->out_policyResults[row * inputBuffers->singleout_policyElts];
+    const float* policySrcBuf =
+      &inputBuffers->out_policyResults[
+        row * inputBuffers->singleout_policyElts +
+        getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_policyHeadElts, modelVersion)
+      ];
     float* policyProbs = outputPolicys + row * NNPos::MAX_NN_POLICY_SIZE;
     
     // Logic from trtbackend.cpp
@@ -385,18 +419,30 @@ void NeuralNet::getOutput(
     
     
     // Value
-    int numValueChannels = 3;
-    output->whiteWinProb = inputBuffers->out_valueResults[row * numValueChannels];
-    output->whiteLossProb = inputBuffers->out_valueResults[row * numValueChannels + 1];
-    output->whiteNoResultProb = inputBuffers->out_valueResults[row * numValueChannels + 2];
+    const float* valueSrcBuf =
+      &inputBuffers->out_valueResults[
+        row * inputBuffers->singleout_valueElts +
+        getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_valueHeadElts, modelVersion)
+      ];
+    output->whiteWinProb = valueSrcBuf[0];
+    output->whiteLossProb = valueSrcBuf[1];
+    output->whiteNoResultProb = valueSrcBuf[2];
     
     // Misc Value
-    int numScoreValueChannels = inputBuffers->singleout_miscvalueElts;
-    int numMoreValueChannels = inputBuffers->singleout_moremiscvalueElts;
+    const float* miscValueSrcBuf =
+      &inputBuffers->out_miscvalueResults[
+        row * inputBuffers->singleout_miscvalueElts +
+        getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_miscvalueHeadElts, modelVersion)
+      ];
+    const float* moreMiscValueSrcBuf =
+      &inputBuffers->out_moremiscvalueResults[
+        row * inputBuffers->singleout_moremiscvalueElts +
+        getSelectedOnnxOutputHeadOffset(inputBuffers->singleout_moremiscvalueHeadElts, modelVersion)
+      ];
     
     if(modelVersion >= 9) {
-        output->varTimeLeft = inputBuffers->out_miscvalueResults[row * numScoreValueChannels + 3];
-        output->shorttermWinlossError = inputBuffers->out_moremiscvalueResults[row * numMoreValueChannels];
+        output->varTimeLeft = miscValueSrcBuf[3];
+        output->shorttermWinlossError = moreMiscValueSrcBuf[0];
     }
   }
 }

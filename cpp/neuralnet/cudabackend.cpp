@@ -1997,6 +1997,8 @@ struct LoadedModel {
 
   LoadedModel(const string& fileName, const string& expectedSha256) {
     ModelDesc::loadFromFileMaybeGZipped(fileName,modelDesc,expectedSha256);
+    if(modelDesc.version == 112)
+      throw StringError("CUDA backend: model version 112 is only supported by ONNX backends");
   }
 
   LoadedModel() = delete;

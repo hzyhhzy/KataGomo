@@ -990,6 +990,8 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net is from an extremely old version of KataGo and is no longer supported by the engine. Model version: " + Global::intToString(version));
   if(version > NNModelVersion::latestModelVersionImplemented)
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));
+  if(version == 112)
+    throw StringError("Model version 112 is only supported for ONNX models");
 
   in >> numInputChannels;
   if(in.fail())
@@ -1177,10 +1179,10 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
 }
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 103, "");
+  static_assert(NNModelVersion::latestModelVersionImplemented == 112, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 103) {
+  if(version <= 103 || version == 112) {
   }
   else {
     ASSERT_UNREACHABLE;
