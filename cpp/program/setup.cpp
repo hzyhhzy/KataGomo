@@ -450,6 +450,9 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("multiValueHeadUtilityMix"+idxStr)) params.multiValueHeadUtilityMix = cfg.getDouble("multiValueHeadUtilityMix"+idxStr, 0.0, 1.0);
     else if(cfg.contains("multiValueHeadUtilityMix"))   params.multiValueHeadUtilityMix = cfg.getDouble("multiValueHeadUtilityMix",        0.0, 1.0);
     else                                                params.multiValueHeadUtilityMix = 0.0;
+    if(cfg.contains("multiValueHeadSelectionBias"+idxStr)) params.multiValueHeadSelectionBias = cfg.getDouble("multiValueHeadSelectionBias"+idxStr, -1.0, 1.0);
+    else if(cfg.contains("multiValueHeadSelectionBias"))   params.multiValueHeadSelectionBias = cfg.getDouble("multiValueHeadSelectionBias",        -1.0, 1.0);
+    else                                                    params.multiValueHeadSelectionBias = 0.0;
     if(cfg.contains("noResultUtilityReduce"+idxStr)) params.noResultUtilityReduce = cfg.getDouble("noResultUtilityReduce"+idxStr, -5.0, 5.0);
     else if(cfg.contains("noResultUtilityReduce"))   params.noResultUtilityReduce = cfg.getDouble("noResultUtilityReduce",        -5.0, 5.0);
     else      params.noResultUtilityReduce=0.0;

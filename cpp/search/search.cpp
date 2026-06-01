@@ -67,6 +67,8 @@ static const double VALUE_WEIGHT_DEGREES_OF_FREEDOM = 3.0;
 static void failIfInvalidMultiValueHeadParams(const SearchParams& params) {
   if(params.multiValueHeadUtilityMix != 0.0 && params.noResultUtilityReduce != 0.0)
     throw StringError("multiValueHeadUtilityMix requires noResultUtilityReduce to be 0");
+  if(params.multiValueHeadSelectionBias < -1.0 || params.multiValueHeadSelectionBias > 1.0)
+    throw StringError("multiValueHeadSelectionBias must be between -1 and 1");
 }
 
 Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const string& rSeed)

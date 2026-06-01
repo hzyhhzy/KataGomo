@@ -330,6 +330,7 @@ $$MULTIPLE_GPUS
 # in non-superko rulesets (-1 to 1)
 # noResultUtilityForWhite = 0.0
 # multiValueHeadUtilityMix = 0.0
+# multiValueHeadSelectionBias = 0.0
 
 # The number of wins that a draw counts as, for white. (0 to 1)
 # drawEquivalentWinsForWhite = 0.5

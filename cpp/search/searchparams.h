@@ -9,6 +9,7 @@ struct SearchParams {
   double winLossUtilityFactor;     //Scaling for [-1,1] value for winning/losing
   double noResultUtilityForWhite; //Utility of having a no-result game (simple ko rules or nonterminating territory encore) 
   double multiValueHeadUtilityMix; //0 = legacy head0 utility, 1 = use v112 multi-head win/loss utility
+  double multiValueHeadSelectionBias; //-1 = opponent win objective, 0 = average, 1 = side-to-move win objective
   
   double noResultUtilityReduce;  // Decrease draw utility for both side (if positive)
 

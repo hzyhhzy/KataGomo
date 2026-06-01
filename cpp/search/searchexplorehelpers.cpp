@@ -495,6 +495,15 @@ void Search::selectBestChildToDescend(
     return getExploreSelectionValue(exploreScalingForObjective,nnPolicyProb,childWeight,childUtility,node.nextPla);
   };
 
+  auto combineMultiValueHeadSelectionValues = [&](double whiteWinSelectionValue, double blackWinSelectionValue) {
+    double p = searchParams.multiValueHeadSelectionBias;
+    double sideToMoveWinWeight = 0.5 + 0.5 * p;
+    double otherWinWeight = 0.5 - 0.5 * p;
+    if(node.nextPla == P_WHITE)
+      return whiteWinSelectionValue * sideToMoveWinWeight + blackWinSelectionValue * otherWinWeight;
+    return blackWinSelectionValue * sideToMoveWinWeight + whiteWinSelectionValue * otherWinWeight;
+  };
+
   //Try all existing children
   //Also count how many children we actually find
   numChildrenFound = 0;
@@ -537,7 +546,7 @@ void Search::selectBestChildToDescend(
         blackWinExploreScaling, totalBlackWinChildWeight, blackWinFpuValue,
         blackWinParentWeightPerVisit, maxBlackWinChildWeight
       );
-      selectionValue = 0.5 * (whiteWinSelectionValue + blackWinSelectionValue);
+      selectionValue = combineMultiValueHeadSelectionValues(whiteWinSelectionValue, blackWinSelectionValue);
     }
     if(selectionValue > maxSelectionValue) {
       maxSelectionValue = selectionValue;
@@ -607,7 +616,7 @@ void Search::selectBestChildToDescend(
         bestNewNNPolicyProb, blackWinExploreScaling, blackWinFpuValue,
         blackWinParentWeightPerVisit, maxBlackWinChildWeight
       );
-      selectionValue = 0.5 * (whiteWinSelectionValue + blackWinSelectionValue);
+      selectionValue = combineMultiValueHeadSelectionValues(whiteWinSelectionValue, blackWinSelectionValue);
     }
     if(selectionValue > maxSelectionValue) {
       maxSelectionValue = selectionValue;

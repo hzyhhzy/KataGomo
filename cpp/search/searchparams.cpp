@@ -9,6 +9,7 @@ SearchParams::SearchParams()
   :winLossUtilityFactor(1.0),
    noResultUtilityForWhite(0.0),
    multiValueHeadUtilityMix(0.0),
+   multiValueHeadSelectionBias(0.0),
    noResultUtilityReduce(0.0),
    cpuctExploration(1.0),
    cpuctExplorationLog(0.0),
@@ -152,6 +153,7 @@ void SearchParams::printParams(std::ostream& out) {
   PRINTPARAM(winLossUtilityFactor);
   PRINTPARAM(noResultUtilityForWhite);
   PRINTPARAM(multiValueHeadUtilityMix);
+  PRINTPARAM(multiValueHeadSelectionBias);
 
   PRINTPARAM(cpuctExploration);
   PRINTPARAM(cpuctExplorationLog);
