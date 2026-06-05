@@ -378,8 +378,8 @@ int MainCmds::match(const vector<string>& args) {
     json j;
     j["bot0name"] = botNames[0];
     j["bot1name"] = botNames[1];
-    j["bot0model"] = nnModelFiles[0];
-    j["bot1model"] = nnModelFiles[1];
+    j["bot0model"] = nnModelFilesByBot[0];
+    j["bot1model"] = nnModelFilesByBot[1];
     auto& r0 = resultsByBotMap[botNames[0]];
     auto& r1 = resultsByBotMap[botNames[1]];
     if(r0.win != r1.lose || r0.draw != r1.draw || r0.lose != r1.win)
