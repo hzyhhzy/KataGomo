@@ -341,7 +341,7 @@ void NeuralNet::getOutput(
     
     copy(rowGlobal, rowGlobal + numGlobalFeatures, rowGlobalInput);
     SymmetryHelpers::copyInputsWithSymmetry(
-      rowSpatial, rowSpatialInput, batchSize, nnXLen, nnYLen, nnZLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
+      rowSpatial, rowSpatialInput, 1, nnYLen, nnXLen, nnZLen, numSpatialFeatures, false, inputBufs[nIdx]->symmetry);
   }
 
   // Run ONNX inference
@@ -406,9 +406,12 @@ void NeuralNet::getOutput(
   
   auto copyToBuffer = [&](size_t idx, float* dest, size_t size) {
     const float* src = outputValues[idx].GetTensorData<float>();
-    // Check size?
-    // size_t count = outputValues[idx].GetTensorTypeAndShapeInfo().GetElementCount();
-    // assert(count == size);
+    size_t count = outputValues[idx].GetTensorTypeAndShapeInfo().GetElementCount();
+    if(count != size)
+      throw StringError(
+        "ONNX backend output " + string(outputNames[idx]) + " had " + std::to_string(count) +
+        " floats, expected " + std::to_string(size)
+      );
     copy(src, src + size, dest);
   };
 
@@ -434,7 +437,7 @@ void NeuralNet::getOutput(
       throw StringError("modelVersion >= 12 && modelVersion <= 99 not supported");
 
     SymmetryHelpers::copyOutputsWithSymmetry(
-      policySrcBuf, policyProbs, batchSize, nnYLen, nnXLen, nnZLen, inputBufs[row]->symmetry);
+      policySrcBuf, policyProbs, 1, nnYLen, nnXLen, nnZLen, inputBufs[row]->symmetry);
     policyProbs[nnLen] = policySrcBuf[nnLen];
 
     // Value
