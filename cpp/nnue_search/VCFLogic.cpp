@@ -521,6 +521,28 @@ vector<Loc> VCFLogic::getAllVCFAttackOrDefenseLocs(const Board& board, Player at
     vector<Loc> allEmptyPositions(uniqueEmptyPositions.begin(), uniqueEmptyPositions.end());
     
     if (board.stage == 0) {
+      for (Loc loc : emptyPositionsInTuples[0]) {
+        bool canBlockAllWithOneStone = true;
+        for (size_t t = 1; t < emptyPositionsInTuples.size(); t++) {
+          bool foundInThisTuple = false;
+          for (Loc tupleLoc : emptyPositionsInTuples[t]) {
+            if (tupleLoc == loc) {
+              foundInThisTuple = true;
+              break;
+            }
+          }
+          if (!foundInThisTuple) {
+            canBlockAllWithOneStone = false;
+            break;
+          }
+        }
+        if (canBlockAllWithOneStone) {
+          winner = defendPla;
+          gameEndMovenum = board.movenum + 1;
+          return locs;
+        }
+      }
+
       // Check if 2 pieces can block all tuples
       for (size_t i = 0; i < allEmptyPositions.size(); i++) {
         Loc loc1 = allEmptyPositions[i];
@@ -901,6 +923,28 @@ vector<Loc> VCFLogic::getAllVCFAttackOrDefenseLocsWithCache(const Board& board, 
         vector<Loc> allEmptyPositions(uniqueEmptyPositions.begin(), uniqueEmptyPositions.end());
 
         if (board.stage == 0) {
+            for (Loc loc : emptyPositionsInTuples[0]) {
+                bool canBlockAllWithOneStone = true;
+                for (size_t t = 1; t < emptyPositionsInTuples.size(); t++) {
+                    bool foundInThisTuple = false;
+                    for (Loc tupleLoc : emptyPositionsInTuples[t]) {
+                        if (tupleLoc == loc) {
+                            foundInThisTuple = true;
+                            break;
+                        }
+                    }
+                    if (!foundInThisTuple) {
+                        canBlockAllWithOneStone = false;
+                        break;
+                    }
+                }
+                if (canBlockAllWithOneStone) {
+                    winner = defendPla;
+                    gameEndMovenum = board.movenum + 1;
+                    return locs;
+                }
+            }
+
             // Check if 2 pieces can block all tuples
             for (size_t i = 0; i < allEmptyPositions.size(); i++) {
                 Loc loc1 = allEmptyPositions[i];
