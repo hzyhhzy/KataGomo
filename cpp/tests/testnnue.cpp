@@ -84,10 +84,10 @@ int MainCmds::testnnue() {
   //testABSearch(nnueWeight);
   
   // Test MCTS search with same initial position
-  //testMCTSSearch3(nnueWeight);
+  testMCTSSearch3(nnueWeight);
   //
 
-  testVCFPrune1(nnueWeight);
+  //testVCFPrune1(nnueWeight);
 
   //testVCFPrune2(nnueWeight);
 
@@ -534,7 +534,7 @@ void testMCTSSearch3(const ModelWeight* weights) {
   //string initialSequence = "j10k11i11j11i13j13h10j12h14i12k14k15l15j15k12";
   //string initialSequence = "j10i11h10j9k7g9g11m6m5k8l6m4a1m8l8";//white has a four
   //string initialSequence = "j10k11i11j11i13j13h10j12h14i12k14k15l15j15n12";//even a bit difficult for katago
-  string initialSequence = "j10k11i11j11i13j13h10j12h14i12k14k15l15j15g11h11i9g12l13i14i16f12h16e13d12j14s19";//require 20s (5e5 nodes), even a bit difficult for katago
+  //string initialSequence = "j10k11i11j11i13j13h10j12h14i12k14k15l15j15g11h11i9g12l13i14i16f12h16e13d12j14s19";//require 20s (5e5 nodes), even a bit difficult for katago
   //string initialSequence = "j10k11i11j11i13j13h10j12h14i12k14k15l15j15g11h11i9g12l13i14i16f12h16e13d12j14i15g15g17f14f16g9m12j9m14f13m11g13n15n14o13e15d16h12c17g14n12e16f9e9o14g8p13h7p12i8h8f8i7j7g7h9f6g6g5g10g4k6l6k12l8l5o16i6m4k5m5j17j5k17j18k9m15k10k4m9k7n10k3o9k2n9n6n7l4"; //109 moves to win
   //string initialSequence = "j10c2p5k11l12q15d15";//4 useless white stones
   //string initialSequence = "j10c2p5k11j12k12i9";//4 useless white stones
@@ -548,7 +548,7 @@ void testMCTSSearch3(const ModelWeight* weights) {
 
   //string initialSequence = "j10k11i11j11i13j13h10j12h14i12k14k15l15j15g11h11i9g12l13i14i16f12h16e13d12j14pass";
 
-
+  string initialSequence = "j10k10j9i8h8i10k8h9h11h10j7k9l9i11g7g9l7i6j6l8j5k6l10h6h5f9h4k5l5i5l6";
 
   vector<Loc> initialLocSeq = Location::parseSequenceGom(initialSequence, board);
   PlayUtils::playMoveLocSequence(board, board.nextPla, initialLocSeq);
