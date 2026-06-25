@@ -44,7 +44,8 @@ map<string,int> Rules::loopPassRuleStringsMap() {
     pair<string, int>("LOOPDRAW_PASSSCORING", 0),
     pair<string, int>("LOOPDRAW_PASSCONTINUE", 1),
     pair<string, int>("LOOPLOSE_PASSSCORING", 2),
-    pair<string, int>("LOOPSCORING_PASSSCORING", 3)
+    pair<string, int>("LOOPSCORING_PASSSCORING", 3),
+    pair<string, int>("BOTZONE", 4)
   };
 }
 
@@ -123,6 +124,10 @@ static Rules parseRulesHelper(const string& sOrig) {
   
   if(lowercased == "tromp-taylor" || lowercased == "tromp_taylor" || lowercased == "tromp taylor" || lowercased == "tromptaylor") {
     rules.loopPassRule= Rules::LOOPDRAW_PASSSCORING;
+    rules.komi = 0;
+  }
+  else if(lowercased == "botzone") {
+    rules.loopPassRule = Rules::BOTZONE;
     rules.komi = 0;
   }
   else if(sOrig.length() > 0 && sOrig[0] == '{') {
@@ -223,10 +228,11 @@ bool Rules::tryParseRules(const string& sOrig, Rules& buf) {
 
 
 
-const Hash128 Rules::ZOBRIST_LOOPPASS_RULE_HASH[4] = {
+const Hash128 Rules::ZOBRIST_LOOPPASS_RULE_HASH[5] = {
   Hash128(0xcfe353052ab23e7aULL, 0x243466cc5740fa07ULL),
   Hash128(0x3bdac963636f8efbULL, 0x7f5d9b5d76a70889ULL),
   Hash128(0xd4aecfb2904ed7d1ULL, 0x9adba41979253974ULL),
-  Hash128(0x23af6fd73de24455ULL, 0x2339118e63d7a780ULL)};
+  Hash128(0x23af6fd73de24455ULL, 0x2339118e63d7a780ULL),
+  Hash128(0x88a88d3f5d2b7b6bULL, 0x4b0123e673c52ad5ULL)};
 const Hash128 Rules::ZOBRIST_KOMI_RULE_HASH_BASE =
   Hash128(0x4c927b66ae674d8fULL, 0x1956c0e6b45360fbULL);

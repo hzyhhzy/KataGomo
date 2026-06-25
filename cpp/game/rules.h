@@ -13,6 +13,8 @@ struct Rules {
   // LOOPDRAW: if the situation repeats, draw
   // LOOPLOSE: who make the situation repeats is a lose
   // LOOPSCORING: if the situation repeats, all empty locations belong to opponent and count stones
+  // BOTZONE: if a repeated situation is followed by the same full move as last time from there, the mover loses.
+  //          Also, if either player has no legal non-pass move, score by current stone counts.
   // PASSSCORING: if one player have no legal moves, all empty locations belong to opponent and count score
   // PASSCONTINUE: if one player have no legal moves, pass and let opponent continue playing. this is only different from PASS_SCORING when using LOOP_DRAW rule on some rare conditions
 
@@ -20,6 +22,7 @@ struct Rules {
   static const int LOOPDRAW_PASSCONTINUE = 1;  
   static const int LOOPLOSE_PASSSCORING = 2;  
   static const int LOOPSCORING_PASSSCORING = 3;  
+  static const int BOTZONE = 4;
   int loopPassRule;
 
   int komi; //non-integer komi is meaningless
@@ -56,7 +59,7 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
 
-  static const Hash128 ZOBRIST_LOOPPASS_RULE_HASH[4];
+  static const Hash128 ZOBRIST_LOOPPASS_RULE_HASH[5];
   static const Hash128 ZOBRIST_KOMI_RULE_HASH_BASE;
 
 };

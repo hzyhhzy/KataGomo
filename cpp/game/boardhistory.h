@@ -16,6 +16,9 @@ struct BoardHistory {
   std::vector<Move> moveHistory;
 
   std::map<Hash128, int> posHashHistoryCount;
+  std::map<Hash128, int> botzoneLastMoveByPosHash;
+  bool botzonePendingMove;
+  Hash128 botzonePendingPosHash;
 
   //The board and player to move as of the very start, before moveHistory.
   Board initialBoard;
@@ -80,6 +83,7 @@ struct BoardHistory {
   //ruleset than ours. Returns true if successful, false if was illegal even unter tolerant rules.
   bool makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla);
   bool isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const;
+  bool getBotzoneProhibitedMove(const Board& board, Loc& firstLoc, Loc& secondLoc) const;
 
   void setWinnerByResignation(Player pla);
   void setWinner(Color pla);

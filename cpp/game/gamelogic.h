@@ -34,6 +34,7 @@ namespace GameLogic {
   //C_EMPTY = draw, C_WALL = not finished 
   Color checkWinnerAfterPlayed(const Board& board, const BoardHistory& hist, Player pla, Loc loc, bool isLegalPass);
   bool hasLegalMoveAssumeStage0(const Board& board);
+  bool hasLegalMoveAssumeStage0(const Board& board, Player pla);
   bool hasLegalMoveAssumeStage1(const Board& board, Loc chosenLoc);
 
 

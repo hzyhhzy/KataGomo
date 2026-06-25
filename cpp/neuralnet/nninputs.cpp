@@ -37,6 +37,8 @@ const Hash128 MiscNNInputParams::ZOBRIST_PLAYOUT_DOUBLINGS =
   Hash128(0xa5e6114d380bfc1dULL, 0x4160557f1222f4adULL);
 const Hash128 MiscNNInputParams::ZOBRIST_NN_POLICY_TEMP =
   Hash128(0xebcbdfeec6f4334bULL, 0xb85e43ee243b5ad2ULL);
+const Hash128 MiscNNInputParams::ZOBRIST_BOTZONE_PROHIBITED_MOVE = // Based on sha256 hash of MiscNNInputParams::ZOBRIST_BOTZONE_PROHIBITED_MOVE
+  Hash128(0x1f7daa2872b66b82ULL, 0xc852a60942b217b7ULL);
 
 //-----------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------
@@ -448,6 +450,16 @@ Hash128 NNInputs::getHash(
   if(hist.isGameFinished )
     hash ^= Board::ZOBRIST_GAME_IS_OVER;
 
+  Loc botzoneProhibitedFirstLoc;
+  Loc botzoneProhibitedSecondLoc;
+  if(hist.getBotzoneProhibitedMove(board, botzoneProhibitedFirstLoc, botzoneProhibitedSecondLoc)) {
+    uint64_t moveHash = static_cast<uint64_t>(static_cast<uint16_t>(botzoneProhibitedFirstLoc));
+    moveHash = (moveHash << 16) ^ static_cast<uint64_t>(static_cast<uint16_t>(botzoneProhibitedSecondLoc));
+    hash ^= MiscNNInputParams::ZOBRIST_BOTZONE_PROHIBITED_MOVE;
+    hash.hash0 ^= Hash::murmurMix(moveHash);
+    hash.hash1 ^= Hash::nasam(moveHash);
+  }
+
   //Fold in asymmetric playout indicator
   if(nnInputParams.playoutDoublingAdvantage != 0) {
     int64_t playoutDoublingsDiscretized = (int64_t)(nnInputParams.playoutDoublingAdvantage*256.0f);
@@ -560,8 +572,27 @@ void NNInputs::fillRowV7(
     rowGlobal[3] = 1.0f;
   } else if(hist.rules.loopPassRule == Rules::LOOPSCORING_PASSSCORING) {
     rowGlobal[4] = 1.0f;
+  } else if(hist.rules.loopPassRule == Rules::BOTZONE) {
+    rowGlobal[4] = 1.0f;
+    rowGlobal[10] = 1.0f;
   } else
     ASSERT_UNREACHABLE;
+
+  if(hist.rules.loopPassRule == Rules::BOTZONE) {
+    Loc botzoneProhibitedFirstLoc;
+    Loc botzoneProhibitedSecondLoc;
+    if(hist.getBotzoneProhibitedMove(board, botzoneProhibitedFirstLoc, botzoneProhibitedSecondLoc)) {
+      rowGlobal[11] = 1.0f;
+      if(board.stage == 0 && board.isOnBoard(botzoneProhibitedFirstLoc)) {
+        int pos = NNPos::locToPos(botzoneProhibitedFirstLoc, board.x_size, nnXLen, nnYLen);
+        setRowBin(rowBin, pos, 5, 1.0f, posStride, featureStride);
+      }
+      if(board.isOnBoard(botzoneProhibitedSecondLoc)) {
+        int pos = NNPos::locToPos(botzoneProhibitedSecondLoc, board.x_size, nnXLen, nnYLen);
+        setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
+      }
+    }
+  }
 
   float selfKomi = pla == C_BLACK ? hist.rules.komi : -hist.rules.komi;
   rowGlobal[5] = tanh(selfKomi);

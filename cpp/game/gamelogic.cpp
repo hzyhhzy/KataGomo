@@ -16,6 +16,15 @@
 
 using namespace std;
 
+static Color getWinnerByCurrentStoneCount(const Board& board, const Rules& rules) {
+  int whiteScore = board.numPlaStonesOnBoard(C_WHITE) - board.numPlaStonesOnBoard(C_BLACK) + rules.komi;
+  if(whiteScore > 0)
+    return C_WHITE;
+  else if(whiteScore < 0)
+    return C_BLACK;
+  else
+    return C_EMPTY;
+}
 
 bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
   if(pla != board.nextPla) {
@@ -69,12 +78,14 @@ GameLogic::MovePriority GameLogic::getMovePriority(const Board& board, const Boa
   return MP;
 }
 
-bool GameLogic::hasLegalMoveAssumeStage0(const Board& board) {
+bool GameLogic::hasLegalMoveAssumeStage0(const Board& board) { 
+  return hasLegalMoveAssumeStage0(board, board.nextPla);
+}
+
+bool GameLogic::hasLegalMoveAssumeStage0(const Board& board, Player pla) {
   if(board.stage == 1)
     return true;//pass is never allowed in stage 1
   assert(board.stage == 0);
-  Color pla = board.nextPla;
-
   for(int y = 0; y < board.y_size; y++) {
     for(int x = 0; x < board.x_size; x++) {
       Loc loc = Location::getLoc(x, y, board.x_size);
@@ -163,11 +174,21 @@ Color GameLogic::checkWinnerAfterPlayed(
         else
           return C_EMPTY;
       }
+    } 
+    else if(hist.rules.loopPassRule == Rules::BOTZONE) {
+      return getWinnerByCurrentStoneCount(board, hist.rules);
     } else
       ASSERT_UNREACHABLE;
   } else if(loc == Board::PASS_LOC)
     return getOpp(pla);//illegal pass
   
+  if(hist.rules.loopPassRule == Rules::BOTZONE && board.stage == 0) {
+    bool blackHasLegalMove = hasLegalMoveAssumeStage0(board, C_BLACK);
+    bool whiteHasLegalMove = hasLegalMoveAssumeStage0(board, C_WHITE);
+    if(!blackHasLegalMove || !whiteHasLegalMove)
+      return getWinnerByCurrentStoneCount(board, hist.rules);
+  }
+
   if(board.numPlaStonesOnBoard(getOpp(pla)) == 0)
     return pla;
   Hash128 h = board.pos_hash;
@@ -197,6 +218,8 @@ Color GameLogic::checkWinnerAfterPlayed(
         return opp;
       else
         return C_EMPTY;
+    }
+    else if(hist.rules.loopPassRule == Rules::BOTZONE) {
     }
     else ASSERT_UNREACHABLE;
   }

@@ -1546,6 +1546,8 @@ int MainCmds::gtp(const vector<string>& args) {
           newRules.loopPassRule = Rules::LOOPLOSE_PASSSCORING;
         else if(r == "3" || r == "ls")
           newRules.loopPassRule = Rules::LOOPSCORING_PASSSCORING;
+        else if(r == "4" || r == "bz" || r == "botzone")
+          newRules.loopPassRule = Rules::BOTZONE;
         else
           parseSuccess = false;
 
