@@ -16,14 +16,32 @@
 
 using namespace std;
 
-static Color getWinnerByCurrentStoneCount(const Board& board, const Rules& rules) {
-  int whiteScore = board.numPlaStonesOnBoard(C_WHITE) - board.numPlaStonesOnBoard(C_BLACK) + rules.komi;
-  if(whiteScore > 0)
+static Color getWinnerByStoneCount(int blackScore, int whiteScore, const Rules& rules) {
+  int whiteLead = whiteScore - blackScore + rules.komi;
+  if(whiteLead > 0)
     return C_WHITE;
-  else if(whiteScore < 0)
+  else if(whiteLead < 0)
     return C_BLACK;
   else
     return C_EMPTY;
+}
+
+static Color getWinnerByBotzoneNoMoveScoring(
+  const Board& board,
+  const Rules& rules,
+  bool blackHasLegalMove,
+  bool whiteHasLegalMove
+) {
+  int blackScore = board.numPlaStonesOnBoard(C_BLACK);
+  int whiteScore = board.numPlaStonesOnBoard(C_WHITE);
+  int emptyCount = board.boardArea() - blackScore - whiteScore;
+
+  if(blackHasLegalMove && !whiteHasLegalMove)
+    blackScore += emptyCount;
+  else if(whiteHasLegalMove && !blackHasLegalMove)
+    whiteScore += emptyCount;
+
+  return getWinnerByStoneCount(blackScore, whiteScore, rules);
 }
 
 bool GameLogic::isLegal(const Board& board, Player pla, Loc loc) {
@@ -176,7 +194,9 @@ Color GameLogic::checkWinnerAfterPlayed(
       }
     } 
     else if(hist.rules.loopPassRule == Rules::BOTZONE) {
-      return getWinnerByCurrentStoneCount(board, hist.rules);
+      bool blackHasLegalMove = hasLegalMoveAssumeStage0(board, C_BLACK);
+      bool whiteHasLegalMove = hasLegalMoveAssumeStage0(board, C_WHITE);
+      return getWinnerByBotzoneNoMoveScoring(board, hist.rules, blackHasLegalMove, whiteHasLegalMove);
     } else
       ASSERT_UNREACHABLE;
   } else if(loc == Board::PASS_LOC)
@@ -186,7 +206,7 @@ Color GameLogic::checkWinnerAfterPlayed(
     bool blackHasLegalMove = hasLegalMoveAssumeStage0(board, C_BLACK);
     bool whiteHasLegalMove = hasLegalMoveAssumeStage0(board, C_WHITE);
     if(!blackHasLegalMove || !whiteHasLegalMove)
-      return getWinnerByCurrentStoneCount(board, hist.rules);
+      return getWinnerByBotzoneNoMoveScoring(board, hist.rules, blackHasLegalMove, whiteHasLegalMove);
   }
 
   if(board.numPlaStonesOnBoard(getOpp(pla)) == 0)
