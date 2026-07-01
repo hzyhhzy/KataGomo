@@ -308,8 +308,7 @@ void NeuralNet::getOutput(
   InputBuffers* inputBuffers,
   int numBatchEltsFilled,
   NNResultBuf** inputBufs,
-  vector<NNOutput*>& outputs,
-  float* outputPolicys
+  vector<NNOutput*>& outputs
 ) {
   int batchSize = numBatchEltsFilled;
   int nnXLen = handle->ctx->nnXLen;
@@ -411,7 +410,7 @@ void NeuralNet::getOutput(
 
     // Policy
     const float* policySrcBuf = &inputBuffers->out_policyResults[row * inputBuffers->singleout_policyElts];
-    float* policyProbs = outputPolicys + row * NNPos::MAX_NN_POLICY_SIZE;
+    float* policyProbs = output->policyProbs;
 
     // Logic from trtbackend.cpp
     if(modelVersion >= 12 && modelVersion <= 99)
