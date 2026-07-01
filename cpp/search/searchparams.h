@@ -51,6 +51,7 @@ struct SearchParams {
   double rootPolicyTemperatureEarly; //At the root node, scale policy probs by this power, early in the game
   double rootFpuReductionMax; //Same as fpuReductionMax, but at root
   double rootFpuLossProp; //Same as fpuLossProp, but at root
+  bool rootAugmentSamePlayerMoves; //Also apply root policy temp/noise and root FPU to consecutive same-player moves from the root.
   int rootNumSymmetriesToSample; //For the root node, sample this many random symmetries (WITHOUT replacement) and average the results together.
   bool rootSymmetryPruning; //For the root node, search only one copy of each symmetrically equivalent move.
   //We use the min of these two together, and also excess visits get pruned if the value turns out bad.

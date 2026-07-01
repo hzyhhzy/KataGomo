@@ -355,7 +355,9 @@ public:
   static void computeDirichletAlphaDistribution(int policySize, const float* policyProbs, double* alphaDistr);
   static void addDirichletNoise(const SearchParams& searchParams, Rand& rand, int policySize, float* policyProbs);
 private:
-  std::shared_ptr<NNOutput>* maybeAddPolicyNoiseAndTemp(SearchThread& thread, bool isRoot, NNOutput* oldNNOutput) const;
+  std::shared_ptr<NNOutput>* maybeAddPolicyNoiseAndTemp(
+    SearchThread& thread, bool isRoot, bool useRootPolicyTempAndNoise, NNOutput* oldNNOutput
+  ) const;
 
   //----------------------------------------------------------------------------------------
   // Computing basic utility and scores
@@ -416,10 +418,10 @@ private:
   void computeRootNNEvaluation(NNResultBuf& nnResultBuf);
   bool initNodeNNOutput(
     SearchThread& thread, SearchNode& node,
-    bool isRoot, bool skipCache, bool isReInit
+    bool isRoot, bool useRootPolicyTempAndNoise, bool skipCache, bool isReInit
   );
   void maybeRecomputeExistingNNOutput(
-    SearchThread& thread, SearchNode& node, bool isRoot
+    SearchThread& thread, SearchNode& node, bool isRoot, bool useRootPolicyTempAndNoise
   );
 
   //----------------------------------------------------------------------------------------
@@ -468,7 +470,7 @@ private:
   ) const;
 
   double getFpuValueForChildrenAssumeVisited(
-    const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
+    const SearchNode& node, Player pla, bool useRootFpu, double policyProbMassVisited,
     double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
   ) const;
 
@@ -476,7 +478,7 @@ private:
     SearchThread& thread, const SearchNode& node, int nodeState,
     int& numChildrenFound, int& bestChildIdx, Loc& bestChildMoveLoc,
     bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
-    bool isRoot
+    bool isRoot, bool useRootFpu
   ) const;
 
   //----------------------------------------------------------------------------------------
@@ -515,7 +517,9 @@ private:
   // search.cpp
   //----------------------------------------------------------------------------------------
   uint32_t createMutexIdxForNode(SearchThread& thread) const;
-  SearchNode* allocateOrFindNode(SearchThread& thread, Player nextPla, Loc bestChildMoveLoc, bool forceNonTerminal, Hash128 graphHash);
+  SearchNode* allocateOrFindNode(
+    SearchThread& thread, Player nextPla, Loc bestChildMoveLoc, bool forceNonTerminal, Hash128 graphHash, bool isRootAugmentedNode
+  );
   void clearOldNNOutputs();
   void transferOldNNOutputs(SearchThread& thread);
   void deleteAllOldOrAllNewTableNodesMulithreaded(bool old);
@@ -531,7 +535,7 @@ private:
   bool playoutDescend(
     SearchThread& thread, SearchNode& node,
     bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
-    bool isRoot
+    bool isRoot, bool useRootPolicyTempNoiseAndFpu
   );
 
   bool maybeCatchUpEdgeVisits(SearchThread& thread, SearchNode& node, SearchNode* child, const int& nodeState, const int bestChildIdx);

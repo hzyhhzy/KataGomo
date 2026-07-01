@@ -553,6 +553,9 @@ vector<SearchParams> Setup::loadParams(
     if(cfg.contains("rootFpuLossProp"+idxStr)) params.rootFpuLossProp = cfg.getDouble("rootFpuLossProp"+idxStr, 0.0, 1.0);
     else if(cfg.contains("rootFpuLossProp"))   params.rootFpuLossProp = cfg.getDouble("rootFpuLossProp",        0.0, 1.0);
     else                                       params.rootFpuLossProp = params.fpuLossProp;
+    if(cfg.contains("rootAugmentSamePlayerMoves"+idxStr)) params.rootAugmentSamePlayerMoves = cfg.getBool("rootAugmentSamePlayerMoves"+idxStr);
+    else if(cfg.contains("rootAugmentSamePlayerMoves"))   params.rootAugmentSamePlayerMoves = cfg.getBool("rootAugmentSamePlayerMoves");
+    else                                                  params.rootAugmentSamePlayerMoves = false;
     if(cfg.contains("rootNumSymmetriesToSample"+idxStr)) params.rootNumSymmetriesToSample = cfg.getInt("rootNumSymmetriesToSample"+idxStr, 1, SymmetryHelpers::NUM_SYMMETRIES);
     else if(cfg.contains("rootNumSymmetriesToSample"))   params.rootNumSymmetriesToSample = cfg.getInt("rootNumSymmetriesToSample",        1, SymmetryHelpers::NUM_SYMMETRIES);
     else                                                 params.rootNumSymmetriesToSample = 1;

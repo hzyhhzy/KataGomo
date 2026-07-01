@@ -120,10 +120,16 @@ void Search::addDirichletNoise(const SearchParams& searchParams, Rand& rand, int
 }
 
 
-std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(SearchThread& thread, bool isRoot, NNOutput* oldNNOutput) const {
-  if(!isRoot)
-    return NULL;
-  if(!searchParams.rootNoiseEnabled && searchParams.rootPolicyTemperature == 1.0 && searchParams.rootPolicyTemperatureEarly == 1.0 && rootHintLoc == Board::NULL_LOC)
+std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(
+  SearchThread& thread, bool isRoot, bool useRootPolicyTempAndNoise, NNOutput* oldNNOutput
+) const {
+  bool applyRootPolicyTemperature =
+    useRootPolicyTempAndNoise &&
+    (searchParams.rootPolicyTemperature != 1.0 || searchParams.rootPolicyTemperatureEarly != 1.0);
+  bool applyRootNoise = useRootPolicyTempAndNoise && searchParams.rootNoiseEnabled;
+  bool applyRootHint = isRoot && rootHintLoc != Board::NULL_LOC;
+
+  if(!applyRootPolicyTemperature && !applyRootNoise && !applyRootHint)
     return NULL;
   if(oldNNOutput == NULL)
     return NULL;
@@ -138,7 +144,7 @@ std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(SearchThread& thre
   newNNOutput->noisedPolicyProbs = noisedPolicyProbs;
   std::copy(newNNOutput->policyProbs, newNNOutput->policyProbs + NNPos::MAX_NN_POLICY_SIZE, noisedPolicyProbs);
 
-  if(searchParams.rootPolicyTemperature != 1.0 || searchParams.rootPolicyTemperatureEarly != 1.0) {
+  if(applyRootPolicyTemperature) {
     double rootPolicyTemperature = interpolateEarly(
       searchParams.chosenMoveTemperatureHalflife, searchParams.rootPolicyTemperatureEarly, searchParams.rootPolicyTemperature
     );
@@ -171,11 +177,11 @@ std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(SearchThread& thre
     }
   }
 
-  if(searchParams.rootNoiseEnabled) {
+  if(applyRootNoise) {
     addDirichletNoise(searchParams, thread.rand, policySize, noisedPolicyProbs);
   }
 
-  if(avoidMoveUntilRescaleRoot) {
+  if(isRoot && avoidMoveUntilRescaleRoot) {
     const std::vector<int>& avoidMoveUntilByLoc =
       rootPla == P_BLACK ? avoidMoveUntilByLocBlack : avoidMoveUntilByLocWhite;
     if(avoidMoveUntilByLoc.size() > 0) {
@@ -199,7 +205,7 @@ std::shared_ptr<NNOutput>* Search::maybeAddPolicyNoiseAndTemp(SearchThread& thre
     }
   }
   //Move a small amount of policy to the hint move, around the same level that noising it would achieve
-  if(rootHintLoc != Board::NULL_LOC) {
+  if(applyRootHint) {
     const float propToMove = 0.02f;
     int pos = getPos(rootHintLoc);
     if(noisedPolicyProbs[pos] >= 0) {

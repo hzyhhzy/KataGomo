@@ -298,6 +298,10 @@ $$MULTIPLE_GPUS
 # Number of symmetries to sample (without replacement) and average at the root
 # rootNumSymmetriesToSample = 1
 
+# If true, apply root policy temperature, root Dirichlet noise, and root FPU to
+# consecutive same-player moves after the root, stopping once the opponent is to move.
+# rootAugmentSamePlayerMoves = false
+
 # Using LCB for move selection?
 # useLcbForSelection = true
 

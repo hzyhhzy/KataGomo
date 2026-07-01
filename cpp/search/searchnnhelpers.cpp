@@ -33,7 +33,7 @@ void Search::computeRootNNEvaluation(NNResultBuf& nnResultBuf) {
 //Returns true if a nnOutput was set where there was none before.
 bool Search::initNodeNNOutput(
   SearchThread& thread, SearchNode& node,
-  bool isRoot, bool skipCache, bool isReInit
+  bool isRoot, bool useRootPolicyTempAndNoise, bool skipCache, bool isReInit
 ) {
   MiscNNInputParams nnInputParams;
   nnInputParams.noResultUtilityForWhite = searchParams.noResultUtilityForWhite;
@@ -74,7 +74,7 @@ bool Search::initNodeNNOutput(
 
 
   assert((*result)->noisedPolicyProbs == NULL);
-  std::shared_ptr<NNOutput>* noisedResult = maybeAddPolicyNoiseAndTemp(thread,isRoot,result->get());
+  std::shared_ptr<NNOutput>* noisedResult = maybeAddPolicyNoiseAndTemp(thread,isRoot,useRootPolicyTempAndNoise,result->get());
   if(noisedResult != NULL) {
     std::shared_ptr<NNOutput>* tmp = result;
     result = noisedResult;
@@ -105,15 +105,22 @@ bool Search::initNodeNNOutput(
 
 //Assumes node already has an nnOutput
 void Search::maybeRecomputeExistingNNOutput(
-  SearchThread& thread, SearchNode& node, bool isRoot
+  SearchThread& thread, SearchNode& node, bool isRoot, bool useRootPolicyTempAndNoise
 ) {
-  //Right now only the root node currently ever needs to recompute, and only if it's old
-  if(isRoot && node.nodeAge.load(std::memory_order_acquire) != searchNodeAge) {
+  bool shouldRecompute =
+    isRoot ||
+    (useRootPolicyTempAndNoise && (
+      searchParams.rootNoiseEnabled ||
+      searchParams.rootPolicyTemperature != 1.0 ||
+      searchParams.rootPolicyTemperatureEarly != 1.0
+    ));
+
+  //Right now only the root and same-player root-augmented nodes ever need to recompute, and only if old.
+  if(shouldRecompute && node.nodeAge.load(std::memory_order_acquire) != searchNodeAge) {
     //See if we're the lucky thread that gets to do the update!
     //Threads that pass by here later will NOT wait for us to be done before proceeding with search.
     //We accept this and tolerate that for a few iterations potentially we will be using the OLD policy - without noise,
     //or without root temperature, etc.
-    //Or if we have none of those things, then we'll not end up updating anything except the age, which is okay too.
     uint32_t oldAge = node.nodeAge.exchange(searchNodeAge,std::memory_order_acq_rel);
     if(oldAge < searchNodeAge) {
       NNOutput* nnOutput = node.getNNOutput();
@@ -123,15 +130,16 @@ void Search::maybeRecomputeExistingNNOutput(
       //If conservative passing, then we may also need to recompute the root policy ignoring the history if a pass ends the game
       //If averaging a bunch of symmetries, then we need to recompute it too
       if(
+         isRoot &&
          searchParams.rootNumSymmetriesToSample > 1
       ) {
-        initNodeNNOutput(thread,node,isRoot,false,true);
+        initNodeNNOutput(thread,node,isRoot,useRootPolicyTempAndNoise,false,true);
       }
       //We also need to recompute the root nn if we have root noise or temperature and that's missing.
       else {
         //We don't need to go all the way to the nnEvaluator, we just need to maybe add those transforms
         //to the existing policy.
-        std::shared_ptr<NNOutput>* result = maybeAddPolicyNoiseAndTemp(thread,isRoot,nnOutput);
+        std::shared_ptr<NNOutput>* result = maybeAddPolicyNoiseAndTemp(thread,isRoot,useRootPolicyTempAndNoise,nnOutput);
         if(result != NULL)
           node.storeNNOutput(result,thread);
       }

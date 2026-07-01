@@ -244,7 +244,7 @@ double Search::getReducedPlaySelectionWeight(
 }
 
 double Search::getFpuValueForChildrenAssumeVisited(
-  const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
+  const SearchNode& node, Player pla, bool useRootFpu, double policyProbMassVisited,
   double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
 ) const {
   int64_t visits = node.stats.visits.load(std::memory_order_acquire);
@@ -288,8 +288,8 @@ double Search::getFpuValueForChildrenAssumeVisited(
 
   double fpuValue;
   {
-    double fpuReductionMax = isRoot ? searchParams.rootFpuReductionMax : searchParams.fpuReductionMax;
-    double fpuLossProp = isRoot ? searchParams.rootFpuLossProp : searchParams.fpuLossProp;
+    double fpuReductionMax = useRootFpu ? searchParams.rootFpuReductionMax : searchParams.fpuReductionMax;
+    double fpuLossProp = useRootFpu ? searchParams.rootFpuLossProp : searchParams.fpuLossProp;
     double utilityRadius = searchParams.winLossUtilityFactor;
 
     double reduction = fpuReductionMax * sqrt(policyProbMassVisited);
@@ -306,7 +306,7 @@ void Search::selectBestChildToDescend(
   SearchThread& thread, const SearchNode& node, int nodeState,
   int& numChildrenFound, int& bestChildIdx, Loc& bestChildMoveLoc,
   bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
-  bool isRoot) const
+  bool isRoot, bool useRootFpu) const
 {
   assert(thread.pla == node.nextPla);
 
@@ -350,7 +350,7 @@ void Search::selectBestChildToDescend(
   double parentWeightPerVisit;
   double parentUtilityStdevFactor;
   double fpuValue = getFpuValueForChildrenAssumeVisited(
-    node, thread.pla, isRoot, policyProbMassVisited,
+    node, thread.pla, useRootFpu, policyProbMassVisited,
     parentUtility, parentWeightPerVisit, parentUtilityStdevFactor
   );
 

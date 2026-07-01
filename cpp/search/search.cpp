@@ -308,6 +308,22 @@ bool Search::makeMove(Loc moveLoc, Player movePla) {
       //Okay, this is now our new root! Create a copy so as to keep the root out of the node table.
       const bool forceNonTerminal = true;
       rootNode = new SearchNode(*child, forceNonTerminal);
+      //If same-player root augmentation added temporary root policy transforms to this child,
+      //do not carry those transforms into the next true root. The next search can add fresh
+      //root temperature/noise in the ordinary root path.
+      if(searchParams.rootAugmentSamePlayerMoves) {
+        std::shared_ptr<NNOutput>* nnOutputPtr = rootNode->nnOutput.load(std::memory_order_acquire);
+        if(nnOutputPtr != NULL && (*nnOutputPtr)->noisedPolicyProbs != NULL) {
+          std::shared_ptr<NNOutput>* cleanNNOutput = new std::shared_ptr<NNOutput>(new NNOutput(**nnOutputPtr));
+          NNOutput* cleanOutput = cleanNNOutput->get();
+          if(cleanOutput->noisedPolicyProbs != NULL) {
+            delete[] cleanOutput->noisedPolicyProbs;
+            cleanOutput->noisedPolicyProbs = NULL;
+          }
+          rootNode->nnOutput.store(cleanNNOutput,std::memory_order_release);
+          delete nnOutputPtr;
+        }
+      }
       //Sweep over the new root marking it as good (calling NULL function), and then delete anything unmarked.
       //This will include the old root node and the old copy of the child that we promoted to root.
       applyRecursivelyAnyOrderMulithreaded({rootNode}, NULL);
@@ -664,9 +680,13 @@ uint32_t Search::createMutexIdxForNode(SearchThread& thread) const {
 
 //Based on sha256 of "search.cpp FORCE_NON_TERMINAL_HASH"
 static const Hash128 FORCE_NON_TERMINAL_HASH = Hash128(0xd4c31800cb8809e2ULL,0xf75f9d2083f2ffcaULL);
+//Based on sha256 of "search.cpp ROOT_AUGMENTED_NODE_HASH"
+static const Hash128 ROOT_AUGMENTED_NODE_HASH = Hash128(0x3a5c25a7df059db3ULL,0x7181dc325a976174ULL);
 
 //Must be called AFTER making the bestChildMoveLoc in the thread board and hist.
-SearchNode* Search::allocateOrFindNode(SearchThread& thread, Player nextPla, Loc bestChildMoveLoc, bool forceNonTerminal, Hash128 graphHash) {
+SearchNode* Search::allocateOrFindNode(
+  SearchThread& thread, Player nextPla, Loc bestChildMoveLoc, bool forceNonTerminal, Hash128 graphHash, bool isRootAugmentedNode
+) {
   //Hash to use as a unique id for this node in the table, for transposition detection.
   //If this collides, we will be sad, but it should be astronomically rare since our hash is 128 bits.
   Hash128 childHash;
@@ -674,6 +694,8 @@ SearchNode* Search::allocateOrFindNode(SearchThread& thread, Player nextPla, Loc
     childHash = graphHash;
     if(forceNonTerminal)
       childHash ^= FORCE_NON_TERMINAL_HASH;
+    if(isRootAugmentedNode)
+      childHash ^= ROOT_AUGMENTED_NODE_HASH;
   }
   else {
     childHash = thread.board.pos_hash ^ Hash128(thread.rand.nextUInt64(),thread.rand.nextUInt64());
@@ -857,7 +879,7 @@ bool Search::runSinglePlayout(SearchThread& thread, double upperBoundVisitsLeft)
   thread.upperBoundVisitsLeft = upperBoundVisitsLeft;
 
   bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE];
-  bool finishedPlayout = playoutDescend(thread,*rootNode,posesWithChildBuf,true);
+  bool finishedPlayout = playoutDescend(thread,*rootNode,posesWithChildBuf,true,true);
 
   //Restore thread state back to the root state
   thread.pla = rootPla;
@@ -872,7 +894,8 @@ bool Search::runSinglePlayout(SearchThread& thread, double upperBoundVisitsLeft)
 bool Search::playoutDescend(
   SearchThread& thread, SearchNode& node,
   bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
-  bool isRoot
+  bool isRoot,
+  bool useRootPolicyTempNoiseAndFpu
 ) {
   //Hit terminal node, finish
   //forceNonTerminal marks special nodes where we cannot end the game. This includes the root, since if we are searching a position
@@ -903,7 +926,7 @@ bool Search::playoutDescend(
   if(nodeState == SearchNode::STATE_UNEVALUATED) {
     //Always attempt to set a new nnOutput. That way, if some GPU is slow and malfunctioning, we don't get blocked by it.
     {
-      bool suc = initNodeNNOutput(thread,node,isRoot,false,false);
+      bool suc = initNodeNNOutput(thread,node,isRoot,useRootPolicyTempNoiseAndFpu,false,false);
       //Leave the node as unevaluated - only the thread that first actually set the nnOutput into the node
       //gets to update the state, to avoid races where we update the state while the node stats aren't updated yet.
       if(!suc)
@@ -929,7 +952,7 @@ bool Search::playoutDescend(
   }
 
   assert(nodeState >= SearchNode::STATE_EXPANDED0);
-  maybeRecomputeExistingNNOutput(thread,node,isRoot);
+  maybeRecomputeExistingNNOutput(thread,node,isRoot,useRootPolicyTempNoiseAndFpu);
 
   //Find the best child to descend down
   int numChildrenFound;
@@ -937,8 +960,11 @@ bool Search::playoutDescend(
   Loc bestChildMoveLoc;
 
   SearchNode* child = NULL;
+  bool childUseRootPolicyTempNoiseAndFpu = false;
   while(true) {
-    selectBestChildToDescend(thread,node,nodeState,numChildrenFound,bestChildIdx,bestChildMoveLoc,posesWithChildBuf,isRoot);
+    selectBestChildToDescend(
+      thread,node,nodeState,numChildrenFound,bestChildIdx,bestChildMoveLoc,posesWithChildBuf,isRoot,useRootPolicyTempNoiseAndFpu
+    );
 
     //The absurdly rare case that the move chosen is not legal
     //(this should only happen either on a bug or where the nnHash doesn't have full legality information or when there's an actual hash collision).
@@ -947,7 +973,7 @@ bool Search::playoutDescend(
     //on an older path that results in bad transposition between positions that don't transpose.
     if(bestChildIdx >= 0 && !thread.history.isLegal(thread.board,bestChildMoveLoc,thread.pla)) {
       bool isReInit = true;
-      initNodeNNOutput(thread,node,isRoot,true,isReInit);
+      initNodeNNOutput(thread,node,isRoot,useRootPolicyTempNoiseAndFpu,true,isReInit);
 
       {
         NNOutput* nnOutput = node.getNNOutput();
@@ -968,7 +994,9 @@ bool Search::playoutDescend(
 
       //As isReInit is true, we don't return, just keep going, since we didn't count this as a true visit in the node stats
       nodeState = node.state.load(std::memory_order_acquire);
-      selectBestChildToDescend(thread,node,nodeState,numChildrenFound,bestChildIdx,bestChildMoveLoc,posesWithChildBuf,isRoot);
+      selectBestChildToDescend(
+        thread,node,nodeState,numChildrenFound,bestChildIdx,bestChildMoveLoc,posesWithChildBuf,isRoot,useRootPolicyTempNoiseAndFpu
+      );
 
       if(bestChildIdx >= 0) {
         //New child
@@ -1022,10 +1050,16 @@ bool Search::playoutDescend(
         thread.graphHash = GraphHash::getGraphHash(
            thread.history, thread.pla
         );
+      childUseRootPolicyTempNoiseAndFpu =
+        searchParams.rootAugmentSamePlayerMoves &&
+        useRootPolicyTempNoiseAndFpu &&
+        thread.pla == rootPla;
 
       //If conservative pass, passing from the root is always non-terminal
       const bool forceNonTerminal = false;
-      child = allocateOrFindNode(thread, thread.pla, bestChildMoveLoc, forceNonTerminal, thread.graphHash);
+      child = allocateOrFindNode(
+        thread, thread.pla, bestChildMoveLoc, forceNonTerminal, thread.graphHash, childUseRootPolicyTempNoiseAndFpu
+      );
       child->virtualLosses.fetch_add(1,std::memory_order_release);
 
       {
@@ -1078,6 +1112,10 @@ bool Search::playoutDescend(
       if(searchParams.useGraphSearch)
         thread.graphHash = GraphHash::getGraphHash(thread.history, thread.pla
         );
+      childUseRootPolicyTempNoiseAndFpu =
+        searchParams.rootAugmentSamePlayerMoves &&
+        useRootPolicyTempNoiseAndFpu &&
+        thread.pla == rootPla;
     }
 
     break;
@@ -1100,7 +1138,7 @@ bool Search::playoutDescend(
   }
 
   //Recurse!
-  bool finishedPlayout = playoutDescend(thread,*child,posesWithChildBuf,false);
+  bool finishedPlayout = playoutDescend(thread,*child,posesWithChildBuf,false,childUseRootPolicyTempNoiseAndFpu);
   //Update this node stats
   if(finishedPlayout) {
     nodeState = node.state.load(std::memory_order_acquire);

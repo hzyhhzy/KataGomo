@@ -38,6 +38,7 @@ SearchParams::SearchParams()
    rootPolicyTemperatureEarly(1.0),
    rootFpuReductionMax(0.2),
    rootFpuLossProp(0.0),
+   rootAugmentSamePlayerMoves(false),
    rootNumSymmetriesToSample(1),
    rootSymmetryPruning(false),
    rootDesiredPerChildVisitsCoeff(0.0),
@@ -180,6 +181,7 @@ void SearchParams::printParams(std::ostream& out) {
   PRINTPARAM(rootPolicyTemperatureEarly);
   PRINTPARAM(rootFpuReductionMax);
   PRINTPARAM(rootFpuLossProp);
+  PRINTPARAM(rootAugmentSamePlayerMoves);
   PRINTPARAM(rootNumSymmetriesToSample);
   PRINTPARAM(rootSymmetryPruning);
 

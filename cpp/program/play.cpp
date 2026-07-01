@@ -1270,15 +1270,18 @@ static Loc runBotWithLimits(
     toMoveBot->searchParams.maxVisits = limits.numAlterVisits;
     toMoveBot->searchParams.maxPlayouts = limits.numAlterPlayouts;
     if(limits.removeRootNoise) {
+      if(!limits.clearBotBeforeSearchThisMove && oldParams.rootAugmentSamePlayerMoves)
+        toMoveBot->clearSearch();
       //Note - this is slightly sketchy to set the params directly. This works because
       //some of the parameters like FPU are basically stateless and will just affect future playouts
-      //and because even stateful effects like rootNoiseEnabled and rootPolicyTemperature only affect
-      //the root so when we step down in the tree we get a fresh start.
+      //and because the tree was cleared above if same-player root augmentation may have caused
+      //stateful effects like rootNoiseEnabled and rootPolicyTemperature to affect nodes below the root.
       toMoveBot->searchParams.rootNoiseEnabled = false;
       toMoveBot->searchParams.rootPolicyTemperature = 1.0;
       toMoveBot->searchParams.rootPolicyTemperatureEarly = 1.0;
       toMoveBot->searchParams.rootFpuLossProp = toMoveBot->searchParams.fpuLossProp;
       toMoveBot->searchParams.rootFpuReductionMax = toMoveBot->searchParams.fpuReductionMax;
+      toMoveBot->searchParams.rootAugmentSamePlayerMoves = false;
       toMoveBot->searchParams.rootDesiredPerChildVisitsCoeff = 0.0;
       toMoveBot->searchParams.rootNumSymmetriesToSample = 1;
     }
