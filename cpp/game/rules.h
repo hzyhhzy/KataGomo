@@ -8,6 +8,11 @@
 
 struct Rules {
 
+  // End the game as soon as the winner is mathematically fixed, even if all
+  // remaining unclaimed areas were awarded to the trailing player.
+  // Set to false at compile time to restore the original full-board behavior.
+  static constexpr bool EARLY_TERMINATE_FIXED_WINNER = true;
+
 
   static const int SCORING_AREA = 0;
   int scoringRule;

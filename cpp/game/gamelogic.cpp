@@ -111,6 +111,25 @@ Color GameLogic::checkWinnerAfterPlayed(
   Loc loc) {
   if(loc == Board::PASS_LOC)
     return getOpp(pla);  //pass is not allowed
+
+  if(Rules::EARLY_TERMINATE_FIXED_WINNER) {
+    int remainingAreaNum = 0;
+    for(int y = 1; y < board.y_size; y += 2) {
+      for(int x = 1; x < board.x_size; x += 2) {
+        Loc areaLoc = Location::getLoc(x, y, board.x_size);
+        if(!board.isSurrounded(areaLoc))
+          remainingAreaNum++;
+      }
+    }
+
+    int currentScore = board.currentScoreBlackMinusWhite - board.komi;
+    // Use strict inequalities: equality still allows the trailing player to
+    // change a loss into a draw by taking every remaining area.
+    if(currentScore > remainingAreaNum)
+      return C_BLACK;
+    if(currentScore < -remainingAreaNum)
+      return C_WHITE;
+  }
   
   int stoneNum = board.numStonesOnBoard();
   if (stoneNum == (board.x_size * board.y_size - 1) / 2)
