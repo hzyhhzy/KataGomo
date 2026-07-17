@@ -722,7 +722,9 @@ void TrainingDataWriter::writeGame(const FinishedGameData& data) {
     else if(data.endHist.winner == P_WHITE)
       assert(lastTargets.win == 1.0f && lastTargets.loss == 0.0f && lastTargets.noResult == 0.0f);
     else
-      assert(lastTargets.noResult == 1.0f);
+      // A draw is a valid game result and trains as half a win plus half a
+      // loss. noResult is reserved for games without a valid result.
+      assert(lastTargets.win == 0.5f && lastTargets.loss == 0.5f && lastTargets.noResult == 0.0f);
 
     assert(!data.endHist.isResignation);
   }
