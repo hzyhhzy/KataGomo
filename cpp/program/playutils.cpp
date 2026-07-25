@@ -126,7 +126,10 @@ void PlayUtils::initializeGameUsingPolicy(
   Search* botB, Search* botW, Board& board, BoardHistory& hist, Player& pla,
   Rand& gameRand, 
   double avgPolicyInitMoveNum,
-  double temperature) {
+  double temperature,
+  bool useRandomization,
+  int randomBlackUntilMove,
+  int randomWhiteUntilMove) {
   NNResultBuf buf;
 
 
@@ -135,9 +138,26 @@ void PlayUtils::initializeGameUsingPolicy(
     (int)floor(gameRand.nextExponential() * (avgPolicyInitMoveNum - randomInitMovenumEquToPolicyInit * board.movenum));
   if(numInitialMovesToPlay < 0)
     numInitialMovesToPlay = 0;
+  if(useRandomization) {
+    int randomUntilMove = std::max(randomBlackUntilMove, randomWhiteUntilMove);
+    int minInitialMovesToPlay = randomUntilMove - board.movenum;
+    if(numInitialMovesToPlay < minInitialMovesToPlay)
+      numInitialMovesToPlay = minInitialMovesToPlay;
+  }
 
   for(int i = 0; i<numInitialMovesToPlay; i++) {
-    Loc loc = getGameInitializationMove(botB, botW, board, hist, pla, buf, gameRand, temperature);
+    bool useRandomMove = useRandomization && (
+      (pla == P_BLACK && board.movenum < randomBlackUntilMove) ||
+      (pla == P_WHITE && board.movenum < randomWhiteUntilMove)
+    );
+    Loc loc;
+    if(useRandomMove) {
+      loc = chooseRandomLegalMove(board, hist, pla, gameRand, Board::PASS_LOC);
+      if(loc == Board::NULL_LOC)
+        loc = Board::PASS_LOC;
+    }
+    else
+      loc = getGameInitializationMove(botB, botW, board, hist, pla, buf, gameRand, temperature);
 
     //Make the move!
     assert(hist.isLegal(board,loc,pla));

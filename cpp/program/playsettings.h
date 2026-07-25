@@ -8,6 +8,11 @@ struct PlaySettings {
   bool initGamesWithPolicy;
   double policyInitAvgMoveNum;           // Avg number of moves
   double startPosesPolicyInitAvgMoveNum; //Avg number of moves when using a starting position from sgf
+  //With this probability per game, use uniformly random non-pass moves for
+  //each player while board.movenum is below that player's threshold.
+  double policyInitRandomizationProb;
+  int policyInitRandomBlackUntilMove;
+  int policyInitRandomWhiteUntilMove;
   //Occasionally try some alternative moves and search the responses to them.
   double sidePositionProb;
 

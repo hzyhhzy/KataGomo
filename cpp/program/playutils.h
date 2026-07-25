@@ -41,7 +41,10 @@ namespace PlayUtils {
     Search* botB, Search* botW, Board& board, BoardHistory& hist, Player& pla,
     Rand& gameRand, 
     double avgPolicyInitMoveNum,
-    double temperature
+    double temperature,
+    bool useRandomization,
+    int randomBlackUntilMove,
+    int randomWhiteUntilMove
   );
 
 

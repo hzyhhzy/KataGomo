@@ -4,6 +4,9 @@ PlaySettings::PlaySettings()
   : initGamesWithPolicy(false),
     policyInitAvgMoveNum(0.0),
     startPosesPolicyInitAvgMoveNum(0.0),
+   policyInitRandomizationProb(0.0),
+   policyInitRandomBlackUntilMove(0),
+   policyInitRandomWhiteUntilMove(0),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
@@ -31,6 +34,12 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
     playSettings.startPosesPolicyInitAvgMoveNum =
       cfg.contains("startPosesPolicyInitAvgMoveNum") ? cfg.getDouble("startPosesPolicyInitAvgMoveNum", 0.0, 100.0) : 0.0;
     playSettings.policyInitAreaTemperature = cfg.contains("policyInitAreaTemperature") ? cfg.getDouble("policyInitAreaTemperature",0.1,5.0) : 1.0;
+    playSettings.policyInitRandomizationProb =
+      cfg.contains("policyInitRandomizationProb") ? cfg.getDouble("policyInitRandomizationProb",0.0,1.0) : 0.0;
+    playSettings.policyInitRandomBlackUntilMove =
+      cfg.contains("policyInitRandomBlackUntilMove") ? cfg.getInt("policyInitRandomBlackUntilMove",0,1000000) : 0;
+    playSettings.policyInitRandomWhiteUntilMove =
+      cfg.contains("policyInitRandomWhiteUntilMove") ? cfg.getInt("policyInitRandomWhiteUntilMove",0,1000000) : 0;
   }
   playSettings.recordTimePerMove = true;
   return playSettings;
@@ -41,6 +50,20 @@ PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
   playSettings.allowResignation = cfg.getBool("allowResignation");
   playSettings.resignThreshold = cfg.getDouble("resignThreshold",-1.0,0.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns",1,100);
+  playSettings.initGamesWithPolicy = cfg.contains("initGamesWithPolicy") ? cfg.getBool("initGamesWithPolicy") : false;
+  if(playSettings.initGamesWithPolicy) {
+    playSettings.policyInitAvgMoveNum = cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0);
+    playSettings.startPosesPolicyInitAvgMoveNum =
+      cfg.contains("startPosesPolicyInitAvgMoveNum") ? cfg.getDouble("startPosesPolicyInitAvgMoveNum", 0.0, 100.0) : 0.0;
+    playSettings.policyInitAreaTemperature =
+      cfg.contains("policyInitAreaTemperature") ? cfg.getDouble("policyInitAreaTemperature",0.1,5.0) : 1.0;
+    playSettings.policyInitRandomizationProb =
+      cfg.contains("policyInitRandomizationProb") ? cfg.getDouble("policyInitRandomizationProb",0.0,1.0) : 0.0;
+    playSettings.policyInitRandomBlackUntilMove =
+      cfg.contains("policyInitRandomBlackUntilMove") ? cfg.getInt("policyInitRandomBlackUntilMove",0,1000000) : 0;
+    playSettings.policyInitRandomWhiteUntilMove =
+      cfg.contains("policyInitRandomWhiteUntilMove") ? cfg.getInt("policyInitRandomWhiteUntilMove",0,1000000) : 0;
+  }
   return playSettings;
 }
 
@@ -51,6 +74,12 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
     cfg.contains("policyInitAvgMoveNum") ? cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0) : 12.0;
   playSettings.startPosesPolicyInitAvgMoveNum =
     cfg.contains("startPosesPolicyInitAvgMoveNum") ? cfg.getDouble("startPosesPolicyInitAvgMoveNum", 0.0, 100.0) : 0.0;
+  playSettings.policyInitRandomizationProb =
+    cfg.contains("policyInitRandomizationProb") ? cfg.getDouble("policyInitRandomizationProb",0.0,1.0) : 0.0;
+  playSettings.policyInitRandomBlackUntilMove =
+    cfg.contains("policyInitRandomBlackUntilMove") ? cfg.getInt("policyInitRandomBlackUntilMove",0,1000000) : 0;
+  playSettings.policyInitRandomWhiteUntilMove =
+    cfg.contains("policyInitRandomWhiteUntilMove") ? cfg.getInt("policyInitRandomWhiteUntilMove",0,1000000) : 0;
   playSettings.sidePositionProb =
     //forkSidePositionProb is the legacy name, included for backward compatibility
     (cfg.contains("forkSidePositionProb") && !cfg.contains("sidePositionProb")) ?

@@ -1262,12 +1262,25 @@ FinishedGameData* Play::runGame(
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double avgPolicyInitMoveNum =
       otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAvgMoveNum : playSettings.policyInitAvgMoveNum;
-    if(avgPolicyInitMoveNum > 0) {
+    bool usePolicyInitRandomization =
+      playSettings.policyInitRandomizationProb > 0.0 &&
+      gameRand.nextBool(playSettings.policyInitRandomizationProb);
+    int randomUntilMove = std::max(
+      playSettings.policyInitRandomBlackUntilMove,
+      playSettings.policyInitRandomWhiteUntilMove
+    );
+    if(avgPolicyInitMoveNum > 0 || (usePolicyInitRandomization && board.movenum < randomUntilMove)) {
       //Perform the initialization using a different noised komi, to get a bit of opening policy mixing across komi
       {
         double temperature = playSettings.policyInitAreaTemperature;
         assert(temperature > 0.0 && temperature < 10.0);
-        PlayUtils::initializeGameUsingPolicy(botB, botW, board, hist, pla, gameRand, avgPolicyInitMoveNum, temperature);
+        PlayUtils::initializeGameUsingPolicy(
+          botB, botW, board, hist, pla, gameRand,
+          avgPolicyInitMoveNum, temperature,
+          usePolicyInitRandomization,
+          playSettings.policyInitRandomBlackUntilMove,
+          playSettings.policyInitRandomWhiteUntilMove
+        );
       }
     }
   }
