@@ -174,8 +174,10 @@ void RandomOpening::initializeSpecialOpening(
           continue;
         Board boardCopy(board);
         boardCopy.setStone(firstMove, C_WHITE);
-        BoardHistory histCopy(board, C_WHITE, hist.rules);
-
+        Rules evalRules = hist.rules;
+        if(evalRules.maxMoves > 0 && boardCopy.numStonesOnBoard() >= evalRules.maxMoves)
+          evalRules.maxMoves = 0;
+        BoardHistory histCopy(boardCopy, C_WHITE, evalRules);
 
         NNResultBuf nnbuf;
         MiscNNInputParams nnInputParams;
