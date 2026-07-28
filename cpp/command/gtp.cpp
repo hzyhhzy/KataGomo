@@ -276,7 +276,11 @@ struct GTPEngine {
 
   //Specify -1 for the sizes for a default
   void setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr) {
-    if(nnEval != NULL && boardXSize == nnEval->getNNXLen() && boardYSize == nnEval->getNNYLen())
+    if(
+      bot != NULL &&
+      boardXSize == bot->getRootBoard().x_size &&
+      boardYSize == bot->getRootBoard().y_size
+    )
       return;
     if(nnEval != NULL) {
       assert(bot != NULL);
