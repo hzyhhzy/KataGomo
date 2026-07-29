@@ -11,11 +11,9 @@ void RandomOpening::initializeBalancedRandomOpening(
   BoardHistory& hist,
   Player& nextPlayer,
   Rand& gameRand,
-  bool forSelfplay) {
-
-
-  double makeOpeningFairRate = forSelfplay ? 0.98 : 1.0;
-  double minAcceptRate = forSelfplay ? 0.005 : 0.001;
+  double makeOpeningFairRate,
+  double dropPow,
+  double minAcceptRate) {
 
   if(gameRand.nextBool(makeOpeningFairRate))  // make game fair
   {
@@ -35,7 +33,6 @@ void RandomOpening::initializeBalancedRandomOpening(
 
       double winrate = nnOutput->whiteWinProb;
       double bias = 2 * winrate - 1;
-      double dropPow = forSelfplay ? 6.0 : 20.0;
       double acceptRate = pow(1 - bias * bias, dropPow);
       acceptRate = std::max(acceptRate, minAcceptRate);
       if(gameRand.nextBool(acceptRate))

@@ -1289,14 +1289,14 @@ FinishedGameData* Play::runGame(
   //one move opening
   if(!gameInited)
   {
-    double balanceOpeningProb = playSettings.forSelfPlay ? 0.99 : 1.0;
-    if(gameRand.nextBool(balanceOpeningProb)) {
+    if(gameRand.nextBool(playSettings.balanceOpeningProb)) {
       if(board.numStonesOnBoard() != 0)
         cout << "board not empty when initialize opening" << endl;
       else {
         if(board.numStonesOnBoard() == 0)  // no lib opening
           RandomOpening::initializeBalancedRandomOpening(
-            botB, botW, board, hist, pla, gameRand, playSettings.forSelfPlay);
+            botB, botW, board, hist, pla, gameRand, playSettings.makeOpeningFairRate,
+            playSettings.balancedOpeningDropPow, playSettings.balancedOpeningMinAcceptRate);
         gameInited = true;
       }
     }

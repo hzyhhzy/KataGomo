@@ -11,7 +11,9 @@ namespace RandomOpening {
     BoardHistory& hist,
     Player& nextPlayer,
     Rand& gameRand,
-    bool forSelfplay);
+    double makeOpeningFairRate,
+    double dropPow,
+    double minAcceptRate);
 
   void initializeSpecialOpening(
     Search* botB,

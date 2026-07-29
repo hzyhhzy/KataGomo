@@ -22,6 +22,10 @@ PlaySettings::PlaySettings()
    completelyRandomOpeningProb(0.1),
    completelyRandomOpeningFillRateAvg(0.01),
    specialOpeningProb(0.02),
+   balanceOpeningProb(1.0),
+   makeOpeningFairRate(1.0),
+   balancedOpeningDropPow(20.0),
+   balancedOpeningMinAcceptRate(0.001),
    forSelfPlay(false),
     normalAsymmetricPlayoutProb(0.0),
     maxAsymmetricRatio(2.0),
@@ -40,6 +44,14 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
   playSettings.earlyDrawThreshold = cfg.getDouble("earlyDrawThreshold", 0.8, 1.0);
   playSettings.earlyDrawConsecTurns = cfg.getInt("earlyDrawConsecTurns", 1, 100);
   playSettings.earlyDrawProbSelfplay = cfg.getDouble("earlyDrawProbSelfplay", 0.0, 1.0);
+  playSettings.balanceOpeningProb =
+    cfg.contains("balanceOpeningProb") ? cfg.getDouble("balanceOpeningProb", 0.0, 1.0) : 1.0;
+  playSettings.makeOpeningFairRate =
+    cfg.contains("makeOpeningFairRate") ? cfg.getDouble("makeOpeningFairRate", 0.0, 1.0) : 1.0;
+  playSettings.balancedOpeningDropPow =
+    cfg.contains("balancedOpeningDropPow") ? cfg.getDouble("balancedOpeningDropPow", 0.0, 100.0) : 20.0;
+  playSettings.balancedOpeningMinAcceptRate =
+    cfg.contains("balancedOpeningMinAcceptRate") ? cfg.getDouble("balancedOpeningMinAcceptRate", 0.0, 1.0) : 0.001;
 
   playSettings.initGamesWithPolicy =  cfg.contains("initGamesWithPolicy") ? cfg.getBool("initGamesWithPolicy") : false;
   if(playSettings.initGamesWithPolicy) {
@@ -62,6 +74,14 @@ PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
   playSettings.earlyDrawThreshold = cfg.getDouble("earlyDrawThreshold", 0.8, 1.0);
   playSettings.earlyDrawConsecTurns = cfg.getInt("earlyDrawConsecTurns", 1, 100);
   playSettings.earlyDrawProbSelfplay = cfg.getDouble("earlyDrawProbSelfplay", 0.0, 1.0);
+  playSettings.balanceOpeningProb =
+    cfg.contains("balanceOpeningProb") ? cfg.getDouble("balanceOpeningProb", 0.0, 1.0) : 1.0;
+  playSettings.makeOpeningFairRate =
+    cfg.contains("makeOpeningFairRate") ? cfg.getDouble("makeOpeningFairRate", 0.0, 1.0) : 1.0;
+  playSettings.balancedOpeningDropPow =
+    cfg.contains("balancedOpeningDropPow") ? cfg.getDouble("balancedOpeningDropPow", 0.0, 100.0) : 20.0;
+  playSettings.balancedOpeningMinAcceptRate =
+    cfg.contains("balancedOpeningMinAcceptRate") ? cfg.getDouble("balancedOpeningMinAcceptRate", 0.0, 1.0) : 0.001;
   return playSettings;
 }
 
@@ -88,6 +108,14 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
     cfg.contains("completelyRandomOpeningFillRateAvg") ? cfg.getDouble("completelyRandomOpeningFillRateAvg", 0.0, 0.5) : 0.01;
   playSettings.specialOpeningProb =
     cfg.contains("specialOpeningProb") ? cfg.getDouble("specialOpeningProb", 0.0, 1.0) : 0.02;
+  playSettings.balanceOpeningProb =
+    cfg.contains("balanceOpeningProb") ? cfg.getDouble("balanceOpeningProb", 0.0, 1.0) : 0.99;
+  playSettings.makeOpeningFairRate =
+    cfg.contains("makeOpeningFairRate") ? cfg.getDouble("makeOpeningFairRate", 0.0, 1.0) : 0.98;
+  playSettings.balancedOpeningDropPow =
+    cfg.contains("balancedOpeningDropPow") ? cfg.getDouble("balancedOpeningDropPow", 0.0, 100.0) : 6.0;
+  playSettings.balancedOpeningMinAcceptRate =
+    cfg.contains("balancedOpeningMinAcceptRate") ? cfg.getDouble("balancedOpeningMinAcceptRate", 0.0, 1.0) : 0.005;
 
   playSettings.initGamesWithPolicy = cfg.getBool("initGamesWithPolicy");
   playSettings.policyInitAvgMoveNum =
