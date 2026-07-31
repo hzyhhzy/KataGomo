@@ -263,6 +263,11 @@ int NNEvaluator::getNNXLen() const {
 int NNEvaluator::getNNYLen() const {
   return nnYLen;
 }
+bool NNEvaluator::supportsBoardSize(int boardXSize, int boardYSize) const {
+  if(boardXSize > nnXLen || boardYSize > nnYLen)
+    return false;
+  return !requireExactNNLen || (boardXSize == nnXLen && boardYSize == nnYLen);
+}
 enabled_t NNEvaluator::getUsingFP16Mode() const {
   return usingFP16Mode;
 }

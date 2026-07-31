@@ -276,18 +276,6 @@ struct GTPEngine {
 
   //Specify -1 for the sizes for a default
   void setOrResetBoardSize(ConfigParser& cfg, Logger& logger, Rand& seedRand, int boardXSize, int boardYSize, bool loggingToStderr) {
-    if(nnEval != NULL && boardXSize == nnEval->getNNXLen() && boardYSize == nnEval->getNNYLen())
-      return;
-    if(nnEval != NULL) {
-      assert(bot != NULL);
-      bot->stopAndWait();
-      delete bot;
-      delete nnEval;
-      bot = NULL;
-      nnEval = NULL;
-      logger.write("Cleaned up old neural net and bot");
-    }
-
     bool wasDefault = false;
     if(boardXSize == -1 || boardYSize == -1) {
       boardXSize = Board::DEFAULT_LEN;
@@ -295,26 +283,51 @@ struct GTPEngine {
       wasDefault = true;
     }
 
-    const int maxConcurrentEvals = params.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
-    const int expectedConcurrentEvals = params.numThreads;
-    const int defaultMaxBatchSize = std::max(8,((params.numThreads+3)/4)*4);
-    bool defaultRequireExactNNLen = true;
-    int nnLenX = boardXSize;
-    int nnLenY = boardYSize;
-    
-    if(cfg.contains("gtpDebugForceMaxNNSize") && cfg.getBool("gtpDebugForceMaxNNSize")) {
-      defaultRequireExactNNLen = false;
-      nnLenX = Board::MAX_LEN;
-      nnLenY = Board::MAX_LEN;
+    if(
+      bot != NULL &&
+      boardXSize == bot->getRootBoard().x_size &&
+      boardYSize == bot->getRootBoard().y_size
+    )
+      return;
+
+    bool reuseNNEval = nnEval != NULL && nnEval->supportsBoardSize(boardXSize,boardYSize);
+    if(bot != NULL) {
+      bot->stopAndWait();
+      delete bot;
+      bot = NULL;
     }
-    const bool disableFP16 = false;
-    const string expectedSha256 = "";
-    nnEval = Setup::initializeNNEvaluator(
-      nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
-      nnLenX,nnLenY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
-      Setup::SETUP_FOR_GTP
-    );
-    logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
+    if(nnEval != NULL && !reuseNNEval) {
+      delete nnEval;
+      nnEval = NULL;
+      logger.write("Cleaned up old neural net and bot");
+    }
+    else if(reuseNNEval)
+      logger.write("Cleaned up old bot, keeping neural net loaded");
+
+    if(nnEval == NULL) {
+      const int maxConcurrentEvals = params.numThreads * 2 + 16; // * 2 + 16 just to give plenty of headroom
+      const int expectedConcurrentEvals = params.numThreads;
+      const int defaultMaxBatchSize = std::max(8,((params.numThreads+3)/4)*4);
+      bool defaultRequireExactNNLen = true;
+      int nnLenX = boardXSize;
+      int nnLenY = boardYSize;
+
+      if(cfg.contains("gtpDebugForceMaxNNSize") && cfg.getBool("gtpDebugForceMaxNNSize")) {
+        defaultRequireExactNNLen = false;
+        nnLenX = Board::MAX_LEN;
+        nnLenY = Board::MAX_LEN;
+      }
+      const bool disableFP16 = false;
+      const string expectedSha256 = "";
+      nnEval = Setup::initializeNNEvaluator(
+        nnModelFile,nnModelFile,expectedSha256,cfg,logger,seedRand,maxConcurrentEvals,expectedConcurrentEvals,
+        nnLenX,nnLenY,defaultMaxBatchSize,defaultRequireExactNNLen,disableFP16,
+        Setup::SETUP_FOR_GTP
+      );
+      logger.write("Loaded neural net with nnXLen " + Global::intToString(nnEval->getNNXLen()) + " nnYLen " + Global::intToString(nnEval->getNNYLen()));
+    }
+    else
+      logger.write("Reusing neural net for new board size");
 
     {
       bool rulesWereSupported;
@@ -334,14 +347,16 @@ struct GTPEngine {
     if(!loggingToStderr)
       cerr << ("Initializing board with boardXSize " + Global::intToString(boardXSize) + " boardYSize " + Global::intToString(boardYSize)) << endl;
 
-    string searchRandSeed;
-    if(cfg.contains("searchRandSeed"))
-      searchRandSeed = cfg.getString("searchRandSeed");
-    else
-      searchRandSeed = Global::uint64ToString(seedRand.nextUInt64());
+    if(bot == NULL) {
+      string searchRandSeed;
+      if(cfg.contains("searchRandSeed"))
+        searchRandSeed = cfg.getString("searchRandSeed");
+      else
+        searchRandSeed = Global::uint64ToString(seedRand.nextUInt64());
 
-    bot = new AsyncBot(params, nnEval, &logger, searchRandSeed);
-    bot->setCopyOfExternalPatternBonusTable(patternBonusTable);
+      bot = new AsyncBot(params, nnEval, &logger, searchRandSeed);
+      bot->setCopyOfExternalPatternBonusTable(patternBonusTable);
+    }
 
     Board board(boardXSize,boardYSize);
     Player pla = P_BLACK;

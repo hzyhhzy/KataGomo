@@ -118,6 +118,7 @@ class NNEvaluator {
   std::set<int> getGpuIdxs() const;
   int getNNXLen() const;
   int getNNYLen() const;
+  bool supportsBoardSize(int boardXSize, int boardYSize) const;
   enabled_t getUsingFP16Mode() const;
   enabled_t getUsingNHWCMode() const;
 
