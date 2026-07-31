@@ -927,6 +927,34 @@ struct GTPEngine {
         out << "varTimeLeft " << Global::strprintf("%.3f",nnOutput->varTimeLeft) << endl;
         out << "shorttermWinlossError " << Global::strprintf("%.3f",nnOutput->shorttermWinlossError) << endl;
 
+        if(nnOutput->hasPolicyByHead()) {
+          for(int head = 0; head<NNOutput::NUM_POLICY_HEADS; head++) {
+            vector<pair<float,int>> policyByPos;
+            int policySize = NNPos::getPolicySize(nnOutput->nnXLen,nnOutput->nnYLen);
+            for(int pos = 0; pos<policySize; pos++) {
+              float prob = nnOutput->getPolicyProbByHead(head,pos);
+              if(prob >= 0.0f)
+                policyByPos.push_back(make_pair(prob,pos));
+            }
+            std::sort(policyByPos.begin(),policyByPos.end(),std::greater<pair<float,int>>());
+
+            out << "head" << head
+                << " whiteWin " << Global::strprintf("%.6f",nnOutput->whiteWinProbByHead[head])
+                << " whiteLoss " << Global::strprintf("%.6f",nnOutput->whiteLossProbByHead[head])
+                << " noResult " << Global::strprintf("%.6f",nnOutput->whiteNoResultProbByHead[head])
+                << " topPolicy";
+            int numToPrint = std::min<int>(8,policyByPos.size());
+            for(int i = 0; i<numToPrint; i++) {
+              Loc loc = NNPos::posToLoc(
+                policyByPos[i].second,board.x_size,board.y_size,nnOutput->nnXLen,nnOutput->nnYLen
+              );
+              out << " " << Location::toString(loc,board)
+                  << ":" << Global::strprintf("%.5f",policyByPos[i].first);
+            }
+            out << endl;
+          }
+        }
+
         out << "policy" << endl;
         for(int y = 0; y<board.y_size; y++) {
           for(int x = 0; x<board.x_size; x++) {

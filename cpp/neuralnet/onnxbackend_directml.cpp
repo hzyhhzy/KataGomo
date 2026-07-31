@@ -454,6 +454,20 @@ void NeuralNet::getOutput(
     SymmetryHelpers::copyOutputsWithSymmetry(policySrcBuf, policyProbs, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
     policyProbs[nnXLen * nnYLen] = policySrcBuf[nnXLen * nnYLen];
 
+    if(modelVersion == 112) {
+      for(int head = 1; head<NNOutput::NUM_POLICY_HEADS; head++) {
+        const float* policyByHeadSrcBuf =
+          &inputBuffers->out_policyResults[
+            row * inputBuffers->singleout_policyElts +
+            (size_t)head * inputBuffers->singleout_policyHeadElts
+          ];
+        float* policyByHead = inputBufs[row]->policyResultsByExtraHead[head-1];
+        SymmetryHelpers::copyOutputsWithSymmetry(
+          policyByHeadSrcBuf, policyByHead, 1, nnYLen, nnXLen, inputBufs[row]->symmetry);
+        policyByHead[nnXLen * nnYLen] = policyByHeadSrcBuf[nnXLen * nnYLen];
+      }
+    }
+
     // Value
     const float* valueBaseBuf =
       &inputBuffers->out_valueResults[

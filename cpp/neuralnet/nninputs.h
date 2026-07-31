@@ -93,6 +93,7 @@ namespace NNInputs {
 
 struct NNOutput {
   static constexpr int NUM_VALUE_HEADS = 6;
+  static constexpr int NUM_POLICY_HEADS = 6;
 
   static inline uint8_t policyQuant(float p) {
     if(p < 0)
@@ -176,6 +177,8 @@ struct NNOutput {
 
   //Indexed by pos rather than loc
   //Values in here will be set to negative for illegal moves, including superko
+  //For v112, heads 1-5 are stored in policyProbsByHeadQuantized. It is null for single-head models.
+  int8_t* policyProbsByHeadQuantized;
   int8_t policyProbsQuantized[NNPos::MAX_NN_POLICY_SIZE];
 
   int nnXLen;
@@ -196,6 +199,14 @@ struct NNOutput {
 
   inline float getPolicyProb(int pos) const { return policyDequant(policyProbsQuantized[pos]); }
   inline float getPolicyProbMaybeNoised(int pos) const { return noisedPolicyProbs != NULL ? noisedPolicyProbs[pos] : policyDequant(policyProbsQuantized[pos]); }
+  inline bool hasPolicyByHead() const { return policyProbsByHeadQuantized != NULL; }
+  inline float getPolicyProbByHead(int head, int pos) const {
+    assert(head >= 0 && head < NUM_POLICY_HEADS);
+    if(head == 0 || policyProbsByHeadQuantized == NULL)
+      return getPolicyProb(pos);
+    return policyDequant(policyProbsByHeadQuantized[(head-1) * NNPos::MAX_NN_POLICY_SIZE + pos]);
+  }
+  void allocatePolicyByHead();
   void debugPrint(std::ostream& out, const Board& board);
   inline int getPos(Loc loc, const Board& board) const { return NNPos::locToPos(loc, board.x_size, nnXLen, nnYLen ); }
 

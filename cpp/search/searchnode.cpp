@@ -2,6 +2,43 @@
 
 #include "../search/search.h"
 
+VctStatsAtomic::VctStatsAtomic()
+  :visits(0),
+   utilityAvg(0.0),
+   utilitySqAvg(0.0),
+   weightSum(0.0),
+   weightSqSum(0.0)
+{}
+VctStatsAtomic::VctStatsAtomic(const VctStatsAtomic& other)
+  :visits(other.visits.load(std::memory_order_acquire)),
+   utilityAvg(other.utilityAvg.load(std::memory_order_acquire)),
+   utilitySqAvg(other.utilitySqAvg.load(std::memory_order_acquire)),
+   weightSum(other.weightSum.load(std::memory_order_acquire)),
+   weightSqSum(other.weightSqSum.load(std::memory_order_acquire))
+{}
+VctStatsAtomic::~VctStatsAtomic()
+{}
+
+VctStats::VctStats()
+  :visits(0),
+   utilityAvg(0.0),
+   utilitySqAvg(0.0),
+   weightSum(0.0),
+   weightSqSum(0.0)
+{}
+VctStats::VctStats(const VctStatsAtomic& other)
+  :visits(other.visits.load(std::memory_order_acquire)),
+   utilityAvg(other.utilityAvg.load(std::memory_order_acquire)),
+   utilitySqAvg(other.utilitySqAvg.load(std::memory_order_acquire)),
+   weightSum(other.weightSum.load(std::memory_order_acquire)),
+   weightSqSum(other.weightSqSum.load(std::memory_order_acquire))
+{}
+VctStats::~VctStats()
+{}
+
+
+//----------------------------------------------------------------------------------------
+
 NodeStatsAtomic::NodeStatsAtomic()
   :visits(0),
    winLossValueAvg(0.0),
@@ -108,15 +145,27 @@ MoreNodeStats::~MoreNodeStats()
 SearchChildPointer::SearchChildPointer():
   data(NULL),
   edgeVisits(0),
+  whiteWinEdgeVisits(0),
+  blackWinEdgeVisits(0),
+  whiteVctEdgeVisits(0),
+  blackVctEdgeVisits(0),
   moveLoc(Board::NULL_LOC)
 {}
 
 void SearchChildPointer::storeAll(const SearchChildPointer& other) {
   SearchNode* d = other.data.load(std::memory_order_acquire);
   int64_t e = other.edgeVisits.load(std::memory_order_acquire);
+  int64_t ewv = other.whiteWinEdgeVisits.load(std::memory_order_acquire);
+  int64_t ebv = other.blackWinEdgeVisits.load(std::memory_order_acquire);
+  int64_t ew = other.whiteVctEdgeVisits.load(std::memory_order_acquire);
+  int64_t eb = other.blackVctEdgeVisits.load(std::memory_order_acquire);
   Loc m = other.moveLoc.load(std::memory_order_acquire);
   moveLoc.store(m,std::memory_order_release);
   edgeVisits.store(e,std::memory_order_release);
+  whiteWinEdgeVisits.store(ewv,std::memory_order_release);
+  blackWinEdgeVisits.store(ebv,std::memory_order_release);
+  whiteVctEdgeVisits.store(ew,std::memory_order_release);
+  blackVctEdgeVisits.store(eb,std::memory_order_release);
   data.store(d,std::memory_order_release);
 }
 
@@ -164,6 +213,78 @@ bool SearchChildPointer::compexweakEdgeVisits(int64_t& expected, int64_t desired
   return edgeVisits.compare_exchange_weak(expected, desired, std::memory_order_acq_rel);
 }
 
+int64_t SearchChildPointer::getObjectiveEdgeVisits(Player objective) const {
+  assert(objective == P_WHITE || objective == P_BLACK);
+  return objective == P_WHITE ?
+    whiteWinEdgeVisits.load(std::memory_order_acquire) :
+    blackWinEdgeVisits.load(std::memory_order_acquire);
+}
+int64_t SearchChildPointer::getObjectiveEdgeVisitsRelaxed(Player objective) const {
+  assert(objective == P_WHITE || objective == P_BLACK);
+  return objective == P_WHITE ?
+    whiteWinEdgeVisits.load(std::memory_order_relaxed) :
+    blackWinEdgeVisits.load(std::memory_order_relaxed);
+}
+void SearchChildPointer::setObjectiveEdgeVisitsRelaxed(Player objective, int64_t x) {
+  assert(objective == P_WHITE || objective == P_BLACK);
+  if(objective == P_WHITE)
+    whiteWinEdgeVisits.store(x,std::memory_order_relaxed);
+  else
+    blackWinEdgeVisits.store(x,std::memory_order_relaxed);
+}
+void SearchChildPointer::addObjectiveEdgeVisits(Player objective, int64_t delta) {
+  assert(objective == P_WHITE || objective == P_BLACK);
+  if(objective == P_WHITE)
+    whiteWinEdgeVisits.fetch_add(delta,std::memory_order_acq_rel);
+  else
+    blackWinEdgeVisits.fetch_add(delta,std::memory_order_acq_rel);
+}
+bool SearchChildPointer::compexweakObjectiveEdgeVisits(
+  Player objective, int64_t& expected, int64_t desired
+) {
+  assert(objective == P_WHITE || objective == P_BLACK);
+  return objective == P_WHITE ?
+    whiteWinEdgeVisits.compare_exchange_weak(
+      expected,desired,std::memory_order_acq_rel
+    ) :
+    blackWinEdgeVisits.compare_exchange_weak(
+      expected,desired,std::memory_order_acq_rel
+    );
+}
+
+int64_t SearchChildPointer::getVctEdgeVisits(Player attacker) const {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  return attacker == P_WHITE ?
+    whiteVctEdgeVisits.load(std::memory_order_acquire) :
+    blackVctEdgeVisits.load(std::memory_order_acquire);
+}
+int64_t SearchChildPointer::getVctEdgeVisitsRelaxed(Player attacker) const {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  return attacker == P_WHITE ?
+    whiteVctEdgeVisits.load(std::memory_order_relaxed) :
+    blackVctEdgeVisits.load(std::memory_order_relaxed);
+}
+void SearchChildPointer::setVctEdgeVisitsRelaxed(Player attacker, int64_t x) {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  if(attacker == P_WHITE)
+    whiteVctEdgeVisits.store(x, std::memory_order_relaxed);
+  else
+    blackVctEdgeVisits.store(x, std::memory_order_relaxed);
+}
+void SearchChildPointer::addVctEdgeVisits(Player attacker, int64_t delta) {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  if(attacker == P_WHITE)
+    whiteVctEdgeVisits.fetch_add(delta, std::memory_order_acq_rel);
+  else
+    blackVctEdgeVisits.fetch_add(delta, std::memory_order_acq_rel);
+}
+bool SearchChildPointer::compexweakVctEdgeVisits(Player attacker, int64_t& expected, int64_t desired) {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  return attacker == P_WHITE ?
+    whiteVctEdgeVisits.compare_exchange_weak(expected, desired, std::memory_order_acq_rel) :
+    blackVctEdgeVisits.compare_exchange_weak(expected, desired, std::memory_order_acq_rel);
+}
+
 
 Loc SearchChildPointer::getMoveLoc() const {
   return moveLoc.load(std::memory_order_acquire);
@@ -195,11 +316,17 @@ SearchNode::SearchNode(Player pla, bool fnt, uint32_t mIdx)
    children1(NULL),
    children2(NULL),
    stats(),
+   whiteVctStats(),
+   blackVctStats(),
    virtualLosses(0),
+   whiteVctVirtualLosses(0),
+   blackVctVirtualLosses(0),
    lastSubtreeValueBiasDeltaSum(0.0),
    lastSubtreeValueBiasWeight(0.0),
    subtreeValueBiasTableEntry(),
-   dirtyCounter(0)
+   dirtyCounter(0),
+   whiteVctDirtyCounter(0),
+   blackVctDirtyCounter(0)
 {
 }
 
@@ -215,11 +342,17 @@ SearchNode::SearchNode(const SearchNode& other, bool fnt, bool copySubtreeValueB
    children1(NULL),
    children2(NULL),
    stats(other.stats),
+   whiteVctStats(other.whiteVctStats),
+   blackVctStats(other.blackVctStats),
    virtualLosses(other.virtualLosses.load(std::memory_order_acquire)),
+   whiteVctVirtualLosses(other.whiteVctVirtualLosses.load(std::memory_order_acquire)),
+   blackVctVirtualLosses(other.blackVctVirtualLosses.load(std::memory_order_acquire)),
    lastSubtreeValueBiasDeltaSum(0.0),
    lastSubtreeValueBiasWeight(0.0),
    subtreeValueBiasTableEntry(),
-   dirtyCounter(other.dirtyCounter.load(std::memory_order_acquire))
+   dirtyCounter(other.dirtyCounter.load(std::memory_order_acquire)),
+   whiteVctDirtyCounter(other.whiteVctDirtyCounter.load(std::memory_order_acquire)),
+   blackVctDirtyCounter(other.blackVctDirtyCounter.load(std::memory_order_acquire))
 {
   if(other.children0 != NULL) {
     children0 = new SearchChildPointer[CHILDREN0SIZE];
@@ -325,6 +458,10 @@ bool SearchNode::tryExpandingChildrenCapacityAssumeFull(int& stateValue) {
       //Getting edge visits relaxed on old children might get slightly out of date if other threads are searching
       //children while we expand, but those should self-correct rapidly with more playouts
       children[i].setEdgeVisitsRelaxed(oldChildren[i].getEdgeVisitsRelaxed());
+      children[i].setObjectiveEdgeVisitsRelaxed(P_WHITE,oldChildren[i].getObjectiveEdgeVisitsRelaxed(P_WHITE));
+      children[i].setObjectiveEdgeVisitsRelaxed(P_BLACK,oldChildren[i].getObjectiveEdgeVisitsRelaxed(P_BLACK));
+      children[i].setVctEdgeVisitsRelaxed(P_WHITE,oldChildren[i].getVctEdgeVisitsRelaxed(P_WHITE));
+      children[i].setVctEdgeVisitsRelaxed(P_BLACK,oldChildren[i].getVctEdgeVisitsRelaxed(P_BLACK));
       //Setting and loading move relaxed is fine because our acquire observation of all the children nodes
       //ensures all the move locs are released to us, and we're storing this new array with release semantics.
       children[i].setMoveLocRelaxed(oldChildren[i].getMoveLocRelaxed());
@@ -356,6 +493,10 @@ bool SearchNode::tryExpandingChildrenCapacityAssumeFull(int& stateValue) {
       //Getting weight relaxed on old children might get slightly out of date weights if other threads are searching
       //children while we expand, but those should self-correct rapidly with more playouts
       children[i].setEdgeVisitsRelaxed(oldChildren[i].getEdgeVisitsRelaxed());
+      children[i].setObjectiveEdgeVisitsRelaxed(P_WHITE,oldChildren[i].getObjectiveEdgeVisitsRelaxed(P_WHITE));
+      children[i].setObjectiveEdgeVisitsRelaxed(P_BLACK,oldChildren[i].getObjectiveEdgeVisitsRelaxed(P_BLACK));
+      children[i].setVctEdgeVisitsRelaxed(P_WHITE,oldChildren[i].getVctEdgeVisitsRelaxed(P_WHITE));
+      children[i].setVctEdgeVisitsRelaxed(P_BLACK,oldChildren[i].getVctEdgeVisitsRelaxed(P_BLACK));
       //Setting and loading move relaxed is fine because our acquire observation of all the children nodes
       //ensures all the move locs are released to us, and we're storing this new array with release semantics.
       children[i].setMoveLocRelaxed(oldChildren[i].getMoveLocRelaxed());
@@ -430,6 +571,31 @@ bool SearchNode::storeNNOutput(std::shared_ptr<NNOutput>* newNNOutput, SearchThr
 bool SearchNode::storeNNOutputIfNull(std::shared_ptr<NNOutput>* newNNOutput) {
   std::shared_ptr<NNOutput>* expected = NULL;
   return nnOutput.compare_exchange_strong(expected, newNNOutput, std::memory_order_acq_rel);
+}
+
+VctStatsAtomic& SearchNode::getVctStats(Player attacker) {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  return attacker == P_WHITE ? whiteVctStats : blackVctStats;
+}
+const VctStatsAtomic& SearchNode::getVctStats(Player attacker) const {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  return attacker == P_WHITE ? whiteVctStats : blackVctStats;
+}
+std::atomic<int32_t>& SearchNode::getVctDirtyCounter(Player attacker) {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  return attacker == P_WHITE ? whiteVctDirtyCounter : blackVctDirtyCounter;
+}
+std::atomic<int32_t>& SearchNode::getVirtualLosses(Player vctAttacker) {
+  if(vctAttacker == C_EMPTY)
+    return virtualLosses;
+  assert(vctAttacker == P_WHITE || vctAttacker == P_BLACK);
+  return vctAttacker == P_WHITE ? whiteVctVirtualLosses : blackVctVirtualLosses;
+}
+const std::atomic<int32_t>& SearchNode::getVirtualLosses(Player vctAttacker) const {
+  if(vctAttacker == C_EMPTY)
+    return virtualLosses;
+  assert(vctAttacker == P_WHITE || vctAttacker == P_BLACK);
+  return vctAttacker == P_WHITE ? whiteVctVirtualLosses : blackVctVirtualLosses;
 }
 
 SearchNode::~SearchNode() {

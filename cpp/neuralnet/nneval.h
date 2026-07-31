@@ -54,6 +54,7 @@ struct NNResultBuf {
   float* rowGlobal;
   std::shared_ptr<NNOutput> result;
   float policyResult[NNPos::MAX_NN_POLICY_SIZE];
+  float policyResultsByExtraHead[NNOutput::NUM_POLICY_HEADS-1][NNPos::MAX_NN_POLICY_SIZE];
   bool errorLogLockout; //error flag to restrict log to 1 error to prevent spam
   int symmetry; //The symmetry to use for this eval
 

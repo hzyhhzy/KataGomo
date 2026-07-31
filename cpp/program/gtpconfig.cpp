@@ -331,6 +331,28 @@ $$MULTIPLE_GPUS
 # noResultUtilityForWhite = 0.0
 # multiValueHeadUtilityMix = 0.0
 # multiValueHeadSelectionBias = 0.0
+# multiHeadNormalPolicyHead1Mix = 0.0
+# multiHeadObjectiveSearchStrength = 0.0
+# multiHeadObjectiveSelectionPower = 2.0
+# multiHeadObjectiveSelectionSharpness = 0.0
+# multiHeadObjectivePolicyMix = 0.0
+# multiHeadObjectiveSeparatePlayouts = false
+# multiHeadObjectiveCrossWeight = 0.0
+# multiHeadObjectiveValueWeightExponent = 1.0
+# multiHeadObjectiveVctWeight = 1.0
+# multiHeadVctObjectiveBudgetMix = 1.0
+# multiHeadVctNormalVerificationProp = 0.0
+# multiHeadDrawPolicyFlattening = 0.0
+# multiHeadDrawRootMinVisitsCoeff = 0.0
+# multiHeadTacticalRootVisits = 0.0
+# multiHeadTacticalContrastiveMix = 0.0
+# multiHeadTacticalObjectiveMask = 15
+# multiHeadTacticalDisproofStrength = 0.0
+# multiHeadTacticalPolicyPower = 1.0
+# multiHeadDrawForcedReplyRootVisits = 0.0
+# multiHeadDrawForcedReplyTreeVisits = 0.0
+# multiHeadDrawForcedReplyAuxPolicyGate = 0.0
+# multiHeadDrawForcedReplyPolicyThreshold = 0.5
 
 # The number of wins that a draw counts as, for white. (0 to 1)
 # drawEquivalentWinsForWhite = 0.5

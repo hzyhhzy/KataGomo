@@ -11,6 +11,62 @@
 struct SearchNode;
 struct SearchThread;
 
+struct VctStatsAtomic {
+  std::atomic<int64_t> visits;
+  std::atomic<double> utilityAvg;
+  std::atomic<double> utilitySqAvg;
+  std::atomic<double> weightSum;
+  std::atomic<double> weightSqSum;
+
+  VctStatsAtomic();
+  explicit VctStatsAtomic(const VctStatsAtomic& other);
+  ~VctStatsAtomic();
+
+  VctStatsAtomic& operator=(const VctStatsAtomic&) = delete;
+  VctStatsAtomic(VctStatsAtomic&& other) = delete;
+  VctStatsAtomic& operator=(VctStatsAtomic&& other) = delete;
+
+  double getChildWeight(int64_t edgeVisits) const;
+  double getChildWeight(int64_t edgeVisits, int64_t childVisits) const;
+  double getChildWeightSq(int64_t edgeVisits) const;
+  double getChildWeightSq(int64_t edgeVisits, int64_t childVisits) const;
+};
+
+struct VctStats {
+  int64_t visits;
+  double utilityAvg;
+  double utilitySqAvg;
+  double weightSum;
+  double weightSqSum;
+
+  VctStats();
+  explicit VctStats(const VctStatsAtomic& other);
+  ~VctStats();
+
+  inline static double childWeight(int64_t edgeVisits, int64_t childVisits, double rawChildWeight) {
+    return rawChildWeight * ((double)edgeVisits / (double)std::max(childVisits,(int64_t)1));
+  }
+  inline static double childWeightSq(int64_t edgeVisits, int64_t childVisits, double rawChildWeightSq) {
+    return rawChildWeightSq * ((double)edgeVisits / (double)std::max(childVisits,(int64_t)1));
+  }
+  double getChildWeight(int64_t edgeVisits) const {
+    return childWeight(edgeVisits, visits, weightSum);
+  }
+};
+
+inline double VctStatsAtomic::getChildWeight(int64_t edgeVisits) const {
+  return VctStats::childWeight(edgeVisits, visits.load(std::memory_order_acquire), weightSum.load(std::memory_order_acquire));
+}
+inline double VctStatsAtomic::getChildWeight(int64_t edgeVisits, int64_t childVisits) const {
+  return VctStats::childWeight(edgeVisits, childVisits, weightSum.load(std::memory_order_acquire));
+}
+inline double VctStatsAtomic::getChildWeightSq(int64_t edgeVisits) const {
+  return VctStats::childWeightSq(edgeVisits, visits.load(std::memory_order_acquire), weightSqSum.load(std::memory_order_acquire));
+}
+inline double VctStatsAtomic::getChildWeightSq(int64_t edgeVisits, int64_t childVisits) const {
+  return VctStats::childWeightSq(edgeVisits, childVisits, weightSqSum.load(std::memory_order_acquire));
+}
+
 struct NodeStatsAtomic {
   std::atomic<int64_t> visits;
   std::atomic<double> winLossValueAvg;
@@ -143,6 +199,10 @@ struct SearchChildPointer {
 private:
   std::atomic<SearchNode*> data;
   std::atomic<int64_t> edgeVisits;
+  std::atomic<int64_t> whiteWinEdgeVisits;
+  std::atomic<int64_t> blackWinEdgeVisits;
+  std::atomic<int64_t> whiteVctEdgeVisits;
+  std::atomic<int64_t> blackVctEdgeVisits;
   std::atomic<Loc> moveLoc; // Generally this will be always guarded under release semantics of data or of the array itself.
 public:
   SearchChildPointer();
@@ -167,6 +227,20 @@ public:
   void setEdgeVisitsRelaxed(int64_t x);
   void addEdgeVisits(int64_t delta);
   bool compexweakEdgeVisits(int64_t& expected, int64_t desired);
+
+  int64_t getObjectiveEdgeVisits(Player objective) const;
+  int64_t getObjectiveEdgeVisitsRelaxed(Player objective) const;
+  void setObjectiveEdgeVisitsRelaxed(Player objective, int64_t x);
+  void addObjectiveEdgeVisits(Player objective, int64_t delta);
+  bool compexweakObjectiveEdgeVisits(
+    Player objective, int64_t& expected, int64_t desired
+  );
+
+  int64_t getVctEdgeVisits(Player attacker) const;
+  int64_t getVctEdgeVisitsRelaxed(Player attacker) const;
+  void setVctEdgeVisitsRelaxed(Player attacker, int64_t x);
+  void addVctEdgeVisits(Player attacker, int64_t delta);
+  bool compexweakVctEdgeVisits(Player attacker, int64_t& expected, int64_t desired);
 
   Loc getMoveLoc() const;
   Loc getMoveLocRelaxed() const;
@@ -220,7 +294,11 @@ struct SearchNode {
   //Lightweight mutable---------------------------------------------------------------
   //Protected under statsLock for writing
   NodeStatsAtomic stats;
+  VctStatsAtomic whiteVctStats;
+  VctStatsAtomic blackVctStats;
   std::atomic<int32_t> virtualLosses;
+  std::atomic<int32_t> whiteVctVirtualLosses;
+  std::atomic<int32_t> blackVctVirtualLosses;
 
   //Protected under the entryLock in subtreeValueBiasTableEntry
   //Used only if subtreeValueBiasTableEntry is not nullptr.
@@ -231,6 +309,8 @@ struct SearchNode {
   std::shared_ptr<SubtreeValueBiasEntry> subtreeValueBiasTableEntry;
 
   std::atomic<int32_t> dirtyCounter;
+  std::atomic<int32_t> whiteVctDirtyCounter;
+  std::atomic<int32_t> blackVctDirtyCounter;
 
   //--------------------------------------------------------------------------------
   SearchNode(Player prevPla, bool forceNonTerminal, uint32_t mutexIdx);
@@ -265,6 +345,12 @@ struct SearchNode {
   //Used within search to update state and allocate children arrays
   void initializeChildren();
   bool maybeExpandChildrenCapacityForNewChild(int& stateValue, int numChildrenFullPlusOne);
+
+  VctStatsAtomic& getVctStats(Player attacker);
+  const VctStatsAtomic& getVctStats(Player attacker) const;
+  std::atomic<int32_t>& getVctDirtyCounter(Player attacker);
+  std::atomic<int32_t>& getVirtualLosses(Player vctAttacker);
+  const std::atomic<int32_t>& getVirtualLosses(Player vctAttacker) const;
 
 private:
   int getChildrenCapacity(int stateValue) const;

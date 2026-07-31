@@ -490,6 +490,12 @@ void NNEvaluator::serve(
         }
         policyProbs[NNPos::locToPos(Board::PASS_LOC,boardXSize,nnXLen,nnYLen)] = (float)rand.nextGaussian();
 
+        if(modelVersion == 112) {
+          for(int head = 1; head<NNOutput::NUM_POLICY_HEADS; head++)
+            std::copy(policyProbs, policyProbs + NNPos::MAX_NN_POLICY_SIZE,
+                      resultBuf->policyResultsByExtraHead[head-1]);
+        }
+
         resultBuf->result->nnXLen = nnXLen;
         resultBuf->result->nnYLen = nnYLen;
      
@@ -804,6 +810,53 @@ void NNEvaluator::evaluate(
     //Fill everything out-of-bounds too, for robustness.
     for(int i = policySize; i<NNPos::MAX_NN_POLICY_SIZE; i++)
       policy[i] = -1.0f;
+
+    if(modelVersion == 112) {
+      buf.result->allocatePolicyByHead();
+      for(int head = 1; head<NNOutput::NUM_POLICY_HEADS; head++) {
+        float* policyByHead = buf.policyResultsByExtraHead[head-1];
+        float maxPolicyByHead = -1e25f;
+        for(int i = 0; i<policySize; i++) {
+          float policyValue = isLegal[i] ? policyByHead[i] * nnPolicyInvTemperature : -1e30f;
+          policyByHead[i] = policyValue;
+          if(policyValue > maxPolicyByHead)
+            maxPolicyByHead = policyValue;
+        }
+
+        if(nnInputParams.fourAttackPolicyReduce != 0) {
+          vector<Loc> fourLocs = GameLogic::getFourAttackLocs(board, history.rules, nextPlayer);
+          for(int i = 0; i < fourLocs.size(); i++)
+            policyByHead[NNPos::locToPos(fourLocs[i], xSize, nnXLen, nnYLen)] -= nnInputParams.fourAttackPolicyReduce;
+        }
+
+        float policySumByHead = 0.0f;
+        for(int i = 0; i<policySize; i++) {
+          policyByHead[i] = exp(policyByHead[i] - maxPolicyByHead);
+          policySumByHead += policyByHead[i];
+        }
+        if(!isfinite(policySumByHead)) {
+          cout << "Got nonfinite for policy sum on head " << head << endl;
+          history.printDebugInfo(cout,board);
+          throw StringError("Got nonfinite for multihead policy sum");
+        }
+        if(policySumByHead <= 0.0f) {
+          float uniform = 1.0f / legalCount;
+          for(int i = 0; i<policySize; i++)
+            policyByHead[i] = isLegal[i] ? uniform : -1.0f;
+        }
+        else {
+          for(int i = 0; i<policySize; i++)
+            policyByHead[i] = isLegal[i] ? policyByHead[i] / policySumByHead : -1.0f;
+        }
+        for(int i = policySize; i<NNPos::MAX_NN_POLICY_SIZE; i++)
+          policyByHead[i] = -1.0f;
+
+        int8_t* quantized = buf.result->policyProbsByHeadQuantized +
+          (head-1) * NNPos::MAX_NN_POLICY_SIZE;
+        for(int i = 0; i<NNPos::MAX_NN_POLICY_SIZE; i++)
+          quantized[i] = NNOutput::policyQuant(policyByHead[i]);
+      }
+    }
 
     //Fix up the value as well. Note that the neural net gives us back the value from the perspective
     //of the player so we need to negate that to make it the white value.

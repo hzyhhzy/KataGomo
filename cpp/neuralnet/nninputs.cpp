@@ -62,9 +62,11 @@ static const double piOverTwo = 1.57079632679489661923;
 
 
 NNOutput::NNOutput()
-  :noisedPolicyProbs(NULL)
+  :policyProbsByHeadQuantized(NULL),
+   noisedPolicyProbs(NULL)
 {}
-NNOutput::NNOutput(const NNOutput& other) {
+NNOutput::NNOutput(const NNOutput& other)
+  :policyProbsByHeadQuantized(NULL) {
   nnHash = other.nnHash;
   whiteWinProb = other.whiteWinProb;
   whiteLossProb = other.whiteLossProb;
@@ -85,10 +87,15 @@ NNOutput::NNOutput(const NNOutput& other) {
   else
     noisedPolicyProbs = NULL;
 
+  if(other.policyProbsByHeadQuantized != NULL) {
+    allocatePolicyByHead();
+    std::copy(other.policyProbsByHeadQuantized, other.policyProbsByHeadQuantized + (NUM_POLICY_HEADS-1) * NNPos::MAX_NN_POLICY_SIZE, policyProbsByHeadQuantized);
+  }
   std::copy(other.policyProbsQuantized, other.policyProbsQuantized + NNPos::MAX_NN_POLICY_SIZE, policyProbsQuantized);
 }
 
-NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
+NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others)
+  :policyProbsByHeadQuantized(NULL) {
   assert(others.size() < 1000000);
   int len = (int)others.size();
   float floatLen = (float)len;
@@ -163,6 +170,24 @@ NNOutput::NNOutput(const vector<shared_ptr<NNOutput>>& others) {
     }
   }
 
+  bool allHavePolicyByHead = true;
+  for(int i = 0; i<len; i++) {
+    if(!others[i]->hasPolicyByHead()) {
+      allHavePolicyByHead = false;
+      break;
+    }
+  }
+  if(allHavePolicyByHead) {
+    allocatePolicyByHead();
+    for(int head = 1; head<NUM_POLICY_HEADS; head++) {
+      for(int pos = 0; pos<NNPos::MAX_NN_POLICY_SIZE; pos++) {
+        float sum = 0.0f;
+        for(int i = 0; i<len; i++)
+          sum += others[i]->getPolicyProbByHead(head,pos);
+        policyProbsByHeadQuantized[(head-1) * NNPos::MAX_NN_POLICY_SIZE + pos] = policyQuant(sum / floatLen);
+      }
+    }
+  }
 }
 
 NNOutput& NNOutput::operator=(const NNOutput& other) {
@@ -190,6 +215,14 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
   else
     noisedPolicyProbs = NULL;
 
+  if(other.policyProbsByHeadQuantized != NULL) {
+    allocatePolicyByHead();
+    std::copy(other.policyProbsByHeadQuantized, other.policyProbsByHeadQuantized + (NUM_POLICY_HEADS-1) * NNPos::MAX_NN_POLICY_SIZE, policyProbsByHeadQuantized);
+  }
+  else if(policyProbsByHeadQuantized != NULL) {
+    delete[] policyProbsByHeadQuantized;
+    policyProbsByHeadQuantized = NULL;
+  }
   std::copy(other.policyProbsQuantized, other.policyProbsQuantized + NNPos::MAX_NN_POLICY_SIZE, policyProbsQuantized);
 
   return *this;
@@ -197,10 +230,19 @@ NNOutput& NNOutput::operator=(const NNOutput& other) {
 
 
 NNOutput::~NNOutput() {
+  if(policyProbsByHeadQuantized != NULL) {
+    delete[] policyProbsByHeadQuantized;
+    policyProbsByHeadQuantized = NULL;
+  }
   if(noisedPolicyProbs != NULL) {
     delete[] noisedPolicyProbs;
     noisedPolicyProbs = NULL;
   }
+}
+
+void NNOutput::allocatePolicyByHead() {
+  if(policyProbsByHeadQuantized == NULL)
+    policyProbsByHeadQuantized = new int8_t[(NUM_POLICY_HEADS-1) * NNPos::MAX_NN_POLICY_SIZE];
 }
 
 
@@ -215,6 +257,30 @@ void NNOutput::debugPrint(ostream& out, const Board& board) {
   }
   out << "VarTimeLeft " << Global::strprintf("%.1f",varTimeLeft) << endl;
   out << "STWinlossError " << Global::strprintf("%.3f",shorttermWinlossError) << endl;
+
+  if(hasPolicyByHead()) {
+    for(int head = 0; head<NNOutput::NUM_POLICY_HEADS; head++) {
+      double sum = 0.0;
+      float maxProb = -1.0f;
+      int maxPos = -1;
+      for(int pos = 0; pos<NNPos::MAX_NN_POLICY_SIZE; pos++) {
+        float prob = getPolicyProbByHead(head,pos);
+        if(prob < 0.0f)
+          continue;
+        sum += prob;
+        if(prob > maxProb) {
+          maxProb = prob;
+          maxPos = pos;
+        }
+      }
+      Loc maxLoc = maxPos < 0 ? Board::NULL_LOC :
+        NNPos::posToLoc(maxPos,board.x_size,board.y_size,nnXLen,nnYLen);
+      out << "PolicyHead" << head
+          << " Sum " << Global::strprintf("%.5f",sum)
+          << " Top " << Location::toString(maxLoc,board)
+          << " " << Global::strprintf("%.5f",maxProb) << endl;
+    }
+  }
 
   out << "Policy" << endl;
   for(int y = 0; y<board.y_size; y++) {

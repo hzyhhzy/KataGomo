@@ -10,6 +10,76 @@ struct SearchParams {
   double noResultUtilityForWhite; //Utility of having a no-result game (simple ko rules or nonterminating territory encore) 
   double multiValueHeadUtilityMix; //0 = legacy head0 utility, 1 = use v112 multi-head win/loss utility
   double multiValueHeadSelectionBias; //-1 = opponent win objective, 0 = average, 1 = side-to-move win objective
+  double multiHeadNormalPolicyHead1Mix; //Blend the independently distilled ordinary head1 policy into head0
+  double multiHeadObjectiveSearchStrength; //0 = fixed two-value mixture, 1 = dynamically choose among win, non-loss, and VCT objectives
+  double multiHeadObjectiveSelectionPower; //Sharpness of the soft choice between normal win and non-loss objectives
+  double multiHeadObjectiveSelectionSharpness; //Risk-seeking log-sum-exp sharpness across the weighted win and non-loss PUCT values
+  double multiHeadObjectivePolicyMix; //Head3 policy for win and head2 policy for non-loss, mixed independently into their PUCT objectives
+  bool multiHeadObjectiveSeparatePlayouts; //Give each normal playout to one win objective and aggregate it with objective-specific edge visits
+  double multiHeadObjectiveCrossWeight; //Credit a separated playout to the other normal objective before objective-specific value downweighting
+  double multiHeadObjectiveValueWeightExponent; //Bad-child downweighting for the independently aggregated normal objectives
+  double multiHeadObjectiveVctWeight; //Relative worth of each VCT objective when dividing playouts among the four objectives
+  double multiHeadVctObjectiveBudgetMix; //0 = confidence-only VCT budget, 1 = blend toward four-objective worth according to objective search strength
+  double multiHeadVctMaxAttackProp; //Maximum fraction of playouts for side-to-move VCT search
+  double multiHeadVctMaxDefenseProp; //Maximum fraction of playouts for opponent VCT search
+  double multiHeadVctUcbCoeff; //Uncertainty bonus when deciding the VCT playout fraction
+  double multiHeadVctProbScale; //VCT probability scale for the smooth budget curve
+  double multiHeadVctProbPower; //Sharpness of the smooth VCT budget curve
+  double multiHeadVctMainWinSuppression; //Suppress redundant VCT probing when head0 already expects the attacker to win
+  double multiHeadVctPolicyMix; //0 = head0 policy, 1 = VCT policy head
+  double multiHeadVctPolicyConsensusMix; //Blend VCT policy with its matching win/non-loss policy using normalized geometric consensus
+  bool multiHeadVctUseNormalRules; //Use normal rules and head0 value for isolated VCT candidate validation
+  double multiHeadVctProbeStartFraction; //Search fraction at which isolated VCT probing begins
+  double multiHeadVctProbeEndFraction; //Search fraction at which isolated VCT probing ends
+  double multiHeadVctProbeRampFraction; //Soft-ramp width at each VCT probe phase boundary
+  double multiHeadVctPriorVisits; //Effective samples over which the VCT prior remains active
+  double multiHeadVctNormalPolicyMaxMix; //Maximum VCT policy mixture used directly by normal search
+  double multiHeadVctAttackPolicyScale; //Scale for head4 own-attack policy proposals
+  double multiHeadVctDefensePolicyScale; //Scale for head5 opponent-attack defense policy proposals
+  double multiHeadVctPolicyRawProbMix; //0 = shaped VCT confidence, 1 = raw VCT win probability
+  double multiHeadVctNormalPolicyPow; //Softness of the VCT-probability policy mixture
+  double multiHeadDrawWinNormalPolicyMaxMix; //Maximum head2 (draw counts as win) policy mixture in normal search
+  double multiHeadDrawLossNormalPolicyMaxMix; //Maximum head3 (draw counts as loss) policy mixture in normal search
+  double multiHeadDrawNormalPolicyProbScale; //Probability scale for head2/head3 normal policy mixtures
+  double multiHeadDrawPolicyRawProbMix; //0 = shaped draw-head confidence, 1 = raw objective probability
+  double multiHeadDrawNormalPolicyPow; //Softness of head2/head3 normal policy mixtures
+  double multiHeadDrawPolicyFlattening; //Maximum head0 policy flattening in positions where head2/head3 expose a wide draw interval
+  double multiHeadDrawRootMinVisitsCoeff; //Additional root child minimum-visit funnel, softly gated by the head2/head3 draw interval
+  double multiHeadDrawAuxRootVisits; //Bounded root seed visits proposed by dynamic h2/h5 and h3/h4 policy consensus
+  double multiHeadTacticalRootVisits; //Root seed visits proposed by the union of win, non-loss, and VCT auxiliary objectives
+  double multiHeadTacticalContrastiveMix; //Prefer moves promoted by an auxiliary rule head relative to the normal h0/h1 ensemble
+  int multiHeadTacticalObjectiveMask; //Bits 0..3 enable tactical root proposals from heads 2..5
+  double multiHeadTacticalDisproofStrength; //Softly stop tactical root verification once normal-rule evidence disproves the candidate
+  double multiHeadTacticalPolicyPower; //Concentrate tactical verification on the auxiliary policy peak
+  double multiHeadDrawForcedReplyRootVisits; //Extra root visits for drawish children whose opponent reply policy is highly concentrated
+  double multiHeadDrawForcedReplyTreeVisits; //Extra non-root visits that continue verifying concentrated forced-reply sequences
+  double multiHeadDrawForcedReplyAuxPolicyGate; //Softly focus root forced-reply visits using head3/head4 attack and head2/head5 defense consensus
+  double multiHeadDrawForcedReplySidecarVisits; //Isolated normal-rules visits for each root forced-reply candidate
+  double multiHeadDrawForcedReplySidecarMaxProp; //Maximum total search fraction spent on isolated forced-reply candidates
+  double multiHeadDrawForcedReplyPolicyThreshold; //Reply-policy peak where forced-reply verification begins
+  double multiHeadVctGuidedPlayoutProp; //Maximum softly gated fraction of fixed-attacker head4/head5 playouts
+  double multiHeadDrawGuidedPlayoutProp; //Maximum softly gated fraction of fixed-winner head3/head2 playouts
+  double multiHeadGuidedStartFraction; //Search fraction before guided playout probability begins ramping up
+  double multiHeadGuidedPolicyMix; //Policy mixture within fixed-player guided playouts
+  double multiHeadGuidedValueWeight; //Auxiliary-vs-head0 value residual used within guided playout selection
+  double multiHeadOutcomeIntervalExplore; //Decaying exploration bonus from head2/head3 decisive-outcome bounds
+  double multiHeadOutcomeIntervalVisitScale; //Edge visits over which outcome-interval exploration decays
+  double multiHeadAuxPolicyChildGate; //How strongly child NN values retire disproven auxiliary policy hints
+  double multiHeadAuxPolicyVisitScale; //Number of edge visits over which auxiliary policy hints progressively decay
+  double multiHeadAuxPolicyOptimism; //Strength of pointwise optimistic policy proposals from auxiliary heads
+  double multiHeadAuxPolicyConcentrationScale; //Policy peak excess needed for an auxiliary head to be trusted
+  double multiHeadAuxValueExplore; //Decaying selection bonus when an auxiliary value confirms its policy proposal
+  double multiHeadAuxValueVisitScale; //Edge visits over which the auxiliary value bonus decays
+  double multiHeadVctCpuctScale; //Exploration scaling within the isolated VCT search planes
+  double multiHeadVctValueWeightExponent; //Bad-child downweighting within VCT search planes
+  double multiHeadVctValidationProp; //Strength of the VCT-to-normal validation signal
+  double multiHeadVctValidationUtility; //Maximum utility-scale validation bonus
+  double multiHeadVctValidationOptimism; //Uncertainty multiples added to isolated evidence before normal validation
+  double multiHeadVctNormalVerificationProp; //Maximum fraction of playouts that normally verify the best isolated root VCT candidate
+  double multiHeadVctMoveSelectionWeight; //Root move-selection weight for high-confidence VCT evidence
+  double multiHeadVctRelativeMoveSelectionWeight; //Root move-selection weight when a normal-value sidecar beats the main root estimate
+  double multiHeadVctNnMoveSelectionWeight; //Root move-selection weight for root/child NN VCT confirmation
+  double multiHeadVctMoveSelectionVisitScale; //VCT visits needed for root move-selection evidence
   
   double noResultUtilityReduce;  // Decrease draw utility for both side (if positive)
 

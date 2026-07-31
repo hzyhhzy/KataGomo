@@ -39,12 +39,20 @@ SearchThread::SearchThread(int tIdx, const Search& search)
   :threadIdx(tIdx),
    pla(search.rootPla),board(search.rootBoard),
    history(search.rootHistory),
+   normalRulesBoard(search.rootBoard),
+   normalRulesHistory(search.rootHistory),
    graphHash(search.rootGraphHash),
    graphPath(),
    rand(makeSeed(search,tIdx)),
    nnResultBuf(),
    statsBuf(),
    upperBoundVisitsLeft(1e30),
+   vctAttacker(C_EMPTY),
+   normalObjective(C_EMPTY),
+   policyGuidanceMode(POLICY_GUIDANCE_NONE),
+   policyGuidanceAttacker(C_EMPTY),
+   rootVctNormalVerificationMoveLoc(Board::NULL_LOC),
+   rootForcedReplySidecarMoveLoc(Board::NULL_LOC),
    oldNNOutputsToCleanUp(),
    illegalMoveHashes()
 {
@@ -69,6 +77,94 @@ static void failIfInvalidMultiValueHeadParams(const SearchParams& params) {
     throw StringError("multiValueHeadUtilityMix requires noResultUtilityReduce to be 0");
   if(params.multiValueHeadSelectionBias < -1.0 || params.multiValueHeadSelectionBias > 1.0)
     throw StringError("multiValueHeadSelectionBias must be between -1 and 1");
+  if(params.multiHeadNormalPolicyHead1Mix < 0.0 || params.multiHeadNormalPolicyHead1Mix > 1.0)
+    throw StringError("multiHeadNormalPolicyHead1Mix must be between 0 and 1");
+  if(params.multiHeadObjectiveSearchStrength < 0.0 || params.multiHeadObjectiveSearchStrength > 1.0)
+    throw StringError("multiHeadObjectiveSearchStrength must be between 0 and 1");
+  if(params.multiHeadObjectiveSearchStrength > 0.0 && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadObjectiveSearchStrength requires multiValueHeadUtilityMix to be nonzero");
+  if(params.multiHeadObjectiveSelectionPower <= 0.0)
+    throw StringError("multiHeadObjectiveSelectionPower must be positive");
+  if(
+    params.multiHeadObjectiveSelectionSharpness < 0.0 ||
+    params.multiHeadObjectiveSelectionSharpness > 16.0
+  )
+    throw StringError("multiHeadObjectiveSelectionSharpness must be between 0 and 16");
+  if(params.multiHeadObjectivePolicyMix < 0.0 || params.multiHeadObjectivePolicyMix > 1.0)
+    throw StringError("multiHeadObjectivePolicyMix must be between 0 and 1");
+  if(params.multiHeadObjectivePolicyMix > 0.0 && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadObjectivePolicyMix requires multiValueHeadUtilityMix to be nonzero");
+  if(params.multiHeadDrawPolicyFlattening < 0.0 || params.multiHeadDrawPolicyFlattening > 1.0)
+    throw StringError("multiHeadDrawPolicyFlattening must be between 0 and 1");
+  if(params.multiHeadDrawPolicyFlattening > 0.0 && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadDrawPolicyFlattening requires multiValueHeadUtilityMix to be nonzero");
+  if(params.multiHeadDrawRootMinVisitsCoeff < 0.0)
+    throw StringError("multiHeadDrawRootMinVisitsCoeff must be nonnegative");
+  if(params.multiHeadDrawRootMinVisitsCoeff > 0.0 && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadDrawRootMinVisitsCoeff requires multiValueHeadUtilityMix to be nonzero");
+  if(params.multiHeadDrawAuxRootVisits > 0.0 && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadDrawAuxRootVisits requires multiValueHeadUtilityMix to be nonzero");
+  if(params.multiHeadTacticalDisproofStrength < 0.0)
+    throw StringError("multiHeadTacticalDisproofStrength must be nonnegative");
+  if(params.multiHeadTacticalPolicyPower <= 0.0)
+    throw StringError("multiHeadTacticalPolicyPower must be positive");
+  if(params.multiHeadDrawForcedReplyRootVisits < 0.0)
+    throw StringError("multiHeadDrawForcedReplyRootVisits must be nonnegative");
+  if(params.multiHeadDrawForcedReplyRootVisits > 0.0 && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadDrawForcedReplyRootVisits requires multiValueHeadUtilityMix to be nonzero");
+  if(
+    params.multiHeadDrawForcedReplySidecarVisits > 0.0 &&
+    params.multiHeadDrawForcedReplySidecarMaxProp <= 0.0
+  )
+    throw StringError("multiHeadDrawForcedReplySidecarVisits requires multiHeadDrawForcedReplySidecarMaxProp");
+  if(
+    params.multiHeadDrawForcedReplySidecarMaxProp > 0.0 &&
+    params.multiHeadDrawForcedReplySidecarVisits <= 0.0
+  )
+    throw StringError("multiHeadDrawForcedReplySidecarMaxProp requires multiHeadDrawForcedReplySidecarVisits");
+  if(
+    params.multiHeadDrawForcedReplySidecarVisits > 0.0 &&
+    !params.multiHeadVctUseNormalRules
+  )
+    throw StringError("forced-reply sidecar search requires multiHeadVctUseNormalRules");
+  if(
+    params.multiHeadDrawForcedReplyPolicyThreshold < 0.0 ||
+    params.multiHeadDrawForcedReplyPolicyThreshold >= 1.0
+  )
+    throw StringError("multiHeadDrawForcedReplyPolicyThreshold must be between 0 and 1");
+  if(params.multiHeadObjectiveSeparatePlayouts && params.multiValueHeadUtilityMix == 0.0)
+    throw StringError("multiHeadObjectiveSeparatePlayouts requires multiValueHeadUtilityMix to be nonzero");
+  if(params.multiHeadObjectiveCrossWeight < 0.0 || params.multiHeadObjectiveCrossWeight > 1.0)
+    throw StringError("multiHeadObjectiveCrossWeight must be between 0 and 1");
+  if(params.multiHeadObjectiveCrossWeight > 0.0 && !params.multiHeadObjectiveSeparatePlayouts)
+    throw StringError("multiHeadObjectiveCrossWeight requires multiHeadObjectiveSeparatePlayouts");
+  if(params.multiHeadObjectiveValueWeightExponent < 0.0)
+    throw StringError("multiHeadObjectiveValueWeightExponent must be nonnegative");
+  if(params.multiHeadObjectiveVctWeight < 0.0)
+    throw StringError("multiHeadObjectiveVctWeight must be nonnegative");
+  if(
+    params.multiHeadVctObjectiveBudgetMix < 0.0 ||
+    params.multiHeadVctObjectiveBudgetMix > 1.0
+  )
+    throw StringError("multiHeadVctObjectiveBudgetMix must be between 0 and 1");
+  if(
+    params.multiHeadVctProbeStartFraction < 0.0 ||
+    params.multiHeadVctProbeStartFraction > 1.0 ||
+    params.multiHeadVctProbeEndFraction < 0.0 ||
+    params.multiHeadVctProbeEndFraction > 1.0 ||
+    params.multiHeadVctProbeRampFraction < 0.0 ||
+    params.multiHeadVctProbeRampFraction > 1.0
+  )
+    throw StringError("multi-head VCT probe fractions must be between 0 and 1");
+  if(params.multiHeadVctProbeEndFraction < params.multiHeadVctProbeStartFraction)
+    throw StringError("multiHeadVctProbeEndFraction must be at least multiHeadVctProbeStartFraction");
+  if(params.multiHeadVctPriorVisits < 0.0)
+    throw StringError("multiHeadVctPriorVisits must be nonnegative");
+  if(
+    params.multiHeadVctNormalVerificationProp < 0.0 ||
+    params.multiHeadVctNormalVerificationProp > 0.9
+  )
+    throw StringError("multiHeadVctNormalVerificationProp must be between 0 and 0.9");
 }
 
 Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const string& rSeed)
@@ -84,6 +180,13 @@ Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const strin
    plaThatSearchIsFor(C_EMPTY),plaThatSearchIsForLastSearch(C_EMPTY),
    lastSearchNumPlayouts(0),
    effectiveSearchTimeCarriedOver(0.0),
+   rootNormalVisitsAtSearchStart(0),
+   rootWhiteWinEdgeVisitsAtSearchStart(0),
+   rootBlackWinEdgeVisitsAtSearchStart(0),
+   rootWhiteVctVisitsAtSearchStart(0),
+   rootBlackVctVisitsAtSearchStart(0),
+   rootVctNormalVerificationPlayouts(0),
+   currentSearchPlayoutBudget(0),
    randSeed(rSeed),
    valueWeightDistribution(NULL),
    patternBonusTable(NULL),
@@ -430,6 +533,10 @@ void Search::runWholeSearch(
       maxTime = maxTime * searchFactor;
     }
   }
+  currentSearchPlayoutBudget = std::max<int64_t>(
+    0,
+    std::min(maxPlayouts,maxVisits - numNonPlayoutVisits)
+  );
 
   //Apply time controls. These two don't particularly need to be synchronized with each other so its fine to have two separate atomics.
   std::atomic<double> tcMaxTime(1e30);
@@ -631,18 +738,42 @@ void Search::beginSearch(bool pondering) {
         for(; i<childrenCapacity; i++) {
           SearchNode* child = children[i].getIfAllocated();
           int64_t edgeVisits = children[i].getEdgeVisits();
+          int64_t whiteWinEdgeVisits =
+            children[i].getObjectiveEdgeVisits(P_WHITE);
+          int64_t blackWinEdgeVisits =
+            children[i].getObjectiveEdgeVisits(P_BLACK);
+          int64_t whiteVctEdgeVisits =
+            children[i].getVctEdgeVisits(P_WHITE);
+          int64_t blackVctEdgeVisits =
+            children[i].getVctEdgeVisits(P_BLACK);
           Loc moveLoc = children[i].getMoveLoc();
           if(child == NULL)
             break;
           //Remove the child from its current spot
           children[i].store(NULL);
           children[i].setEdgeVisits(0);
+          children[i].setObjectiveEdgeVisitsRelaxed(P_WHITE,0);
+          children[i].setObjectiveEdgeVisitsRelaxed(P_BLACK,0);
+          children[i].setVctEdgeVisitsRelaxed(P_WHITE,0);
+          children[i].setVctEdgeVisitsRelaxed(P_BLACK,0);
           children[i].setMoveLoc(Board::NULL_LOC);
           //Maybe add it back. Specifically check for legality just in case weird graph interaction in the
           //tree gives wrong legality - ensure that once we are the root, we are strict on legality.
           if(rootHistory.isLegal(rootBoard,moveLoc,rootPla) && isAllowedRootMove(moveLoc)) {
             children[numGoodChildren].store(child);
             children[numGoodChildren].setEdgeVisits(edgeVisits);
+            children[numGoodChildren].setObjectiveEdgeVisitsRelaxed(
+              P_WHITE,whiteWinEdgeVisits
+            );
+            children[numGoodChildren].setObjectiveEdgeVisitsRelaxed(
+              P_BLACK,blackWinEdgeVisits
+            );
+            children[numGoodChildren].setVctEdgeVisitsRelaxed(
+              P_WHITE,whiteVctEdgeVisits
+            );
+            children[numGoodChildren].setVctEdgeVisitsRelaxed(
+              P_BLACK,blackVctEdgeVisits
+            );
             children[numGoodChildren].setMoveLoc(moveLoc);
             numGoodChildren++;
           }
@@ -727,6 +858,18 @@ void Search::beginSearch(bool pondering) {
 
   //Mark all nodes old for the purposes of updating old nnoutputs
   searchNodeAge++;
+
+  rootNormalVisitsAtSearchStart =
+    rootNode->stats.visits.load(std::memory_order_acquire);
+  rootWhiteWinEdgeVisitsAtSearchStart =
+    getRootObjectiveEdgeVisits(P_WHITE);
+  rootBlackWinEdgeVisitsAtSearchStart =
+    getRootObjectiveEdgeVisits(P_BLACK);
+  rootWhiteVctVisitsAtSearchStart =
+    rootNode->whiteVctStats.visits.load(std::memory_order_acquire);
+  rootBlackVctVisitsAtSearchStart =
+    rootNode->blackVctStats.visits.load(std::memory_order_acquire);
+  rootVctNormalVerificationPlayouts.store(0,std::memory_order_release);
 }
 
 uint32_t Search::createMutexIdxForNode(SearchThread& thread) const {
@@ -906,6 +1049,8 @@ void Search::recursivelyRecomputeStats(SearchNode& n) {
     int32_t numVirtualLosses = node->virtualLosses.load(std::memory_order_acquire);
     (void)numVirtualLosses;
     assert(numVirtualLosses == 0);
+    assert(node->whiteVctVirtualLosses.load(std::memory_order_acquire) == 0);
+    assert(node->blackVctVirtualLosses.load(std::memory_order_acquire) == 0);
 
     bool isRoot = (node == rootNode);
 
@@ -961,10 +1106,757 @@ void Search::recursivelyRecomputeStats(SearchNode& n) {
     delete dummyThreads[threadIdx];
 }
 
+double Search::getCurrentSearchProgress(const SearchThread& thread) const {
+  if(currentSearchPlayoutBudget <= 0)
+    return 0.0;
+  return std::clamp(
+    1.0 - thread.upperBoundVisitsLeft / (double)currentSearchPlayoutBudget,
+    0.0,1.0
+  );
+}
+
+double Search::getVctProbePhaseScale(const SearchThread& thread) const {
+  double start = searchParams.multiHeadVctProbeStartFraction;
+  double end = searchParams.multiHeadVctProbeEndFraction;
+  if(start <= 0.0 && end >= 1.0)
+    return 1.0;
+  if(end <= start)
+    return 0.0;
+
+  double progress = getCurrentSearchProgress(thread);
+  if(progress < start || progress >= end)
+    return 0.0;
+
+  double ramp = std::min(
+    searchParams.multiHeadVctProbeRampFraction,
+    0.5 * (end - start)
+  );
+  if(ramp <= 0.0)
+    return 1.0;
+
+  auto smoothStep = [](double x) {
+    x = std::clamp(x,0.0,1.0);
+    return x * x * (3.0 - 2.0 * x);
+  };
+  double startScale = smoothStep((progress - start) / ramp);
+  double endScale = smoothStep((end - progress) / ramp);
+  return std::min(startScale,endScale);
+}
+
+double Search::getVctValidationPhaseScale(const SearchThread& thread) const {
+  double end = searchParams.multiHeadVctProbeEndFraction;
+  //The default window preserves the pre-phased validation behavior.
+  if(end >= 1.0)
+    return 1.0;
+
+  double progress = getCurrentSearchProgress(thread);
+  if(progress < end)
+    return 0.0;
+  double ramp = searchParams.multiHeadVctProbeRampFraction;
+  if(ramp <= 0.0)
+    return 1.0;
+
+  double x = std::clamp((progress - end) / ramp,0.0,1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
+
+Player Search::chooseVctPlayoutAttacker(const SearchThread& thread) const {
+  if(searchParams.multiHeadVctMaxAttackProp <= 0.0 && searchParams.multiHeadVctMaxDefenseProp <= 0.0)
+    return C_EMPTY;
+  double probePhaseScale = getVctProbePhaseScale(thread);
+  if(probePhaseScale <= 0.0)
+    return C_EMPTY;
+
+  const NNOutput* nnOutput = rootNode->getNNOutput();
+  if(nnOutput == NULL)
+    return C_EMPTY;
+  if(!nnOutput->hasPolicyByHead())
+    throw StringError("multi-head VCT search requires a v112 model with six policy heads");
+
+  int policySize = NNPos::getPolicySize(nnOutput->nnXLen,nnOutput->nnYLen);
+  auto getPolicyGate = [&](Player attacker) {
+    int vctHead = attacker == rootPla ? 4 : 5;
+    int outcomeHead = attacker == rootPla ? 3 : 2;
+    double consensusMix = searchParams.multiHeadVctPolicyConsensusMix;
+    double consensusMass = 0.0;
+    if(consensusMix > 0.0) {
+      for(int movePos = 0; movePos<policySize; movePos++) {
+        if(nnOutput->getPolicyProbMaybeNoised(movePos) < 0.0)
+          continue;
+        double vctPolicy = nnOutput->getPolicyProbByHead(vctHead,movePos);
+        double outcomePolicy = nnOutput->getPolicyProbByHead(outcomeHead,movePos);
+        if(vctPolicy > 0.0 && outcomePolicy > 0.0)
+          consensusMass += sqrt(vctPolicy * outcomePolicy);
+      }
+    }
+    double peakPolicy = 0.0;
+    double normalPolicyAtPeak = 0.0;
+    for(int movePos = 0; movePos<policySize; movePos++) {
+      double normalPolicy = nnOutput->getPolicyProbMaybeNoised(movePos);
+      if(normalPolicy < 0.0)
+        continue;
+      double vctPolicy = nnOutput->getPolicyProbByHead(vctHead,movePos);
+      double auxiliaryPolicy = vctPolicy;
+      if(consensusMix > 0.0 && consensusMass > 0.0) {
+        double outcomePolicy = nnOutput->getPolicyProbByHead(outcomeHead,movePos);
+        double consensusPolicy =
+          vctPolicy > 0.0 && outcomePolicy > 0.0 ?
+          sqrt(vctPolicy * outcomePolicy) / consensusMass :
+          0.0;
+        auxiliaryPolicy =
+          (1.0 - consensusMix) * vctPolicy +
+          consensusMix * consensusPolicy;
+      }
+      if(auxiliaryPolicy > peakPolicy) {
+        peakPolicy = auxiliaryPolicy;
+        normalPolicyAtPeak = normalPolicy;
+      }
+    }
+    if(peakPolicy <= 0.0)
+      return 0.0;
+
+    //A diffuse auxiliary policy gets a small but nonzero budget. Concentrated
+    //policies get more, particularly when their top move is novel versus head0.
+    double concentration =
+      peakPolicy /
+      (peakPolicy + searchParams.multiHeadAuxPolicyConcentrationScale);
+    double novelty = std::clamp(
+      1.0 - normalPolicyAtPeak / peakPolicy,
+      0.0,1.0
+    );
+    return concentration * (0.1 + 0.9 * novelty);
+  };
+  auto getPriorSuccessProb = [&](Player attacker) {
+    int head = attacker == rootPla ? 4 : 5;
+    double successProb = attacker == P_WHITE ?
+      nnOutput->whiteWinProbByHead[head] :
+      nnOutput->whiteLossProbByHead[head];
+    return std::clamp(successProb,1e-4,1.0);
+  };
+  auto getMainWinNeed = [&](Player attacker) {
+    double normalWinProb = attacker == P_WHITE ?
+      nnOutput->whiteWinProbByHead[0] :
+      nnOutput->whiteLossProbByHead[0];
+    double need = std::clamp(1.0 - normalWinProb,0.0,1.0);
+    return pow(need,searchParams.multiHeadVctMainWinSuppression);
+  };
+  auto getSmoothBudget = [&](double probability) {
+    double poweredProbability = pow(
+      std::clamp(probability,0.0,1.0),
+      searchParams.multiHeadVctProbPower
+    );
+    double poweredScale = pow(
+      searchParams.multiHeadVctProbScale,
+      searchParams.multiHeadVctProbPower
+    );
+    return poweredProbability / (poweredProbability + poweredScale);
+  };
+  auto getUrgency = [&](Player attacker) {
+    double policyGate = getPolicyGate(attacker);
+    double mainWinNeed = getMainWinNeed(attacker);
+    VctStats stats(rootNode->getVctStats(attacker));
+    double priorSuccessProb = getPriorSuccessProb(attacker);
+    //Every expanded node starts with one direct NN sample in each isolated
+    //stats plane. Until there is a real tactical playout, budget from the
+    //auxiliary prior rather than treating that seed as validation evidence.
+    if(stats.visits <= 1 || stats.weightSum <= 0.0)
+      return
+        policyGate *
+        mainWinNeed *
+        getSmoothBudget(priorSuccessProb);
+
+    double successProb = attacker == P_WHITE ?
+      0.5 * (stats.utilityAvg + 1.0) :
+      0.5 * (1.0 - stats.utilityAvg);
+    successProb = std::clamp(successProb,0.0,1.0);
+
+    double variance = std::max(0.0,stats.utilitySqAvg - stats.utilityAvg * stats.utilityAvg);
+    double effectiveSamples = stats.weightSqSum > 0.0 ?
+      stats.weightSum * stats.weightSum / stats.weightSqSum :
+      (double)stats.visits;
+    effectiveSamples = std::max(1.0,effectiveSamples);
+    double empiricalStdErr = 0.5 * sqrt(variance / effectiveSamples);
+    if(searchParams.multiHeadVctUseNormalRules) {
+      double sidecarSelfUtility =
+        attacker == P_WHITE ? stats.utilityAvg : -stats.utilityAvg;
+      double mainUtility =
+        rootNode->stats.utilityAvg.load(std::memory_order_acquire);
+      double mainSelfUtility =
+        attacker == P_WHITE ? mainUtility : -mainUtility;
+      double relativeGainProb =
+        0.5 * (sidecarSelfUtility - mainSelfUtility);
+      double priorVisits = searchParams.multiHeadVctPriorVisits;
+      double explorationStdErr = 0.5 / sqrt(effectiveSamples + priorVisits);
+      double uncertainty = std::max(empiricalStdErr,explorationStdErr);
+      double priorCarry = priorVisits > 0.0 ?
+        priorSuccessProb * priorVisits / (effectiveSamples + priorVisits) :
+        0.0;
+      double optimisticOpportunity = std::clamp(
+        std::max(
+          priorCarry,
+          relativeGainProb + searchParams.multiHeadVctUcbCoeff * uncertainty
+        ),
+        0.0,1.0
+      );
+      return
+        policyGate *
+        mainWinNeed *
+        getSmoothBudget(optimisticOpportunity);
+    }
+
+    double explorationStdErr = sqrt(
+      std::max(1e-4,successProb * (1.0 - successProb)) /
+      (effectiveSamples + 4.0)
+    );
+    double uncertainty = std::max(empiricalStdErr,explorationStdErr);
+    double optimisticProb = std::clamp(
+      successProb + searchParams.multiHeadVctUcbCoeff * uncertainty,
+      0.0,1.0
+    );
+    return
+      policyGate *
+      mainWinNeed *
+      getSmoothBudget(optimisticProb);
+  };
+
+  Player attackAttacker = rootPla;
+  Player defenseAttacker = getOpp(rootPla);
+  double attackUrgency = getUrgency(attackAttacker);
+  double defenseUrgency = getUrgency(defenseAttacker);
+  double attackProp =
+    probePhaseScale *
+    searchParams.multiHeadVctMaxAttackProp *
+    attackUrgency;
+  double defenseProp =
+    probePhaseScale *
+    searchParams.multiHeadVctMaxDefenseProp *
+    defenseUrgency;
+  double objectiveBudgetStrength =
+    searchParams.multiHeadObjectiveSearchStrength *
+    searchParams.multiHeadVctObjectiveBudgetMix;
+  if(objectiveBudgetStrength > 0.0) {
+    double normalWinWorth;
+    double normalNonLossWorth;
+    getNormalObjectiveWorths(*rootNode,normalWinWorth,normalNonLossWorth);
+    double normalWorth = normalWinWorth + normalNonLossWorth;
+    double attackWorth =
+      searchParams.multiHeadObjectiveVctWeight * attackUrgency;
+    double defenseWorth =
+      searchParams.multiHeadObjectiveVctWeight * defenseUrgency;
+    double totalWorth = normalWorth + attackWorth + defenseWorth;
+    double objectiveAttackProp = totalWorth > 0.0 ?
+      std::min(searchParams.multiHeadVctMaxAttackProp,attackWorth / totalWorth) :
+      0.0;
+    double objectiveDefenseProp = totalWorth > 0.0 ?
+      std::min(searchParams.multiHeadVctMaxDefenseProp,defenseWorth / totalWorth) :
+      0.0;
+    double strength = objectiveBudgetStrength;
+    attackProp =
+      (1.0 - strength) * attackProp +
+      strength * probePhaseScale * objectiveAttackProp;
+    defenseProp =
+      (1.0 - strength) * defenseProp +
+      strength * probePhaseScale * objectiveDefenseProp;
+  }
+  double tacticalProp = attackProp + defenseProp;
+  constexpr double MAX_TACTICAL_PROP = 0.85;
+  if(tacticalProp > MAX_TACTICAL_PROP) {
+    double scale = MAX_TACTICAL_PROP / tacticalProp;
+    attackProp *= scale;
+    defenseProp *= scale;
+    tacticalProp = MAX_TACTICAL_PROP;
+  }
+  double normalProp = 1.0 - tacticalProp;
+
+  auto getCurrentSearchCount = [](int64_t currentVisits, int64_t initialVisits) {
+    int64_t baseline = initialVisits > 0 ? initialVisits : 1;
+    return std::max<int64_t>(0,currentVisits - baseline);
+  };
+  int64_t normalCount = getCurrentSearchCount(
+    rootNode->stats.visits.load(std::memory_order_acquire),
+    rootNormalVisitsAtSearchStart
+  );
+  int64_t whiteVctCount = getCurrentSearchCount(
+    rootNode->whiteVctStats.visits.load(std::memory_order_acquire),
+    rootWhiteVctVisitsAtSearchStart
+  );
+  int64_t blackVctCount = getCurrentSearchCount(
+    rootNode->blackVctStats.visits.load(std::memory_order_acquire),
+    rootBlackVctVisitsAtSearchStart
+  );
+  int64_t attackCount = attackAttacker == P_WHITE ? whiteVctCount : blackVctCount;
+  int64_t defenseCount = defenseAttacker == P_WHITE ? whiteVctCount : blackVctCount;
+  double nextTotal = (double)(normalCount + whiteVctCount + blackVctCount + 1);
+
+  double bestDeficit = normalProp * nextTotal - normalCount;
+  Player selectedAttacker = C_EMPTY;
+  double attackDeficit = attackProp * nextTotal - attackCount;
+  if(attackDeficit > bestDeficit) {
+    bestDeficit = attackDeficit;
+    selectedAttacker = attackAttacker;
+  }
+  double defenseDeficit = defenseProp * nextTotal - defenseCount;
+  if(defenseDeficit > bestDeficit)
+    selectedAttacker = defenseAttacker;
+  return selectedAttacker;
+}
+
+Loc Search::chooseForcedReplySidecarMove(const SearchThread& thread) const {
+  double targetVisits = searchParams.multiHeadDrawForcedReplySidecarVisits;
+  double maxProp = searchParams.multiHeadDrawForcedReplySidecarMaxProp;
+  if(
+    targetVisits <= 0.0 ||
+    maxProp <= 0.0 ||
+    rootNode == NULL
+  )
+    return Board::NULL_LOC;
+
+  double phaseScale = getVctProbePhaseScale(thread);
+  if(phaseScale <= 0.0)
+    return Board::NULL_LOC;
+  double targetProp = maxProp * phaseScale;
+
+  auto getCurrentSearchCount = [](int64_t currentVisits, int64_t initialVisits) {
+    int64_t baseline = initialVisits > 0 ? initialVisits : 1;
+    return std::max<int64_t>(0,currentVisits - baseline);
+  };
+  int64_t normalCount = getCurrentSearchCount(
+    rootNode->stats.visits.load(std::memory_order_acquire),
+    rootNormalVisitsAtSearchStart
+  );
+  int64_t whiteVctCount = getCurrentSearchCount(
+    rootNode->whiteVctStats.visits.load(std::memory_order_acquire),
+    rootWhiteVctVisitsAtSearchStart
+  );
+  int64_t blackVctCount = getCurrentSearchCount(
+    rootNode->blackVctStats.visits.load(std::memory_order_acquire),
+    rootBlackVctVisitsAtSearchStart
+  );
+  int64_t sidecarCount =
+    rootPla == P_WHITE ? whiteVctCount : blackVctCount;
+  double nextTotal =
+    (double)(normalCount + whiteVctCount + blackVctCount + 1);
+  double sidecarDeficit = targetProp * nextTotal - sidecarCount;
+  double normalDeficit = (1.0 - targetProp) * nextTotal - normalCount;
+  if(sidecarDeficit <= normalDeficit)
+    return Board::NULL_LOC;
+
+  int childrenCapacity;
+  const SearchChildPointer* children = rootNode->getChildren(childrenCapacity);
+  if(childrenCapacity <= 0)
+    return Board::NULL_LOC;
+
+  double concentrationScale =
+    searchParams.multiHeadDrawForcedReplyPolicyThreshold;
+  double concentrationNorm =
+    1.0 + concentrationScale * concentrationScale;
+  constexpr double OPPORTUNITY_SCALE = 0.35;
+  constexpr double OPPORTUNITY_NORM =
+    1.0 + OPPORTUNITY_SCALE * OPPORTUNITY_SCALE;
+
+  Loc bestMoveLoc = Board::NULL_LOC;
+  double bestDeficit = 0.0;
+  for(int i = 0; i<childrenCapacity; i++) {
+    const SearchNode* child = children[i].getIfAllocated();
+    if(child == NULL)
+      break;
+    const NNOutput* childNNOutput = child->getNNOutput();
+    if(childNNOutput == NULL)
+      continue;
+    if(!childNNOutput->hasPolicyByHead())
+      throw StringError("forced-reply sidecar search requires a v112 model");
+
+    double peakReplyPolicy = 0.0;
+    for(int movePos = 0; movePos<policySize; movePos++) {
+      peakReplyPolicy = std::max(
+        peakReplyPolicy,
+        (double)childNNOutput->getPolicyProbMaybeNoised(movePos)
+      );
+    }
+    double peakSq = peakReplyPolicy * peakReplyPolicy;
+    double scaleSq = concentrationScale * concentrationScale;
+    double concentration = peakSq > 0.0 ?
+      concentrationNorm * peakSq / (peakSq + scaleSq) :
+      0.0;
+    concentration = std::clamp(concentration,0.0,1.0);
+
+    Player childPla = child->nextPla;
+    double childMustWinProb = childPla == P_WHITE ?
+      childNNOutput->whiteWinProbByHead[3] :
+      childNNOutput->whiteLossProbByHead[3];
+    double childLossProbWhenDrawCountsAsWin = childPla == P_WHITE ?
+      childNNOutput->whiteLossProbByHead[2] :
+      childNNOutput->whiteWinProbByHead[2];
+    double childNonLossProb =
+      1.0 - childLossProbWhenDrawCountsAsWin;
+    double childOutcomeInterval = std::clamp(
+      childNonLossProb - childMustWinProb,
+      0.0,1.0
+    );
+    double childDrawSignal = sqrt(
+      std::clamp(
+        (double)childNNOutput->whiteNoResultProb,
+        0.0,1.0
+      ) *
+      childOutcomeInterval
+    );
+
+    int64_t edgeVisits = children[i].getVctEdgeVisits(rootPla);
+    double opportunity = 1.0;
+    if(edgeVisits > 0) {
+      VctStats stats(child->getVctStats(rootPla));
+      if(stats.visits > 0 && stats.weightSum > 0.0) {
+        double selfUtility =
+          rootPla == P_WHITE ? stats.utilityAvg : -stats.utilityAvg;
+        double successProb =
+          std::clamp(0.5 * (selfUtility + 1.0),0.0,1.0);
+        double variance = std::max(
+          0.0,
+          stats.utilitySqAvg - stats.utilityAvg * stats.utilityAvg
+        );
+        double effectiveSamples = stats.weightSqSum > 0.0 ?
+          stats.weightSum * stats.weightSum / stats.weightSqSum :
+          (double)stats.visits;
+        effectiveSamples = std::max(1.0,effectiveSamples);
+        double empiricalStdErr =
+          0.5 * sqrt(variance / effectiveSamples);
+        double explorationStdErr = 0.25 / sqrt(effectiveSamples);
+        double uncertainty =
+          std::max(empiricalStdErr,explorationStdErr);
+        double optimisticProb = std::clamp(
+          successProb +
+            searchParams.multiHeadVctUcbCoeff * uncertainty,
+          0.0,1.0
+        );
+        double optimisticSq = optimisticProb * optimisticProb;
+        opportunity =
+          OPPORTUNITY_NORM * optimisticSq /
+          (optimisticSq + OPPORTUNITY_SCALE * OPPORTUNITY_SCALE);
+        opportunity = std::clamp(opportunity,0.0,1.0);
+      }
+    }
+
+    double desiredVisits =
+      targetVisits *
+      concentration *
+      childDrawSignal *
+      opportunity;
+    double deficit = desiredVisits - edgeVisits;
+    if(deficit > bestDeficit) {
+      bestDeficit = deficit;
+      bestMoveLoc = children[i].getMoveLocRelaxed();
+    }
+  }
+  return bestMoveLoc;
+}
+
+Loc Search::chooseVctNormalVerificationMove(const SearchThread& thread) {
+  if(
+    searchParams.multiHeadVctNormalVerificationProp <= 0.0 ||
+    (
+      searchParams.multiHeadVctMaxAttackProp <= 0.0 &&
+      searchParams.multiHeadDrawForcedReplySidecarVisits <= 0.0
+    ) ||
+    rootNode == NULL
+  )
+    return Board::NULL_LOC;
+
+  int childrenCapacity;
+  const SearchChildPointer* children = rootNode->getChildren(childrenCapacity);
+  if(childrenCapacity <= 0)
+    return Board::NULL_LOC;
+
+  double bestNormalSelfUtility = -1.0;
+  for(int i = 0; i<childrenCapacity; i++) {
+    const SearchNode* child = children[i].getIfAllocated();
+    if(child == NULL)
+      break;
+    int64_t edgeVisits = children[i].getEdgeVisits();
+    if(edgeVisits <= 0)
+      continue;
+    double utility = child->stats.utilityAvg.load(std::memory_order_acquire);
+    double selfUtility = rootPla == P_WHITE ? utility : -utility;
+    bestNormalSelfUtility = std::max(bestNormalSelfUtility,selfUtility);
+  }
+
+  Loc bestMoveLoc = Board::NULL_LOC;
+  double bestSignal = 0.0;
+  for(int i = 0; i<childrenCapacity; i++) {
+    const SearchNode* child = children[i].getIfAllocated();
+    if(child == NULL)
+      break;
+    int64_t vctEdgeVisits = children[i].getVctEdgeVisits(rootPla);
+    if(vctEdgeVisits <= 0)
+      continue;
+    VctStats stats(child->getVctStats(rootPla));
+    if(stats.visits <= 0 || stats.weightSum <= 0.0)
+      continue;
+
+    double successProb = rootPla == P_WHITE ?
+      0.5 * (stats.utilityAvg + 1.0) :
+      0.5 * (1.0 - stats.utilityAvg);
+    successProb = std::clamp(successProb,0.0,1.0);
+    double variance = std::max(
+      0.0,
+      stats.utilitySqAvg - stats.utilityAvg * stats.utilityAvg
+    );
+    double effectiveSamples = stats.weightSqSum > 0.0 ?
+      stats.weightSum * stats.weightSum / stats.weightSqSum :
+      (double)stats.visits;
+    effectiveSamples = std::max(1.0,effectiveSamples);
+    double empiricalStdErr = 0.5 * sqrt(variance / effectiveSamples);
+    double explorationStdErr = sqrt(
+      std::max(1e-4,successProb * (1.0 - successProb)) /
+      (effectiveSamples + 4.0)
+    );
+    double uncertainty = std::max(empiricalStdErr,explorationStdErr);
+    double optimisticProb = std::clamp(
+      successProb + searchParams.multiHeadVctUcbCoeff * uncertainty,
+      0.0,1.0
+    );
+    double poweredProbability = pow(
+      optimisticProb,
+      searchParams.multiHeadVctProbPower
+    );
+    double poweredScale = pow(
+      searchParams.multiHeadVctProbScale,
+      searchParams.multiHeadVctProbPower
+    );
+    double probabilityGate =
+      poweredProbability / (poweredProbability + poweredScale);
+    double visitConfidence = sqrt(
+      (double)vctEdgeVisits /
+      (vctEdgeVisits + searchParams.multiHeadVctMoveSelectionVisitScale)
+    );
+
+    int64_t normalEdgeVisits = children[i].getEdgeVisits();
+    double normalDisproofGate = 1.0;
+    if(normalEdgeVisits > 0 && bestNormalSelfUtility > -1.0) {
+      double normalUtility =
+        child->stats.utilityAvg.load(std::memory_order_acquire);
+      double normalSelfUtility =
+        rootPla == P_WHITE ? normalUtility : -normalUtility;
+      double utilityGap = std::max(
+        0.0,
+        bestNormalSelfUtility - normalSelfUtility - 0.10
+      );
+      double normalConfidence =
+        (double)normalEdgeVisits / (normalEdgeVisits + 8.0);
+      normalDisproofGate = exp(-4.0 * utilityGap * normalConfidence);
+    }
+
+    double signal =
+      probabilityGate * visitConfidence * normalDisproofGate;
+    if(signal > bestSignal) {
+      bestSignal = signal;
+      bestMoveLoc = children[i].getMoveLocRelaxed();
+    }
+  }
+  if(bestMoveLoc == Board::NULL_LOC || bestSignal <= 0.0)
+    return Board::NULL_LOC;
+
+  auto getCurrentSearchCount = [](int64_t currentVisits, int64_t initialVisits) {
+    int64_t baseline = initialVisits > 0 ? initialVisits : 1;
+    return std::max<int64_t>(0,currentVisits - baseline);
+  };
+  int64_t normalCount = getCurrentSearchCount(
+    rootNode->stats.visits.load(std::memory_order_acquire),
+    rootNormalVisitsAtSearchStart
+  );
+  int64_t whiteVctCount = getCurrentSearchCount(
+    rootNode->whiteVctStats.visits.load(std::memory_order_acquire),
+    rootWhiteVctVisitsAtSearchStart
+  );
+  int64_t blackVctCount = getCurrentSearchCount(
+    rootNode->blackVctStats.visits.load(std::memory_order_acquire),
+    rootBlackVctVisitsAtSearchStart
+  );
+  int64_t nextTotal = normalCount + whiteVctCount + blackVctCount + 1;
+  double targetProp =
+    searchParams.multiHeadVctNormalVerificationProp * bestSignal;
+  int64_t targetCount = (int64_t)floor(targetProp * nextTotal);
+  int64_t currentCount =
+    rootVctNormalVerificationPlayouts.load(std::memory_order_acquire);
+  while(currentCount < targetCount) {
+    if(rootVctNormalVerificationPlayouts.compare_exchange_weak(
+      currentCount,currentCount + 1,
+      std::memory_order_acq_rel,std::memory_order_acquire
+    ))
+      return bestMoveLoc;
+  }
+  return Board::NULL_LOC;
+}
+
+int64_t Search::getRootObjectiveEdgeVisits(Player objective) const {
+  assert(objective == P_WHITE || objective == P_BLACK);
+  if(rootNode == NULL)
+    return 0;
+  int childrenCapacity;
+  const SearchChildPointer* children = rootNode->getChildren(childrenCapacity);
+  int64_t visits = 0;
+  for(int i = 0; i<childrenCapacity; i++) {
+    if(children[i].getIfAllocated() == NULL)
+      break;
+    visits += children[i].getObjectiveEdgeVisits(objective);
+  }
+  return visits;
+}
+
+Player Search::chooseNormalPlayoutObjective() const {
+  if(!searchParams.multiHeadObjectiveSeparatePlayouts)
+    return C_EMPTY;
+  assert(rootNode != NULL);
+
+  double sideWinProp = getSideToMoveWinObjectiveWeight(*rootNode);
+  double whiteWinProp =
+    rootPla == P_WHITE ? sideWinProp : 1.0 - sideWinProp;
+  double blackWinProp = 1.0 - whiteWinProp;
+  int64_t whiteCount = std::max<int64_t>(
+    0,
+    getRootObjectiveEdgeVisits(P_WHITE) -
+      rootWhiteWinEdgeVisitsAtSearchStart
+  );
+  int64_t blackCount = std::max<int64_t>(
+    0,
+    getRootObjectiveEdgeVisits(P_BLACK) -
+      rootBlackWinEdgeVisitsAtSearchStart
+  );
+  double nextTotal = (double)(whiteCount + blackCount + 1);
+  double whiteDeficit = whiteWinProp * nextTotal - whiteCount;
+  double blackDeficit = blackWinProp * nextTotal - blackCount;
+  return whiteDeficit > blackDeficit ? P_WHITE : P_BLACK;
+}
+
+void Search::addNormalEdgeVisit(
+  SearchChildPointer& child, Player normalObjective, int64_t delta
+) const {
+  child.addEdgeVisits(delta);
+  if(normalObjective != C_EMPTY)
+    child.addObjectiveEdgeVisits(normalObjective,delta);
+}
+
+void Search::choosePolicyGuidance(SearchThread& thread) const {
+  thread.policyGuidanceMode = SearchThread::POLICY_GUIDANCE_NONE;
+  thread.policyGuidanceAttacker = C_EMPTY;
+  if(
+    searchParams.multiHeadVctGuidedPlayoutProp <= 0.0 &&
+    searchParams.multiHeadDrawGuidedPlayoutProp <= 0.0
+  )
+    return;
+
+  const NNOutput* nnOutput = rootNode->getNNOutput();
+  if(nnOutput == NULL)
+    return;
+  if(!nnOutput->hasPolicyByHead())
+    throw StringError("multi-head guided playouts require a v112 model with six policy heads");
+
+  int policySize = NNPos::getPolicySize(nnOutput->nnXLen,nnOutput->nnYLen);
+  int legalPolicyCount = 0;
+  for(int movePos = 0; movePos<policySize; movePos++) {
+    if(nnOutput->getPolicyProbMaybeNoised(movePos) >= 0.0f)
+      legalPolicyCount++;
+  }
+  double twiceUniformPolicy =
+    legalPolicyCount > 0 ? 2.0 / legalPolicyCount : 1.0;
+  auto getPolicyConcentration = [&](int head) {
+    double peakPolicy = 0.0;
+    for(int movePos = 0; movePos<policySize; movePos++) {
+      float policy = nnOutput->getPolicyProbByHead(head,movePos);
+      if(policy > peakPolicy)
+        peakPolicy = policy;
+    }
+    double peakExcess = std::max(0.0,peakPolicy - twiceUniformPolicy);
+    return
+      peakExcess /
+      (peakExcess + searchParams.multiHeadAuxPolicyConcentrationScale);
+  };
+  auto getWinProb = [&](int head) {
+    return rootPla == P_WHITE ?
+      (double)nnOutput->whiteWinProbByHead[head] :
+      (double)nnOutput->whiteLossProbByHead[head];
+  };
+
+  double vctProp =
+    searchParams.multiHeadVctGuidedPlayoutProp *
+    std::clamp(getWinProb(4),0.0,1.0) *
+    getPolicyConcentration(4);
+  double mustWinProp =
+    searchParams.multiHeadDrawGuidedPlayoutProp *
+    std::clamp(getWinProb(3),0.0,1.0) *
+    getPolicyConcentration(3);
+  if(searchParams.multiHeadGuidedStartFraction > 0.0) {
+    double startFraction = searchParams.multiHeadGuidedStartFraction;
+    if(startFraction >= 1.0)
+      return;
+    int64_t plannedPlayouts = std::min(
+      searchParams.maxPlayouts,
+      searchParams.maxVisits
+    );
+    if(plannedPlayouts <= 0)
+      return;
+    double searchProgress = std::clamp(
+      1.0 - thread.upperBoundVisitsLeft / plannedPlayouts,
+      0.0,1.0
+    );
+    double ramp = std::clamp(
+      (searchProgress - startFraction) / (1.0 - startFraction),
+      0.0,1.0
+    );
+    vctProp *= ramp;
+    mustWinProp *= ramp;
+  }
+  constexpr double MAX_GUIDED_PROP = 0.85;
+  double guidedProp = vctProp + mustWinProp;
+  if(guidedProp > MAX_GUIDED_PROP) {
+    double scale = MAX_GUIDED_PROP / guidedProp;
+    vctProp *= scale;
+    mustWinProp *= scale;
+  }
+
+  double choice = thread.rand.nextDouble();
+  if(choice < vctProp)
+    thread.policyGuidanceMode = SearchThread::POLICY_GUIDANCE_VCT;
+  else if(choice < vctProp + mustWinProp)
+    thread.policyGuidanceMode = SearchThread::POLICY_GUIDANCE_MUST_WIN;
+  else
+    return;
+  thread.policyGuidanceAttacker = rootPla;
+}
 
 bool Search::runSinglePlayout(SearchThread& thread, double upperBoundVisitsLeft) {
   //Store this value, used for futile-visit pruning this thread's root children selections.
   thread.upperBoundVisitsLeft = upperBoundVisitsLeft;
+  thread.rootForcedReplySidecarMoveLoc =
+    chooseForcedReplySidecarMove(thread);
+  thread.vctAttacker =
+    thread.rootForcedReplySidecarMoveLoc != Board::NULL_LOC ?
+      rootPla :
+      chooseVctPlayoutAttacker(thread);
+  thread.normalObjective =
+    thread.vctAttacker == C_EMPTY ?
+      chooseNormalPlayoutObjective() :
+      C_EMPTY;
+  thread.rootVctNormalVerificationMoveLoc =
+    thread.vctAttacker == C_EMPTY ?
+      chooseVctNormalVerificationMove(thread) :
+      Board::NULL_LOC;
+  thread.policyGuidanceMode = SearchThread::POLICY_GUIDANCE_NONE;
+  thread.policyGuidanceAttacker = C_EMPTY;
+  if(
+    thread.vctAttacker == C_EMPTY &&
+    thread.rootVctNormalVerificationMoveLoc == Board::NULL_LOC
+  )
+    choosePolicyGuidance(thread);
+  if(thread.vctAttacker != C_EMPTY) {
+    thread.normalRulesBoard = thread.board;
+    thread.normalRulesHistory = thread.history;
+    if(!searchParams.multiHeadVctUseNormalRules) {
+      thread.history.rules.VCNRule =
+        thread.vctAttacker == P_BLACK ? Rules::VCNRULE_VC3_B : Rules::VCNRULE_VC3_W;
+      thread.history.rules.firstPassWin = false;
+      thread.history.rules.maxMoves = 0;
+    }
+  }
 
   bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE];
   bool finishedPlayout = playoutDescend(thread,*rootNode,posesWithChildBuf,true);
@@ -973,10 +1865,36 @@ bool Search::runSinglePlayout(SearchThread& thread, double upperBoundVisitsLeft)
   thread.pla = rootPla;
   thread.board = rootBoard;
   thread.history = rootHistory;
+  thread.normalRulesBoard = rootBoard;
+  thread.normalRulesHistory = rootHistory;
   thread.graphHash = rootGraphHash;
   thread.graphPath.clear();
+  thread.vctAttacker = C_EMPTY;
+  thread.normalObjective = C_EMPTY;
+  thread.policyGuidanceMode = SearchThread::POLICY_GUIDANCE_NONE;
+  thread.policyGuidanceAttacker = C_EMPTY;
+  thread.rootVctNormalVerificationMoveLoc = Board::NULL_LOC;
+  thread.rootForcedReplySidecarMoveLoc = Board::NULL_LOC;
 
   return finishedPlayout;
+}
+
+void Search::makeMoveForPlayout(SearchThread& thread, Loc moveLoc) {
+  Player movePla = thread.pla;
+  thread.history.makeBoardMoveAssumeLegal(thread.board,moveLoc,movePla);
+  if(thread.vctAttacker != C_EMPTY) {
+    thread.normalRulesHistory.makeBoardMoveAssumeLegal(
+      thread.normalRulesBoard,moveLoc,movePla
+    );
+    assert(thread.normalRulesBoard.pos_hash == thread.board.pos_hash);
+  }
+  thread.pla = getOpp(movePla);
+
+  if(searchParams.useGraphSearch) {
+    const BoardHistory& graphHistory =
+      thread.vctAttacker == C_EMPTY ? thread.history : thread.normalRulesHistory;
+    thread.graphHash = GraphHash::getGraphHash(graphHistory,thread.pla);
+  }
 }
 
 bool Search::playoutDescend(
@@ -1001,14 +1919,37 @@ bool Search::playoutDescend(
     
     nnEvaluator->waitForNextNNEvalIfAny();
    
-      double whiteWinProb = thread.history.winner == C_WHITE ? 1.0 : 0.0;
-      double blackWinProb = thread.history.winner == C_BLACK ? 1.0 : 0.0;
-      double noResultValue = thread.history.winner == C_EMPTY ? 1.0 : 0.0;
-      double legacyUtility = getResultUtility(whiteWinProb - blackWinProb, noResultValue);
-      double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
-      double blackWinUtilityInv = getBlackWinUtilityInv(legacyUtility, blackWinProb);
       double weight = (searchParams.useUncertainty && nnEvaluator->supportsShorttermError()) ? searchParams.uncertaintyMaxWeight : 1.0;
-      addLeafValue(node, whiteWinProb, blackWinProb, noResultValue, legacyUtility, whiteWinUtility, blackWinUtilityInv, weight, weight, weight, true, false);
+      if(thread.vctAttacker == C_EMPTY) {
+        double whiteWinProb = thread.history.winner == C_WHITE ? 1.0 : 0.0;
+        double blackWinProb = thread.history.winner == C_BLACK ? 1.0 : 0.0;
+        double noResultValue = thread.history.winner == C_EMPTY ? 1.0 : 0.0;
+        double legacyUtility = getResultUtility(whiteWinProb - blackWinProb, noResultValue);
+        double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
+        double blackWinUtilityInv = getBlackWinUtilityInv(legacyUtility, blackWinProb);
+        addLeafValue(
+          node,whiteWinProb,blackWinProb,noResultValue,legacyUtility,
+          whiteWinUtility,blackWinUtilityInv,weight,weight,weight,
+          true,false,thread.normalObjective
+        );
+      }
+      else {
+        double utility;
+        if(searchParams.multiHeadVctUseNormalRules) {
+          double whiteWinProb = thread.history.winner == C_WHITE ? 1.0 : 0.0;
+          double blackWinProb = thread.history.winner == C_BLACK ? 1.0 : 0.0;
+          double noResultValue = thread.history.winner == C_EMPTY ? 1.0 : 0.0;
+          utility = getResultUtility(whiteWinProb - blackWinProb,noResultValue);
+        }
+        else {
+          bool attackerWon = thread.history.winner == thread.vctAttacker;
+          if(thread.vctAttacker == P_WHITE)
+            utility = attackerWon ? 1.0 : -1.0;
+          else
+            utility = attackerWon ? -1.0 : 1.0;
+        }
+        addVctLeafValue(node,thread.vctAttacker,utility,weight,false);
+      }
       return true;
     
   }
@@ -1100,7 +2041,12 @@ bool Search::playoutDescend(
           int childrenCapacity;
           SearchChildPointer* children = node.getChildren(nodeState,childrenCapacity);
           assert(childrenCapacity > bestChildIdx);
-          children[bestChildIdx].addEdgeVisits(1);
+          if(thread.vctAttacker == C_EMPTY)
+            addNormalEdgeVisit(
+              children[bestChildIdx],thread.normalObjective,1
+            );
+          else
+            children[bestChildIdx].addVctEdgeVisits(thread.vctAttacker,1);
           return true;
         }
       }
@@ -1109,7 +2055,10 @@ bool Search::playoutDescend(
     if(bestChildIdx <= -1) {
       //This might happen if all moves have been forbidden. The node will just get stuck counting visits without expanding
       //and we won't do any search.
-      addCurrentNNOutputAsLeafValue(node,false);
+      if(thread.vctAttacker == C_EMPTY)
+        addCurrentNNOutputAsLeafValue(node,false,thread.normalObjective);
+      else
+        addCurrentNNOutputAsVctLeafValue(node,thread.vctAttacker,false);
       return true;
     }
 
@@ -1130,17 +2079,12 @@ bool Search::playoutDescend(
       assert(childrenCapacity > bestChildIdx);
 
       //Make the move! We need to make the move before we create the node so we can see the new state and get the right graphHash.
-      thread.history.makeBoardMoveAssumeLegal(thread.board,bestChildMoveLoc,thread.pla);
-      thread.pla = getOpp(thread.pla);
-      if(searchParams.useGraphSearch)
-        thread.graphHash = GraphHash::getGraphHash(
-           thread.history, thread.pla
-        );
+      makeMoveForPlayout(thread,bestChildMoveLoc);
 
       //If conservative pass, passing from the root is always non-terminal
       const bool forceNonTerminal = false;
       child = allocateOrFindNode(thread, thread.pla, bestChildMoveLoc, forceNonTerminal, thread.graphHash);
-      child->virtualLosses.fetch_add(1,std::memory_order_release);
+      child->getVirtualLosses(thread.vctAttacker).fetch_add(1,std::memory_order_release);
 
       {
         //Lock mutex to store child and move loc in a synchronized way
@@ -1156,7 +2100,7 @@ bool Search::playoutDescend(
           //Someone got there ahead of us. We already made a move so we can't just loop again. Instead just fail this playout and try again.
           //Even if the node was newly allocated, no need to delete the node, it will get cleaned up next time we mark and sweep the node table later.
           //Clean up virtual losses in case the node is a transposition and is being used.
-          child->virtualLosses.fetch_add(-1,std::memory_order_release);
+          child->getVirtualLosses(thread.vctAttacker).fetch_add(-1,std::memory_order_release);
           return false;
         }
       }
@@ -1165,7 +2109,7 @@ bool Search::playoutDescend(
       //Instead just add edge visits and treat that as a visit.
       if(maybeCatchUpEdgeVisits(thread, node, child, nodeState, bestChildIdx)) {
         updateStatsAfterPlayout(node,thread,isRoot);
-        child->virtualLosses.fetch_add(-1,std::memory_order_release);
+        child->getVirtualLosses(thread.vctAttacker).fetch_add(-1,std::memory_order_release);
         return true;
       }
     }
@@ -1176,22 +2120,18 @@ bool Search::playoutDescend(
       child = children[bestChildIdx].getIfAllocated();
       assert(child != NULL);
 
-      child->virtualLosses.fetch_add(1,std::memory_order_release);
+      child->getVirtualLosses(thread.vctAttacker).fetch_add(1,std::memory_order_release);
 
       //If edge visits is too much smaller than the child's visits, we can avoid descending.
       //Instead just add edge visits and treat that as a visit.
       if(maybeCatchUpEdgeVisits(thread, node, child, nodeState, bestChildIdx)) {
         updateStatsAfterPlayout(node,thread,isRoot);
-        child->virtualLosses.fetch_add(-1,std::memory_order_release);
+        child->getVirtualLosses(thread.vctAttacker).fetch_add(-1,std::memory_order_release);
         return true;
       }
 
       //Make the move!
-      thread.history.makeBoardMoveAssumeLegal(thread.board,bestChildMoveLoc,thread.pla);
-      thread.pla = getOpp(thread.pla);
-      if(searchParams.useGraphSearch)
-        thread.graphHash = GraphHash::getGraphHash(thread.history, thread.pla
-        );
+      makeMoveForPlayout(thread,bestChildMoveLoc);
     }
 
     break;
@@ -1206,9 +2146,14 @@ bool Search::playoutDescend(
     if(!result.second) {
       int childrenCapacity;
       SearchChildPointer* children = node.getChildren(nodeState,childrenCapacity);
-      children[bestChildIdx].addEdgeVisits(1);
+      if(thread.vctAttacker == C_EMPTY)
+        addNormalEdgeVisit(
+          children[bestChildIdx],thread.normalObjective,1
+        );
+      else
+        children[bestChildIdx].addVctEdgeVisits(thread.vctAttacker,1);
       updateStatsAfterPlayout(node,thread,isRoot);
-      child->virtualLosses.fetch_add(-1,std::memory_order_release);
+      child->getVirtualLosses(thread.vctAttacker).fetch_add(-1,std::memory_order_release);
       return true;
     }
   }
@@ -1220,10 +2165,15 @@ bool Search::playoutDescend(
     nodeState = node.state.load(std::memory_order_acquire);
     int childrenCapacity;
     SearchChildPointer* children = node.getChildren(nodeState,childrenCapacity);
-    children[bestChildIdx].addEdgeVisits(1);
+    if(thread.vctAttacker == C_EMPTY)
+      addNormalEdgeVisit(
+        children[bestChildIdx],thread.normalObjective,1
+      );
+    else
+      children[bestChildIdx].addVctEdgeVisits(thread.vctAttacker,1);
     updateStatsAfterPlayout(node,thread,isRoot);
   }
-  child->virtualLosses.fetch_add(-1,std::memory_order_release);
+  child->getVirtualLosses(thread.vctAttacker).fetch_add(-1,std::memory_order_release);
 
   return finishedPlayout;
 }
@@ -1237,14 +2187,59 @@ bool Search::maybeCatchUpEdgeVisits(SearchThread& thread, SearchNode& node, Sear
   int childrenCapacity;
   SearchChildPointer* children = node.getChildren(nodeState,childrenCapacity);
 
+  if(
+    thread.vctAttacker == C_EMPTY &&
+    thread.normalObjective != C_EMPTY
+  ) {
+    double objectiveWeightSum =
+      thread.normalObjective == P_WHITE ?
+        child->stats.whiteWinWeightSum.load(std::memory_order_acquire) :
+        child->stats.blackWinWeightSum.load(std::memory_order_acquire);
+    double childVisits = std::max(1.0,ceil(objectiveWeightSum));
+    Player otherObjective = getOpp(thread.normalObjective);
+    double crossWeight = searchParams.multiHeadObjectiveCrossWeight;
+    while(true) {
+      int64_t selectedEdgeVisits =
+        children[bestChildIdx].getObjectiveEdgeVisits(
+          thread.normalObjective
+        );
+      int64_t otherEdgeVisits =
+        children[bestChildIdx].getObjectiveEdgeVisits(otherObjective);
+      double creditedEdgeVisits =
+        selectedEdgeVisits + crossWeight * otherEdgeVisits;
+      if(creditedEdgeVisits >= childVisits)
+        return false;
+      if(
+        searchParams.graphSearchCatchUpLeakProb > 0.0 &&
+        thread.rand.nextBool(searchParams.graphSearchCatchUpLeakProb)
+      )
+        return false;
+      int64_t expected = selectedEdgeVisits;
+      if(children[bestChildIdx].compexweakObjectiveEdgeVisits(
+        thread.normalObjective,expected,selectedEdgeVisits + 1
+      )) {
+        children[bestChildIdx].addEdgeVisits(1);
+        return true;
+      }
+    }
+  }
+
   // int64_t maxNumToAdd = 1;
   // if(searchParams.graphSearchCatchUpProp > 0.0) {
   //   int64_t parentVisits = node.stats.visits.load(std::memory_order_acquire);
   //   //Truncate down
   //   maxNumToAdd = 1 + (int64_t)(searchParams.graphSearchCatchUpProp * parentVisits);
   // }
-  int64_t childVisits = child->stats.visits.load(std::memory_order_acquire);
-  int64_t edgeVisits = children[bestChildIdx].getEdgeVisits();
+  int64_t childVisits;
+  int64_t edgeVisits;
+  if(thread.vctAttacker == C_EMPTY) {
+    childVisits = child->stats.visits.load(std::memory_order_acquire);
+    edgeVisits = children[bestChildIdx].getEdgeVisits();
+  }
+  else {
+    childVisits = child->getVctStats(thread.vctAttacker).visits.load(std::memory_order_acquire);
+    edgeVisits = children[bestChildIdx].getVctEdgeVisits(thread.vctAttacker);
+  }
 
   //If we want to leak through some of the time, then we keep searching the transposition node even if we'd be happy to stop here with
   //how many visits it has
@@ -1259,7 +2254,15 @@ bool Search::maybeCatchUpEdgeVisits(SearchThread& thread, SearchNode& node, Sear
     if(edgeVisits >= childVisits)
       return false;
     // numToAdd = std::min((childVisits - edgeVisits + 3) / 4, maxNumToAdd);
-  } while(!children[bestChildIdx].compexweakEdgeVisits(edgeVisits, edgeVisits + numToAdd));
+  } while(
+    thread.vctAttacker == C_EMPTY ?
+      !children[bestChildIdx].compexweakEdgeVisits(
+        edgeVisits,edgeVisits + numToAdd
+      ) :
+      !children[bestChildIdx].compexweakVctEdgeVisits(
+        thread.vctAttacker,edgeVisits,edgeVisits + numToAdd
+      )
+  );
 
   return true;
 }

@@ -21,8 +21,25 @@ void Search::addLeafValue(
   double whiteWinWeight,
   double blackWinWeight,
   bool isTerminal,
-  bool assumeNoExistingWeight
+  bool assumeNoExistingWeight,
+  Player normalObjective
 ) {
+  assert(
+    normalObjective == C_EMPTY ||
+    normalObjective == P_WHITE ||
+    normalObjective == P_BLACK
+  );
+  if(
+    searchParams.multiHeadObjectiveSeparatePlayouts &&
+    !assumeNoExistingWeight &&
+    node.stats.visits.load(std::memory_order_acquire) > 0
+  ) {
+    double crossWeight = searchParams.multiHeadObjectiveCrossWeight;
+    if(normalObjective == P_WHITE)
+      blackWinWeight *= crossWeight;
+    else if(normalObjective == P_BLACK)
+      whiteWinWeight *= crossWeight;
+  }
   double winLossValue = whiteWinProb - blackWinProb;
 
   if(searchParams.subtreeValueBiasFactor != 0 && !isTerminal && node.subtreeValueBiasTableEntry != nullptr) {
@@ -113,12 +130,14 @@ void Search::addLeafValue(
   }
 }
 
-void Search::addCurrentNNOutputAsLeafValue(SearchNode& node, bool assumeNoExistingWeight) {
+void Search::addCurrentNNOutputAsLeafValue(
+  SearchNode& node, bool assumeNoExistingWeight, Player normalObjective
+) {
   const NNOutput* nnOutput = node.getNNOutput();
   assert(nnOutput != NULL);
   //Values in the search are from the perspective of white positive always
-  double whiteWinProb = getWhiteWinProbFromNN(*nnOutput);
-  double blackWinProb = getBlackWinProbFromNN(*nnOutput);
+  double whiteWinProb = getWhiteWinProbFromNN(*nnOutput,node.nextPla);
+  double blackWinProb = getBlackWinProbFromNN(*nnOutput,node.nextPla);
   double noResultProb = (double)nnOutput->whiteNoResultProb;
   double legacyUtility = getResultUtilityFromNN(*nnOutput);
   double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
@@ -126,7 +145,70 @@ void Search::addCurrentNNOutputAsLeafValue(SearchNode& node, bool assumeNoExisti
   double weight = computeWeightFromNNOutput(nnOutput);
   double whiteWinWeight = computeWhiteWinWeightFromNNOutput(nnOutput);
   double blackWinWeight = computeBlackWinWeightFromNNOutput(nnOutput);
-  addLeafValue(node,whiteWinProb,blackWinProb,noResultProb,legacyUtility,whiteWinUtility,blackWinUtilityInv,weight,whiteWinWeight,blackWinWeight,false,assumeNoExistingWeight);
+  addLeafValue(
+    node,whiteWinProb,blackWinProb,noResultProb,legacyUtility,
+    whiteWinUtility,blackWinUtilityInv,weight,whiteWinWeight,blackWinWeight,
+    false,assumeNoExistingWeight,normalObjective
+  );
+}
+
+void Search::addVctLeafValue(
+  SearchNode& node, Player attacker, double utility, double weight,
+  bool assumeNoExistingWeight
+) {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  VctStatsAtomic& stats = node.getVctStats(attacker);
+  double utilitySq = utility * utility;
+  double weightSq = weight * weight;
+
+  while(node.statsLock.test_and_set(std::memory_order_acquire));
+  if(assumeNoExistingWeight) {
+    int64_t oldVisits = stats.visits.load(std::memory_order_relaxed);
+    stats.utilityAvg.store(utility,std::memory_order_release);
+    stats.utilitySqAvg.store(utilitySq,std::memory_order_release);
+    stats.weightSum.store(weight,std::memory_order_release);
+    stats.weightSqSum.store(weightSq,std::memory_order_release);
+    stats.visits.fetch_add(1,std::memory_order_release);
+    node.statsLock.clear(std::memory_order_release);
+    if(oldVisits != 0)
+      logger->write("WARNING: assumeNoExistingWeight for VCT leaf but leaf already has visits");
+  }
+  else {
+    double oldWeightSum = stats.weightSum.load(std::memory_order_relaxed);
+    double newWeightSum = oldWeightSum + weight;
+    if(newWeightSum > 0.0) {
+      stats.utilityAvg.store(
+        (stats.utilityAvg.load(std::memory_order_relaxed) * oldWeightSum + utility * weight) / newWeightSum,
+        std::memory_order_release
+      );
+      stats.utilitySqAvg.store(
+        (stats.utilitySqAvg.load(std::memory_order_relaxed) * oldWeightSum + utilitySq * weight) / newWeightSum,
+        std::memory_order_release
+      );
+    }
+    stats.weightSum.store(newWeightSum,std::memory_order_release);
+    stats.weightSqSum.store(stats.weightSqSum.load(std::memory_order_relaxed) + weightSq,std::memory_order_release);
+    stats.visits.fetch_add(1,std::memory_order_release);
+    node.statsLock.clear(std::memory_order_release);
+  }
+}
+
+double Search::getVctUtilityFromNN(const NNOutput& nnOutput, Player attacker, Player nextPla) const {
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  assert(nextPla == P_WHITE || nextPla == P_BLACK);
+  int head = attacker == nextPla ? 4 : 5;
+  if(attacker == P_WHITE)
+    return 2.0 * nnOutput.whiteWinProbByHead[head] - 1.0;
+  return 1.0 - 2.0 * nnOutput.whiteLossProbByHead[head];
+}
+
+void Search::addCurrentNNOutputAsVctLeafValue(SearchNode& node, Player attacker, bool assumeNoExistingWeight) {
+  const NNOutput* nnOutput = node.getNNOutput();
+  assert(nnOutput != NULL);
+  double utility = searchParams.multiHeadVctUseNormalRules ?
+    getUtilityFromNN(*nnOutput,node.nextPla) :
+    getVctUtilityFromNN(*nnOutput,attacker,node.nextPla);
+  addVctLeafValue(node,attacker,utility,1.0,assumeNoExistingWeight);
 }
 
 double Search::computeWeightFromNNOutput(const NNOutput* nnOutput) const {
@@ -162,6 +244,11 @@ double Search::computeBlackWinWeightFromNNOutput(const NNOutput* nnOutput) const
 }
 
 void Search::updateStatsAfterPlayout(SearchNode& node, SearchThread& thread, bool isRoot) {
+  if(thread.vctAttacker != C_EMPTY) {
+    updateVctStatsAfterPlayout(node,thread);
+    return;
+  }
+
   //The thread that grabs a 0 from this peforms the recomputation of stats.
   int32_t oldDirtyCounter = node.dirtyCounter.fetch_add(1,std::memory_order_acq_rel);
   assert(oldDirtyCounter >= 0);
@@ -184,6 +271,101 @@ void Search::updateStatsAfterPlayout(SearchNode& node, SearchThread& thread, boo
     numVisitsCompleted = newDirtyCounter;
     continue;
   }
+}
+
+void Search::updateVctStatsAfterPlayout(SearchNode& node, SearchThread& thread) {
+  Player attacker = thread.vctAttacker;
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  std::atomic<int32_t>& dirtyCounter = node.getVctDirtyCounter(attacker);
+  int32_t oldDirtyCounter = dirtyCounter.fetch_add(1,std::memory_order_acq_rel);
+  assert(oldDirtyCounter >= 0);
+  if(oldDirtyCounter > 0)
+    return;
+
+  int32_t numVisitsCompleted = 1;
+  while(true) {
+    recomputeVctNodeStats(node,thread,numVisitsCompleted);
+    oldDirtyCounter = dirtyCounter.fetch_add(-numVisitsCompleted,std::memory_order_acq_rel);
+    int32_t newDirtyCounter = oldDirtyCounter - numVisitsCompleted;
+    if(newDirtyCounter <= 0) {
+      assert(newDirtyCounter == 0);
+      break;
+    }
+    numVisitsCompleted = newDirtyCounter;
+  }
+}
+
+void Search::recomputeVctNodeStats(SearchNode& node, SearchThread& thread, int32_t numVisitsToAdd) {
+  Player attacker = thread.vctAttacker;
+  assert(attacker == P_WHITE || attacker == P_BLACK);
+  vector<MoreNodeStats>& statsBuf = thread.statsBuf;
+  int numGoodChildren = 0;
+
+  int childrenCapacity;
+  const SearchChildPointer* children = node.getChildren(childrenCapacity);
+  double totalChildWeight = 0.0;
+  for(int i = 0; i<childrenCapacity; i++) {
+    const SearchNode* child = children[i].getIfAllocated();
+    if(child == NULL)
+      break;
+
+    int64_t edgeVisits = children[i].getVctEdgeVisits(attacker);
+    VctStats childStats(child->getVctStats(attacker));
+    if(childStats.visits <= 0 || childStats.weightSum <= 0.0 || edgeVisits <= 0)
+      continue;
+
+    MoreNodeStats& stats = statsBuf[numGoodChildren];
+    stats.stats = NodeStats();
+    stats.stats.visits = childStats.visits;
+    stats.stats.utilityAvg = childStats.utilityAvg;
+    stats.stats.utilitySqAvg = childStats.utilitySqAvg;
+    stats.stats.weightSum = childStats.weightSum;
+    stats.stats.weightSqSum = childStats.weightSqSum;
+    stats.selfUtility = node.nextPla == P_WHITE ? childStats.utilityAvg : -childStats.utilityAvg;
+    stats.weightAdjusted = childStats.getChildWeight(edgeVisits);
+    stats.prevMoveLoc = children[i].getMoveLocRelaxed();
+    totalChildWeight += stats.weightAdjusted;
+    numGoodChildren++;
+  }
+
+  double adjustedTotalChildWeight = totalChildWeight;
+  if(numGoodChildren > 0) {
+    downweightBadChildrenAndNormalizeWeight(
+      numGoodChildren, adjustedTotalChildWeight, adjustedTotalChildWeight,
+      0.0, 0.0, statsBuf, searchParams.multiHeadVctValueWeightExponent
+    );
+  }
+
+  double utilitySum = 0.0;
+  double utilitySqSum = 0.0;
+  double weightSqSum = 0.0;
+  for(int i = 0; i<numGoodChildren; i++) {
+    const NodeStats& stats = statsBuf[i].stats;
+    double desiredWeight = statsBuf[i].weightAdjusted;
+    double weightScaling = desiredWeight / stats.weightSum;
+    utilitySum += desiredWeight * stats.utilityAvg;
+    utilitySqSum += desiredWeight * stats.utilitySqAvg;
+    weightSqSum += weightScaling * weightScaling * stats.weightSqSum;
+  }
+
+  const NNOutput* nodeNNOutput = node.getNNOutput();
+  assert(nodeNNOutput != NULL);
+  double directUtility = searchParams.multiHeadVctUseNormalRules ?
+    getUtilityFromNN(*nodeNNOutput,node.nextPla) :
+    getVctUtilityFromNN(*nodeNNOutput,attacker,node.nextPla);
+  utilitySum += directUtility;
+  utilitySqSum += directUtility * directUtility;
+  weightSqSum += 1.0;
+  double weightSum = adjustedTotalChildWeight + 1.0;
+
+  VctStatsAtomic& stats = node.getVctStats(attacker);
+  while(node.statsLock.test_and_set(std::memory_order_acquire));
+  stats.utilityAvg.store(utilitySum / weightSum,std::memory_order_release);
+  stats.utilitySqAvg.store(utilitySqSum / weightSum,std::memory_order_release);
+  stats.weightSum.store(weightSum,std::memory_order_release);
+  stats.weightSqSum.store(weightSqSum,std::memory_order_release);
+  stats.visits.fetch_add(numVisitsToAdd,std::memory_order_release);
+  node.statsLock.clear(std::memory_order_release);
 }
 
 //Recompute all the stats of this node based on its children, except its visits and virtual losses, which are not child-dependent and
@@ -216,15 +398,32 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
     stats.selfUtility = node.nextPla == P_WHITE ? childUtility : -childUtility;
     stats.weightAdjusted = stats.stats.getChildWeight(edgeVisits);
     stats.whiteWinSelfUtility = node.nextPla == P_WHITE ? stats.stats.whiteWinUtilityAvg : -stats.stats.whiteWinUtilityAvg;
-    stats.whiteWinWeightAdjusted = stats.stats.getChildWhiteWinWeight(edgeVisits);
     stats.blackWinSelfUtility = node.nextPla == P_WHITE ? stats.stats.blackWinUtilityInvAvg : -stats.stats.blackWinUtilityInvAvg;
-    stats.blackWinWeightAdjusted = stats.stats.getChildBlackWinWeight(edgeVisits);
+    if(searchParams.multiHeadObjectiveSeparatePlayouts) {
+      double whiteWinEdgeVisits =
+        (double)children[i].getObjectiveEdgeVisits(P_WHITE);
+      double blackWinEdgeVisits =
+        (double)children[i].getObjectiveEdgeVisits(P_BLACK);
+      double crossWeight = searchParams.multiHeadObjectiveCrossWeight;
+      stats.whiteWinWeightAdjusted =
+        whiteWinEdgeVisits + crossWeight * blackWinEdgeVisits;
+      stats.blackWinWeightAdjusted =
+        blackWinEdgeVisits + crossWeight * whiteWinEdgeVisits;
+    }
+    else {
+      stats.whiteWinWeightAdjusted =
+        stats.stats.getChildWhiteWinWeight(edgeVisits);
+      stats.blackWinWeightAdjusted =
+        stats.stats.getChildBlackWinWeight(edgeVisits);
+    }
     stats.prevMoveLoc = moveLoc;
 
-    if(stats.whiteWinWeightAdjusted <= 0.0)
-      stats.whiteWinWeightAdjusted = stats.weightAdjusted;
-    if(stats.blackWinWeightAdjusted <= 0.0)
-      stats.blackWinWeightAdjusted = stats.weightAdjusted;
+    if(!searchParams.multiHeadObjectiveSeparatePlayouts) {
+      if(stats.whiteWinWeightAdjusted <= 0.0)
+        stats.whiteWinWeightAdjusted = stats.weightAdjusted;
+      if(stats.blackWinWeightAdjusted <= 0.0)
+        stats.blackWinWeightAdjusted = stats.weightAdjusted;
+    }
 
     origTotalChildWeight += stats.weightAdjusted;
     origTotalWhiteWinChildWeight += stats.whiteWinWeightAdjusted;
@@ -272,9 +471,16 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
         amountToPrune = std::min(searchParams.chosenMovePrune, maxChildWeight/64.0);
       }
 
+      double valueWeightExponent = searchParams.valueWeightExponent;
+      if(objective != 0 && searchParams.multiHeadObjectiveSearchStrength > 0.0) {
+        double strength = searchParams.multiHeadObjectiveSearchStrength;
+        valueWeightExponent =
+          (1.0 - strength) * valueWeightExponent +
+          strength * searchParams.multiHeadObjectiveValueWeightExponent;
+      }
       downweightBadChildrenAndNormalizeWeight(
         numGoodChildren, currentTotalWeight, currentTotalWeight,
-        amountToSubtract, amountToPrune, statsBuf
+        amountToSubtract, amountToPrune, statsBuf, valueWeightExponent
       );
     }
 
@@ -349,8 +555,8 @@ void Search::recomputeNodeStats(SearchNode& node, SearchThread& thread, int numV
 
   //Also add in the direct evaluation of this node.
   {
-    double whiteWinProb = getWhiteWinProbFromNN(*nodeNNOutput);
-    double blackWinProb = getBlackWinProbFromNN(*nodeNNOutput);
+    double whiteWinProb = getWhiteWinProbFromNN(*nodeNNOutput,node.nextPla);
+    double blackWinProb = getBlackWinProbFromNN(*nodeNNOutput,node.nextPla);
     double noResultProb = (double)nodeNNOutput->whiteNoResultProb;
     double legacyUtility = getResultUtilityFromNN(*nodeNNOutput);
     double whiteWinUtility = getWhiteWinUtility(legacyUtility, whiteWinProb);
@@ -466,12 +672,13 @@ void Search::downweightBadChildrenAndNormalizeWeight(
   double desiredTotalWeight, //What statsBuf[i].weightAdjusted should sum up to after this function is done.
   double amountToSubtract,
   double amountToPrune,
-  vector<MoreNodeStats>& statsBuf
+  vector<MoreNodeStats>& statsBuf,
+  double valueWeightExponent
 ) const {
   if(numChildren <= 0 || currentTotalWeight <= 0.0)
     return;
 
-  if(searchParams.valueWeightExponent == 0 ) {
+  if(valueWeightExponent == 0) {
     for(int i = 0; i<numChildren; i++) {
       if(statsBuf[i].weightAdjusted < amountToPrune) {
         currentTotalWeight -= statsBuf[i].weightAdjusted;
@@ -540,7 +747,7 @@ void Search::downweightBadChildrenAndNormalizeWeight(
     double z = (statsBuf[i].selfUtility - simpleValue) / stdevs[i];
     //Also just for numeric sanity, make sure everything has some tiny minimum value.
     double p = valueWeightDistribution->getCdf(z) + 0.0001;
-    statsBuf[i].weightAdjusted *= pow(p, searchParams.valueWeightExponent);
+    statsBuf[i].weightAdjusted *= pow(p, valueWeightExponent);
     totalNewUnnormWeight += statsBuf[i].weightAdjusted;
   }
 

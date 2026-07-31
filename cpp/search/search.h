@@ -37,11 +37,19 @@ struct SearchNodeTable;
 
 //Per-thread state
 struct SearchThread {
+  static constexpr int POLICY_GUIDANCE_NONE = 0;
+  static constexpr int POLICY_GUIDANCE_VCT = 1;
+  static constexpr int POLICY_GUIDANCE_MUST_WIN = 2;
+
   int threadIdx;
 
   Player pla;
   Board board;
   BoardHistory history;
+  //For tactical playouts, keep the ordinary-rules state separate so that v112
+  //still receives the original v101 input and graph search shares normal hashes.
+  Board normalRulesBoard;
+  BoardHistory normalRulesHistory;
   Hash128 graphHash;
   //The path we trace down the graph as we do a playout
   std::unordered_set<SearchNode*> graphPath;
@@ -52,6 +60,19 @@ struct SearchThread {
   std::vector<MoreNodeStats> statsBuf;
 
   double upperBoundVisitsLeft;
+  //C_EMPTY for normal search, otherwise the player whose forced VCT is being searched.
+  Player vctAttacker;
+  //C_EMPTY for legacy mixed normal search, otherwise the absolute winner
+  //objective whose edge budget this normal playout belongs to.
+  Player normalObjective;
+  //Optional fixed-player policy guidance. Unlike vctAttacker, this still uses
+  //ordinary rules and backs every visit up into the normal head0 statistics.
+  int policyGuidanceMode;
+  Player policyGuidanceAttacker;
+  //For a bounded root-only verification playout proposed by the isolated VCT plane.
+  Loc rootVctNormalVerificationMoveLoc;
+  //For an isolated normal-rules playout fixed to a root forced-reply candidate.
+  Loc rootForcedReplySidecarMoveLoc;
 
   //Occasionally we may need to swap out an NNOutput from a node mid-search.
   //However, to prevent access-after-delete races, the thread that swaps one out stores
@@ -101,6 +122,13 @@ struct Search {
   Player plaThatSearchIsForLastSearch;
   int64_t lastSearchNumPlayouts;
   double effectiveSearchTimeCarriedOver; //Effective search time carried over from previous moves due to ponder/tree reuse
+  int64_t rootNormalVisitsAtSearchStart;
+  int64_t rootWhiteWinEdgeVisitsAtSearchStart;
+  int64_t rootBlackWinEdgeVisitsAtSearchStart;
+  int64_t rootWhiteVctVisitsAtSearchStart;
+  int64_t rootBlackVctVisitsAtSearchStart;
+  std::atomic<int64_t> rootVctNormalVerificationPlayouts;
+  int64_t currentSearchPlayoutBudget;
 
   std::string randSeed;
 
@@ -372,13 +400,17 @@ private:
   //----------------------------------------------------------------------------------------
   double getResultUtility(double winlossValue, double noResultValue) const;
   double getResultUtilityFromNN(const NNOutput& nnOutput) const;
-  double getWhiteWinProbFromNN(const NNOutput& nnOutput) const;
-  double getBlackWinProbFromNN(const NNOutput& nnOutput) const;
+  double getWhiteWinProbFromNN(const NNOutput& nnOutput, Player nextPla) const;
+  double getBlackWinProbFromNN(const NNOutput& nnOutput, Player nextPla) const;
   double getWhiteWinUtility(double legacyUtility, double whiteWinProb) const;
   double getBlackWinUtilityInv(double legacyUtility, double blackWinProb) const;
-  double getWhiteWinUtilityFromNN(const NNOutput& nnOutput) const;
-  double getBlackWinUtilityInvFromNN(const NNOutput& nnOutput) const;
-  double getUtilityFromNN(const NNOutput& nnOutput) const;
+  double getWhiteWinUtilityFromNN(const NNOutput& nnOutput, Player nextPla) const;
+  double getBlackWinUtilityInvFromNN(const NNOutput& nnOutput, Player nextPla) const;
+  double getUtilityFromNN(const NNOutput& nnOutput, Player nextPla) const;
+  void getNormalObjectiveWorths(
+    const SearchNode& node, double& winWorth, double& nonLossWorth
+  ) const;
+  double getSideToMoveWinObjectiveWeight(const SearchNode& node) const;
 
   //----------------------------------------------------------------------------------------
   // Miscellaneous search biasing helpers, root move selection, etc.
@@ -489,11 +521,17 @@ private:
   ) const;
   double getFpuValueForChildrenAssumeVisitedByStats(
     const SearchNode& node, Player pla, bool isRoot, double policyProbMassVisited,
-    double weightSum, double utilityAvg, double utilitySqAvg, double nnUtility,
+    double visits, double weightSum, double utilityAvg, double utilitySqAvg, double nnUtility,
     double& parentUtility, double& parentWeightPerVisit, double& parentUtilityStdevFactor
   ) const;
 
   void selectBestChildToDescend(
+    SearchThread& thread, const SearchNode& node, int nodeState,
+    int& numChildrenFound, int& bestChildIdx, Loc& bestChildMoveLoc,
+    bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
+    bool isRoot
+  ) const;
+  void selectBestVctChildToDescend(
     SearchThread& thread, const SearchNode& node, int nodeState,
     int& numChildrenFound, int& bestChildIdx, Loc& bestChildMoveLoc,
     bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
@@ -517,9 +555,18 @@ private:
     double whiteWinWeight,
     double blackWinWeight,
     bool isTerminal,
+    bool assumeNoExistingWeight,
+    Player normalObjective
+  );
+  void addCurrentNNOutputAsLeafValue(
+    SearchNode& node, bool assumeNoExistingWeight, Player normalObjective
+  );
+  void addVctLeafValue(
+    SearchNode& node, Player attacker, double utility, double weight,
     bool assumeNoExistingWeight
   );
-  void addCurrentNNOutputAsLeafValue(SearchNode& node, bool assumeNoExistingWeight);
+  void addCurrentNNOutputAsVctLeafValue(SearchNode& node, Player attacker, bool assumeNoExistingWeight);
+  double getVctUtilityFromNN(const NNOutput& nnOutput, Player attacker, Player nextPla) const;
 
   double computeWeightFromNNOutput(const NNOutput* nnOutput) const;
   double computeWhiteWinWeightFromNNOutput(const NNOutput* nnOutput) const;
@@ -527,6 +574,8 @@ private:
 
   void updateStatsAfterPlayout(SearchNode& node, SearchThread& thread, bool isRoot);
   void recomputeNodeStats(SearchNode& node, SearchThread& thread, int32_t numVisitsToAdd, bool isRoot);
+  void updateVctStatsAfterPlayout(SearchNode& node, SearchThread& thread);
+  void recomputeVctNodeStats(SearchNode& node, SearchThread& thread, int32_t numVisitsToAdd);
 
   void downweightBadChildrenAndNormalizeWeight(
     int numChildren,
@@ -534,7 +583,8 @@ private:
     double desiredTotalWeight,
     double amountToSubtract,
     double amountToPrune,
-    std::vector<MoreNodeStats>& statsBuf
+    std::vector<MoreNodeStats>& statsBuf,
+    double valueWeightExponent
   ) const;
 
   double pruneNoiseWeight(std::vector<MoreNodeStats>& statsBuf, int numChildren, double totalChildWeight, const double* policyProbsBuf) const;
@@ -563,8 +613,21 @@ private:
     bool posesWithChildBuf[NNPos::MAX_NN_POLICY_SIZE],
     bool isRoot
   );
+  void makeMoveForPlayout(SearchThread& thread, Loc moveLoc);
 
   bool maybeCatchUpEdgeVisits(SearchThread& thread, SearchNode& node, SearchNode* child, const int& nodeState, const int bestChildIdx);
+  double getCurrentSearchProgress(const SearchThread& thread) const;
+  double getVctProbePhaseScale(const SearchThread& thread) const;
+  double getVctValidationPhaseScale(const SearchThread& thread) const;
+  Player chooseVctPlayoutAttacker(const SearchThread& thread) const;
+  Loc chooseForcedReplySidecarMove(const SearchThread& thread) const;
+  Loc chooseVctNormalVerificationMove(const SearchThread& thread);
+  Player chooseNormalPlayoutObjective() const;
+  int64_t getRootObjectiveEdgeVisits(Player objective) const;
+  void addNormalEdgeVisit(
+    SearchChildPointer& child, Player normalObjective, int64_t delta
+  ) const;
+  void choosePolicyGuidance(SearchThread& thread) const;
 
   //----------------------------------------------------------------------------------------
   // Private helpers for search results and analysis and top level move selection

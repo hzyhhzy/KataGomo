@@ -238,15 +238,23 @@ double Search::getResultUtilityFromNN(const NNOutput& nnOutput) const {
 }
 
 
-double Search::getWhiteWinProbFromNN(const NNOutput& nnOutput) const {
+double Search::getWhiteWinProbFromNN(const NNOutput& nnOutput, Player nextPla) const {
+  assert(nextPla == P_WHITE || nextPla == P_BLACK);
   double c = searchParams.multiValueHeadUtilityMix;
-  return (1.0 - c) * nnOutput.whiteWinProbByHead[0] + c * nnOutput.whiteWinProbByHead[3];
+  double multiHeadProb = nextPla == P_WHITE ?
+    nnOutput.whiteWinProbByHead[3] :
+    nnOutput.whiteWinProbByHead[2];
+  return (1.0 - c) * nnOutput.whiteWinProbByHead[0] + c * multiHeadProb;
 }
 
 
-double Search::getBlackWinProbFromNN(const NNOutput& nnOutput) const {
+double Search::getBlackWinProbFromNN(const NNOutput& nnOutput, Player nextPla) const {
+  assert(nextPla == P_WHITE || nextPla == P_BLACK);
   double c = searchParams.multiValueHeadUtilityMix;
-  return (1.0 - c) * nnOutput.whiteLossProbByHead[0] + c * nnOutput.whiteLossProbByHead[2];
+  double multiHeadProb = nextPla == P_BLACK ?
+    nnOutput.whiteLossProbByHead[3] :
+    nnOutput.whiteLossProbByHead[2];
+  return (1.0 - c) * nnOutput.whiteLossProbByHead[0] + c * multiHeadProb;
 }
 
 
@@ -262,22 +270,73 @@ double Search::getBlackWinUtilityInv(double legacyUtility, double blackWinProb) 
 }
 
 
-double Search::getWhiteWinUtilityFromNN(const NNOutput& nnOutput) const {
+double Search::getWhiteWinUtilityFromNN(const NNOutput& nnOutput, Player nextPla) const {
   double legacyUtility = getResultUtilityFromNN(nnOutput);
-  return getWhiteWinUtility(legacyUtility, getWhiteWinProbFromNN(nnOutput));
+  return getWhiteWinUtility(legacyUtility, getWhiteWinProbFromNN(nnOutput,nextPla));
 }
 
 
-double Search::getBlackWinUtilityInvFromNN(const NNOutput& nnOutput) const {
+double Search::getBlackWinUtilityInvFromNN(const NNOutput& nnOutput, Player nextPla) const {
   double legacyUtility = getResultUtilityFromNN(nnOutput);
-  return getBlackWinUtilityInv(legacyUtility, getBlackWinProbFromNN(nnOutput));
+  return getBlackWinUtilityInv(legacyUtility, getBlackWinProbFromNN(nnOutput,nextPla));
 }
 
 
-double Search::getUtilityFromNN(const NNOutput& nnOutput) const {
-  double whiteWinUtility = getWhiteWinUtilityFromNN(nnOutput);
-  double blackWinUtilityInv = getBlackWinUtilityInvFromNN(nnOutput);
+double Search::getUtilityFromNN(const NNOutput& nnOutput, Player nextPla) const {
+  double whiteWinUtility = getWhiteWinUtilityFromNN(nnOutput,nextPla);
+  double blackWinUtilityInv = getBlackWinUtilityInvFromNN(nnOutput,nextPla);
   return 0.5 * (whiteWinUtility + blackWinUtilityInv);
+}
+
+void Search::getNormalObjectiveWorths(
+  const SearchNode& node, double& winWorth, double& nonLossWorth
+) const {
+  double whiteWinUtility =
+    node.stats.whiteWinUtilityAvg.load(std::memory_order_acquire);
+  double blackWinUtilityInv =
+    node.stats.blackWinUtilityInvAvg.load(std::memory_order_acquire);
+  double sideWinUtility = node.nextPla == P_WHITE ?
+    whiteWinUtility : -blackWinUtilityInv;
+  double sideNonLossUtility = node.nextPla == P_WHITE ?
+    blackWinUtilityInv : -whiteWinUtility;
+  double winProb = std::clamp(0.5 * (sideWinUtility + 1.0),0.0,1.0);
+  double nonLossProb =
+    std::clamp(0.5 * (sideNonLossUtility + 1.0),0.0,1.0);
+
+  //The common unresolved factor makes already-won positions less urgent.
+  //The floor keeps either objective alive even when the current estimates
+  //look resolved, since hidden tactics are exactly where head0 is least useful.
+  constexpr double OBJECTIVE_WORTH_FLOOR = 0.10;
+  double unresolvedWin = 1.0 - winProb;
+  winWorth =
+    OBJECTIVE_WORTH_FLOOR + nonLossProb * unresolvedWin;
+  nonLossWorth =
+    OBJECTIVE_WORTH_FLOOR + (1.0 - nonLossProb) * unresolvedWin;
+}
+
+double Search::getSideToMoveWinObjectiveWeight(const SearchNode& node) const {
+  double p = searchParams.multiValueHeadSelectionBias;
+  double fixedWinWeight = 0.5 + 0.5 * p;
+  if(searchParams.multiHeadObjectiveSearchStrength <= 0.0)
+    return fixedWinWeight;
+
+  double winWorth;
+  double nonLossWorth;
+  getNormalObjectiveWorths(node,winWorth,nonLossWorth);
+  double selectionPower = searchParams.multiHeadObjectiveSelectionPower;
+  double poweredWinWorth = pow(winWorth,selectionPower);
+  double poweredNonLossWorth = pow(nonLossWorth,selectionPower);
+  double biasedWinWorth = fixedWinWeight * poweredWinWorth;
+  double biasedNonLossWorth =
+    (1.0 - fixedWinWeight) * poweredNonLossWorth;
+  double dynamicWinWeight =
+    biasedWinWorth + biasedNonLossWorth > 0.0 ?
+      biasedWinWorth / (biasedWinWorth + biasedNonLossWorth) :
+      fixedWinWeight;
+  double strength = searchParams.multiHeadObjectiveSearchStrength;
+  return
+    (1.0 - strength) * fixedWinWeight +
+    strength * dynamicWinWeight;
 }
 
 bool Search::isAllowedRootMove(Loc moveLoc) const {

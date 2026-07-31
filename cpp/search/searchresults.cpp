@@ -211,6 +211,201 @@ bool Search::getPlaySelectionValues(
     }
   }
 
+  if(
+    &node == rootNode &&
+    numChildren > 0 &&
+    searchParams.multiHeadVctMoveSelectionWeight > 0.0
+  ) {
+    double referenceWeight = 0.0;
+    for(double weight: playSelectionValues)
+      referenceWeight = std::max(referenceWeight,weight);
+
+    for(int i = 0; i<numChildren; i++) {
+      const SearchNode* child = children[i].getIfAllocated();
+      int64_t vctVisits = children[i].getVctEdgeVisits(rootPla);
+      if(child == NULL || vctVisits <= 0)
+        continue;
+      VctStats stats(child->getVctStats(rootPla));
+      if(stats.visits <= 0 || stats.weightSum <= 0.0)
+        continue;
+
+      double successProb = rootPla == P_WHITE ?
+        0.5 * (stats.utilityAvg + 1.0) :
+        0.5 * (1.0 - stats.utilityAvg);
+      successProb = std::clamp(successProb,0.0,1.0);
+      double variance = std::max(0.0,stats.utilitySqAvg - stats.utilityAvg * stats.utilityAvg);
+      double effectiveSamples = stats.weightSqSum > 0.0 ?
+        stats.weightSum * stats.weightSum / stats.weightSqSum :
+        (double)stats.visits;
+      effectiveSamples = std::max(1.0,effectiveSamples);
+      double empiricalStdErr = 0.5 * sqrt(variance / effectiveSamples);
+      double explorationStdErr = 0.25 / sqrt(effectiveSamples);
+      double uncertainty = std::max(empiricalStdErr,explorationStdErr);
+      double lowerBound = std::clamp(
+        successProb - searchParams.multiHeadVctUcbCoeff * uncertainty,
+        0.0,1.0
+      );
+      double evidence = std::max(0.0,2.0 * lowerBound - 1.0);
+      double visitConfidence =
+        (double)vctVisits /
+        (vctVisits + searchParams.multiHeadVctMoveSelectionVisitScale);
+      playSelectionValues[i] +=
+        referenceWeight *
+        searchParams.multiHeadVctMoveSelectionWeight *
+        evidence *
+        visitConfidence;
+    }
+  }
+
+  if(
+    &node == rootNode &&
+    numChildren > 0 &&
+    searchParams.multiHeadVctUseNormalRules &&
+    searchParams.multiHeadVctRelativeMoveSelectionWeight > 0.0
+  ) {
+    double referenceWeight = 0.0;
+    double bestMainSelfUtility = -1e20;
+    for(int i = 0; i<numChildren; i++) {
+      referenceWeight = std::max(referenceWeight,playSelectionValues[i]);
+      const SearchNode* child = children[i].getIfAllocated();
+      int64_t edgeVisits = children[i].getEdgeVisits();
+      if(child == NULL || edgeVisits <= 0)
+        continue;
+      int64_t childVisits =
+        child->stats.visits.load(std::memory_order_acquire);
+      double childWeight =
+        child->stats.getChildWeight(edgeVisits,childVisits);
+      if(childVisits <= 0 || childWeight <= 0.0)
+        continue;
+      double utility =
+        child->stats.utilityAvg.load(std::memory_order_acquire);
+      double selfUtility = rootPla == P_WHITE ? utility : -utility;
+      bestMainSelfUtility =
+        std::max(bestMainSelfUtility,selfUtility);
+    }
+
+    if(bestMainSelfUtility > -1e10) {
+      for(int i = 0; i<numChildren; i++) {
+        const SearchNode* child = children[i].getIfAllocated();
+        int64_t sidecarVisits =
+          children[i].getVctEdgeVisits(rootPla);
+        if(child == NULL || sidecarVisits <= 0)
+          continue;
+        VctStats stats(child->getVctStats(rootPla));
+        if(stats.visits <= 0 || stats.weightSum <= 0.0)
+          continue;
+
+        double sidecarUtility =
+          rootPla == P_WHITE ? stats.utilityAvg : -stats.utilityAvg;
+        double variance = std::max(
+          0.0,
+          stats.utilitySqAvg - stats.utilityAvg * stats.utilityAvg
+        );
+        double effectiveSamples = stats.weightSqSum > 0.0 ?
+          stats.weightSum * stats.weightSum / stats.weightSqSum :
+          (double)stats.visits;
+        effectiveSamples = std::max(1.0,effectiveSamples);
+        double empiricalStdErr =
+          sqrt(variance / effectiveSamples);
+        double explorationStdErr =
+          0.5 / sqrt(effectiveSamples);
+        double uncertainty =
+          std::max(empiricalStdErr,explorationStdErr);
+        double sidecarLowerBound =
+          sidecarUtility -
+          searchParams.multiHeadVctUcbCoeff * uncertainty;
+        double relativeEvidence = std::max(
+          0.0,
+          0.5 * (sidecarLowerBound - bestMainSelfUtility)
+        );
+        double visitConfidence =
+          (double)sidecarVisits /
+          (
+            sidecarVisits +
+            searchParams.multiHeadVctMoveSelectionVisitScale
+          );
+        playSelectionValues[i] +=
+          referenceWeight *
+          searchParams.multiHeadVctRelativeMoveSelectionWeight *
+          relativeEvidence *
+          visitConfidence;
+      }
+    }
+  }
+
+  if(
+    &node == rootNode &&
+    numChildren > 0 &&
+    searchParams.multiHeadVctNnMoveSelectionWeight > 0.0
+  ) {
+    const NNOutput* rootNNOutput = node.getNNOutput();
+    assert(rootNNOutput != NULL);
+    if(!rootNNOutput->hasPolicyByHead())
+      throw StringError("multi-head NN VCT move selection requires a v112 model");
+
+    double referenceWeight = 0.0;
+    for(double weight: playSelectionValues)
+      referenceWeight = std::max(referenceWeight,weight);
+
+    int legalPolicyCount = 0;
+    double peakVctPolicy = 0.0;
+    for(int movePos = 0; movePos<policySize; movePos++) {
+      if(rootNNOutput->getPolicyProbMaybeNoised(movePos) < 0.0f)
+        continue;
+      legalPolicyCount++;
+      peakVctPolicy = std::max(
+        peakVctPolicy,
+        (double)rootNNOutput->getPolicyProbByHead(4,movePos)
+      );
+    }
+    double twiceUniformPolicy =
+      legalPolicyCount > 0 ? 2.0 / legalPolicyCount : 1.0;
+    double peakExcess = std::max(0.0,peakVctPolicy - twiceUniformPolicy);
+    double policyConcentration =
+      peakExcess /
+      (peakExcess + searchParams.multiHeadAuxPolicyConcentrationScale);
+    double rootVctProb = rootPla == P_WHITE ?
+      rootNNOutput->whiteWinProbByHead[4] :
+      rootNNOutput->whiteLossProbByHead[4];
+    rootVctProb = std::clamp(rootVctProb,0.0,1.0);
+
+    for(int i = 0; i<numChildren; i++) {
+      const SearchNode* child = children[i].getIfAllocated();
+      if(child == NULL)
+        continue;
+      const NNOutput* childNNOutput = child->getNNOutput();
+      if(childNNOutput == NULL)
+        continue;
+
+      int movePos = getPos(locs[i]);
+      double normalPolicy = rootNNOutput->getPolicyProbMaybeNoised(movePos);
+      double vctPolicy = rootNNOutput->getPolicyProbByHead(4,movePos);
+      if(normalPolicy < 0.0 || vctPolicy <= normalPolicy || vctPolicy <= 0.0)
+        continue;
+      double policyContrast = 1.0 - normalPolicy / vctPolicy;
+
+      double childVctProb = rootPla == P_WHITE ?
+        childNNOutput->whiteWinProbByHead[5] :
+        childNNOutput->whiteLossProbByHead[5];
+      childVctProb = std::clamp(childVctProb,0.0,1.0);
+
+      int64_t edgeVisits = children[i].getEdgeVisits();
+      double visitConfidence =
+        (double)edgeVisits /
+        (edgeVisits + searchParams.multiHeadVctMoveSelectionVisitScale);
+      double evidence =
+        rootVctProb *
+        childVctProb *
+        policyConcentration *
+        policyContrast *
+        visitConfidence;
+      playSelectionValues[i] +=
+        referenceWeight *
+        searchParams.multiHeadVctNnMoveSelectionWeight *
+        evidence;
+    }
+  }
+
   const NNOutput* nnOutput = node.getNNOutput();
 
   //If we have no children, then use the policy net directly. Only for the root, though, if calling this on any subtree
@@ -325,8 +520,8 @@ bool Search::getNodeRawNNValues(const SearchNode& node, ReportedSearchValues& va
   if(nnOutput == NULL)
     return false;
 
-  values.winValue = getWhiteWinProbFromNN(*nnOutput);
-  values.lossValue = getBlackWinProbFromNN(*nnOutput);
+  values.winValue = getWhiteWinProbFromNN(*nnOutput,node.nextPla);
+  values.lossValue = getBlackWinProbFromNN(*nnOutput,node.nextPla);
   values.noResultValue = nnOutput->whiteNoResultProb;
 
 
@@ -340,7 +535,7 @@ bool Search::getNodeRawNNValues(const SearchNode& node, ReportedSearchValues& va
   if(winLossValue < -1.0) winLossValue = -1.0;
   values.winLossValue = winLossValue;
 
-  values.utility = getUtilityFromNN(*nnOutput);
+  values.utility = getUtilityFromNN(*nnOutput,node.nextPla);
   values.weight = computeWeightFromNNOutput(nnOutput);
   values.visits = 1;
 
@@ -830,7 +1025,7 @@ void Search::getAnalysisData(
     double amountToPrune = 0.0;
     downweightBadChildrenAndNormalizeWeight(
       numChildren, totalChildWeight, totalChildWeight,
-      amountToSubtract, amountToPrune, statsBuf
+      amountToSubtract, amountToPrune, statsBuf, searchParams.valueWeightExponent
     );
     for(int i = 0; i<numChildren; i++)
       buf[i].weightFactor = statsBuf[i].weightAdjusted;
@@ -1347,10 +1542,10 @@ bool Search::getPrunedNodeValues(const SearchNode* nodePtr, ReportedSearchValues
     //If somehow the nnOutput is still null here, skip
     if(nnOutput == NULL)
       return false;
-    double winProb = getWhiteWinProbFromNN(*nnOutput);
-    double lossProb = getBlackWinProbFromNN(*nnOutput);
+    double winProb = getWhiteWinProbFromNN(*nnOutput,node.nextPla);
+    double lossProb = getBlackWinProbFromNN(*nnOutput,node.nextPla);
     double noResultProb = (double)nnOutput->whiteNoResultProb;
-    double utility = getUtilityFromNN(*nnOutput);
+    double utility = getUtilityFromNN(*nnOutput,node.nextPla);
 
     double weight = computeWeightFromNNOutput(nnOutput);
     whiteWinProbSum += winProb * weight;

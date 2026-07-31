@@ -39,11 +39,16 @@ bool Search::initNodeNNOutput(
   SearchThread& thread, SearchNode& node,
   bool isRoot, bool skipCache, bool isReInit
 ) {
+  const Board* nnBoard =
+    thread.vctAttacker == C_EMPTY ? &thread.board : &thread.normalRulesBoard;
+  const BoardHistory* nnHistory =
+    thread.vctAttacker == C_EMPTY ? &thread.history : &thread.normalRulesHistory;
+
   MiscNNInputParams nnInputParams;
   nnInputParams.noResultUtilityForWhite = searchParams.noResultUtilityForWhite;
   nnInputParams.useForbiddenInput = searchParams.useForbiddenInput;
   nnInputParams.useHistoryInput = searchParams.useHistoryInput;
-  nnInputParams.useVCFInput = searchParams.useVCFInput && thread.history.rules.maxMoves == 0;
+  nnInputParams.useVCFInput = searchParams.useVCFInput && nnHistory->rules.maxMoves == 0;
   nnInputParams.fourAttackPolicyReduce = searchParams.fourAttackPolicyReduce;
   nnInputParams.nnPolicyTemperature = searchParams.nnPolicyTemperature;
   if(searchParams.playoutDoublingAdvantage != 0) {
@@ -63,7 +68,7 @@ bool Search::initNodeNNOutput(
       nnInputParams.symmetry = symmetryIndexes[i];
       bool skipCacheThisIteration = true; //Skip cache since there's no guarantee which symmetry is in the cache
       nnEvaluator->evaluate(
-        thread.board, thread.history, thread.pla,
+        *nnBoard, *nnHistory, thread.pla,
         nnInputParams,
         thread.nnResultBuf, skipCacheThisIteration
       );
@@ -73,7 +78,7 @@ bool Search::initNodeNNOutput(
   }
   else {
     nnEvaluator->evaluate(
-      thread.board, thread.history, thread.pla,
+      *nnBoard, *nnHistory, thread.pla,
       nnInputParams,
       thread.nnResultBuf, skipCache
     );
@@ -105,7 +110,9 @@ bool Search::initNodeNNOutput(
       delete result;
       return false;
     }
-    addCurrentNNOutputAsLeafValue(node,true);
+    addCurrentNNOutputAsLeafValue(node,true,C_EMPTY);
+    addCurrentNNOutputAsVctLeafValue(node,P_WHITE,true);
+    addCurrentNNOutputAsVctLeafValue(node,P_BLACK,true);
     return true;
   }
 }
