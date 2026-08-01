@@ -4,6 +4,7 @@ PlaySettings::PlaySettings()
   : initGamesWithPolicy(false),
     policyInitAvgMoveNum(0.0),
     startPosesPolicyInitAvgMoveNum(0.0),
+    randomInitialBoardPolicyInitAvgMoveNumMultiplier(1.0),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
@@ -63,6 +64,9 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
     cfg.contains("policyInitAvgMoveNum") ? cfg.getDouble("policyInitAvgMoveNum", 0.0, 100.0) : 12.0;
   playSettings.startPosesPolicyInitAvgMoveNum =
     cfg.contains("startPosesPolicyInitAvgMoveNum") ? cfg.getDouble("startPosesPolicyInitAvgMoveNum", 0.0, 100.0) : 0.0;
+  playSettings.randomInitialBoardPolicyInitAvgMoveNumMultiplier =
+    cfg.contains("randomInitialBoardPolicyInitAvgMoveNumMultiplier") ?
+    cfg.getDouble("randomInitialBoardPolicyInitAvgMoveNumMultiplier", 0.0, 100.0) : 1.0;
   playSettings.sidePositionProb =
     //forkSidePositionProb is the legacy name, included for backward compatibility
     (cfg.contains("forkSidePositionProb") && !cfg.contains("sidePositionProb")) ?

@@ -29,6 +29,7 @@ struct InitialPosition {
 struct OtherGameProperties {
   bool isSgfPos = false;
   bool isHintPos = false;
+  bool isRandomInitialBoard = false;
   bool allowPolicyInit = true;
 
   int hintTurn = -1;

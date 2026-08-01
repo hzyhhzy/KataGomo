@@ -349,6 +349,7 @@ void GameInitializer::createGameSharedUnsynchronized(
   OtherGameProperties& otherGameProps,
   const Sgf::PositionSample* startPosSample
 ) {
+  otherGameProps.isRandomInitialBoard = false;
   if(initialPosition != NULL) {
     board = initialPosition->board;
     hist = initialPosition->hist;
@@ -431,6 +432,7 @@ void GameInitializer::createGameSharedUnsynchronized(
     board = Board(xSize,ySize);
 
     if(rand.nextBool(randomInitialBoardProb)) {
+      otherGameProps.isRandomInitialBoard = true;
       for(int y = 0; y < board.y_size; y++) {
         for(int x = 0; x < board.x_size; x++) {
           Loc loc = Location::getLoc(x, y, board.x_size);
@@ -1380,6 +1382,8 @@ FinishedGameData* Play::runGame(
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double avgPolicyInitMoveNum =
       otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAvgMoveNum : playSettings.policyInitAvgMoveNum;
+    if(otherGameProps.isRandomInitialBoard)
+      avgPolicyInitMoveNum *= playSettings.randomInitialBoardPolicyInitAvgMoveNumMultiplier;
     if(avgPolicyInitMoveNum > 0) {
       //Perform the initialization using a different noised komi, to get a bit of opening policy mixing across komi
       {

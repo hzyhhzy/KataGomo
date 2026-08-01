@@ -386,6 +386,7 @@ void testSelfplayRuleSampling() {
     randomizedInitializer.createGame(
       board, pla, hist, nullptr, playSettings, otherGameProps, nullptr
     );
+    testAssert(!otherGameProps.isRandomInitialBoard);
     testAssert(hist.rules.maxMoves >= 10 && hist.rules.maxMoves <= 700);
     sampledMaxMoves.insert(hist.rules.maxMoves);
   }
@@ -415,6 +416,7 @@ void testSelfplayRuleSampling() {
     randomBoardInitializer.createGame(
       board, pla, hist, nullptr, playSettings, otherGameProps, nullptr
     );
+    testAssert(otherGameProps.isRandomInitialBoard);
     testAssert(hist.rules.maxMoves == 123);
     for(int y = 0; y < board.y_size; y++) {
       for(int x = 0; x < board.x_size; x++) {
