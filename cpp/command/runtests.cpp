@@ -83,19 +83,19 @@ void testInitialSetupAndOrdinaryMoves() {
   testAssert(board.numPlaStonesOnBoard(P_BLACK) == 12);
   testAssert(board.numPlaStonesOnBoard(P_WHITE) == 12);
   for(int x = 0; x < 6; x++) {
-    testAssert(board.colors[xy(board, x, 0)] == P_BLACK);
-    testAssert(board.colors[xy(board, x, 1)] == P_BLACK);
-    testAssert(board.colors[xy(board, x, 4)] == P_WHITE);
-    testAssert(board.colors[xy(board, x, 5)] == P_WHITE);
+    testAssert(board.colors[xy(board, x, 0)] == P_WHITE);
+    testAssert(board.colors[xy(board, x, 1)] == P_WHITE);
+    testAssert(board.colors[xy(board, x, 4)] == P_BLACK);
+    testAssert(board.colors[xy(board, x, 5)] == P_BLACK);
   }
 
-  Loc source = xy(board, 0, 1);
-  Loc adjacent = xy(board, 0, 2);
+  Loc source = xy(board, 0, 4);
+  Loc adjacent = xy(board, 0, 3);
   testAssert(board.isLegal(source, P_BLACK));
   board.playMoveAssumeLegal(source, P_BLACK);
   testAssert(board.stage == 1 && board.movenum == 0);
   testAssert(board.isLegal(adjacent, P_BLACK));
-  testAssert(!board.isLegal(xy(board, 2, 2), P_BLACK));
+  testAssert(!board.isLegal(xy(board, 2, 3), P_BLACK));
   board.playMoveAssumeLegal(adjacent, P_BLACK);
   testAssert(board.stage == 0 && board.movenum == 1);
   testAssert(board.nextPla == P_WHITE);
@@ -276,7 +276,7 @@ void testPassAndHashes() {
 
   Board stageOne;
   BoardHistory stageOneHist(stageOne, P_BLACK, rules);
-  Loc source = xy(stageOne, 0, 1);
+  Loc source = xy(stageOne, 0, 4);
   stageOneHist.makeBoardMoveAssumeLegal(stageOne, source, P_BLACK);
   testAssert(stageOneHist.isLegal(stageOne, Board::PASS_LOC, P_BLACK));
   stageOneHist.makeBoardMoveAssumeLegal(stageOne, Board::PASS_LOC, P_BLACK);
@@ -322,7 +322,7 @@ void testPassPolicyMasking() {
   NNResultBuf ordinaryResult;
   nnEval.evaluate(ordinaryBoard, ordinaryHist, P_BLACK, nnInputParams, ordinaryResult, true);
   testAssert(ordinaryResult.result->policyProbs[passPos] == -1.0f);
-  int sourcePos = NNPos::locToPos(xy(ordinaryBoard, 0, 1), 6, 6, 6);
+  int sourcePos = NNPos::locToPos(xy(ordinaryBoard, 0, 4), 6, 6, 6);
   testAssert(ordinaryResult.result->policyProbs[sourcePos] >= 0.0f);
 
   Board stuck = emptyBoard();

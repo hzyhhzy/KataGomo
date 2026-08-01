@@ -153,13 +153,13 @@ void Board::init(int xS, int yS)
   Location::getAdjacentOffsets(adj_offsets, x_size);
 
 
-  // Standard Surakarta setup: black occupies the top two rows and moves
-  // first, white occupies the bottom two rows.
+  // Match the legacy Surakarta orientation: white occupies the top two rows,
+  // black occupies the bottom two rows, and black moves first.
   for(int x = 0; x < x_size; x++) {
-    setStone(Location::getLoc(x, 0, x_size), C_BLACK);
-    setStone(Location::getLoc(x, 1, x_size), C_BLACK);
-    setStone(Location::getLoc(x, y_size - 2, x_size), C_WHITE);
-    setStone(Location::getLoc(x, y_size - 1, x_size), C_WHITE);
+    setStone(Location::getLoc(x, 0, x_size), C_WHITE);
+    setStone(Location::getLoc(x, 1, x_size), C_WHITE);
+    setStone(Location::getLoc(x, y_size - 2, x_size), C_BLACK);
+    setStone(Location::getLoc(x, y_size - 1, x_size), C_BLACK);
   }
 }
 
