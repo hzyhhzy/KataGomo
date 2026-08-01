@@ -224,6 +224,23 @@ void testRepetitionNNFeatures() {
   testAssert(spatial[4 * 36 + destinationPos] == 1.0f);
   testAssert(spatial[5 * 36 + destinationPos] == 1.0f);
   testAssert(spatial[6 * 36 + destinationPos] == 1.0f);
+
+  Board limitedBoard = emptyBoard();
+  limitedBoard.movenum = 50;
+  BoardHistory limitedHist(
+    limitedBoard, P_BLACK, Rules(200, 3, Rules::NO_LEGAL_MOVE_DRAW)
+  );
+  NNInputs::fillRowV7(
+    limitedBoard, limitedHist, P_BLACK, nnInputParams,
+    6, 6, false, spatial, global
+  );
+  testAssert(global[2] == 1.0f);
+  testAssert(global[4] == 1.0f);
+  testAssert(global[6] == 1.0f);
+  testAssert(std::abs(global[7] - std::exp(-1.0f)) < 1e-6f);
+  testAssert(std::abs(global[8] - std::exp(-3.0f)) < 1e-6f);
+  testAssert(global[10] == -1.0f);
+  testAssert(std::abs(global[11] - std::exp(-10.0f)) < 1e-6f);
 }
 
 void testPassAndHashes() {
@@ -308,15 +325,12 @@ void testSelfplayRuleSampling() {
   ConfigParser weightedCfg(map<string,string>{
     {"repetitionRules", "2,3,3"},
     {"noLegalMoveRules", "LOSE,DRAW,DRAW,COUNT"},
-    {"maxMovesRules", "111,222,222"},
     {"bSizes", "6"},
     {"bSizeRelProbs", "1"},
   });
   GameInitializer weightedInitializer(weightedCfg, logger, "weighted-rule-test");
   int repetition2 = 0;
   int repetition3 = 0;
-  int max111 = 0;
-  int max222 = 0;
   int noLegalLose = 0;
   int noLegalDraw = 0;
   int noLegalCount = 0;
@@ -324,16 +338,13 @@ void testSelfplayRuleSampling() {
     Rules rules = weightedInitializer.createRules();
     repetition2 += rules.repetitionCount == 2 ? 1 : 0;
     repetition3 += rules.repetitionCount == 3 ? 1 : 0;
-    max111 += rules.maxMoves == 111 ? 1 : 0;
-    max222 += rules.maxMoves == 222 ? 1 : 0;
+    testAssert(rules.maxMoves == 200);
     noLegalLose += rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_LOSE ? 1 : 0;
     noLegalDraw += rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_DRAW ? 1 : 0;
     noLegalCount += rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_COUNT ? 1 : 0;
   }
   testAssert(repetition3 > repetition2);
-  testAssert(max222 > max111);
   testAssert(repetition2 + repetition3 == 2000);
-  testAssert(max111 + max222 == 2000);
   testAssert(noLegalDraw > noLegalLose && noLegalDraw > noLegalCount);
   testAssert(noLegalLose + noLegalDraw + noLegalCount == 2000);
 
@@ -358,6 +369,45 @@ void testSelfplayRuleSampling() {
     sampledMaxMoves.insert(hist.rules.maxMoves);
   }
   testAssert(sampledMaxMoves.size() > 1);
+
+  ConfigParser randomBoardCfg(map<string,string>{
+    {"repetitionRules", "2"},
+    {"noLegalMoveRules", "COUNT"},
+    {"maxMovesRandomBase", "123"},
+    {"maxMovesRandomPositiveScale", "0"},
+    {"maxMovesRandomNegativeScale", "0"},
+    {"maxMovesRandomMin", "10"},
+    {"maxMovesRandomMax", "700"},
+    {"randomInitialBoardProb", "1"},
+    {"bSizes", "6"},
+    {"bSizeRelProbs", "1"},
+  });
+  GameInitializer randomBoardInitializer(randomBoardCfg, logger, "random-board-test");
+  int emptyCount = 0;
+  int blackCount = 0;
+  int whiteCount = 0;
+  for(int i = 0; i < 100; i++) {
+    Board board;
+    BoardHistory hist;
+    Player pla = C_EMPTY;
+    OtherGameProperties otherGameProps;
+    randomBoardInitializer.createGame(
+      board, pla, hist, nullptr, playSettings, otherGameProps, nullptr
+    );
+    testAssert(hist.rules.maxMoves == 123);
+    for(int y = 0; y < board.y_size; y++) {
+      for(int x = 0; x < board.x_size; x++) {
+        Color color = board.colors[xy(board, x, y)];
+        emptyCount += color == C_EMPTY ? 1 : 0;
+        blackCount += color == C_BLACK ? 1 : 0;
+        whiteCount += color == C_WHITE ? 1 : 0;
+      }
+    }
+  }
+  testAssert(emptyCount + blackCount + whiteCount == 3600);
+  testAssert(emptyCount > 900 && emptyCount < 1500);
+  testAssert(blackCount > 900 && blackCount < 1500);
+  testAssert(whiteCount > 900 && whiteCount < 1500);
 }
 
 } // namespace

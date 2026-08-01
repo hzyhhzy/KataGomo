@@ -64,16 +64,20 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   if(allowedNoLegalMoveRules.empty())
     throw IOError("noLegalMoveRules must have at least one value in " + cfg.getFileName());
 
-  if(cfg.contains("maxMovesRules") && cfg.contains("gameMaxMoves"))
-    throw IOError("Cannot specify both maxMovesRules and legacy gameMaxMoves in " + cfg.getFileName());
-  if(cfg.contains("maxMovesRules"))
-    allowedMaxMovesRules = cfg.getInts("maxMovesRules", 0, 1000000);
-  else if(cfg.contains("gameMaxMoves"))
-    allowedMaxMovesRules = vector<int>{cfg.getInt("gameMaxMoves", 0, 1000000)};
-  randomizeMaxMovesRules = allowedMaxMovesRules.empty();
-  if(cfg.contains("maxMovesRules") && allowedMaxMovesRules.empty())
-    throw IOError("maxMovesRules must have at least one value in " + cfg.getFileName());
+  maxMovesRandomBase = cfg.contains("maxMovesRandomBase") ?
+    cfg.getDouble("maxMovesRandomBase", 0.0, 1000000.0) : 150.0;
+  maxMovesRandomPositiveScale = cfg.contains("maxMovesRandomPositiveScale") ?
+    cfg.getDouble("maxMovesRandomPositiveScale", 0.0, 1000000.0) : 80.0;
+  maxMovesRandomNegativeScale = cfg.contains("maxMovesRandomNegativeScale") ?
+    cfg.getDouble("maxMovesRandomNegativeScale", 0.0, 1000000.0) : 30.0;
+  maxMovesRandomMin = cfg.contains("maxMovesRandomMin") ?
+    cfg.getInt("maxMovesRandomMin", 0, 1000000) : 10;
+  maxMovesRandomMax = cfg.contains("maxMovesRandomMax") ?
+    cfg.getInt("maxMovesRandomMax", 0, 1000000) : 700;
+  if(maxMovesRandomMin > maxMovesRandomMax)
+    throw IOError("maxMovesRandomMin must not exceed maxMovesRandomMax in " + cfg.getFileName());
 
+  randomInitialBoardProb = cfg.contains("randomInitialBoardProb") ? cfg.getDouble("randomInitialBoardProb", 0.0, 1.0) : 0.0;
   randomInitialStonesProb = cfg.contains("randomInitialStonesProb") ? cfg.getDouble("randomInitialStonesProb", 0.0, 1.0) : 0.0;
   banLocProb = cfg.contains("banLocProb") ? cfg.getDouble("banLocProb", 0.0, 1.0) : 0.0;
   banLocAreaPropAvg = cfg.contains("banLocAreaPropAvg") ? cfg.getDouble("banLocAreaPropAvg", 0.0, 1.0) : 0.12;
@@ -332,8 +336,6 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
-  if(!allowedMaxMovesRules.empty())
-    rules.maxMoves = allowedMaxMovesRules[rand.nextUInt((uint32_t)allowedMaxMovesRules.size())];
   rules.repetitionCount = allowedRepetitionRules[rand.nextUInt((uint32_t)allowedRepetitionRules.size())];
   rules.noLegalMoveRule = allowedNoLegalMoveRules[rand.nextUInt((uint32_t)allowedNoLegalMoveRules.size())];
 
@@ -418,20 +420,27 @@ void GameInitializer::createGameSharedUnsynchronized(
     int ySize = allowedBSizes[ySizeIdx];
 
     // As in AnimalChess2025, vary the move limit from game to game using
-    // asymmetric exponential noise. Its unclamped mean is 230 completed
-    // player-moves, while retaining a long upper tail for endgame training.
-    // Specifying maxMovesRules in the cfg disables this continuous sampling
-    // and instead samples uniformly from that list (duplicates add weight).
-    if(randomizeMaxMovesRules) {
-      int maxMoves = static_cast<int>(
-        rand.nextExponential() * 80.0 + 180.0 - rand.nextExponential() * 30.0
-      );
-      rules.maxMoves = std::max(10, std::min(700, maxMoves));
-    }
+    // asymmetric exponential noise. All five constants are configurable.
+    int maxMoves = static_cast<int>(
+      maxMovesRandomBase +
+      rand.nextExponential() * maxMovesRandomPositiveScale -
+      rand.nextExponential() * maxMovesRandomNegativeScale
+    );
+    rules.maxMoves = std::max(maxMovesRandomMin, std::min(maxMovesRandomMax, maxMoves));
 
     board = Board(xSize,ySize);
 
-    if(rand.nextBool(randomInitialStonesProb)) {
+    if(rand.nextBool(randomInitialBoardProb)) {
+      for(int y = 0; y < board.y_size; y++) {
+        for(int x = 0; x < board.x_size; x++) {
+          Loc loc = Location::getLoc(x, y, board.x_size);
+          uint32_t randomColor = rand.nextUInt(3);
+          Color color = randomColor == 0 ? C_EMPTY : randomColor == 1 ? C_BLACK : C_WHITE;
+          board.setStone(loc, color);
+        }
+      }
+    }
+    else if(rand.nextBool(randomInitialStonesProb)) {
       int initialBlackStones = 1 + int(1.0 * rand.nextExponential());
       int initialWhiteStones = 1 + int(1.0 * rand.nextExponential());
       if(initialWhiteStones + initialBlackStones > board.x_size * board.y_size) {

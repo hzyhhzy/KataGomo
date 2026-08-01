@@ -582,12 +582,16 @@ void NNInputs::fillRowV7(
   rowGlobal[3] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_LOSE ? 1.0f : 0.0f;
   rowGlobal[4] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_DRAW ? 1.0f : 0.0f;
   rowGlobal[5] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_COUNT ? 1.0f : 0.0f;
-  if(hist.rules.maxMoves <= 0) {
+  if(hist.rules.maxMoves > 0) {
+    // Match the AnimalChess-style move-limit encoding. Give the net only the
+    // distance to the forced result, rather than the sampled limit and elapsed
+    // move count separately.
+    int remainingMoves = std::max(0, hist.rules.maxMoves - board.movenum);
     rowGlobal[6] = 1.0f;
-  }
-  else {
-    rowGlobal[7] = tanh(hist.rules.maxMoves / 200.0f);
-    rowGlobal[8] = std::min(1.0f, board.movenum / static_cast<float>(hist.rules.maxMoves));
+    rowGlobal[7] = exp(-remainingMoves / 150.0f);
+    rowGlobal[8] = exp(-remainingMoves / 50.0f);
+    rowGlobal[10] = 2.0f * (remainingMoves % 2) - 1.0f;
+    rowGlobal[11] = exp(-remainingMoves / 15.0f);
   }
 
   Hash128 lastCompletedPositionHash = board.pos_hash;

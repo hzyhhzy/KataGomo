@@ -102,11 +102,15 @@ class GameInitializer {
   std::vector<int> allowedRepetitionRules;
   std::vector<std::string> allowedNoLegalMoveRuleStrs;
   std::vector<int> allowedNoLegalMoveRules;
-  std::vector<int> allowedMaxMovesRules;
-  bool randomizeMaxMovesRules;
+  double maxMovesRandomBase;
+  double maxMovesRandomPositiveScale;
+  double maxMovesRandomNegativeScale;
+  int maxMovesRandomMin;
+  int maxMovesRandomMax;
   std::vector<int> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
 
+  double randomInitialBoardProb;
   double randomInitialStonesProb;
   double banLocProb;
   double banLocAreaPropAvg;
