@@ -1065,7 +1065,9 @@ bool Connection::uploadTrainingGameAndData(
     int boardSizeX = gameData->startBoard.x_size;
     int boardSizeY = gameData->startBoard.y_size;
     int handicap = gameData->handicapForSgf;
-    double komi = gameData->startHist.rules.komi;
+    // The distributed API still requires this legacy Go metadata field.
+    // Surakarta has no komi, so report its neutral fixed value.
+    double komi = 0.0;
     string rules = gameData->startHist.rules.toJsonStringNoKomiMaybeOmitStuff();
     json extraMetadata;
     extraMetadata["playout_doubling_advantage"] = gameData->playoutDoublingAdvantage;
@@ -1148,7 +1150,9 @@ bool Connection::uploadRatingGame(
     int boardSizeX = gameData->startBoard.x_size;
     int boardSizeY = gameData->startBoard.y_size;
     int handicap = (gameData->numExtraBlack > 0 ? (gameData->numExtraBlack + 1) : 0);
-    double komi = gameData->startHist.rules.komi;
+    // The distributed API still requires this legacy Go metadata field.
+    // Surakarta has no komi, so report its neutral fixed value.
+    double komi = 0.0;
     string rules = gameData->startHist.rules.toJsonStringNoKomiMaybeOmitStuff();
     json extraMetadata = json({});
     string gametype = getGameTypeStr(gameData);

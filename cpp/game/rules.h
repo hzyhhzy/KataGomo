@@ -21,10 +21,6 @@ struct Rules {
 
   int noLegalMoveRule;
 
-  // Retained only for compatibility with generic GTP/SGF/distributed code.
-  // Surakarta scoring does not use komi.
-  int komi;
-
   Rules();
   Rules(int maxMoves, int repetitionCount, int noLegalMoveRule);
   ~Rules();

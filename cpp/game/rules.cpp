@@ -10,14 +10,12 @@ using json = nlohmann::json;
 Rules::Rules()
   : maxMoves(200),
     repetitionCount(2),
-    noLegalMoveRule(NO_LEGAL_MOVE_COUNT),
-    komi(0) {}
+    noLegalMoveRule(NO_LEGAL_MOVE_COUNT) {}
 
 Rules::Rules(int maxMoves_, int repetitionCount_, int noLegalMoveRule_)
   : maxMoves(maxMoves_),
     repetitionCount(repetitionCount_),
-    noLegalMoveRule(noLegalMoveRule_),
-    komi(0) {
+    noLegalMoveRule(noLegalMoveRule_) {
   if(maxMoves < 0)
     throw IOError("Rules: maxMoves must be nonnegative");
   if(repetitionCount != 2 && repetitionCount != 3)

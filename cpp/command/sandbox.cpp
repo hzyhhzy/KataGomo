@@ -61,7 +61,6 @@ using namespace std;
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Player pla = P_BLACK;
 // //   Board board = Board::parseBoard(19,19,R"(
@@ -247,7 +246,6 @@ int MainCmds::sandbox() {
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Player pla = P_WHITE;
 //   Board board = Board::parseBoard(9,9,R"(
@@ -1378,7 +1376,6 @@ int MainCmds::sandbox() {
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Player pla = P_WHITE;
 //   Board board = Board::parseBoard(19,19,R"(
@@ -1479,7 +1476,6 @@ int MainCmds::sandbox() {
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Player pla = P_WHITE;
 //   Board board = Board::parseBoard(19,19,R"(
@@ -1589,7 +1585,6 @@ int MainCmds::sandbox() {
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Board board;
 //   BoardHistory boardHistory(board,P_BLACK,rules);
@@ -1700,7 +1695,6 @@ int MainCmds::sandbox() {
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Board board1 = Board::parseBoard(19,19,R"(
 //    A B C D E F G H J K L M N O P Q R S T
@@ -1924,7 +1918,6 @@ int MainCmds::sandbox() {
 //   rules.koRule = Rules::KO_POSITIONAL;
 //   rules.scoringRule = Rules::SCORING_AREA;
 //   rules.multiStoneSuicideLegal = true;
-//   rules.komi = 7.5f;
 
 //   Board board1 = Board::parseBoard(19,19,R"(
 //    A B C D E F G H J K L M N O P Q R S T
