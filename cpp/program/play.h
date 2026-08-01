@@ -99,10 +99,11 @@ class GameInitializer {
   std::mutex createGameMutex;
   Rand rand;
 
-  std::vector<int> allowedRepetitionCounts;
+  std::vector<int> allowedRepetitionRules;
   std::vector<std::string> allowedNoLegalMoveRuleStrs;
   std::vector<int> allowedNoLegalMoveRules;
-  int gameMaxMoves;
+  std::vector<int> allowedMaxMovesRules;
+  bool randomizeMaxMovesRules;
   std::vector<int> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
 

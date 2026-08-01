@@ -16,6 +16,7 @@
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/nneval.h"
 #include "../program/gtpconfig.h"
+#include "../program/play.h"
 #include "../program/setup.h"
 #include "../tests/tests.h"
 #include "../command/commandline.h"
@@ -300,6 +301,65 @@ void testPassPolicyMasking() {
   nnEval.killServerThreads();
 }
 
+void testSelfplayRuleSampling() {
+  Logger logger;
+  logger.setDisabled(true);
+
+  ConfigParser weightedCfg(map<string,string>{
+    {"repetitionRules", "2,3,3"},
+    {"noLegalMoveRules", "LOSE,DRAW,DRAW,COUNT"},
+    {"maxMovesRules", "111,222,222"},
+    {"bSizes", "6"},
+    {"bSizeRelProbs", "1"},
+  });
+  GameInitializer weightedInitializer(weightedCfg, logger, "weighted-rule-test");
+  int repetition2 = 0;
+  int repetition3 = 0;
+  int max111 = 0;
+  int max222 = 0;
+  int noLegalLose = 0;
+  int noLegalDraw = 0;
+  int noLegalCount = 0;
+  for(int i = 0; i < 2000; i++) {
+    Rules rules = weightedInitializer.createRules();
+    repetition2 += rules.repetitionCount == 2 ? 1 : 0;
+    repetition3 += rules.repetitionCount == 3 ? 1 : 0;
+    max111 += rules.maxMoves == 111 ? 1 : 0;
+    max222 += rules.maxMoves == 222 ? 1 : 0;
+    noLegalLose += rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_LOSE ? 1 : 0;
+    noLegalDraw += rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_DRAW ? 1 : 0;
+    noLegalCount += rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_COUNT ? 1 : 0;
+  }
+  testAssert(repetition3 > repetition2);
+  testAssert(max222 > max111);
+  testAssert(repetition2 + repetition3 == 2000);
+  testAssert(max111 + max222 == 2000);
+  testAssert(noLegalDraw > noLegalLose && noLegalDraw > noLegalCount);
+  testAssert(noLegalLose + noLegalDraw + noLegalCount == 2000);
+
+  ConfigParser randomizedCfg(map<string,string>{
+    {"repetitionRules", "2"},
+    {"noLegalMoveRules", "COUNT"},
+    {"bSizes", "6"},
+    {"bSizeRelProbs", "1"},
+  });
+  GameInitializer randomizedInitializer(randomizedCfg, logger, "continuous-max-moves-test");
+  PlaySettings playSettings;
+  set<int> sampledMaxMoves;
+  for(int i = 0; i < 100; i++) {
+    Board board;
+    BoardHistory hist;
+    Player pla = C_EMPTY;
+    OtherGameProperties otherGameProps;
+    randomizedInitializer.createGame(
+      board, pla, hist, nullptr, playSettings, otherGameProps, nullptr
+    );
+    testAssert(hist.rules.maxMoves >= 10 && hist.rules.maxMoves <= 700);
+    sampledMaxMoves.insert(hist.rules.maxMoves);
+  }
+  testAssert(sampledMaxMoves.size() > 1);
+}
+
 } // namespace
 
 int MainCmds::runtests(const vector<string>& args) {
@@ -315,6 +375,7 @@ int MainCmds::runtests(const vector<string>& args) {
   testRepetitionNNFeatures();
   testPassAndHashes();
   testPassPolicyMasking();
+  testSelfplayRuleSampling();
   cout << "Surakarta rules tests passed" << endl;
   return 0;
 }
