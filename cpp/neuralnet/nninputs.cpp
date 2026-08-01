@@ -580,8 +580,8 @@ void NNInputs::fillRowV7(
     ASSERT_UNREACHABLE;
 
 
-  // Rule features for the three no-legal-move outcomes.
-  rowGlobal[3] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_LOSE ? 1.0f : 0.0f;
+  // Match the legacy behavior by using all-zero as the baseline for LOSE.
+  // Only the two non-legacy no-legal-move outcomes need explicit features.
   rowGlobal[4] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_DRAW ? 1.0f : 0.0f;
   rowGlobal[5] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_COUNT ? 1.0f : 0.0f;
   if(hist.rules.maxMoves > 0) {

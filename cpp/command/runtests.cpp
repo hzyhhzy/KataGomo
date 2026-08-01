@@ -235,13 +235,33 @@ void testDisabledRepetitionNNFeatures() {
     6, 6, false, spatial, global
   );
   testAssert(global[2] == 0.0f);
+  testAssert(global[3] == 0.0f);
   testAssert(global[4] == 1.0f);
+  testAssert(global[5] == 0.0f);
   testAssert(global[6] == 1.0f);
   testAssert(std::abs(global[7] - std::exp(-1.0f)) < 1e-6f);
   testAssert(std::abs(global[8] - std::exp(-3.0f)) < 1e-6f);
   testAssert(global[10] == -1.0f);
   testAssert(std::abs(global[11] - std::exp(-10.0f)) < 1e-6f);
   testAssert(global[9] == 0.0f);
+
+  BoardHistory legacyLoseHist(
+    limitedBoard, P_BLACK, Rules(200, 3, Rules::NO_LEGAL_MOVE_LOSE)
+  );
+  NNInputs::fillRowV7(
+    limitedBoard, legacyLoseHist, P_BLACK, nnInputParams,
+    6, 6, false, spatial, global
+  );
+  testAssert(global[3] == 0.0f && global[4] == 0.0f && global[5] == 0.0f);
+
+  BoardHistory countRuleHist(
+    limitedBoard, P_BLACK, Rules(200, 3, Rules::NO_LEGAL_MOVE_COUNT)
+  );
+  NNInputs::fillRowV7(
+    limitedBoard, countRuleHist, P_BLACK, nnInputParams,
+    6, 6, false, spatial, global
+  );
+  testAssert(global[3] == 0.0f && global[4] == 0.0f && global[5] == 1.0f);
 }
 
 void testPassAndHashes() {
