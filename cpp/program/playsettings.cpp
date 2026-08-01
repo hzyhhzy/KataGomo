@@ -66,7 +66,7 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
     cfg.contains("startPosesPolicyInitAvgMoveNum") ? cfg.getDouble("startPosesPolicyInitAvgMoveNum", 0.0, 100.0) : 0.0;
   playSettings.randomInitialBoardPolicyInitAvgMoveNumMultiplier =
     cfg.contains("randomInitialBoardPolicyInitAvgMoveNumMultiplier") ?
-    cfg.getDouble("randomInitialBoardPolicyInitAvgMoveNumMultiplier", 0.0, 100.0) : 1.0;
+    cfg.getDouble("randomInitialBoardPolicyInitAvgMoveNumMultiplier", 0.0, 1.0) : 1.0;
   playSettings.sidePositionProb =
     //forkSidePositionProb is the legacy name, included for backward compatibility
     (cfg.contains("forkSidePositionProb") && !cfg.contains("sidePositionProb")) ?
