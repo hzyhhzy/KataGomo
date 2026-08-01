@@ -708,17 +708,12 @@ void NNEvaluator::evaluate(
     float maxPolicy = -1e25f;
     bool isLegal[NNPos::MAX_NN_POLICY_SIZE];
     int legalCount = 0;
-    bool isDeadOrCaptured[NNPos::MAX_NN_POLICY_SIZE];
-    bool hasNonDeadMoves = false;
 
     GameLogic::ResultsBeforeNN resultsBeforeNN = nnInputParamsWithResultsBeforeNN.resultsBeforeNN;
     if(resultsBeforeNN.myOnlyLoc == Board::NULL_LOC) {
       for(int i = 0; i < policySize; i++) {
         Loc loc = NNPos::posToLoc(i, xSize, ySize, nnXLen, nnYLen);
         isLegal[i] = history.isLegal(board, loc, nextPlayer);
-        isDeadOrCaptured[i] = history.rules.maxMoves == 0 && board.isDeadOrCaptured(loc);
-        if(!isDeadOrCaptured[i])
-          hasNonDeadMoves=true;
       }
     } 
     else  // assume all other moves are illegal
@@ -728,13 +723,6 @@ void NNEvaluator::evaluate(
       }
       isLegal[NNPos::locToPos(resultsBeforeNN.myOnlyLoc, xSize, nnXLen, nnYLen)] = true;
       isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = true;
-    }
-
-    if (hasNonDeadMoves)
-    {
-      for(int i = 0; i < policySize; i++) {
-        isLegal[i] &= (!isDeadOrCaptured[i]);
-      }
     }
 
     for(int i = 0; i<policySize; i++) {
@@ -750,27 +738,6 @@ void NNEvaluator::evaluate(
       if(policyValue > maxPolicy)
         maxPolicy = policyValue;
     }
-
-    //policyLocalFocus
-    if(nnInputParams.policyLocalFocusPow > 0 && history.moveHistory.size() >= 1 && board.isOnBoard(history.moveHistory[history.moveHistory.size()-1].loc)) {
-      Loc lastMove = history.moveHistory[history.moveHistory.size() - 1].loc;
-      int lastMoveX = Location::getX(lastMove, board.x_size);
-      int lastMoveY = Location::getY(lastMove, board.x_size);
-
-      double plfDistInv = 1.0 / nnInputParams.policyLocalFocusDist;
-      for(int y = 0; y < board.y_size; y++) {
-        for(int x = 0; x < board.x_size; x++) {
-          double dx = lastMoveX - x;
-          double dy = lastMoveY - y;
-          double dist = sqrt(dx * dx + dy * dy + dx * dy);//distance on Hex board
-          double factor = -log(1 + dist * plfDistInv);
-          factor *= nnInputParams.policyLocalFocusPow;
-          int pos = NNPos::xyToPos(x, y, nnXLen);
-          policy[pos] += factor;
-        }
-      }
-    }
-
 
     assert(legalCount > 0);
 

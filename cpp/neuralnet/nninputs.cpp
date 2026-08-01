@@ -456,19 +456,6 @@ Hash128 NNInputs::getHash(
     hash.hash0 += hash.hash1;
   }
 
-  // Fold in policyLocalFocus
-  if(nnInputParams.policyLocalFocusPow != 0) {
-    int64_t policyLocalFocusPowDiscretized = (int64_t)(nnInputParams.policyLocalFocusPow * 2048.0f);
-    hash.hash0 ^= Hash::basicLCong2(hash.hash1 + (uint64_t)policyLocalFocusPowDiscretized);
-    hash.hash1 = Hash::splitMix64(hash.hash0 + (uint64_t)policyLocalFocusPowDiscretized);
-    hash.hash0 += hash.hash1;
-
-    int64_t policyLocalFocusDistDiscretized = (int64_t)(nnInputParams.policyLocalFocusDist * 2048.0f);
-    hash.hash0 ^= Hash::basicLCong2(hash.hash1 + (uint64_t)policyLocalFocusDistDiscretized);
-    hash.hash1 = Hash::splitMix64(hash.hash0 + (uint64_t)policyLocalFocusDistDiscretized);
-    hash.hash0 += hash.hash1;
-  }
-
   return hash;
 }
 
@@ -530,19 +517,6 @@ void NNInputs::fillRowV7(
     }
   }
 
-  //policyLocalFocus
-  if(
-    nnInputParams.policyLocalFocusPow > 0 && hist.moveHistory.size() >= 1 &&
-    board.isOnBoard(hist.moveHistory[hist.moveHistory.size() - 1].loc)) {
-    Loc lastMove = hist.moveHistory[hist.moveHistory.size() - 1].loc;
-
-    int pos = NNPos::locToPos(lastMove, board.x_size, nnXLen, nnYLen);
-    setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
-    rowGlobal[1] = 1.0;
-    rowGlobal[2] = nnInputParams.policyLocalFocusPow * 3.0;
-    rowGlobal[3] = 3.0 / nnInputParams.policyLocalFocusDist;
-  }
-
   rowGlobal[0] = nextPlayer == C_WHITE ? 1.0 : 0.0;
 
   //Global features.
@@ -552,32 +526,6 @@ void NNInputs::fillRowV7(
   if(hist.rules.scoringRule == Rules::SCORING_AREA) {}
   else
     ASSERT_UNREACHABLE;
-
-  if(hist.rules.maxMoves > 0 && hist.rules.maxMoves < board.x_size * board.y_size) {
-    rowGlobal[4] = 1.0;
-    rowGlobal[14] =
-      nextPlayer == P_BLACK ? -nnInputParams.noResultUtilityForWhite : nnInputParams.noResultUtilityForWhite;
-    int mm = hist.rules.maxMoves;
-    int movecount = board.numStonesOnBoard();
-    int area = board.x_size * board.y_size;
-    int remain = mm - movecount;
-    if (remain <= 0)
-    {
-      cout << board;
-      cout << hist.rules;
-      cout << "remain move count <= 0 in nninput\n";
-      remain = 0;
-    }
-    rowGlobal[5] = double(mm) / double(area);
-    rowGlobal[6] = exp(-double(remain) / 1.5);
-    rowGlobal[7] = exp(-double(remain) / 5.0);
-    rowGlobal[8] = exp(-double(remain) / 15.0);
-    rowGlobal[9] = exp(-double(remain) / 50.0);
-    rowGlobal[10] = exp(-double(remain) / 150.0);
-    rowGlobal[11] = remain % 2;
-    rowGlobal[12] = 2.0 * sqrt(double(area - mm) / double(area));
-
-  }
 
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.

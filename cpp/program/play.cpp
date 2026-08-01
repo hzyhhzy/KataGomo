@@ -222,13 +222,6 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   }
 
   noResultRandRadius = cfg.contains("noResultRandRadius") ? cfg.getDouble("noResultRandRadius", 0.0, 1.0) : 0.0;
-  moveLimitProb = cfg.contains("moveLimitProb") ? cfg.getDouble("moveLimitProb", 0.0, 1.0) : 0.0;
-  moveLimitAreaPow = cfg.contains("moveLimitAreaPow") ? cfg.getDouble("moveLimitAreaPow", 0.01, 10.0) : 1.0;
-  policyLocalFocusProb = cfg.contains("policyLocalFocusProb") ? cfg.getDouble("policyLocalFocusProb", 0.0, 1.0) : 0.0;
-  policyLocalFocusPowAvg = cfg.contains("policyLocalFocusPowAvg") ? cfg.getDouble("policyLocalFocusPowAvg", 0.01, 3.0) : 0.2;
-  policyLocalFocusDistAvg = cfg.contains("policyLocalFocusDistAvg") ? cfg.getDouble("policyLocalFocusDistAvg", 1.0, 50.0) : 5.0;
-  policyLocalFocusPowStdev = cfg.contains("policyLocalFocusPowStdev") ? cfg.getDouble("policyLocalFocusPowStdev", 0.0, 3.0) : 0.5;
-  policyLocalFocusDistStdev = cfg.contains("policyLocalFocusDistStdev") ? cfg.getDouble("policyLocalFocusDistStdev", 0.0, 3.0) : 0.5;
 }
 
 GameInitializer::~GameInitializer()
@@ -268,14 +261,6 @@ void GameInitializer::createGame(
     while(params.noResultUtilityForWhite < -1.0 || params.noResultUtilityForWhite > 1.0)
       params.noResultUtilityForWhite = mean + noResultRandRadius * (rand.nextDouble() * 2 - 1);
   }
-  if(rand.nextBool(policyLocalFocusProb)) {
-    params.policyLocalFocusPow =
-      2 * rand.nextDouble() * exp(log(policyLocalFocusPowAvg) + policyLocalFocusPowStdev * rand.nextGaussianTruncated(2.0));
-    assert(params.policyLocalFocusPow < 10);
-    params.policyLocalFocusDist = exp(log(policyLocalFocusDistAvg) + policyLocalFocusDistStdev * rand.nextGaussianTruncated(2.0));
-    assert(params.policyLocalFocusDist < 100);
-  } else
-    params.policyLocalFocusPow = 0;
 }
 
 Rules GameInitializer::randomizeScoringAndTaxRules(Rules rules, Rand& randToUse) const {
@@ -399,22 +384,6 @@ void GameInitializer::createGameSharedUnsynchronized(
   else {
     int xSize = allowedBSizes[xSizeIdx];
     int ySize = allowedBSizes[ySizeIdx];
-
-    if(rand.nextBool(moveLimitProb)) {
-      //int maxMoves = int(pow(rand.nextDouble(), moveLimitAreaPow) * xSize * ySize);
-
-      //shortest win ~ 0.60*x^1.9
-      //low draw rate ~ 0.70*x^1.9
-      double maxMovesD = 0.65 * pow(xSize * ySize, 0.95);
-      double mmStdev = rand.nextBool(0.2) ? 2.0 * xSize : 0.7 * xSize;
-      int maxMoves = int(maxMovesD + mmStdev * rand.nextGaussian());
-      if(maxMoves >= xSize * ySize)
-        maxMoves = 0;
-      if(maxMoves < xSize)
-        maxMoves = 0;
-      rules.maxMoves = maxMoves;
-    }
-
 
     board = Board(xSize,ySize);
     pla = P_BLACK;
@@ -773,8 +742,6 @@ static NNRawStats computeNNRawStats(const Search* bot, const Board& board, const
   NNResultBuf buf;
   MiscNNInputParams nnInputParams;
   nnInputParams.noResultUtilityForWhite = bot->searchParams.noResultUtilityForWhite;
-  nnInputParams.policyLocalFocusDist = bot->searchParams.policyLocalFocusDist;
-  nnInputParams.policyLocalFocusPow = bot->searchParams.policyLocalFocusPow;
   Board b = board;
   bot->nnEvaluator->evaluate(b,hist,pla,nnInputParams,buf,false);
   NNOutput& nnOutput = *(buf.result);
@@ -1224,8 +1191,6 @@ FinishedGameData* Play::runGame(
   gameData->noResultUtilityForWhite = botSpecB.baseParams.noResultUtilityForWhite;
   gameData->playoutDoublingAdvantagePla = otherGameProps.playoutDoublingAdvantagePla;
   gameData->playoutDoublingAdvantage = otherGameProps.playoutDoublingAdvantage;
-  gameData->policyLocalFocusDist = botSpecB.baseParams.policyLocalFocusDist;
-  gameData->policyLocalFocusPow = botSpecB.baseParams.policyLocalFocusPow;
 
   gameData->mode = FinishedGameData::MODE_NORMAL;
   gameData->usedInitialPosition = 0;
@@ -1302,9 +1267,6 @@ FinishedGameData* Play::runGame(
     }
   }
 
-  if(board.numStonesOnBoard() >= hist.rules.maxMoves)
-    hist.rules.maxMoves = 0;
-
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double avgPolicyInitMoveNum =
       otherGameProps.isSgfPos ? playSettings.startPosesPolicyInitAvgMoveNum : playSettings.policyInitAvgMoveNum;
@@ -1338,9 +1300,6 @@ FinishedGameData* Play::runGame(
   vector<ReportedSearchValues> rawNNValues;
 
   ClockTimer timer;
-
-  bool drawEarlyEndGame =
-    playSettings.allowEarlyDraw && (!playSettings.forSelfPlay || gameRand.nextBool(playSettings.earlyDrawProbSelfplay));
 
   //Main play loop
   for(int i = 0; i<maxMovesPerGame; i++) {
@@ -1451,7 +1410,7 @@ FinishedGameData* Play::runGame(
       }
     }
 
-    if(playSettings.allowResignation || playSettings.reduceVisits || playSettings.allowEarlyDraw) {
+    if(playSettings.allowResignation || playSettings.reduceVisits) {
       ReportedSearchValues values = toMoveBot->getRootValuesRequireSuccess();
       historicalMctsWinLossValues.push_back(values.winLossValue);
       historicalMctsDrawValues.push_back(values.noResultValue);
@@ -1500,17 +1459,6 @@ FinishedGameData* Play::runGame(
         if(shouldResign)
           hist.setWinnerByResignation(getOpp(pla));
       }
-    }
-
-    // Check for drawEarlyEndGame
-    if(drawEarlyEndGame && historicalMctsDrawValues.size() >= playSettings.earlyDrawConsecTurns) {
-      bool shouldEndGameDraw = true;
-      for(int i = 0; i < playSettings.earlyDrawConsecTurns; i++) {
-        if(historicalMctsDrawValues[historicalMctsDrawValues.size() - i - 1] < playSettings.earlyDrawThreshold)
-          shouldEndGameDraw = false;
-      }
-      if(shouldEndGameDraw)
-        hist.setWinner(C_EMPTY);
     }
 
     testAssert(hist.moveHistory.size() < 0x1FFFffff);
@@ -1733,8 +1681,6 @@ FinishedGameData* Play::runGame(
           Search* toMoveBot2 = sp2->pla == P_BLACK ? botB : botW;
           MiscNNInputParams nnInputParams;
           nnInputParams.noResultUtilityForWhite = toMoveBot2->searchParams.noResultUtilityForWhite;
-          nnInputParams.policyLocalFocusDist = toMoveBot2->searchParams.policyLocalFocusDist;
-          nnInputParams.policyLocalFocusPow = toMoveBot2->searchParams.policyLocalFocusPow;
           toMoveBot2->nnEvaluator->evaluate(
             sp2->board,sp2->hist,sp2->pla,nnInputParams,
             nnResultBuf,false

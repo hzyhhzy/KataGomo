@@ -83,8 +83,6 @@ FinishedGameData::FinishedGameData()
    gameHash(),
 
    noResultUtilityForWhite(0.0),
-   policyLocalFocusPow(0.0),
-    policyLocalFocusDist(5.0),
    playoutDoublingAdvantagePla(P_BLACK),
    playoutDoublingAdvantage(0.0),
 
@@ -320,8 +318,6 @@ void TrainingWriteBuffers::addRow(
   {
     MiscNNInputParams nnInputParams;
     nnInputParams.noResultUtilityForWhite = data.noResultUtilityForWhite;
-    nnInputParams.policyLocalFocusDist = data.policyLocalFocusDist;
-    nnInputParams.policyLocalFocusPow = data.policyLocalFocusPow;
     //Note: this is coordinated with the fact that selfplay does not use this feature on side positions
     if(!isSidePosition)
       nnInputParams.playoutDoublingAdvantage = getOpp(nextPlayer) == data.playoutDoublingAdvantagePla ? -data.playoutDoublingAdvantage : data.playoutDoublingAdvantage;

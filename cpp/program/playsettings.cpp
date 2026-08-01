@@ -15,10 +15,6 @@ PlaySettings::PlaySettings()
     selfplayResignProb(0.0),
     resignThreshold(0.0),
     resignConsecTurns(1),
-    allowEarlyDraw(false),
-    earlyDrawThreshold(0.99),
-    earlyDrawConsecTurns(4),
-    earlyDrawProbSelfplay(0.9),
    completelyRandomOpeningProb(0.1),
    completelyRandomOpeningFillRateAvg(0.01),
    specialOpeningProb(0.02),
@@ -40,10 +36,6 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
   playSettings.resignThreshold = cfg.getDouble("resignThreshold",-1.0,0.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns", 1, 100);
 
-  playSettings.allowEarlyDraw = cfg.getBool("allowEarlyDraw");
-  playSettings.earlyDrawThreshold = cfg.getDouble("earlyDrawThreshold", 0.8, 1.0);
-  playSettings.earlyDrawConsecTurns = cfg.getInt("earlyDrawConsecTurns", 1, 100);
-  playSettings.earlyDrawProbSelfplay = cfg.getDouble("earlyDrawProbSelfplay", 0.0, 1.0);
   playSettings.balanceOpeningProb =
     cfg.contains("balanceOpeningProb") ? cfg.getDouble("balanceOpeningProb", 0.0, 1.0) : 1.0;
   playSettings.makeOpeningFairRate =
@@ -70,10 +62,6 @@ PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
   playSettings.resignThreshold = cfg.getDouble("resignThreshold",-1.0,0.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns", 1, 100);
 
-  playSettings.allowEarlyDraw = cfg.getBool("allowEarlyDraw");
-  playSettings.earlyDrawThreshold = cfg.getDouble("earlyDrawThreshold", 0.8, 1.0);
-  playSettings.earlyDrawConsecTurns = cfg.getInt("earlyDrawConsecTurns", 1, 100);
-  playSettings.earlyDrawProbSelfplay = cfg.getDouble("earlyDrawProbSelfplay", 0.0, 1.0);
   playSettings.balanceOpeningProb =
     cfg.contains("balanceOpeningProb") ? cfg.getDouble("balanceOpeningProb", 0.0, 1.0) : 1.0;
   playSettings.makeOpeningFairRate =
@@ -95,10 +83,6 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
       cfg.getDouble("resignThreshold", -1.0, 0.0);  // Threshold on [-1,1], regardless of winLossUtilityFactor
     playSettings.resignConsecTurns = cfg.getInt("resignConsecTurns", 1, 100);
 
-    playSettings.allowEarlyDraw = cfg.getBool("allowEarlyDraw");
-    playSettings.earlyDrawThreshold = cfg.getDouble("earlyDrawThreshold", 0.8, 1.0);
-    playSettings.earlyDrawConsecTurns = cfg.getInt("earlyDrawConsecTurns", 1, 100);
-    playSettings.earlyDrawProbSelfplay = cfg.getDouble("earlyDrawProbSelfplay", 0.0, 1.0);
   }
 
   

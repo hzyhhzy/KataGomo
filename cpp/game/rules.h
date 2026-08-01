@@ -12,15 +12,7 @@ struct Rules {
   static const int SCORING_AREA = 0;
   int scoringRule;
 
-  //if reaches this move limit, regarded as draw
-  int maxMoves;
-
-
-
   Rules();
-  Rules(
-    int scoringRule,int maxMoves
-  );
   ~Rules();
 
   bool operator==(const Rules& other) const;
@@ -49,7 +41,6 @@ struct Rules {
   nlohmann::json toJson() const;
 
   static const Hash128 ZOBRIST_SCORING_RULE_HASH[2];
-  static const Hash128 ZOBRIST_MAXMOVES_HASH_BASE;
 
 };
 
