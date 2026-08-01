@@ -109,7 +109,7 @@ SearchParams SearchParams::forTestsV2() {
   params.minVisitPropForLCB = 0.15;
   params.rootPruneUselessMoves = true;
   params.useNonBuggyLcb = true;
-  params.useGraphSearch = true;
+  params.useGraphSearch = false;
   params.fpuParentWeightByVisitedPolicy = true;
   params.valueWeightExponent = 0.25;
   params.useNoisePruning = true;

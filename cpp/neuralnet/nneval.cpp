@@ -712,6 +712,9 @@ void NNEvaluator::evaluate(
         if(isLegal[i] && loc != Board::PASS_LOC)
           hasLegalMoveExceptPass = true;
       }
+      // Surakarta keeps pass pseudolegal at the rules/API layer so callers
+      // cannot crash on it, but search must treat it exactly like an illegal
+      // policy point unless it is the sole legal choice.
       if(hasLegalMoveExceptPass)
         isLegal[NNPos::locToPos(Board::PASS_LOC, xSize, nnXLen, nnYLen)] = false;
     } 

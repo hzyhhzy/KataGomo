@@ -70,30 +70,12 @@ logToStderr = false
 # ===========================================================================
 # Rules
 # ===========================================================================
-# This section configures the scoring and playing rules. Rules can also be
-# changed mid-run by issuing custom GTP commands.
-#
-# See https://lightvector.github.io/KataGo/rules.html for rules details.
-#
-# See https://github.com/lightvector/KataGo/blob/master/docs/GTP_Extensions.md
-# for GTP commands.
+# This section configures Surakarta terminal rules. Rules can also be changed
+# mid-run by issuing custom GTP commands.
 
-$$KO_RULE
-
-$$LOOPPASS_RULE
-# options: 
-# LOOPDRAW_PASSSCORING, LOOPDRAW_PASSCONTINUE, LOOPLOSE_PASSSCORING, LOOPSCORING_PASSSCORING, BOTZONE 
-
-
-$$TAX_RULE
-
-$$MULTI_STONE_SUICIDE
-
-$$BUTTON
-
-$$WHITE_HANDICAP_BONUS
-
-$$FRIENDLY_PASS_OK
+$$SURAKARTA_RULES
+# repetitionCount may be 2 or 3.
+# noLegalMoveRule may be LOSE, DRAW, or COUNT.
 
 # ===========================================================================
 # Bot behavior
@@ -388,7 +370,8 @@ $$MULTIPLE_GPUS
 
 # Use graph search rather than tree search - identify and share search for
 # transpositions.
-# useGraphSearch = true
+# Graph search is intentionally unsupported for Surakarta because repetition is path-dependent.
+# useGraphSearch = false
 
 # How much to shard the node table for search synchronization
 # nodeTableShardsPowerOfTwo = 16
@@ -468,7 +451,12 @@ string GTPConfig::makeConfig(
     assert(pos != string::npos);
     config.replace(pos, key.size(), replacement);
   };
-  replace("$$LOOPPASSRULE", "loopPassRule = "+Rules::writeLoopPassRule(rules.loopPassRule)+" ");
+  replace(
+    "$$SURAKARTA_RULES",
+    "maxMoves = " + Global::intToString(rules.maxMoves) + "\n" +
+    "repetitionCount = " + Global::intToString(rules.repetitionCount) + "\n" +
+    "noLegalMoveRule = " + Rules::writeNoLegalMoveRule(rules.noLegalMoveRule)
+  );
 
 
 

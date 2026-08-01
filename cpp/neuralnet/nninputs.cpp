@@ -37,8 +37,6 @@ const Hash128 MiscNNInputParams::ZOBRIST_PLAYOUT_DOUBLINGS =
   Hash128(0xa5e6114d380bfc1dULL, 0x4160557f1222f4adULL);
 const Hash128 MiscNNInputParams::ZOBRIST_NN_POLICY_TEMP =
   Hash128(0xebcbdfeec6f4334bULL, 0xb85e43ee243b5ad2ULL);
-const Hash128 MiscNNInputParams::ZOBRIST_BOTZONE_PROHIBITED_MOVE = // Based on sha256 hash of MiscNNInputParams::ZOBRIST_BOTZONE_PROHIBITED_MOVE
-  Hash128(0x1f7daa2872b66b82ULL, 0xc852a60942b217b7ULL);
 
 //-----------------------------------------------------------------------------------------------------------
 //-----------------------------------------------------------------------------------------------------------
@@ -436,7 +434,7 @@ static void setRowBin(float* rowBin, int pos, int feature, float value, int posS
   rowBin[pos * posStride + feature * featureStride] = value;
 }
 
-//Currently does NOT depend on history (except for marking ko-illegal spots)
+//Includes path history because Surakarta repetition terminality depends on it.
 Hash128 NNInputs::getHash(
   const Board& board, const BoardHistory& hist, Player nextPlayer,
   const MiscNNInputParams& nnInputParams
@@ -449,16 +447,6 @@ Hash128 NNInputs::getHash(
   //If the history is in a weird prolonged state, also treat it similarly.
   if(hist.isGameFinished )
     hash ^= Board::ZOBRIST_GAME_IS_OVER;
-
-  Loc botzoneProhibitedFirstLoc;
-  Loc botzoneProhibitedSecondLoc;
-  if(hist.getBotzoneProhibitedMove(board, botzoneProhibitedFirstLoc, botzoneProhibitedSecondLoc)) {
-    uint64_t moveHash = static_cast<uint64_t>(static_cast<uint16_t>(botzoneProhibitedFirstLoc));
-    moveHash = (moveHash << 16) ^ static_cast<uint64_t>(static_cast<uint16_t>(botzoneProhibitedSecondLoc));
-    hash ^= MiscNNInputParams::ZOBRIST_BOTZONE_PROHIBITED_MOVE;
-    hash.hash0 ^= Hash::murmurMix(moveHash);
-    hash.hash1 ^= Hash::nasam(moveHash);
-  }
 
   //Fold in asymmetric playout indicator
   if(nnInputParams.playoutDoublingAdvantage != 0) {
@@ -539,8 +527,32 @@ void NNInputs::fillRowV7(
         setRowBin(rowBin, pos, 1, 1.0f, posStride, featureStride);
       else if(stone == opp)
         setRowBin(rowBin, pos, 2, 1.0f, posStride, featureStride);
-      else if(stone == C_BAN)
-        setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
+
+      // In the destination-selection stage, expose all legal destination
+      // points (ordinary moves and loop captures) to the network.
+      if(board.stage == 1 && board.isLegal(loc, pla)) {
+        setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
+
+        // Repetition is path-dependent. For every non-capturing destination,
+        // tell the network how often the resulting full position has already
+        // occurred, and whether this destination reaches the configured
+        // repetition threshold. Captures reset the repetition history.
+        if(board.colors[loc] == C_EMPTY) {
+          Board nextBoard = board;
+          nextBoard.playMoveAssumeLegal(loc, pla);
+          int previousOccurrences = 0;
+          auto iter = hist.posHashHistoryCount.find(nextBoard.pos_hash);
+          if(iter != hist.posHashHistoryCount.end())
+            previousOccurrences = iter->second;
+          float repetitionProgress = std::min(
+            1.0f,
+            previousOccurrences / static_cast<float>(hist.rules.repetitionCount - 1)
+          );
+          setRowBin(rowBin, pos, 5, repetitionProgress, posStride, featureStride);
+          if(previousOccurrences + 1 >= hist.rules.repetitionCount)
+            setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
+        }
+      }
     }
   }
 
@@ -558,49 +570,36 @@ void NNInputs::fillRowV7(
       std::cout << "nninput: chosen move not on board ";
     } else {
       int pos = NNPos::locToPos(chosenMove, board.x_size, nnXLen, nnYLen);
-      setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
+      setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
     }
   } else
     ASSERT_UNREACHABLE;
 
 
-  //Scoring
-  if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSSCORING) {
-  } else if(hist.rules.loopPassRule == Rules::LOOPDRAW_PASSCONTINUE) {
-    rowGlobal[2] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::LOOPLOSE_PASSSCORING) {
-    rowGlobal[3] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::LOOPSCORING_PASSSCORING) {
-    rowGlobal[4] = 1.0f;
-  } else if(hist.rules.loopPassRule == Rules::BOTZONE) {
-    rowGlobal[4] = 1.0f;
-    rowGlobal[10] = 1.0f;
-  } else
-    ASSERT_UNREACHABLE;
-
-  if(hist.rules.loopPassRule == Rules::BOTZONE) {
-    Loc botzoneProhibitedFirstLoc;
-    Loc botzoneProhibitedSecondLoc;
-    if(hist.getBotzoneProhibitedMove(board, botzoneProhibitedFirstLoc, botzoneProhibitedSecondLoc)) {
-      rowGlobal[11] = 1.0f;
-      if(board.stage == 0 && board.isOnBoard(botzoneProhibitedFirstLoc)) {
-        int pos = NNPos::locToPos(botzoneProhibitedFirstLoc, board.x_size, nnXLen, nnYLen);
-        setRowBin(rowBin, pos, 5, 1.0f, posStride, featureStride);
-      }
-      if(board.isOnBoard(botzoneProhibitedSecondLoc)) {
-        int pos = NNPos::locToPos(botzoneProhibitedSecondLoc, board.x_size, nnXLen, nnYLen);
-        setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
-      }
-    }
+  // Rule and progress features, so a single model can be trained with either
+  // repetition threshold and any of the three no-legal-move outcomes.
+  rowGlobal[2] = hist.rules.repetitionCount == 3 ? 1.0f : 0.0f;
+  rowGlobal[3] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_LOSE ? 1.0f : 0.0f;
+  rowGlobal[4] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_DRAW ? 1.0f : 0.0f;
+  rowGlobal[5] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_COUNT ? 1.0f : 0.0f;
+  if(hist.rules.maxMoves <= 0) {
+    rowGlobal[6] = 1.0f;
+  }
+  else {
+    rowGlobal[7] = tanh(hist.rules.maxMoves / 200.0f);
+    rowGlobal[8] = std::min(1.0f, board.movenum / static_cast<float>(hist.rules.maxMoves));
   }
 
-  float selfKomi = pla == C_BLACK ? hist.rules.komi : -hist.rules.komi;
-  rowGlobal[5] = tanh(selfKomi);
-  rowGlobal[6] = tanh(selfKomi * 0.3);
-  rowGlobal[7] = tanh(selfKomi * 0.1);
-  rowGlobal[8] = selfKomi / board.boardArea();
-
-  rowGlobal[9] = (hist.rules.komi + board.boardArea()) % 2;
+  Hash128 lastCompletedPositionHash = board.pos_hash;
+  if(board.stage == 1)
+    lastCompletedPositionHash = hist.getRecentBoard(1).pos_hash;
+  auto currentRepeatIter = hist.posHashHistoryCount.find(lastCompletedPositionHash);
+  if(currentRepeatIter != hist.posHashHistoryCount.end()) {
+    rowGlobal[9] = std::min(
+      1.0f,
+      currentRepeatIter->second / static_cast<float>(hist.rules.repetitionCount - 1)
+    );
+  }
   
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
   // nonzero, no matter how slightly.

@@ -1538,16 +1538,16 @@ int MainCmds::gtp(const vector<string>& args) {
         bool parseSuccess = true;
         string r = pieces[0];
         Rules newRules = engine->getCurrentRules();
-        if(r == "0" || r == "ps")
-          newRules.loopPassRule = Rules::LOOPDRAW_PASSSCORING;
-        else if(r == "1" || r == "pc")
-          newRules.loopPassRule = Rules::LOOPDRAW_PASSCONTINUE;
-        else if(r == "2" || r == "ll")
-          newRules.loopPassRule = Rules::LOOPLOSE_PASSSCORING;
-        else if(r == "3" || r == "ls")
-          newRules.loopPassRule = Rules::LOOPSCORING_PASSSCORING;
-        else if(r == "4" || r == "bz" || r == "botzone")
-          newRules.loopPassRule = Rules::BOTZONE;
+        if(r == "2" || r == "r2")
+          newRules.repetitionCount = 2;
+        else if(r == "3" || r == "r3")
+          newRules.repetitionCount = 3;
+        else if(r == "lose")
+          newRules.noLegalMoveRule = Rules::NO_LEGAL_MOVE_LOSE;
+        else if(r == "draw")
+          newRules.noLegalMoveRule = Rules::NO_LEGAL_MOVE_DRAW;
+        else if(r == "count")
+          newRules.noLegalMoveRule = Rules::NO_LEGAL_MOVE_COUNT;
         else
           parseSuccess = false;
 

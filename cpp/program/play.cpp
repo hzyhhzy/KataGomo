@@ -43,17 +43,23 @@ GameInitializer::GameInitializer(ConfigParser& cfg, Logger& logger, const string
 
 void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
 
-  allowedLoopPassRuleStrs = cfg.getStrings("loopPassRules", Rules::loopPassRuleStrings());
+  allowedRepetitionCounts = cfg.contains("repetitionCounts") ? cfg.getInts("repetitionCounts", 2, 3) : vector<int>{2};
+  for(int count: allowedRepetitionCounts) {
+    if(count != 2 && count != 3)
+      throw IOError("repetitionCounts entries must be 2 or 3 in " + cfg.getFileName());
+  }
+  if(allowedRepetitionCounts.empty())
+    throw IOError("repetitionCounts must have at least one value in " + cfg.getFileName());
 
-  for(size_t i = 0; i < allowedLoopPassRuleStrs.size(); i++)
-    allowedLoopPassRules.push_back(Rules::parseLoopPassRule(allowedLoopPassRuleStrs[i]));
-  if(allowedLoopPassRules.size() <= 0)
-    throw IOError("loopPassRules must have at least one value in " + cfg.getFileName());
+  allowedNoLegalMoveRuleStrs = cfg.contains("noLegalMoveRules") ?
+    cfg.getStrings("noLegalMoveRules", Rules::noLegalMoveRuleStrings()) :
+    vector<string>{"COUNT"};
+  for(const string& rule: allowedNoLegalMoveRuleStrs)
+    allowedNoLegalMoveRules.push_back(Rules::parseNoLegalMoveRule(rule));
+  if(allowedNoLegalMoveRules.empty())
+    throw IOError("noLegalMoveRules must have at least one value in " + cfg.getFileName());
 
-  komiMean = cfg.contains("komiMean") ? cfg.getFloat("komiMean", -1000, 1000) : 0.0f;
-  komiStdev = cfg.contains("komiStdev") ? cfg.getFloat("komiStdev", 0.0f, 1000.0f) : 0.0f;
-  komiBigStdevProb = cfg.contains("komiBigStdevProb") ? cfg.getDouble("komiBigStdevProb", 0.0, 1.0) : 0.0;
-  komiBigStdev = cfg.contains("komiBigStdev") ? cfg.getFloat("komiBigStdev", 0.0f, 1000.0f) : 2.0f;
+  gameMaxMoves = cfg.contains("gameMaxMoves") ? cfg.getInt("gameMaxMoves", 0, 1000000) : 200;
 
   randomInitialStonesProb = cfg.contains("randomInitialStonesProb") ? cfg.getDouble("randomInitialStonesProb", 0.0, 1.0) : 0.0;
   banLocProb = cfg.contains("banLocProb") ? cfg.getDouble("banLocProb", 0.0, 1.0) : 0.0;
@@ -63,8 +69,14 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
 
   allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
   allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
+  for(int boardSize: allowedBSizes) {
+    if(boardSize != 6)
+      throw IOError("Surakarta self-play requires bSizes = 6 in " + cfg.getFileName());
+  }
 
   allowRectangleProb = cfg.contains("allowRectangleProb") ? cfg.getDouble("allowRectangleProb",0.0,1.0) : 0.0;
+  if(allowRectangleProb != 0.0)
+    throw IOError("Surakarta does not support rectangular boards in " + cfg.getFileName());
 
   auto generateCumProbs = [](const vector<Sgf::PositionSample> poses, double lambda, double& effectiveSampleSize) {
     int minInitialTurnNumber = 0;
@@ -307,14 +319,9 @@ Rules GameInitializer::createRules() {
 
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
-  rules.loopPassRule = allowedLoopPassRules[rand.nextUInt((uint32_t)allowedLoopPassRules.size())];
-
-  int boardArea = Board::MAX_LEN * Board::MAX_LEN;
-
-  float komiStdevThis = rand.nextBool(komiBigStdevProb) ? komiBigStdev : komiStdev;
-  do {
-    rules.komi = llround(komiMean + rand.nextGaussian() * komiStdevThis);
-  } while(rules.komi <= -boardArea || rules.komi >= boardArea);
+  rules.maxMoves = gameMaxMoves;
+  rules.repetitionCount = allowedRepetitionCounts[rand.nextUInt((uint32_t)allowedRepetitionCounts.size())];
+  rules.noLegalMoveRule = allowedNoLegalMoveRules[rand.nextUInt((uint32_t)allowedNoLegalMoveRules.size())];
 
   return rules;
 }

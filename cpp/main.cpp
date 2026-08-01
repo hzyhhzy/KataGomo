@@ -47,6 +47,7 @@ gatekeeper : Poll directory for new nets and match them against the latest net s
 evalsgf : Utility/debug tool, analyze a single position of a game from an SGF file.
 
 testgpuerror : Print the average error of the neural net between current config and fp32 config.
+runtests : Run Surakarta rules and hashing tests.
 
 
 )%%" << endl;
@@ -80,6 +81,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::selfplay(subArgs);
   else if(subcommand == "testgpuerror")
     return MainCmds::testgpuerror(subArgs);
+  else if(subcommand == "runtests")
+    return MainCmds::runtests(subArgs);
   else if(subcommand == "samplesgfs")
     return MainCmds::samplesgfs(subArgs);
   else if(subcommand == "dataminesgfs")

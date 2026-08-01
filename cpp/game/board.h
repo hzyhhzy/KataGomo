@@ -12,7 +12,7 @@
 #include "../external/nlohmann_json/json.hpp"
 
 #ifndef COMPILE_MAX_BOARD_LEN 
-#define COMPILE_MAX_BOARD_LEN 7
+#define COMPILE_MAX_BOARD_LEN 6
 #endif
 
 //how many stages in each move
@@ -199,9 +199,15 @@ struct Board
   int y_size;                  //Vertical size of board
   Color colors[MAX_ARR_SIZE];  //Color of each location on the board.
 
+  //Number of completed turns (one move by one player). Selecting a source
+  //point in the first stage does not increment this counter.
+  int movenum;
+
   /* PointList empty_list; //List of all empty locations on board */
 
-  Hash128 pos_hash; //A zobrist hash of the current board position (does not include ko point or player to move)
+  //Zobrist hash of stones, board size, stage/selected source, and side to move.
+  //It deliberately excludes movenum so it can serve as the repetition key.
+  Hash128 pos_hash;
 
   short adj_offsets[8]; //Indices 0-3: Offsets to add for adjacent points. Indices 4-7: Offsets for diagonal points. 2 and 3 are +x and +y.
 
@@ -212,8 +218,8 @@ struct Board
   //who plays the next move
   Color nextPla;
 
-  //一步内每一阶段的选点
-  //例如：象棋类midLoc[0]是选择的棋子，midLoc[1]是落点
+  //Locations selected by the stages of one move. For example, midLocs[0]
+  //is the selected piece and the next location is its destination.
   Loc midLocs[STAGE_NUM_EACH_PLA];
 
 

@@ -520,7 +520,9 @@ vector<SearchParams> Setup::loadParams(
 
     if(cfg.contains("useGraphSearch"+idxStr)) params.useGraphSearch = cfg.getBool("useGraphSearch"+idxStr);
     else if(cfg.contains("useGraphSearch"))   params.useGraphSearch = cfg.getBool("useGraphSearch");
-    else                                      params.useGraphSearch = (setupFor != SETUP_FOR_DISTRIBUTED);
+    else                                      params.useGraphSearch = false;
+    if(params.useGraphSearch)
+      throw StringError("Graph search is not supported for Surakarta because terminal repetition depends on path history");
     if(cfg.contains("graphSearchCatchUpLeakProb"+idxStr)) params.graphSearchCatchUpLeakProb = cfg.getDouble("graphSearchCatchUpLeakProb"+idxStr, 0.0, 1.0);
     else if(cfg.contains("graphSearchCatchUpLeakProb"))   params.graphSearchCatchUpLeakProb = cfg.getDouble("graphSearchCatchUpLeakProb", 0.0, 1.0);
     else                                                  params.graphSearchCatchUpLeakProb = 0.0;
@@ -702,14 +704,22 @@ Rules Setup::loadSingleRules(
   Rules rules;
 
   if(cfg.contains("rules")) {
-    if(cfg.contains("loopPassRule")) throw StringError("Cannot both specify 'rules' and individual rules like scoringRule");
+    if(cfg.contains("maxMoves") || cfg.contains("repetitionCount") || cfg.contains("noLegalMoveRule"))
+      throw StringError("Cannot specify both 'rules' and individual Surakarta rule options");
     rules = Rules::parseRules(cfg.getString("rules"));
   }
   else {
-    string loopPassRule = cfg.getString("loopPassRule", Rules::loopPassRuleStrings());
-    rules.loopPassRule = Rules::parseLoopPassRule(loopPassRule);
-
-
+    if(cfg.contains("maxMoves"))
+      rules.maxMoves = cfg.getInt("maxMoves", 0, 1000000);
+    if(cfg.contains("repetitionCount")) {
+      rules.repetitionCount = cfg.getInt("repetitionCount", 2, 3);
+      if(rules.repetitionCount != 2 && rules.repetitionCount != 3)
+        throw StringError("repetitionCount must be 2 or 3");
+    }
+    if(cfg.contains("noLegalMoveRule"))
+      rules.noLegalMoveRule = Rules::parseNoLegalMoveRule(
+        cfg.getString("noLegalMoveRule", Rules::noLegalMoveRuleStrings())
+      );
   }
 
   return rules;
@@ -743,7 +753,7 @@ bool Setup::loadDefaultBoardXYSize(
 vector<pair<set<string>,set<string>>> Setup::getMutexKeySets() {
   vector<pair<set<string>,set<string>>> mutexKeySets = {
     std::make_pair<set<string>,set<string>>(
-    {"rules"},{"koRule","scoringRule","multiStoneSuicideLegal","taxRule","hasButton","whiteBonusPerHandicapStone","friendlyPassOk","whiteHandicapBonus"}
+    {"rules"},{"maxMoves","repetitionCount","noLegalMoveRule"}
     ),
   };
   return mutexKeySets;

@@ -108,6 +108,7 @@ Board::Board(const Board& other)
 
   memcpy(colors, other.colors, sizeof(Color)*MAX_ARR_SIZE);
 
+  movenum = other.movenum;
   pos_hash = other.pos_hash;
 
   memcpy(adj_offsets, other.adj_offsets, sizeof(short) * 8);
@@ -120,8 +121,8 @@ Board::Board(const Board& other)
 void Board::init(int xS, int yS)
 {
   assert(IS_ZOBRIST_INITALIZED);
-  if(xS < 0 || yS < 0 || xS > MAX_LEN || yS > MAX_LEN)
-    throw StringError("Board::init - invalid board size");
+  if(xS != 6 || yS != 6)
+    throw StringError("Surakarta requires a 6x6 board");
 
   x_size = xS;
   y_size = yS;
@@ -144,6 +145,7 @@ void Board::init(int xS, int yS)
   }
   nextPla = C_BLACK;
   stage = 0;
+  movenum = 0;
 
   pos_hash = ZOBRIST_SIZE_X_HASH[x_size] ^ ZOBRIST_SIZE_Y_HASH[y_size] ^ ZOBRIST_NEXTPLA_HASH[nextPla] ^
              ZOBRIST_STAGENUM_HASH[stage];
@@ -151,11 +153,14 @@ void Board::init(int xS, int yS)
   Location::getAdjacentOffsets(adj_offsets, x_size);
 
 
-  //initial stones
-  setStone(Location::getLoc(0, 0, x_size), C_BLACK);
-  setStone(Location::getLoc(x_size - 1, y_size - 1, x_size), C_BLACK);
-  setStone(Location::getLoc(0, y_size - 1, x_size), C_WHITE);
-  setStone(Location::getLoc(x_size - 1, 0, x_size), C_WHITE);
+  // Standard Surakarta setup: black occupies the top two rows and moves
+  // first, white occupies the bottom two rows.
+  for(int x = 0; x < x_size; x++) {
+    setStone(Location::getLoc(x, 0, x_size), C_BLACK);
+    setStone(Location::getLoc(x, 1, x_size), C_BLACK);
+    setStone(Location::getLoc(x, y_size - 2, x_size), C_WHITE);
+    setStone(Location::getLoc(x, y_size - 1, x_size), C_WHITE);
+  }
 }
 
 void Board::initHash()
@@ -306,6 +311,10 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
 
   if(loc == PASS_LOC) {
     pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
+    for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
+      pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
+      midLocs[i] = Board::NULL_LOC;
+    }
     stage = 0;
     pos_hash ^= ZOBRIST_STAGENUM_HASH[stage];
 
@@ -313,36 +322,23 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     nextPla = getOpp(nextPla);
     pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
 
+    movenum += 1;
+
     return;
   }
   assert(isOnBoard(loc));
 
-  Player opp = getOpp(pla);
-
-  if(stage == 0)  //choose
+  if(stage == 0)  // choose a piece
   {
-    if(colors[loc]==C_EMPTY) {
-      setStone(loc, pla);
-      for(int i = 0; i < 8; i++) {
-        Loc loc1 = loc + adj_offsets[i];
-        if(colors[loc1] == opp)
-          setStone(loc1, pla);
-      }
-      pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-      nextPla = getOpp(nextPla);
-      pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
-    } 
-    else if(colors[loc] == pla) {
-      stage = 1;
-      pos_hash ^= ZOBRIST_STAGENUM_HASH[0];
-      pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
+    assert(colors[loc] == pla);
+    stage = 1;
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[0];
+    pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
 
-      midLocs[0] = loc;
-      pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][0];
-    } 
-    else ASSERT_UNREACHABLE;
+    midLocs[0] = loc;
+    pos_hash ^= ZOBRIST_STAGELOC_HASH[loc][0];
   } 
-  else if(stage == 1)  //place
+  else if(stage == 1)  // place the selected piece, possibly capturing
   {
     stage = 0;
     pos_hash ^= ZOBRIST_STAGENUM_HASH[1];
@@ -351,11 +347,6 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     Loc chosenLoc = midLocs[0];
     setStone(chosenLoc, C_EMPTY);
     setStone(loc, pla);
-    for(int i = 0; i < 8; i++) {
-      Loc loc1 = loc + adj_offsets[i];
-      if(colors[loc1] == opp)
-        setStone(loc1, pla);
-    }
 
     for(int i = 0; i < STAGE_NUM_EACH_PLA - 1; i++) {
       pos_hash ^= ZOBRIST_STAGELOC_HASH[midLocs[i]][i];
@@ -365,6 +356,8 @@ void Board::playMoveAssumeLegal(Loc loc, Player pla)
     nextPla = getOpp(nextPla);
     pos_hash ^= ZOBRIST_NEXTPLA_HASH[getOpp(nextPla)];
     pos_hash ^= ZOBRIST_NEXTPLA_HASH[nextPla];
+
+    movenum += 1;
 
   } 
   else
@@ -464,6 +457,8 @@ bool Board::isEqualForTesting(const Board& other) const {
   if(y_size != other.y_size)
     return false;
   if(pos_hash != other.pos_hash)
+    return false;
+  if(movenum != other.movenum)
     return false;
   for(int i = 0; i<MAX_ARR_SIZE; i++) {
     if(colors[i] != other.colors[i])
@@ -893,6 +888,10 @@ Board Board::parseBoard(int xSize, int ySize, const string& s) {
 
 Board Board::parseBoard(int xSize, int ySize, const string& s, char lineDelimiter) {
   Board board(xSize,ySize);
+  for(int y = 0; y < ySize; y++) {
+    for(int x = 0; x < xSize; x++)
+      board.setStone(Location::getLoc(x, y, xSize), C_EMPTY);
+  }
   vector<string> lines = Global::split(Global::trim(s),lineDelimiter);
 
   //Throw away coordinate labels line if it exists

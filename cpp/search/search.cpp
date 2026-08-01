@@ -62,6 +62,12 @@ SearchThread::~SearchThread() {
 
 static const double VALUE_WEIGHT_DEGREES_OF_FREEDOM = 3.0;
 
+static void assertGraphSearchDisabled(const SearchParams& params) {
+  assert(!params.useGraphSearch);
+  if(params.useGraphSearch)
+    throw StringError("Graph search is not supported for Surakarta because terminal repetition depends on path history");
+}
+
 Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const string& rSeed)
   :rootPla(P_BLACK),
    rootBoard(),
@@ -93,6 +99,7 @@ Search::Search(SearchParams params, NNEvaluator* nnEval, Logger* lg, const strin
    oldNNOutputsToCleanUpMutex(),
    oldNNOutputsToCleanUp()
 {
+  assertGraphSearchDisabled(params);
   assert(logger != NULL);
   nnXLen = nnEval->getNNXLen();
   nnYLen = nnEval->getNNYLen();
@@ -201,11 +208,13 @@ void Search::setRootSymmetryPruningOnly(const std::vector<int>& v) {
 
 
 void Search::setParams(SearchParams params) {
+  assertGraphSearchDisabled(params);
   clearSearch();
   searchParams = params;
 }
 
 void Search::setParamsNoClearing(SearchParams params) {
+  assertGraphSearchDisabled(params);
   searchParams = params;
 }
 

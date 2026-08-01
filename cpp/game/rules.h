@@ -3,54 +3,46 @@
 
 #include "../core/global.h"
 #include "../core/hash.h"
-
 #include "../external/nlohmann_json/json.hpp"
 
 struct Rules {
+  // What happens when the player to move has no legal non-pass move.
+  static const int NO_LEGAL_MOVE_LOSE = 0;
+  static const int NO_LEGAL_MOVE_DRAW = 1;
+  static const int NO_LEGAL_MOVE_COUNT = 2;
 
-  
+  // Zero disables the absolute move limit. A move is one completed turn by
+  // one player, rather than one source/destination selection stage.
+  int maxMoves;
 
-  // LOOPDRAW: if the situation repeats, draw
-  // LOOPLOSE: who make the situation repeats is a lose
-  // LOOPSCORING: if the situation repeats, all empty locations belong to opponent and count stones
-  // BOTZONE: if a repeated situation is followed by the same full move as last time from there, the mover loses.
-  //          Also, if either player has no legal non-pass move, score by current stone counts.
-  // PASSSCORING: if one player have no legal moves, all empty locations belong to opponent and count score
-  // PASSCONTINUE: if one player have no legal moves, pass and let opponent continue playing. this is only different from PASS_SCORING when using LOOP_DRAW rule on some rare conditions
+  // End the game when a full position, including the side to move, has
+  // occurred this many times. Supported values are 2 and 3.
+  int repetitionCount;
 
-  static const int LOOPDRAW_PASSSCORING = 0;
-  static const int LOOPDRAW_PASSCONTINUE = 1;  
-  static const int LOOPLOSE_PASSSCORING = 2;  
-  static const int LOOPSCORING_PASSSCORING = 3;  
-  static const int BOTZONE = 4;
-  int loopPassRule;
+  int noLegalMoveRule;
 
-  int komi; //non-integer komi is meaningless
-
-
+  // Retained only for compatibility with generic GTP/SGF/distributed code.
+  // Surakarta scoring does not use komi.
+  int komi;
 
   Rules();
-  Rules(
-    int loopPassRule,
-    int komi
-  );
+  Rules(int maxMoves, int repetitionCount, int noLegalMoveRule);
   ~Rules();
 
   bool operator==(const Rules& other) const;
   bool operator!=(const Rules& other) const;
 
-
+  // Kept under this historical name because much of KataGo's generic
+  // infrastructure asks for a default rules object through this method.
   static Rules getTrompTaylorish();
 
-  static std::map<std::string, int> loopPassRuleStringsMap();
-  static std::set<std::string> loopPassRuleStrings();
-  static int parseLoopPassRule(const std::string& s);
-  static std::string writeLoopPassRule(int scoringRule);
-
+  static std::map<std::string, int> noLegalMoveRuleStringsMap();
+  static std::set<std::string> noLegalMoveRuleStrings();
+  static int parseNoLegalMoveRule(const std::string& s);
+  static std::string writeNoLegalMoveRule(int rule);
 
   static Rules parseRules(const std::string& str);
   static bool tryParseRules(const std::string& str, Rules& buf);
-
   static Rules updateRules(const std::string& key, const std::string& value, Rules priorRules);
 
   friend std::ostream& operator<<(std::ostream& out, const Rules& rules);
@@ -59,9 +51,8 @@ struct Rules {
   std::string toJsonString() const;
   nlohmann::json toJson() const;
 
-  static const Hash128 ZOBRIST_LOOPPASS_RULE_HASH[5];
-  static const Hash128 ZOBRIST_KOMI_RULE_HASH_BASE;
-
+  static const Hash128 ZOBRIST_NO_LEGAL_MOVE_RULE_HASH[3];
+  static const Hash128 ZOBRIST_REPETITION_COUNT_HASH[4];
 };
 
 #endif  // GAME_RULES_H_

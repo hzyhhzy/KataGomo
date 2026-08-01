@@ -399,16 +399,12 @@ void PlayUtils::printGenmoveLog(ostream& out, const AsyncBot* bot, const NNEvalu
 }
 
 Rules PlayUtils::genRandomRules(Rand& rand) {
-  vector<int> allowedLoopPassRule;
-  {
-    auto ruleMap = Rules::loopPassRuleStringsMap();
-    for(auto r = ruleMap.begin(); r != ruleMap.end(); r++) {
-      allowedLoopPassRule.push_back(r->second);
-    }
-  }
-
   Rules rules;
-  rules.loopPassRule = allowedLoopPassRule[rand.nextUInt((uint32_t)allowedLoopPassRule.size())];
+  rules.repetitionCount = rand.nextBool(0.5) ? 2 : 3;
+  rules.noLegalMoveRule = rand.nextInt(
+    Rules::NO_LEGAL_MOVE_LOSE,
+    Rules::NO_LEGAL_MOVE_COUNT
+  );
 
   return rules;
 }

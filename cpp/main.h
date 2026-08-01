@@ -15,6 +15,7 @@ namespace MainCmds {
   int selfplay(const std::vector<std::string>& args);
 
   int testgpuerror(const std::vector<std::string>& args);
+  int runtests(const std::vector<std::string>& args);
 
 
   int samplesgfs(const std::vector<std::string>& args);

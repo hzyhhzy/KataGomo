@@ -4,15 +4,39 @@
 
 using namespace std;
 
+static Hash128 repetitionCountContribution(Hash128 posHash, int count) {
+  if(count <= 0)
+    return Hash128();
+  uint64_t countBits = static_cast<uint64_t>(count) * 0x9e3779b97f4a7c15ULL;
+  return Hash128(
+    Hash::murmurMix(posHash.hash0 ^ countBits),
+    Hash::nasam(posHash.hash1 + countBits)
+  );
+}
+
+static void clearRepetitionHistory(BoardHistory& hist) {
+  hist.posHashHistoryCount.clear();
+  hist.repetitionHistoryHash = Hash128();
+}
+
+static void incrementRepetitionHistory(BoardHistory& hist, Hash128 posHash) {
+  int oldCount = 0;
+  auto iter = hist.posHashHistoryCount.find(posHash);
+  if(iter != hist.posHashHistoryCount.end())
+    oldCount = iter->second;
+  hist.repetitionHistoryHash ^= repetitionCountContribution(posHash, oldCount);
+  int newCount = oldCount + 1;
+  hist.posHashHistoryCount[posHash] = newCount;
+  hist.repetitionHistoryHash ^= repetitionCountContribution(posHash, newCount);
+}
+
 
 
 BoardHistory::BoardHistory()
   :rules(),
    moveHistory(),
    posHashHistoryCount(),
-   botzoneLastMoveByPosHash(),
-   botzonePendingMove(false),
-   botzonePendingPosHash(),
+   repetitionHistoryHash(),
    initialBoard(),
    initialPla(P_BLACK),
    initialTurnNumber(0),
@@ -31,9 +55,7 @@ BoardHistory::BoardHistory(const Board& board, Player pla, const Rules& r)
   :rules(r),
    moveHistory(),
    posHashHistoryCount(),
-   botzoneLastMoveByPosHash(),
-   botzonePendingMove(false),
-   botzonePendingPosHash(),
+   repetitionHistoryHash(),
    initialBoard(),
    initialPla(),
    initialTurnNumber(0),
@@ -51,9 +73,7 @@ BoardHistory::BoardHistory(const BoardHistory& other)
   :rules(other.rules),
    moveHistory(other.moveHistory),
    posHashHistoryCount(other.posHashHistoryCount),
-   botzoneLastMoveByPosHash(other.botzoneLastMoveByPosHash),
-   botzonePendingMove(other.botzonePendingMove),
-   botzonePendingPosHash(other.botzonePendingPosHash),
+   repetitionHistoryHash(other.repetitionHistoryHash),
    initialBoard(other.initialBoard),
    initialPla(other.initialPla),
    initialTurnNumber(other.initialTurnNumber),
@@ -74,9 +94,7 @@ BoardHistory& BoardHistory::operator=(const BoardHistory& other)
   rules = other.rules;
   moveHistory = other.moveHistory;
   posHashHistoryCount = other.posHashHistoryCount;
-  botzoneLastMoveByPosHash = other.botzoneLastMoveByPosHash;
-  botzonePendingMove = other.botzonePendingMove;
-  botzonePendingPosHash = other.botzonePendingPosHash;
+  repetitionHistoryHash = other.repetitionHistoryHash;
   initialBoard = other.initialBoard;
   initialPla = other.initialPla;
   initialTurnNumber = other.initialTurnNumber;
@@ -95,9 +113,7 @@ BoardHistory::BoardHistory(BoardHistory&& other) noexcept
  :rules(other.rules),
   moveHistory(std::move(other.moveHistory)),
   posHashHistoryCount(std::move(other.posHashHistoryCount)),
-  botzoneLastMoveByPosHash(std::move(other.botzoneLastMoveByPosHash)),
-  botzonePendingMove(other.botzonePendingMove),
-  botzonePendingPosHash(other.botzonePendingPosHash),
+  repetitionHistoryHash(other.repetitionHistoryHash),
   initialBoard(other.initialBoard),
   initialPla(other.initialPla),
   initialTurnNumber(other.initialTurnNumber),
@@ -115,9 +131,7 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
   rules = other.rules;
   moveHistory = std::move(other.moveHistory);
   posHashHistoryCount = std::move(other.posHashHistoryCount);
-  botzoneLastMoveByPosHash = std::move(other.botzoneLastMoveByPosHash);
-  botzonePendingMove = other.botzonePendingMove;
-  botzonePendingPosHash = other.botzonePendingPosHash;
+  repetitionHistoryHash = other.repetitionHistoryHash;
   initialBoard = other.initialBoard;
   initialPla = other.initialPla;
   initialTurnNumber = other.initialTurnNumber;
@@ -135,10 +149,9 @@ BoardHistory& BoardHistory::operator=(BoardHistory&& other) noexcept
 void BoardHistory::clear(const Board& board, Player pla, const Rules& r) {
   rules = r;
   moveHistory.clear();
-  posHashHistoryCount.clear();
-  botzoneLastMoveByPosHash.clear();
-  botzonePendingMove = false;
-  botzonePendingPosHash = Hash128();
+  clearRepetitionHistory(*this);
+  if(board.stage == 0)
+    incrementRepetitionHistory(*this, board.pos_hash);
 
   initialBoard = board;
   initialPla = pla;
@@ -157,6 +170,11 @@ void BoardHistory::clear(const Board& board, Player pla, const Rules& r) {
   winner = C_EMPTY;
   isNoResult = false;
   isResignation = false;
+
+  if(board.stage == 0 && !GameLogic::hasLegalMoveAssumeStage0(board, pla)) {
+    isGameFinished = true;
+    winner = GameLogic::getWinnerForNoLegalMoves(board, rules, pla);
+  }
 
 }
 
@@ -234,41 +252,6 @@ bool BoardHistory::makeBoardMoveTolerant(Board& board, Loc moveLoc, Player moveP
   return true;
 }
 
-static int getBotzoneMoveKey(Loc firstLoc, Loc secondLoc) {
-  return (static_cast<int>(firstLoc) << 16) ^ static_cast<int>(secondLoc);
-}
-
-static void unpackBotzoneMoveKey(int moveKey, Loc& firstLoc, Loc& secondLoc) {
-  firstLoc = static_cast<Loc>((moveKey >> 16) & 0xffff);
-  secondLoc = static_cast<Loc>(moveKey & 0xffff);
-}
-
-bool BoardHistory::getBotzoneProhibitedMove(const Board& board, Loc& firstLoc, Loc& secondLoc) const {
-  if(rules.loopPassRule != Rules::BOTZONE)
-    return false;
-
-  Hash128 posHash;
-  if(board.stage == 0) {
-    posHash = board.pos_hash;
-  }
-  else if(board.stage == 1) {
-    if(!botzonePendingMove)
-      return false;
-    posHash = botzonePendingPosHash;
-  }
-  else
-    return false;
-
-  auto iter = botzoneLastMoveByPosHash.find(posHash);
-  if(iter == botzoneLastMoveByPosHash.end())
-    return false;
-
-  unpackBotzoneMoveKey(iter->second, firstLoc, secondLoc);
-  if(board.stage == 1 && firstLoc != board.midLocs[0])
-    return false;
-  return true;
-}
-
 void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player movePla) {
 
   //If somehow we're making a move after the game was ended, just clear those values and continue
@@ -277,53 +260,20 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   isNoResult = false;
   isResignation = false;
 
-  Hash128 posHashBeforePlay = board.pos_hash;
-  auto hashCountIter = posHashHistoryCount.find(posHashBeforePlay);
-  int hashCountBeforePlay = hashCountIter == posHashHistoryCount.end() ? 0 : hashCountIter->second;
-  bool isCopyStone = board.stage == 0 && board.colors[moveLoc]==C_EMPTY;
-
-  if(isCopyStone || (rules.loopPassRule != Rules::BOTZONE && hashCountBeforePlay>=2)) {
-    posHashHistoryCount.clear();
-    botzoneLastMoveByPosHash.clear();
-    botzonePendingMove = false;
-    botzonePendingPosHash = Hash128();
-  }
-
-  bool isLegalPass = moveLoc == Board::PASS_LOC && board.stage == 0 && (!GameLogic::hasLegalMoveAssumeStage0(board));
-
-  bool botzoneLosingMove = false;
-  bool botzoneRecordsMove = false;
-  Hash128 botzoneRecordPosHash;
-  int botzoneMoveKey = 0;
-  bool botzoneStartsJump = false;
-  if(rules.loopPassRule == Rules::BOTZONE) {
-    if(board.stage == 0) {
-      if(moveLoc != Board::PASS_LOC && board.colors[moveLoc] == movePla) {
-        botzoneStartsJump = true;
-      }
-    }
-    else if(board.stage == 1) {
-      Loc firstLoc = board.midLocs[0];
-      botzoneRecordsMove = true;
-      botzoneRecordPosHash = botzonePendingMove ? botzonePendingPosHash : posHashBeforePlay;
-      botzoneMoveKey = getBotzoneMoveKey(firstLoc, moveLoc);
-    }
-
-    if(botzoneRecordsMove) {
-      auto iter = botzoneLastMoveByPosHash.find(botzoneRecordPosHash);
-      botzoneLosingMove = iter != botzoneLastMoveByPosHash.end() && iter->second == botzoneMoveKey;
-    }
-  }
+  bool completesMove = moveLoc == Board::PASS_LOC || board.stage == 1;
+  bool isCapture =
+    board.stage == 1 &&
+    moveLoc != Board::PASS_LOC &&
+    board.isOnBoard(moveLoc) &&
+    board.colors[moveLoc] == getOpp(movePla);
 
   board.playMoveAssumeLegal(moveLoc,movePla);
 
-  
-  Hash128 h = board.pos_hash;
-  int c = posHashHistoryCount.count(h);
-  if(c == 0)
-    posHashHistoryCount[h] = 1;
-  else
-    posHashHistoryCount[h] += 1;
+  if(completesMove) {
+    if(isCapture)
+      clearRepetitionHistory(*this);
+    incrementRepetitionHistory(*this, board.pos_hash);
+  }
 
   //Update recent boards
   currentRecentBoardIdx = (currentRecentBoardIdx + 1) % NUM_RECENT_BOARDS;
@@ -332,25 +282,7 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
   moveHistory.push_back(Move(moveLoc,movePla));
   presumedNextMovePla = board.nextPla;
 
-  if(rules.loopPassRule == Rules::BOTZONE) {
-    if(botzoneStartsJump) {
-      botzonePendingMove = true;
-      botzonePendingPosHash = posHashBeforePlay;
-    }
-    else {
-      if(botzoneRecordsMove)
-        botzoneLastMoveByPosHash[botzoneRecordPosHash] = botzoneMoveKey;
-      botzonePendingMove = false;
-      botzonePendingPosHash = Hash128();
-    }
-  }
-
-  if(botzoneLosingMove) {
-    setWinner(getOpp(movePla));
-    return;
-  }
-
-  Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc,isLegalPass);
+  Color maybeWinner = GameLogic::checkWinnerAfterPlayed(board, *this, movePla, moveLoc);
   if(maybeWinner!=C_WALL) { //game finished
     setWinner(maybeWinner);
   }
@@ -360,17 +292,20 @@ void BoardHistory::makeBoardMoveAssumeLegal(Board& board, Loc moveLoc, Player mo
 
 
 Hash128 BoardHistory::getSituationRulesHash(const Board& board, const BoardHistory& hist, Player nextPlayer) {
- //Note that board.pos_hash also incorporates the size of the board.
+  // board.pos_hash incorporates board size, stones, stage, selected source,
+  // and the side to move. Move count and repetition history are deliberately
+  // kept outside board.pos_hash so that board.pos_hash remains suitable as a
+  // repetition key.
   Hash128 hash = board.pos_hash;
   hash ^= Board::ZOBRIST_PLAYER_HASH[nextPlayer];
+  hash ^= Rules::ZOBRIST_NO_LEGAL_MOVE_RULE_HASH[hist.rules.noLegalMoveRule];
+  hash ^= Rules::ZOBRIST_REPETITION_COUNT_HASH[hist.rules.repetitionCount];
+  hash ^= hist.repetitionHistoryHash;
 
-  //Fold in the ko, scoring, and suicide rules
-  hash ^= Rules::ZOBRIST_LOOPPASS_RULE_HASH[hist.rules.loopPassRule];
-  if(hist.rules.komi != 0) {
-    hash = Hash128(Hash::murmurMix(hash.hash0 + hist.rules.komi), Hash::nasam(hash.hash1 - hist.rules.komi));
-  }
-
-
+  uint64_t moveBits = static_cast<uint64_t>(board.movenum);
+  uint64_t maxMoveBits = static_cast<uint64_t>(hist.rules.maxMoves);
+  hash.hash0 ^= Hash::murmurMix(moveBits ^ (maxMoveBits << 32));
+  hash.hash1 ^= Hash::nasam((moveBits << 32) ^ maxMoveBits);
   return hash;
 }
 

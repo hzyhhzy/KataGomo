@@ -16,9 +16,9 @@ struct BoardHistory {
   std::vector<Move> moveHistory;
 
   std::map<Hash128, int> posHashHistoryCount;
-  std::map<Hash128, int> botzoneLastMoveByPosHash;
-  bool botzonePendingMove;
-  Hash128 botzonePendingPosHash;
+  // Incremental hash of the entire repetition-count map. This is included in
+  // NN/cache state hashes because repetition is path-dependent.
+  Hash128 repetitionHistoryHash;
 
   //The board and player to move as of the very start, before moveHistory.
   Board initialBoard;
@@ -83,15 +83,14 @@ struct BoardHistory {
   //ruleset than ours. Returns true if successful, false if was illegal even unter tolerant rules.
   bool makeBoardMoveTolerant(Board& board, Loc moveLoc, Player movePla);
   bool isLegalTolerant(const Board& board, Loc moveLoc, Player movePla) const;
-  bool getBotzoneProhibitedMove(const Board& board, Loc& firstLoc, Loc& secondLoc) const;
-
   void setWinnerByResignation(Player pla);
   void setWinner(Color pla);
 
   void printBasicInfo(std::ostream& out, const Board& board) const;
   void printDebugInfo(std::ostream& out, const Board& board) const;
 
-  //Compute a hash that takes into account the full situation, the rules, discretized komi, and any immediate ko prohibitions.
+  //Compute a hash that takes into account the board, rules, move limit state,
+  //and the complete repetition-count history.
   static Hash128 getSituationRulesHash(
     const Board& board,
     const BoardHistory& hist,
