@@ -198,7 +198,7 @@ void testMoveLimitAndNoLegalRules() {
   testAssert(countHist.isGameFinished && countHist.winner == P_WHITE);
 }
 
-void testRepetitionNNFeatures() {
+void testDisabledRepetitionNNFeatures() {
   Board board = emptyBoard();
   board.setStone(xy(board, 0, 0), P_BLACK);
   board.setStone(xy(board, 1, 1), P_BLACK);
@@ -222,8 +222,8 @@ void testRepetitionNNFeatures() {
   );
   int destinationPos = NNPos::xyToPos(4, 4, 6);
   testAssert(spatial[4 * 36 + destinationPos] == 1.0f);
-  testAssert(spatial[5 * 36 + destinationPos] == 1.0f);
-  testAssert(spatial[6 * 36 + destinationPos] == 1.0f);
+  testAssert(spatial[5 * 36 + destinationPos] == 0.0f);
+  testAssert(spatial[6 * 36 + destinationPos] == 0.0f);
 
   Board limitedBoard = emptyBoard();
   limitedBoard.movenum = 50;
@@ -234,13 +234,14 @@ void testRepetitionNNFeatures() {
     limitedBoard, limitedHist, P_BLACK, nnInputParams,
     6, 6, false, spatial, global
   );
-  testAssert(global[2] == 1.0f);
+  testAssert(global[2] == 0.0f);
   testAssert(global[4] == 1.0f);
   testAssert(global[6] == 1.0f);
   testAssert(std::abs(global[7] - std::exp(-1.0f)) < 1e-6f);
   testAssert(std::abs(global[8] - std::exp(-3.0f)) < 1e-6f);
   testAssert(global[10] == -1.0f);
   testAssert(std::abs(global[11] - std::exp(-10.0f)) < 1e-6f);
+  testAssert(global[9] == 0.0f);
 }
 
 void testPassAndHashes() {
@@ -422,7 +423,7 @@ int MainCmds::runtests(const vector<string>& args) {
   testRepetition(2, 1);
   testRepetition(3, 2);
   testMoveLimitAndNoLegalRules();
-  testRepetitionNNFeatures();
+  testDisabledRepetitionNNFeatures();
   testPassAndHashes();
   testPassPolicyMasking();
   testSelfplayRuleSampling();

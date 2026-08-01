@@ -533,24 +533,28 @@ void NNInputs::fillRowV7(
       if(board.stage == 1 && board.isLegal(loc, pla)) {
         setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
 
-        // Repetition is path-dependent. For every non-capturing destination,
-        // tell the network how often the resulting full position has already
-        // occurred, and whether this destination reaches the configured
-        // repetition threshold. Captures reset the repetition history.
-        if(board.colors[loc] == C_EMPTY) {
-          Board nextBoard = board;
-          nextBoard.playMoveAssumeLegal(loc, pla);
-          int previousOccurrences = 0;
-          auto iter = hist.posHashHistoryCount.find(nextBoard.pos_hash);
-          if(iter != hist.posHashHistoryCount.end())
-            previousOccurrences = iter->second;
-          float repetitionProgress = std::min(
-            1.0f,
-            previousOccurrences / static_cast<float>(hist.rules.repetitionCount - 1)
-          );
-          setRowBin(rowBin, pos, 5, repetitionProgress, posStride, featureStride);
-          if(previousOccurrences + 1 >= hist.rules.repetitionCount)
-            setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
+        // Keep these channels reserved, but disable repetition-related NN
+        // features for now. Repetition enforcement and hashing remain active.
+        if(false) {
+          // Repetition is path-dependent. For every non-capturing destination,
+          // tell the network how often the resulting full position has already
+          // occurred, and whether this destination reaches the configured
+          // repetition threshold. Captures reset the repetition history.
+          if(board.colors[loc] == C_EMPTY) {
+            Board nextBoard = board;
+            nextBoard.playMoveAssumeLegal(loc, pla);
+            int previousOccurrences = 0;
+            auto iter = hist.posHashHistoryCount.find(nextBoard.pos_hash);
+            if(iter != hist.posHashHistoryCount.end())
+              previousOccurrences = iter->second;
+            float repetitionProgress = std::min(
+              1.0f,
+              previousOccurrences / static_cast<float>(hist.rules.repetitionCount - 1)
+            );
+            setRowBin(rowBin, pos, 5, repetitionProgress, posStride, featureStride);
+            if(previousOccurrences + 1 >= hist.rules.repetitionCount)
+              setRowBin(rowBin, pos, 6, 1.0f, posStride, featureStride);
+          }
         }
       }
     }
@@ -576,9 +580,7 @@ void NNInputs::fillRowV7(
     ASSERT_UNREACHABLE;
 
 
-  // Rule and progress features, so a single model can be trained with either
-  // repetition threshold and any of the three no-legal-move outcomes.
-  rowGlobal[2] = hist.rules.repetitionCount == 3 ? 1.0f : 0.0f;
+  // Rule features for the three no-legal-move outcomes.
   rowGlobal[3] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_LOSE ? 1.0f : 0.0f;
   rowGlobal[4] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_DRAW ? 1.0f : 0.0f;
   rowGlobal[5] = hist.rules.noLegalMoveRule == Rules::NO_LEGAL_MOVE_COUNT ? 1.0f : 0.0f;
@@ -594,15 +596,20 @@ void NNInputs::fillRowV7(
     rowGlobal[11] = exp(-remainingMoves / 15.0f);
   }
 
-  Hash128 lastCompletedPositionHash = board.pos_hash;
-  if(board.stage == 1)
-    lastCompletedPositionHash = hist.getRecentBoard(1).pos_hash;
-  auto currentRepeatIter = hist.posHashHistoryCount.find(lastCompletedPositionHash);
-  if(currentRepeatIter != hist.posHashHistoryCount.end()) {
-    rowGlobal[9] = std::min(
-      1.0f,
-      currentRepeatIter->second / static_cast<float>(hist.rules.repetitionCount - 1)
-    );
+  // Keep these channels reserved, but disable repetition-related NN features
+  // for now. Repetition enforcement and hashing remain active.
+  if(false) {
+    rowGlobal[2] = hist.rules.repetitionCount == 3 ? 1.0f : 0.0f;
+    Hash128 lastCompletedPositionHash = board.pos_hash;
+    if(board.stage == 1)
+      lastCompletedPositionHash = hist.getRecentBoard(1).pos_hash;
+    auto currentRepeatIter = hist.posHashHistoryCount.find(lastCompletedPositionHash);
+    if(currentRepeatIter != hist.posHashHistoryCount.end()) {
+      rowGlobal[9] = std::min(
+        1.0f,
+        currentRepeatIter->second / static_cast<float>(hist.rules.repetitionCount - 1)
+      );
+    }
   }
   
   // Parameter 15 is used because there's actually a discontinuity in how training behavior works when this is
