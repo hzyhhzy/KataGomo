@@ -3,6 +3,19 @@
 #include <algorithm>
 #include <cmath>
 
+static void loadRandomInitialBoardFilterSettings(ConfigParser& cfg, PlaySettings& playSettings) {
+  playSettings.randomInitialBoardRejectProbCap =
+    cfg.contains("randomInitialBoardRejectProbCap") ?
+    cfg.getDouble("randomInitialBoardRejectProbCap", 0.0, 1.0) : 0.995;
+  playSettings.randomInitialBoardRejectProbPower =
+    cfg.contains("randomInitialBoardRejectProbPower") ?
+    cfg.getDouble("randomInitialBoardRejectProbPower", 0.000001, 100.0) : 1.0;
+  playSettings.randomInitialBoardMaxResampleAttempts =
+    cfg.contains("randomInitialBoardMaxResampleAttempts") ?
+    cfg.getInt("randomInitialBoardMaxResampleAttempts", 1, 10000000) : 10000;
+  playSettings.filterRandomInitialBoardWithNN = true;
+}
+
 PlaySettings::PlaySettings()
   : initGamesWithPolicy(false),
     policyInitAvgMoveNum(0.0),
@@ -11,6 +24,7 @@ PlaySettings::PlaySettings()
     randomInitialBoardRejectProbCap(0.995),
     randomInitialBoardRejectProbPower(1.0),
     randomInitialBoardMaxResampleAttempts(10000),
+    filterRandomInitialBoardWithNN(false),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
@@ -42,6 +56,7 @@ PlaySettings PlaySettings::loadForMatch(ConfigParser& cfg) {
       cfg.contains("startPosesPolicyInitAvgMoveNum") ? cfg.getDouble("startPosesPolicyInitAvgMoveNum", 0.0, 100.0) : 0.0;
     playSettings.policyInitAreaTemperature = cfg.contains("policyInitAreaTemperature") ? cfg.getDouble("policyInitAreaTemperature",0.1,5.0) : 1.0;
   }
+  loadRandomInitialBoardFilterSettings(cfg, playSettings);
   playSettings.recordTimePerMove = true;
   return playSettings;
 }
@@ -73,15 +88,7 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
   playSettings.randomInitialBoardPolicyInitAvgMoveNumMultiplier =
     cfg.contains("randomInitialBoardPolicyInitAvgMoveNumMultiplier") ?
     cfg.getDouble("randomInitialBoardPolicyInitAvgMoveNumMultiplier", 0.0, 1.0) : 1.0;
-  playSettings.randomInitialBoardRejectProbCap =
-    cfg.contains("randomInitialBoardRejectProbCap") ?
-    cfg.getDouble("randomInitialBoardRejectProbCap", 0.0, 1.0) : 0.995;
-  playSettings.randomInitialBoardRejectProbPower =
-    cfg.contains("randomInitialBoardRejectProbPower") ?
-    cfg.getDouble("randomInitialBoardRejectProbPower", 0.000001, 100.0) : 1.0;
-  playSettings.randomInitialBoardMaxResampleAttempts =
-    cfg.contains("randomInitialBoardMaxResampleAttempts") ?
-    cfg.getInt("randomInitialBoardMaxResampleAttempts", 1, 10000000) : 10000;
+  loadRandomInitialBoardFilterSettings(cfg, playSettings);
   playSettings.sidePositionProb =
     //forkSidePositionProb is the legacy name, included for backward compatibility
     (cfg.contains("forkSidePositionProb") && !cfg.contains("sidePositionProb")) ?

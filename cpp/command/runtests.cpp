@@ -343,6 +343,23 @@ void testSelfplayRuleSampling() {
   Logger logger;
   logger.setDisabled(true);
 
+  ConfigParser matchPlayCfg(map<string,string>{
+    {"allowResignationProb", "0"},
+    {"resignThreshold", "-0.9"},
+    {"resignConsecTurns", "3"},
+    {"judgeDrawProb", "0"},
+    {"judgeDrawThreshold", "0.9"},
+    {"judgeDrawConsecTurns", "3"},
+    {"randomInitialBoardRejectProbCap", "0.75"},
+    {"randomInitialBoardRejectProbPower", "2.5"},
+    {"randomInitialBoardMaxResampleAttempts", "4321"},
+  });
+  PlaySettings matchPlaySettings = PlaySettings::loadForMatch(matchPlayCfg);
+  testAssert(matchPlaySettings.filterRandomInitialBoardWithNN);
+  testAssert(matchPlaySettings.randomInitialBoardRejectProbCap == 0.75);
+  testAssert(matchPlaySettings.randomInitialBoardRejectProbPower == 2.5);
+  testAssert(matchPlaySettings.randomInitialBoardMaxResampleAttempts == 4321);
+
   ConfigParser weightedCfg(map<string,string>{
     {"repetitionRules", "2,3,3"},
     {"noLegalMoveRules", "LOSE,DRAW,DRAW,COUNT"},

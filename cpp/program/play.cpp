@@ -1398,7 +1398,7 @@ FinishedGameData* Play::runGame(
 
 
 
-  if(playSettings.forSelfPlay &&
+  if(playSettings.filterRandomInitialBoardWithNN &&
      otherGameProps.isRandomInitialBoard &&
      playSettings.randomInitialBoardRejectProbCap > 0.0) {
     Search* openingEvalBot = pla == P_BLACK ? botB : botW;
