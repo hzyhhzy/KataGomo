@@ -127,5 +127,5 @@ double PlaySettings::getRandomInitialBoardRejectProb(
 ) {
   double k = std::max(std::fabs(blackWinProb - whiteWinProb), drawProb);
   k = std::max(0.0, std::min(1.0, k));
-  return std::min(rejectProbCap, std::pow(k, rejectProbPower));
+  return std::min(rejectProbCap, 1.0 - std::pow(1.0 - k, rejectProbPower));
 }

@@ -459,7 +459,7 @@ void testSelfplayRuleSampling() {
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.5, 0.5, 0.0, 0.995, 1.0) - 0.0) < 1e-12);
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.7, 0.2, 0.1, 0.995, 1.0) - 0.5) < 1e-12);
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(1.0, 0.0, 0.0, 0.995, 1.0) - 0.995) < 1e-12);
-  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.7, 0.2, 0.1, 0.995, 2.0) - 0.25) < 1e-12);
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.7, 0.2, 0.1, 0.995, 2.0) - 0.75) < 1e-12);
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(1.0, 0.0, 0.0, 0.0, 1.0) - 0.0) < 1e-12);
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(1.0, 0.0, 0.0, 1.0, 1.0) - 1.0) < 1e-12);
 }
