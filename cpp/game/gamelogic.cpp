@@ -70,14 +70,20 @@ Color GameLogic::checkWinnerAfterPlayed(
   Player pla,
   Loc loc,
   int8_t* bufferForCheckingWinner) {
-  (void)hist;
-
   // AntiHex: making your own real stone chain connect your two sides loses.
   if(board.checkConnection(bufferForCheckingWinner, pla))
     return getOpp(pla);
 
   if(loc == Board::PASS_LOC)
     return getOpp(pla);  // Pass is not allowed.
+
+  //Optionally stop one move before a forced full board when neither player is connected.
+  if(
+    hist.rules.noResultWhenOneEmpty &&
+    board.stonenum == board.x_size * board.y_size - 1 &&
+    !board.checkConnection(bufferForCheckingWinner, getOpp(pla))
+  )
+    return C_EMPTY;
 
   return C_WALL;
 }

@@ -713,14 +713,14 @@ Rules Setup::loadSingleRules(
   Rules rules;
 
   if(cfg.contains("rules")) {
-    if(cfg.contains("scoringRule")) throw StringError("Cannot both specify 'rules' and individual rules like scoringRule");
+    if(cfg.contains("scoringRule") || cfg.contains("noResultWhenOneEmpty"))
+      throw StringError("Cannot both specify 'rules' and individual rule settings");
     rules = Rules::parseRules(cfg.getString("rules"));
   }
   else {
     string scoringRule = cfg.getString("scoringRule", Rules::scoringRuleStrings());
     rules.scoringRule = Rules::parseScoringRule(scoringRule);
-
-
+    rules.noResultWhenOneEmpty = cfg.contains("noResultWhenOneEmpty") ? cfg.getBool("noResultWhenOneEmpty") : true;
   }
 
   return rules;
@@ -754,7 +754,7 @@ bool Setup::loadDefaultBoardXYSize(
 vector<pair<set<string>,set<string>>> Setup::getMutexKeySets() {
   vector<pair<set<string>,set<string>>> mutexKeySets = {
     std::make_pair<set<string>,set<string>>(
-    {"rules"},{"koRule","scoringRule","multiStoneSuicideLegal","taxRule","hasButton","whiteBonusPerHandicapStone","friendlyPassOk","whiteHandicapBonus"}
+    {"rules"},{"koRule","scoringRule","multiStoneSuicideLegal","taxRule","hasButton","whiteBonusPerHandicapStone","friendlyPassOk","whiteHandicapBonus","noResultWhenOneEmpty"}
     ),
   };
   return mutexKeySets;

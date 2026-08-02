@@ -12,6 +12,9 @@ struct Rules {
   static const int SCORING_AREA = 0;
   int scoringRule;
 
+  //If only one board location remains empty and neither player is connected, end as a draw.
+  bool noResultWhenOneEmpty;
+
   Rules();
   ~Rules();
 
@@ -41,6 +44,7 @@ struct Rules {
   nlohmann::json toJson() const;
 
   static const Hash128 ZOBRIST_SCORING_RULE_HASH[2];
+  static const Hash128 ZOBRIST_NO_RESULT_WHEN_ONE_EMPTY_HASH[2];
 
 };
 

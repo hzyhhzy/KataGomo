@@ -102,6 +102,7 @@ class GameInitializer {
 
   std::vector<std::string> allowedScoringRuleStrs;
   std::vector<int> allowedScoringRules;
+  double noResultWhenOneEmptyProb;
   std::vector<int> allowedBSizes;
   std::vector<double> allowedBSizeRelProbs;
 

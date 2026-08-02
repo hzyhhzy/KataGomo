@@ -517,10 +517,16 @@ void NNInputs::fillRowV7(
     }
   }
 
-  rowGlobal[0] = nextPlayer == C_WHITE ? 1.0 : 0.0;
+  //Global feature 0 - player to move.
+  rowGlobal[0] = nextPlayer == C_WHITE ? 1.0f : 0.0f;
 
-  //Global features.
-  //The first 5 of them were set already above to flag which of the past 5 moves were passes.
+  //Global feature 1 - parity of the number of empty board locations (1 for odd, 0 for even).
+  int numEmpty = xSize * ySize - board.stonenum;
+  assert(numEmpty >= 0);
+  rowGlobal[1] = (numEmpty & 1) != 0 ? 1.0f : 0.0f;
+
+  //Global feature 2 - whether the one-empty no-result rule is enabled.
+  rowGlobal[2] = hist.rules.noResultWhenOneEmpty ? 1.0f : 0.0f;
 
   //Scoring
   if(hist.rules.scoringRule == Rules::SCORING_AREA) {}

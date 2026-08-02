@@ -50,6 +50,8 @@ void GameInitializer::initShared(ConfigParser& cfg, Logger& logger) {
   if(allowedScoringRules.size() <= 0)
     throw IOError("scoringRules must have at least one value in " + cfg.getFileName());
 
+  noResultWhenOneEmptyProb = cfg.contains("noResultWhenOneEmptyProb") ?
+    cfg.getDouble("noResultWhenOneEmptyProb",0.0,1.0) : 1.0;
 
   allowedBSizes = cfg.getInts("bSizes", 2, Board::MAX_LEN);
   allowedBSizeRelProbs = cfg.getDoubles("bSizeRelProbs",0.0,1e100);
@@ -265,7 +267,7 @@ void GameInitializer::createGame(
 
 Rules GameInitializer::randomizeScoringAndTaxRules(Rules rules, Rand& randToUse) const {
   rules.scoringRule = allowedScoringRules[randToUse.nextUInt((uint32_t)allowedScoringRules.size())];
-
+  rules.noResultWhenOneEmpty = randToUse.nextBool(noResultWhenOneEmptyProb);
 
   return rules;
 }
@@ -304,6 +306,7 @@ Rules GameInitializer::createRules() {
 Rules GameInitializer::createRulesUnsynchronized() {
   Rules rules;
   rules.scoringRule = allowedScoringRules[rand.nextUInt((uint32_t)allowedScoringRules.size())];
+  rules.noResultWhenOneEmpty = rand.nextBool(noResultWhenOneEmptyProb);
 
   return rules;
 }

@@ -10,23 +10,27 @@ using json = nlohmann::json;
 Rules::Rules() {
   //Defaults if not set - closest match to TT rules
   scoringRule = SCORING_AREA;
+  noResultWhenOneEmpty = true;
 }
 
 Rules::~Rules() {
 }
 
 bool Rules::operator==(const Rules& other) const {
-  return scoringRule == other.scoringRule;
+  return
+    scoringRule == other.scoringRule &&
+    noResultWhenOneEmpty == other.noResultWhenOneEmpty;
 }
 
 bool Rules::operator!=(const Rules& other) const {
-  return scoringRule != other.scoringRule;
+  return !(*this == other);
 }
 
 
 Rules Rules::getTrompTaylorish() {
   Rules rules;
   rules.scoringRule = SCORING_AREA;
+  rules.noResultWhenOneEmpty = true;
   return rules;
 }
 
@@ -48,6 +52,7 @@ string Rules::writeScoringRule(int scoringRule) {
 
 ostream& operator<<(ostream& out, const Rules& rules) {
   out << "score" << Rules::writeScoringRule(rules.scoringRule);
+  out << " noResultWhenOneEmpty" << (rules.noResultWhenOneEmpty ? "true" : "false");
   return out;
 }
 
@@ -67,17 +72,20 @@ string Rules::toJsonString() const {
 json Rules::toJson() const {
   json ret;
   ret["scoring"] = writeScoringRule(scoringRule);
+  ret["noResultWhenOneEmpty"] = noResultWhenOneEmpty;
   return ret;
 }
 
 
 Rules Rules::updateRules(const string& k, const string& v, Rules oldRules) {
   Rules rules = oldRules;
-  string key = Global::trim(k);
+  string key = Global::toLower(Global::trim(k));
   string value = Global::trim(Global::toUpper(v));
   if(key == "score") rules.scoringRule = Rules::parseScoringRule(value);
   else if(key == "scoring")
     rules.scoringRule = Rules::parseScoringRule(value);
+  else if(key == "noresultwhenoneempty")
+    rules.noResultWhenOneEmpty = Global::stringToBool(value);
   else throw IOError("Unknown rules option: " + key);
   return rules;
 }
@@ -101,6 +109,8 @@ static Rules parseRulesHelper(const string& sOrig) {
           rules.scoringRule = Rules::parseScoringRule(iter.value().get<string>());
         else if(key == "scoring")
           rules.scoringRule = Rules::parseScoringRule(iter.value().get<string>());
+        else if(key == "noResultWhenOneEmpty" || key == "noresultwhenoneempty")
+          rules.noResultWhenOneEmpty = iter.value().get<bool>();
         else
           throw IOError("Unknown rules option: " + key);
       }
@@ -144,6 +154,12 @@ static Rules parseRulesHelper(const string& sOrig) {
         else throw IOError("Could not parse rules: " + sOrig);
         continue;
       }
+      if(startsWithAndStrip(s,"noResultWhenOneEmpty")) {
+        if(startsWithAndStrip(s,"true")) rules.noResultWhenOneEmpty = true;
+        else if(startsWithAndStrip(s,"false")) rules.noResultWhenOneEmpty = false;
+        else throw IOError("Could not parse rules: " + sOrig);
+        continue;
+      }
 
       //Unknown rules format
       else throw IOError("Could not parse rules: " + sOrig);
@@ -180,4 +196,9 @@ const Hash128 Rules::ZOBRIST_SCORING_RULE_HASH[2] = {
   Hash128(0x8b3ed7598f901494ULL ^ 0x72eeccc72c82a5e7ULL, 0x1dfd47ac77bce5f8ULL ^ 0x0d1265e413623e2bULL),
   //Based on sha256 hash of Rules::SCORING_TERRITORY, but also mixing seki tax rule hash, to preserve legacy hashes
   Hash128(0x381345dc357ec982ULL ^ 0x125bfe48a41042d5ULL, 0x03ba55c026026b56ULL ^ 0x061866b5f2b98a79ULL),
+};
+
+const Hash128 Rules::ZOBRIST_NO_RESULT_WHEN_ONE_EMPTY_HASH[2] = {
+  Hash128(0x0ULL, 0x0ULL),
+  Hash128(0x2767d1c76e49f53bULL, 0xa8fd524d31e791c7ULL),
 };
