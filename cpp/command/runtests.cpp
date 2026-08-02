@@ -405,6 +405,7 @@ void testSelfplayRuleSampling() {
     {"bSizeRelProbs", "1"},
   });
   GameInitializer randomBoardInitializer(randomBoardCfg, logger, "random-board-test");
+  testAssert(playSettings.randomInitialBoardMaxResampleAttempts == 10000);
   int emptyCount = 0;
   int blackCount = 0;
   int whiteCount = 0;
@@ -418,19 +419,32 @@ void testSelfplayRuleSampling() {
     );
     testAssert(otherGameProps.isRandomInitialBoard);
     testAssert(hist.rules.maxMoves == 123);
+    int boardBlackCount = 0;
+    int boardWhiteCount = 0;
     for(int y = 0; y < board.y_size; y++) {
       for(int x = 0; x < board.x_size; x++) {
         Color color = board.colors[xy(board, x, y)];
         emptyCount += color == C_EMPTY ? 1 : 0;
         blackCount += color == C_BLACK ? 1 : 0;
         whiteCount += color == C_WHITE ? 1 : 0;
+        boardBlackCount += color == C_BLACK ? 1 : 0;
+        boardWhiteCount += color == C_WHITE ? 1 : 0;
       }
     }
+    testAssert(boardBlackCount > 0);
+    testAssert(boardWhiteCount > 0);
   }
   testAssert(emptyCount + blackCount + whiteCount == 3600);
   testAssert(emptyCount > 900 && emptyCount < 1500);
   testAssert(blackCount > 900 && blackCount < 1500);
   testAssert(whiteCount > 900 && whiteCount < 1500);
+
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.5, 0.5, 0.0, 0.995, 1.0) - 0.0) < 1e-12);
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.7, 0.2, 0.1, 0.995, 1.0) - 0.5) < 1e-12);
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(1.0, 0.0, 0.0, 0.995, 1.0) - 0.995) < 1e-12);
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.7, 0.2, 0.1, 0.995, 2.0) - 0.25) < 1e-12);
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(1.0, 0.0, 0.0, 0.0, 1.0) - 0.0) < 1e-12);
+  testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(1.0, 0.0, 0.0, 1.0, 1.0) - 1.0) < 1e-12);
 }
 
 } // namespace

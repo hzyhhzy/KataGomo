@@ -1,10 +1,16 @@
 #include "../program/playsettings.h"
 
+#include <algorithm>
+#include <cmath>
+
 PlaySettings::PlaySettings()
   : initGamesWithPolicy(false),
     policyInitAvgMoveNum(0.0),
     startPosesPolicyInitAvgMoveNum(0.0),
     randomInitialBoardPolicyInitAvgMoveNumMultiplier(1.0),
+    randomInitialBoardRejectProbCap(0.995),
+    randomInitialBoardRejectProbPower(1.0),
+    randomInitialBoardMaxResampleAttempts(10000),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
@@ -67,6 +73,15 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
   playSettings.randomInitialBoardPolicyInitAvgMoveNumMultiplier =
     cfg.contains("randomInitialBoardPolicyInitAvgMoveNumMultiplier") ?
     cfg.getDouble("randomInitialBoardPolicyInitAvgMoveNumMultiplier", 0.0, 1.0) : 1.0;
+  playSettings.randomInitialBoardRejectProbCap =
+    cfg.contains("randomInitialBoardRejectProbCap") ?
+    cfg.getDouble("randomInitialBoardRejectProbCap", 0.0, 1.0) : 0.995;
+  playSettings.randomInitialBoardRejectProbPower =
+    cfg.contains("randomInitialBoardRejectProbPower") ?
+    cfg.getDouble("randomInitialBoardRejectProbPower", 0.000001, 100.0) : 1.0;
+  playSettings.randomInitialBoardMaxResampleAttempts =
+    cfg.contains("randomInitialBoardMaxResampleAttempts") ?
+    cfg.getInt("randomInitialBoardMaxResampleAttempts", 1, 10000000) : 10000;
   playSettings.sidePositionProb =
     //forkSidePositionProb is the legacy name, included for backward compatibility
     (cfg.contains("forkSidePositionProb") && !cfg.contains("sidePositionProb")) ?
@@ -94,4 +109,16 @@ PlaySettings PlaySettings::loadForSelfplay(ConfigParser& cfg) {
     throw StringError("policySurpriseDataWeight + valueSurpriseDataWeight > 1.0");
 
   return playSettings;
+}
+
+double PlaySettings::getRandomInitialBoardRejectProb(
+  double blackWinProb,
+  double whiteWinProb,
+  double drawProb,
+  double rejectProbCap,
+  double rejectProbPower
+) {
+  double k = std::max(std::fabs(blackWinProb - whiteWinProb), drawProb);
+  k = std::max(0.0, std::min(1.0, k));
+  return std::min(rejectProbCap, std::pow(k, rejectProbPower));
 }

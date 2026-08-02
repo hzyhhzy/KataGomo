@@ -9,6 +9,9 @@ struct PlaySettings {
   double policyInitAvgMoveNum;           // Avg number of moves
   double startPosesPolicyInitAvgMoveNum; //Avg number of moves when using a starting position from sgf
   double randomInitialBoardPolicyInitAvgMoveNumMultiplier;
+  double randomInitialBoardRejectProbCap;
+  double randomInitialBoardRejectProbPower;
+  int randomInitialBoardMaxResampleAttempts;
   //Occasionally try some alternative moves and search the responses to them.
   double sidePositionProb;
 
@@ -70,6 +73,14 @@ struct PlaySettings {
   static PlaySettings loadForMatch(ConfigParser& cfg);
   static PlaySettings loadForGatekeeper(ConfigParser& cfg);
   static PlaySettings loadForSelfplay(ConfigParser& cfg);
+
+  static double getRandomInitialBoardRejectProb(
+    double blackWinProb,
+    double whiteWinProb,
+    double drawProb,
+    double rejectProbCap,
+    double rejectProbPower
+  );
 };
 
 #endif // PROGRAM_PLAYSETTINGS_H_

@@ -16,6 +16,32 @@ using namespace std;
 
 //----------------------------------------------------------------------------------------------------------
 
+// Fill every non-banned point independently with empty, black, or white at
+// equal probability. Boards missing either player are always resampled.
+static void randomizeInitialBoardWithBothPlayers(Board& board, Rand& rand, int maxResampleAttempts) {
+  for(int attempt = 0; attempt <= maxResampleAttempts; attempt++) {
+    int numBlack = 0;
+    int numWhite = 0;
+    for(int y = 0; y < board.y_size; y++) {
+      for(int x = 0; x < board.x_size; x++) {
+        Loc loc = Location::getLoc(x, y, board.x_size);
+        if(board.colors[loc] == C_BAN)
+          continue;
+        uint32_t randomColor = rand.nextUInt(3);
+        Color color = randomColor == 0 ? C_EMPTY : randomColor == 1 ? C_BLACK : C_WHITE;
+        board.setStone(loc, color);
+        numBlack += color == C_BLACK ? 1 : 0;
+        numWhite += color == C_WHITE ? 1 : 0;
+      }
+    }
+    if(numBlack > 0 && numWhite > 0)
+      return;
+  }
+  throw StringError("Failed to generate a random initial board containing both players within the resample limit");
+}
+
+//----------------------------------------------------------------------------------------------------------
+
 InitialPosition::InitialPosition()
   :board(),hist(),pla(C_EMPTY)
 {}
@@ -433,14 +459,7 @@ void GameInitializer::createGameSharedUnsynchronized(
 
     if(rand.nextBool(randomInitialBoardProb)) {
       otherGameProps.isRandomInitialBoard = true;
-      for(int y = 0; y < board.y_size; y++) {
-        for(int x = 0; x < board.x_size; x++) {
-          Loc loc = Location::getLoc(x, y, board.x_size);
-          uint32_t randomColor = rand.nextUInt(3);
-          Color color = randomColor == 0 ? C_EMPTY : randomColor == 1 ? C_BLACK : C_WHITE;
-          board.setStone(loc, color);
-        }
-      }
+      randomizeInitialBoardWithBothPlayers(board, rand, playSettings.randomInitialBoardMaxResampleAttempts);
     }
     else if(rand.nextBool(randomInitialStonesProb)) {
       int initialBlackStones = 1 + int(1.0 * rand.nextExponential());
@@ -1378,6 +1397,41 @@ FinishedGameData* Play::runGame(
 
 
 
+
+  if(playSettings.forSelfPlay &&
+     otherGameProps.isRandomInitialBoard &&
+     playSettings.randomInitialBoardRejectProbCap > 0.0) {
+    Search* openingEvalBot = pla == P_BLACK ? botB : botW;
+    NNResultBuf buf;
+    MiscNNInputParams nnInputParams;
+    nnInputParams.noResultUtilityForWhite = openingEvalBot->searchParams.noResultUtilityForWhite;
+    int numResampleAttempts = 0;
+    while(true) {
+      if(shouldStop != nullptr && shouldStop())
+        break;
+      Board boardCopy = board;
+      openingEvalBot->nnEvaluator->evaluate(boardCopy, hist, pla, nnInputParams, buf, false);
+      const NNOutput& nnOutput = *(buf.result);
+
+      double rejectProb = PlaySettings::getRandomInitialBoardRejectProb(
+        nnOutput.whiteLossProb,
+        nnOutput.whiteWinProb,
+        nnOutput.whiteNoResultProb,
+        playSettings.randomInitialBoardRejectProbCap,
+        playSettings.randomInitialBoardRejectProbPower
+      );
+      if(numResampleAttempts >= playSettings.randomInitialBoardMaxResampleAttempts ||
+         !gameRand.nextBool(rejectProb))
+        break;
+
+      numResampleAttempts += 1;
+      randomizeInitialBoardWithBothPlayers(
+        board, gameRand, playSettings.randomInitialBoardMaxResampleAttempts
+      );
+      Rules rules = hist.rules;
+      hist.clear(board, pla, rules);
+    }
+  }
 
   if(playSettings.initGamesWithPolicy && otherGameProps.allowPolicyInit) {
     double avgPolicyInitMoveNum =
