@@ -355,7 +355,6 @@ void testSelfplayRuleSampling() {
     {"randomInitialBoardMaxResampleAttempts", "4321"},
   });
   PlaySettings matchPlaySettings = PlaySettings::loadForMatch(matchPlayCfg);
-  testAssert(matchPlaySettings.filterRandomInitialBoardWithNN);
   testAssert(matchPlaySettings.randomInitialBoardRejectProbCap == 0.75);
   testAssert(matchPlaySettings.randomInitialBoardRejectProbPower == 2.5);
   testAssert(matchPlaySettings.randomInitialBoardMaxResampleAttempts == 4321);

@@ -12,7 +12,6 @@ struct PlaySettings {
   double randomInitialBoardRejectProbCap;
   double randomInitialBoardRejectProbPower;
   int randomInitialBoardMaxResampleAttempts;
-  bool filterRandomInitialBoardWithNN;
   //Occasionally try some alternative moves and search the responses to them.
   double sidePositionProb;
 

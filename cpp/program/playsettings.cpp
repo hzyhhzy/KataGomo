@@ -13,7 +13,6 @@ static void loadRandomInitialBoardFilterSettings(ConfigParser& cfg, PlaySettings
   playSettings.randomInitialBoardMaxResampleAttempts =
     cfg.contains("randomInitialBoardMaxResampleAttempts") ?
     cfg.getInt("randomInitialBoardMaxResampleAttempts", 1, 10000000) : 10000;
-  playSettings.filterRandomInitialBoardWithNN = true;
 }
 
 PlaySettings::PlaySettings()
@@ -24,7 +23,6 @@ PlaySettings::PlaySettings()
     randomInitialBoardRejectProbCap(0.995),
     randomInitialBoardRejectProbPower(1.0),
     randomInitialBoardMaxResampleAttempts(10000),
-    filterRandomInitialBoardWithNN(false),
    sidePositionProb(0.0),
    policyInitAreaTemperature(1.0),
    cheapSearchProb(0),cheapSearchVisits(0),cheapSearchTargetWeight(0.0f),
@@ -69,6 +67,7 @@ PlaySettings PlaySettings::loadForGatekeeper(ConfigParser& cfg) {
   playSettings.judgeDrawProb = cfg.getDouble("judgeDrawProb", 0.0, 1.0); 
   playSettings.judgeDrawThreshold = cfg.getDouble("judgeDrawThreshold",0.0,1.0); //Threshold on [-1,1], regardless of winLossUtilityFactor
   playSettings.judgeDrawConsecTurns = cfg.getInt("judgeDrawConsecTurns", 1, 100);
+  loadRandomInitialBoardFilterSettings(cfg, playSettings);
   return playSettings;
 }
 
