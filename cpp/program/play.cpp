@@ -16,8 +16,8 @@ using namespace std;
 
 //----------------------------------------------------------------------------------------------------------
 
-// Fill every non-banned point independently with empty, black, or white at
-// equal probability. Boards missing either player are always resampled.
+// Fill every non-banned point independently with 50% empty, 25% black, and
+// 25% white. Boards missing either player are always resampled.
 static void randomizeInitialBoardWithBothPlayers(Board& board, Rand& rand, int maxResampleAttempts) {
   for(int attempt = 0; attempt <= maxResampleAttempts; attempt++) {
     int numBlack = 0;
@@ -27,8 +27,8 @@ static void randomizeInitialBoardWithBothPlayers(Board& board, Rand& rand, int m
         Loc loc = Location::getLoc(x, y, board.x_size);
         if(board.colors[loc] == C_BAN)
           continue;
-        uint32_t randomColor = rand.nextUInt(3);
-        Color color = randomColor == 0 ? C_EMPTY : randomColor == 1 ? C_BLACK : C_WHITE;
+        uint32_t randomColor = rand.nextUInt(4);
+        Color color = randomColor < 2 ? C_EMPTY : randomColor == 2 ? C_BLACK : C_WHITE;
         board.setStone(loc, color);
         numBlack += color == C_BLACK ? 1 : 0;
         numWhite += color == C_WHITE ? 1 : 0;
@@ -38,6 +38,14 @@ static void randomizeInitialBoardWithBothPlayers(Board& board, Rand& rand, int m
       return;
   }
   throw StringError("Failed to generate a random initial board containing both players within the resample limit");
+}
+
+static void setBoardNextPlayer(Board& board, Player pla) {
+  if(board.nextPla == pla)
+    return;
+  board.pos_hash ^= Board::ZOBRIST_NEXTPLA_HASH[board.nextPla];
+  board.nextPla = pla;
+  board.pos_hash ^= Board::ZOBRIST_NEXTPLA_HASH[board.nextPla];
 }
 
 //----------------------------------------------------------------------------------------------------------
@@ -555,7 +563,8 @@ void GameInitializer::createGameSharedUnsynchronized(
       }
     }
 
-    pla = P_BLACK;
+    pla = otherGameProps.isRandomInitialBoard && rand.nextBool(0.5) ? P_WHITE : P_BLACK;
+    setBoardNextPlayer(board, pla);
     hist.clear(board,pla,rules);
 
     otherGameProps.isSgfPos = false;
@@ -1400,7 +1409,10 @@ FinishedGameData* Play::runGame(
 
   if(otherGameProps.isRandomInitialBoard &&
      playSettings.randomInitialBoardRejectProbCap > 0.0) {
-    Search* openingEvalBot = pla == P_BLACK ? botB : botW;
+    // Pick once per game so all rejected candidates use the same model.
+    Search* openingEvalBot = botB;
+    if(botSpecB.nnEval != botSpecW.nnEval && gameRand.nextBool(0.5))
+      openingEvalBot = botW;
     NNResultBuf buf;
     MiscNNInputParams nnInputParams;
     nnInputParams.noResultUtilityForWhite = openingEvalBot->searchParams.noResultUtilityForWhite;

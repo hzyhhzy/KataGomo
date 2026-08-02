@@ -425,6 +425,8 @@ void testSelfplayRuleSampling() {
   int emptyCount = 0;
   int blackCount = 0;
   int whiteCount = 0;
+  int blackToMoveCount = 0;
+  int whiteToMoveCount = 0;
   for(int i = 0; i < 100; i++) {
     Board board;
     BoardHistory hist;
@@ -435,6 +437,12 @@ void testSelfplayRuleSampling() {
     );
     testAssert(otherGameProps.isRandomInitialBoard);
     testAssert(hist.rules.maxMoves == 123);
+    testAssert(pla == board.nextPla);
+    testAssert(hist.initialPla == pla);
+    testAssert(hist.presumedNextMovePla == pla);
+    board.checkConsistency();
+    blackToMoveCount += pla == P_BLACK ? 1 : 0;
+    whiteToMoveCount += pla == P_WHITE ? 1 : 0;
     int boardBlackCount = 0;
     int boardWhiteCount = 0;
     for(int y = 0; y < board.y_size; y++) {
@@ -451,9 +459,11 @@ void testSelfplayRuleSampling() {
     testAssert(boardWhiteCount > 0);
   }
   testAssert(emptyCount + blackCount + whiteCount == 3600);
-  testAssert(emptyCount > 900 && emptyCount < 1500);
-  testAssert(blackCount > 900 && blackCount < 1500);
-  testAssert(whiteCount > 900 && whiteCount < 1500);
+  testAssert(emptyCount > 1500 && emptyCount < 2100);
+  testAssert(blackCount > 650 && blackCount < 1150);
+  testAssert(whiteCount > 650 && whiteCount < 1150);
+  testAssert(blackToMoveCount > 30 && blackToMoveCount < 70);
+  testAssert(whiteToMoveCount > 30 && whiteToMoveCount < 70);
 
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.5, 0.5, 0.0, 0.995, 1.0) - 0.0) < 1e-12);
   testAssert(std::fabs(PlaySettings::getRandomInitialBoardRejectProb(0.7, 0.2, 0.1, 0.995, 1.0) - 0.5) < 1e-12);
