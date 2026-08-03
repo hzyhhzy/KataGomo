@@ -42,10 +42,9 @@ void RandomOpening::initializeBalancedRandomOpening(
       nextBot->nnEvaluator->evaluate(boardCopy, histCopy, firstPlayer, nnInputParams, nnbuf, false);
       std::shared_ptr<NNOutput> nnOutput = std::move(nnbuf.result);
 
-      double maxOutcome = std::max(
-        nnOutput->whiteWinProb,
-        std::max(nnOutput->whiteLossProb, nnOutput->whiteNoResultProb));
-      double acceptRate = pow(1 - maxOutcome, dropPow);
+      double winLossBalance = 1.0 - std::abs(nnOutput->whiteWinProb - nnOutput->whiteLossProb);
+      double nonDrawRate = 1.0 - nnOutput->whiteNoResultProb;
+      double acceptRate = pow(winLossBalance * nonDrawRate, dropPow);
       acceptRate = std::max(acceptRate, minAcceptRate);
       if(gameRand.nextBool(acceptRate))
         break;
