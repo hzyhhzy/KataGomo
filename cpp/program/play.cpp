@@ -1254,7 +1254,7 @@ FinishedGameData* Play::runGame(
     }
   }
 
-  //one move opening
+  //two-move opening
   if(!gameInited)
   {
     if(gameRand.nextBool(playSettings.balanceOpeningProb)) {

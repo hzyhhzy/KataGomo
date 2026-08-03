@@ -17,30 +17,43 @@ void RandomOpening::initializeBalancedRandomOpening(
 
   if(gameRand.nextBool(makeOpeningFairRate))  // make game fair
   {
-    int firstx, firsty;
+    Loc firstMove;
+    Loc secondMove;
     while(1) {
-      firstx = gameRand.nextUInt(board.x_size), firsty = gameRand.nextUInt(board.y_size);
+      int boardArea = board.x_size * board.y_size;
+      assert(boardArea >= 2);
+      int firstPos = gameRand.nextUInt(boardArea);
+      int secondPos = gameRand.nextUInt(boardArea - 1);
+      if(secondPos >= firstPos)
+        secondPos += 1;
+      firstMove = Location::getLoc(firstPos % board.x_size, firstPos / board.x_size, board.x_size);
+      secondMove = Location::getLoc(secondPos % board.x_size, secondPos / board.x_size, board.x_size);
 
       Board boardCopy(board);
       BoardHistory histCopy(hist);
-      Loc firstMove = Location::getLoc(firstx, firsty, board.x_size);
-      histCopy.makeBoardMoveAssumeLegal(boardCopy, firstMove, C_BLACK);
+      Player firstPlayer = nextPlayer;
+      Player secondPlayer = getOpp(firstPlayer);
+      histCopy.makeBoardMoveAssumeLegal(boardCopy, firstMove, firstPlayer);
+      histCopy.makeBoardMoveAssumeLegal(boardCopy, secondMove, secondPlayer);
 
       NNResultBuf nnbuf;
       MiscNNInputParams nnInputParams;
-      botW->nnEvaluator->evaluate(boardCopy, histCopy, C_WHITE, nnInputParams, nnbuf, false);
+      Search* nextBot = firstPlayer == C_BLACK ? botB : botW;
+      nextBot->nnEvaluator->evaluate(boardCopy, histCopy, firstPlayer, nnInputParams, nnbuf, false);
       std::shared_ptr<NNOutput> nnOutput = std::move(nnbuf.result);
 
-      double winrate = nnOutput->whiteWinProb;
-      double bias = 2 * winrate - 1;
-      double acceptRate = pow(1 - bias * bias, dropPow);
+      double maxOutcome = std::max(
+        nnOutput->whiteWinProb,
+        std::max(nnOutput->whiteLossProb, nnOutput->whiteNoResultProb));
+      double acceptRate = pow(1 - maxOutcome, dropPow);
       acceptRate = std::max(acceptRate, minAcceptRate);
       if(gameRand.nextBool(acceptRate))
         break;
     }
 
-    Loc firstMove = Location::getLoc(firstx, firsty, board.x_size);
     hist.makeBoardMoveAssumeLegal(board, firstMove, nextPlayer);
+    nextPlayer = getOpp(nextPlayer);
+    hist.makeBoardMoveAssumeLegal(board, secondMove, nextPlayer);
     nextPlayer = getOpp(nextPlayer);
   }
 }
