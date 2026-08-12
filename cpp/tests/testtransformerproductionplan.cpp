@@ -747,6 +747,11 @@ void Tests::runTransformerProductionPlanTests() {
   size_t wideFFN = findRequest(
     widePlan,ArchitectureOpKind::TransformerFFN,384,384,1024
   );
+  testAssert(widePlan.requests[wideAttention].key.boardX == 15);
+  testAssert(widePlan.requests[wideAttention].key.boardY == 15);
+  testAssert(widePlan.requests[wideFFN].key.spatialArea == 225);
+  testAssert(widePlan.requests[wideFFN].key.boardX == 0);
+  testAssert(widePlan.requests[wideFFN].key.boardY == 0);
   testAssert(widePlan.prepared[wideAttention].support == SupportClass::CompatibleOnly);
   testAssert(widePlan.prepared[wideFFN].support == SupportClass::CompatibleOnly);
   size_t baseV3 = findRequest(planA,ArchitectureOpKind::MatMul,128,3);

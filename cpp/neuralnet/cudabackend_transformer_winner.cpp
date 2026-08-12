@@ -98,9 +98,9 @@ bool validatedDynamicRows(const CapabilityKey& key) {
   ) != std::end(rowsMeasured);
 }
 
-bool validatedC384Runtime(const CapabilityKey& key) {
+bool validatedC384Rows(const CapabilityKey& key) {
   const int64_t rows = (int64_t)key.batchSize * (int64_t)key.spatialArea;
-  if(key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225)
+  if(key.spatialArea != 225)
     return false;
   // All staged C384 kernels accept dynamic M and retain a construction-time
   // handle for the requested maximum batch. Keep a conservative production
@@ -108,6 +108,19 @@ bool validatedC384Runtime(const CapabilityKey& key) {
   // the sampled points as if they were the implementation contract.
   return key.batchSize >= 1 && key.batchSize <= 128 &&
     rows > 0 && rows <= (1 << 20);
+}
+
+bool validatedC384AttentionRuntime(const CapabilityKey& key) {
+  // Attention declares OP_RUNTIME_SPATIAL_XY as well as area because learned
+  // RoPE depends on the board axes, so require the exact staged geometry.
+  return key.boardX == 15 && key.boardY == 15 && validatedC384Rows(key);
+}
+
+bool validatedC384FfnRuntime(const CapabilityKey& key) {
+  // FFN declares only OP_RUNTIME_SPATIAL_AREA. Its canonical capability key
+  // intentionally zeros boardX/boardY, so do not manufacture an axis
+  // dependency that the operator does not have.
+  return validatedC384Rows(key);
 }
 
 SupportClass matchAttentionSquare(const OpRequest& request, const void*) {
@@ -173,7 +186,7 @@ SupportClass matchAttentionExact(const OpRequest& request, const void* userData)
 SupportClass matchAttentionC384Dynamic(const OpRequest& request, const void* userData) {
   const RegistrationContext& context = *(const RegistrationContext*)userData;
   return isHalfNhwcNoMask(request.key) && isC384Attention(request.key) &&
-    isSm120(request,context) && validatedC384Runtime(request.key) ?
+    isSm120(request,context) && validatedC384AttentionRuntime(request.key) ?
     SupportClass::CompatibleOnly : SupportClass::Unsupported;
 }
 
@@ -202,7 +215,7 @@ SupportClass matchFfnDynamic(const OpRequest& request, const void* userData) {
 SupportClass matchFfnC384Dynamic(const OpRequest& request, const void* userData) {
   const RegistrationContext& context = *(const RegistrationContext*)userData;
   return isHalfNhwcNoMask(request.key) && isC384F1024(request.key) &&
-    isSm120(request,context) && validatedC384Runtime(request.key) ?
+    isSm120(request,context) && validatedC384FfnRuntime(request.key) ?
     SupportClass::CompatibleOnly : SupportClass::Unsupported;
 }
 
