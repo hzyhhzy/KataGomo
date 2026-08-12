@@ -89,6 +89,95 @@ NNServerBuf::~NNServerBuf() {
 
 //-------------------------------------------------------------------------------------
 
+NNBatchAwareDispatchState::NNBatchAwareDispatchState(
+  bool enabled_, const vector<int>& gpuIdxByServerThread_
+)
+  : enabled(enabled_),
+    gpuIdxByServerThread(gpuIdxByServerThread_),
+    serverThreadHasActiveBatch(gpuIdxByServerThread_.size(),false)
+{}
+
+int NNBatchAwareDispatchState::normalizeGpuIdx(int gpuIdx) {
+  return gpuIdx < 0 ? 0 : gpuIdx;
+}
+
+bool NNBatchAwareDispatchState::isGpuIdleForServerThread(int serverThreadIdx) const {
+  assert(serverThreadIdx >= 0 && serverThreadIdx < (int)gpuIdxByServerThread.size());
+  const int gpuIdx = normalizeGpuIdx(gpuIdxByServerThread[serverThreadIdx]);
+  for(int i = 0; i < (int)serverThreadHasActiveBatch.size(); i++) {
+    if(
+      normalizeGpuIdx(gpuIdxByServerThread[i]) == gpuIdx &&
+      serverThreadHasActiveBatch[i]
+    )
+      return false;
+  }
+  return true;
+}
+
+bool NNBatchAwareDispatchState::canStartBatch(
+  int serverThreadIdx, bool hasFullBatch, int partialRows
+) const {
+  assert(serverThreadIdx >= 0 && serverThreadIdx < (int)gpuIdxByServerThread.size());
+  assert(partialRows >= 0);
+  if(!hasFullBatch && partialRows <= 0)
+    return false;
+  if(!enabled || hasFullBatch)
+    return true;
+  return isGpuIdleForServerThread(serverThreadIdx);
+}
+
+void NNBatchAwareDispatchState::markBatchStarted(int serverThreadIdx) {
+  if(!enabled)
+    return;
+  assert(serverThreadIdx >= 0 && serverThreadIdx < (int)serverThreadHasActiveBatch.size());
+  assert(!serverThreadHasActiveBatch[serverThreadIdx]);
+  serverThreadHasActiveBatch[serverThreadIdx] = true;
+}
+
+void NNBatchAwareDispatchState::markBatchCompleted(int serverThreadIdx) {
+  if(!enabled)
+    return;
+  assert(serverThreadIdx >= 0 && serverThreadIdx < (int)serverThreadHasActiveBatch.size());
+  assert(serverThreadHasActiveBatch[serverThreadIdx]);
+  serverThreadHasActiveBatch[serverThreadIdx] = false;
+}
+
+void NNBatchAwareDispatchState::resetGpuIdxByServerThread(
+  const vector<int>& gpuIdxByServerThread_
+) {
+  for(bool active : serverThreadHasActiveBatch)
+    assert(!active);
+  gpuIdxByServerThread = gpuIdxByServerThread_;
+  serverThreadHasActiveBatch.assign(gpuIdxByServerThread.size(),false);
+}
+
+bool NNBatchAwareDispatchState::hasActiveBatch(int serverThreadIdx) const {
+  assert(serverThreadIdx >= 0 && serverThreadIdx < (int)serverThreadHasActiveBatch.size());
+  return serverThreadHasActiveBatch[serverThreadIdx];
+}
+
+int NNBatchDispatchPlan::sourceRowForPhysicalRow(int physicalRow) const {
+  assert(logicalRows > 0);
+  assert(physicalRow >= 0 && physicalRow < physicalRows);
+  return std::min(physicalRow,logicalRows-1);
+}
+
+NNBatchDispatchPlan getNNBatchDispatchPlan(
+  bool batchAwareDispatch,
+  int logicalRows,
+  int maxBatchSize
+) {
+  assert(logicalRows > 0);
+  assert(logicalRows <= maxBatchSize);
+  NNBatchDispatchPlan plan;
+  plan.logicalRows = logicalRows;
+  plan.physicalRows = batchAwareDispatch ? maxBatchSize : logicalRows;
+  plan.paddedRows = plan.physicalRows - plan.logicalRows;
+  return plan;
+}
+
+//-------------------------------------------------------------------------------------
+
 NNEvaluator::NNEvaluator(
   const string& mName,
   const string& mFileName,
@@ -113,6 +202,7 @@ NNEvaluator::NNEvaluator(
   const string& rSeed,
   bool doRandomize,
   int defaultSymmetry,
+  bool batchAwareDispatch_,
   int backendNumThr
 )
   :modelName(mName),
@@ -129,6 +219,7 @@ NNEvaluator::NNEvaluator(
    gpuIdxByServerThread(gpuIdxByServerThr),
    randSeed(rSeed),
    debugSkipNeuralNet(skipNeuralNet),
+   batchAwareDispatch(batchAwareDispatch_),
    computeContext(NULL),
    loadedModel(NULL),
    nnCacheTable(NULL),
@@ -139,6 +230,7 @@ NNEvaluator::NNEvaluator(
    numResultBufss(),
    numResultBufssMask(),
    m_numRowsProcessed(0),
+   m_numPaddedRowsProcessed(0),
    m_numBatchesProcessed(0),
    serverWaitingForBatchStart(),
    bufferMutex(),
@@ -154,7 +246,8 @@ NNEvaluator::NNEvaluator(
    m_resultBufss(NULL),
    m_currentResultBufsLen(0),
    m_currentResultBufsIdx(0),
-   m_oldestResultBufsIdx(0)
+   m_oldestResultBufsIdx(0),
+   batchAwareDispatchState(batchAwareDispatch_,gpuIdxByServerThr)
 {
   if(nnXLen > NNPos::MAX_BOARD_LEN)
     throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
@@ -172,6 +265,12 @@ NNEvaluator::NNEvaluator(
       "Initializing neural net buffer to be size " +
       Global::intToString(nnXLen) + " * " + Global::intToString(nnYLen) +
       (requireExactNNLen ? " exactly" : " allowing smaller boards")
+    );
+    logger->write(
+      "NN batch-aware dispatch is " + string(batchAwareDispatch ? "enabled" : "disabled") +
+      (batchAwareDispatch ?
+       "; physical batch size is fixed at " + Global::intToString(maxBatchSize) :
+       "; backend batch size follows logical rows")
     );
   }
 
@@ -342,6 +441,12 @@ Rules NNEvaluator::getSupportedRules(const Rules& desiredRules, bool& supported)
 uint64_t NNEvaluator::numRowsProcessed() const {
   return m_numRowsProcessed.load(std::memory_order_relaxed);
 }
+uint64_t NNEvaluator::numPhysicalRowsProcessed() const {
+  return numRowsProcessed() + numPaddedRowsProcessed();
+}
+uint64_t NNEvaluator::numPaddedRowsProcessed() const {
+  return m_numPaddedRowsProcessed.load(std::memory_order_relaxed);
+}
 uint64_t NNEvaluator::numBatchesProcessed() const {
   return m_numBatchesProcessed.load(std::memory_order_relaxed);
 }
@@ -351,6 +456,7 @@ double NNEvaluator::averageProcessedBatchSize() const {
 
 void NNEvaluator::clearStats() {
   m_numRowsProcessed.store(0);
+  m_numPaddedRowsProcessed.store(0);
   m_numBatchesProcessed.store(0);
 }
 
@@ -390,6 +496,7 @@ void NNEvaluator::setNumThreads(const vector<int>& gpuIdxByServerThr) {
     throw StringError("NNEvaluator::setNumThreads called when threads were already running!");
   numThreads = (int)gpuIdxByServerThr.size();
   gpuIdxByServerThread = gpuIdxByServerThr;
+  batchAwareDispatchState.resetGpuIdxByServerThread(gpuIdxByServerThr);
 }
 
 void NNEvaluator::spawnServerThreads() {
@@ -437,6 +544,8 @@ void NNEvaluator::killServerThreads() {
   assert(numOngoingEvals == 0);
   assert(numWaitingEvals == 0);
   assert(numEvalsToAwaken == 0);
+  for(int i = 0; i < numThreads; i++)
+    assert(!batchAwareDispatchState.hasActiveBatch(i));
 }
 
 namespace {
@@ -663,7 +772,9 @@ void NNEvaluator::serve(
   int serverThreadIdx
 ) {
   int64_t numBatchesHandledThisThread = 0;
-  int64_t numRowsHandledThisThread = 0;
+  int64_t numLogicalRowsHandledThisThread = 0;
+  int64_t numPaddedRowsHandledThisThread = 0;
+  vector<bool> loggedLogicalBatchSize(maxNumRows+1,false);
 
   ComputeHandle* gpuHandle = NULL;
   if(loadedModel != NULL)
@@ -689,13 +800,21 @@ void NNEvaluator::serve(
   }
 
   vector<NNOutput*> outputBuf;
+  vector<NNResultBuf*> paddedResultBufs;
+  if(batchAwareDispatch)
+    paddedResultBufs.reserve(maxNumRows);
   vector<float> policyBuf;
   policyBuf.resize(NNPos::MAX_NN_POLICY_SIZE * maxNumRows);
 
   unique_lock<std::mutex> lock(bufferMutex);
   while(true) {
-    while(m_currentResultBufsLen <= 0 && m_currentResultBufsIdx == m_oldestResultBufsIdx && !isKilled)
+    while(!isKilled) {
+      const bool hasFullBatch = m_currentResultBufsIdx != m_oldestResultBufsIdx;
+      const int partialRows = hasFullBatch ? 0 : m_currentResultBufsLen;
+      if(batchAwareDispatchState.canStartBatch(serverThreadIdx,hasFullBatch,partialRows))
+        break;
       serverWaitingForBatchStart.wait(lock);
+    }
 
     if(isKilled)
       break;
@@ -716,6 +835,7 @@ void NNEvaluator::serve(
       numRows = maxNumRows;
     }
 
+    batchAwareDispatchState.markBatchStarted(serverThreadIdx);
     numOngoingEvals += 1;
     bool doRandomize = currentDoRandomize;
     int defaultSymmetry = currentDefaultSymmetry;
@@ -768,6 +888,8 @@ void NNEvaluator::serve(
       }
     }
     else {
+      const NNBatchDispatchPlan dispatchPlan =
+        getNNBatchDispatchPlan(batchAwareDispatch,numRows,maxNumRows);
       outputBuf.clear();
       for(int row = 0; row<numRows; row++) {
         NNOutput* emptyOutput = new NNOutput();
@@ -788,14 +910,50 @@ void NNEvaluator::serve(
         }
       }
 
-      NeuralNet::getOutput(gpuHandle, buf.inputBuffers, numRows, buf.resultBufs, outputBuf, policyBuf.data());
-      assert(outputBuf.size() == numRows);
+      NNResultBuf** inferenceResultData = buf.resultBufs;
+      if(dispatchPlan.paddedRows > 0) {
+        paddedResultBufs.assign(buf.resultBufs,buf.resultBufs+numRows);
+        paddedResultBufs.resize(dispatchPlan.physicalRows,buf.resultBufs[numRows-1]);
+        inferenceResultData = paddedResultBufs.data();
+        for(int row = numRows; row < dispatchPlan.physicalRows; row++) {
+          NNOutput* dummyOutput = new NNOutput();
+          dummyOutput->nnXLen = nnXLen;
+          dummyOutput->nnYLen = nnYLen;
+          outputBuf.push_back(dummyOutput);
+        }
+      }
+      NeuralNet::getOutput(
+        gpuHandle, buf.inputBuffers, dispatchPlan.physicalRows,
+        inferenceResultData, outputBuf, policyBuf.data()
+      );
+      assert(outputBuf.size() == dispatchPlan.physicalRows);
       assert(policyBuf.size() >= numRows * NNPos::MAX_NN_POLICY_SIZE);
+      if(dispatchPlan.paddedRows > 0) {
+        // Destroy padded outputs immediately. Only logical outputs can be released to callers.
+        for(int row = numRows; row < dispatchPlan.physicalRows; row++)
+          delete outputBuf[row];
+        outputBuf.resize(numRows);
+      }
 
       m_numRowsProcessed.fetch_add(numRows, std::memory_order_relaxed);
+      if(dispatchPlan.paddedRows > 0) {
+        m_numPaddedRowsProcessed.fetch_add(dispatchPlan.paddedRows, std::memory_order_relaxed);
+        numPaddedRowsHandledThisThread += dispatchPlan.paddedRows;
+      }
       m_numBatchesProcessed.fetch_add(1, std::memory_order_relaxed);
-      numRowsHandledThisThread += numRows;
+      numLogicalRowsHandledThisThread += numRows;
       numBatchesHandledThisThread += 1;
+
+      if(batchAwareDispatch && !loggedLogicalBatchSize[numRows] && logger != NULL) {
+        logger->write(
+          "BATCH_AWARE_DISPATCH_ACTIVE serverThread=" + Global::intToString(serverThreadIdx) +
+          " device=" + Global::intToString(gpuIdxForThisThread < 0 ? 0 : gpuIdxForThisThread) +
+          " logicalRows=" + Global::intToString(numRows) +
+          " physicalRows=" + Global::intToString(dispatchPlan.physicalRows) +
+          " paddedRows=" + Global::intToString(dispatchPlan.paddedRows)
+        );
+        loggedLogicalBatchSize[numRows] = true;
+      }
 
       for(int row = 0; row < numRows; row++) {
         assert(buf.resultBufs[row] != NULL);
@@ -819,12 +977,15 @@ void NNEvaluator::serve(
     //Lock and update stats before looping again
     lock.lock();
     numOngoingEvals -= 1;
+    batchAwareDispatchState.markBatchCompleted(serverThreadIdx);
 
     if(numWaitingEvals > 0) {
       numEvalsToAwaken += numWaitingEvals;
       numWaitingEvals = 0;
       waitingForFinish.notify_all();
     }
+    if(batchAwareDispatch)
+      serverWaitingForBatchStart.notify_all();
     continue;
   }
 
@@ -832,7 +993,10 @@ void NNEvaluator::serve(
   if(logger != NULL) {
     logger->write(
       "GPU " + Global::intToString(gpuIdxForThisThread) + " finishing, processed " +
-      Global::int64ToString(numRowsHandledThisThread) + " rows " +
+      Global::int64ToString(numLogicalRowsHandledThisThread) + " logical rows, " +
+      Global::int64ToString(numLogicalRowsHandledThisThread + numPaddedRowsHandledThisThread) +
+      " physical rows, " +
+      Global::int64ToString(numPaddedRowsHandledThisThread) + " padded rows, " +
       Global::int64ToString(numBatchesHandledThisThread) + " batches"
     );
   }
@@ -933,14 +1097,22 @@ void NNEvaluator::evaluate(
 
   m_resultBufss[m_currentResultBufsIdx][m_currentResultBufsLen] = &buf;
   m_currentResultBufsLen += 1;
-  if(m_currentResultBufsLen == 1 && m_currentResultBufsIdx == m_oldestResultBufsIdx)
-    serverWaitingForBatchStart.notify_one();
+  if(m_currentResultBufsLen == 1 && m_currentResultBufsIdx == m_oldestResultBufsIdx) {
+    if(batchAwareDispatch)
+      serverWaitingForBatchStart.notify_all();
+    else
+      serverWaitingForBatchStart.notify_one();
+  }
 
   bool overlooped = false;
   if(m_currentResultBufsLen >= maxNumRows) {
     m_currentResultBufsLen = 0;
     m_currentResultBufsIdx = (m_currentResultBufsIdx + 1) & numResultBufssMask;
     overlooped = m_currentResultBufsIdx == m_oldestResultBufsIdx;
+    // A server may have gone back to sleep because this was a partial batch on a
+    // busy GPU. Reaching full size makes it immediately dispatchable.
+    if(batchAwareDispatch)
+      serverWaitingForBatchStart.notify_all();
   }
   lock.unlock();
 

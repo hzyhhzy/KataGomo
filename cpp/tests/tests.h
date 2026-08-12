@@ -20,6 +20,9 @@ namespace Tests {
   // testtransformerproductionplan.cpp
   void runTransformerProductionPlanTests();
 
+  // testbatchawaredispatch.cpp
+  void runBatchAwareDispatchTests();
+
   // testnnevalcanary.cpp
   void runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print);
   bool runFP16Test(

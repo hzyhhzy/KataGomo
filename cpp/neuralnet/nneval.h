@@ -16,6 +16,42 @@
 
 class NNEvaluator;
 
+// Pure scheduling state for optional fixed-physical-batch dispatch. The caller must
+// serialize access (NNEvaluator uses bufferMutex). Keeping the policy separate makes
+// the same-GPU and multi-GPU decisions independently CPU-testable.
+class NNBatchAwareDispatchState {
+ public:
+  NNBatchAwareDispatchState(bool enabled, const std::vector<int>& gpuIdxByServerThread);
+
+  bool canStartBatch(int serverThreadIdx, bool hasFullBatch, int partialRows) const;
+  void markBatchStarted(int serverThreadIdx);
+  void markBatchCompleted(int serverThreadIdx);
+  void resetGpuIdxByServerThread(const std::vector<int>& gpuIdxByServerThread);
+  bool hasActiveBatch(int serverThreadIdx) const;
+
+ private:
+  const bool enabled;
+  std::vector<int> gpuIdxByServerThread;
+  std::vector<bool> serverThreadHasActiveBatch;
+
+  static int normalizeGpuIdx(int gpuIdx);
+  bool isGpuIdleForServerThread(int serverThreadIdx) const;
+};
+
+struct NNBatchDispatchPlan {
+  int logicalRows;
+  int physicalRows;
+  int paddedRows;
+
+  int sourceRowForPhysicalRow(int physicalRow) const;
+};
+
+NNBatchDispatchPlan getNNBatchDispatchPlan(
+  bool batchAwareDispatch,
+  int logicalRows,
+  int maxBatchSize
+);
+
 struct NNEvalBenchmarkResult {
   int batchSize;
   int numServerThreads;
@@ -113,6 +149,7 @@ class NNEvaluator {
     const std::string& randSeed,
     bool doRandomize,
     int defaultSymmetry,
+    bool batchAwareDispatch,
     int backendNumThr
   );
   ~NNEvaluator();
@@ -187,6 +224,8 @@ class NNEvaluator {
 
   //Some stats
   uint64_t numRowsProcessed() const;
+  uint64_t numPhysicalRowsProcessed() const;
+  uint64_t numPaddedRowsProcessed() const;
   uint64_t numBatchesProcessed() const;
   double averageProcessedBatchSize() const;
 
@@ -217,6 +256,7 @@ class NNEvaluator {
   std::vector<int> gpuIdxByServerThread;
   const std::string randSeed;
   const bool debugSkipNeuralNet;
+  const bool batchAwareDispatch;
 
   ComputeContext* computeContext;
   LoadedModel* loadedModel;
@@ -236,6 +276,7 @@ class NNEvaluator {
 
   //Counters for statistics
   std::atomic<uint64_t> m_numRowsProcessed;
+  std::atomic<uint64_t> m_numPaddedRowsProcessed;
   std::atomic<uint64_t> m_numBatchesProcessed;
 
   std::condition_variable serverWaitingForBatchStart;
@@ -265,6 +306,7 @@ class NNEvaluator {
   int m_currentResultBufsLen; //Number of rows used in in the latest (not yet full) resultBufss.
   int m_currentResultBufsIdx; //Index of the current resultBufs being filled.
   int m_oldestResultBufsIdx; //Index of the oldest resultBufs that still needs to be processed by a server thread
+  NNBatchAwareDispatchState batchAwareDispatchState;
   friend class ONNXModelHeader;
  public:
   //Helper, for internal use only

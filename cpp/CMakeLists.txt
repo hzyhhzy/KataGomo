@@ -356,6 +356,7 @@ add_executable(katago
   tests/testcommon.cpp
   tests/testarchitecturedesc.cpp
   tests/testtransformerproductionplan.cpp
+  tests/testbatchawaredispatch.cpp
   tests/testnnevalcanary.cpp
   distributed/client.cpp
   command/commandline.cpp

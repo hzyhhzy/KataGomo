@@ -336,6 +336,8 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     backendNumThreads = cfg.getInt("backendNumThreads", 1, 4096);
 
 #endif
+    const bool nnBatchAwareDispatch =
+      cfg.contains("nnBatchAwareDispatch") ? cfg.getBool("nnBatchAwareDispatch") : false;
     NNEvaluator* nnEval = new NNEvaluator(
       nnModelName,
       nnModelFile,
@@ -360,6 +362,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       nnRandSeed,
       (forcedSymmetry >= 0 ? false : nnRandomize),
       defaultSymmetry,
+      nnBatchAwareDispatch,
       backendNumThreads
     );
 

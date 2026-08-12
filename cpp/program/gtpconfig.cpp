@@ -248,6 +248,7 @@ searchFactorWhenWinningThreshold = 0.95
 # value is roughly equal to numSearchThreads, but can be specified manually
 # if running out of memory, or using multiple GPUs that expect to share work.
 # nnMaxBatchSize = <integer>
+# nnBatchAwareDispatch = false
 
 # Controls the neural network cache size, which is the primary RAM/memory use.
 # KataGo will cache up to (2 ** nnCacheSizePowerOfTwo) many neural net

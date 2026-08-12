@@ -35,3 +35,10 @@ int MainCmds::testtransformerproductionplan(const vector<string>& args) {
   Tests::runTransformerProductionPlanTests();
   return 0;
 }
+
+int MainCmds::testbatchawaredispatch(const vector<string>& args) {
+  if(args.size() != 1 || args[0] != "testbatchawaredispatch")
+    throw StringError("testbatchawaredispatch takes no arguments");
+  Tests::runBatchAwareDispatchTests();
+  return 0;
+}
