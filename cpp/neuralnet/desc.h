@@ -99,6 +99,79 @@ struct MatBiasLayerDesc {
   MatBiasLayerDesc& operator=(MatBiasLayerDesc&& other);
 };
 
+// RMSNorm used inside transformer blocks. It has a learned scale but no bias.
+struct TransformerRMSNormDesc {
+  std::string name;
+  int numChannels;
+  float epsilon;
+  std::vector<float> weight;
+
+  TransformerRMSNormDesc();
+  TransformerRMSNormDesc(std::istream& in, bool binaryFloats);
+  TransformerRMSNormDesc(TransformerRMSNormDesc&& other);
+
+  TransformerRMSNormDesc(const TransformerRMSNormDesc&) = delete;
+  TransformerRMSNormDesc& operator=(const TransformerRMSNormDesc&) = delete;
+  TransformerRMSNormDesc& operator=(TransformerRMSNormDesc&& other);
+};
+
+struct TransformerAttentionDesc {
+  std::string name;
+  int numHeads;
+  int numKVHeads;
+  int qHeadDim;
+  int vHeadDim;
+  bool useRope;
+  bool learnableRope;
+
+  TransformerRMSNormDesc preLN;
+  MatMulLayerDesc qProj;
+  MatMulLayerDesc kProj;
+  MatMulLayerDesc vProj;
+  MatMulLayerDesc outProj;
+
+  int ropeNumKVHeads;
+  int ropeNumPairs;
+  std::vector<float> ropeFreqs;
+  float ropeTheta;
+
+  TransformerAttentionDesc();
+  TransformerAttentionDesc(std::istream& in, bool binaryFloats);
+  TransformerAttentionDesc(TransformerAttentionDesc&& other);
+
+  TransformerAttentionDesc(const TransformerAttentionDesc&) = delete;
+  TransformerAttentionDesc& operator=(const TransformerAttentionDesc&) = delete;
+  TransformerAttentionDesc& operator=(TransformerAttentionDesc&& other);
+
+  void computeRopeCosSin(
+    int nnXLen,
+    int nnYLen,
+    int paddedNNXYLen,
+    std::vector<float>& cosTable,
+    std::vector<float>& sinTable
+  ) const;
+};
+
+struct TransformerFFNDesc {
+  std::string name;
+  int numChannels;
+  int ffnChannels;
+  bool useSwiGLU;
+
+  TransformerRMSNormDesc preLN;
+  MatMulLayerDesc linear1;
+  MatMulLayerDesc linearGate;
+  MatMulLayerDesc linear2;
+
+  TransformerFFNDesc();
+  TransformerFFNDesc(std::istream& in, bool binaryFloats);
+  TransformerFFNDesc(TransformerFFNDesc&& other);
+
+  TransformerFFNDesc(const TransformerFFNDesc&) = delete;
+  TransformerFFNDesc& operator=(const TransformerFFNDesc&) = delete;
+  TransformerFFNDesc& operator=(TransformerFFNDesc&& other);
+};
+
 struct ResidualBlockDesc {
   std::string name;
   BatchNormLayerDesc preBN;
@@ -175,6 +248,8 @@ struct NestedBottleneckResidualBlockDesc {
 constexpr int ORDINARY_BLOCK_KIND = 0;
 constexpr int GLOBAL_POOLING_BLOCK_KIND = 2;
 constexpr int NESTED_BOTTLENECK_BLOCK_KIND = 3;
+constexpr int TRANSFORMER_ATTENTION_BLOCK_KIND = 4;
+constexpr int TRANSFORMER_FFN_BLOCK_KIND = 5;
 
 struct TrunkDesc {
   std::string name;
@@ -201,6 +276,7 @@ struct TrunkDesc {
   TrunkDesc& operator=(TrunkDesc&& other);
 
   void iterConvLayers(std::function<void(const ConvLayerDesc& dest)> f) const;
+  bool hasAnyTransformerBlocks() const;
 };
 
 struct PolicyHeadDesc {

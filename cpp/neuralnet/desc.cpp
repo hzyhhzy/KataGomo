@@ -249,6 +249,8 @@ ActivationLayerDesc::ActivationLayerDesc(istream& in, int version) {
       activation = ACTIVATION_RELU;
     else if(kind == "ACTIVATION_MISH")
       activation = ACTIVATION_MISH;
+    else if(kind == "ACTIVATION_SILU")
+      activation = ACTIVATION_SILU;
     else
       throw StringError(
         name + ": unknown activation " + kind
@@ -346,6 +348,262 @@ MatBiasLayerDesc& MatBiasLayerDesc::operator=(MatBiasLayerDesc&& other) {
   name = std::move(other.name);
   numChannels = other.numChannels;
   weights = std::move(other.weights);
+  return *this;
+}
+
+//-----------------------------------------------------------------------------
+
+TransformerRMSNormDesc::TransformerRMSNormDesc()
+  : numChannels(0), epsilon(0.0f) {}
+
+TransformerRMSNormDesc::TransformerRMSNormDesc(istream& in, bool binaryFloats) {
+  in >> name;
+  in >> numChannels;
+  in >> epsilon;
+  if(in.fail())
+    throw StringError(name + ": transformer rmsnorm failed to parse parameters");
+  if(numChannels < 1)
+    throw StringError(name + ": transformer rmsnorm numChannels must be positive");
+  if(!isfinite(epsilon) || epsilon <= 0.0f || epsilon > 1.0f)
+    throw StringError(name + ": transformer rmsnorm epsilon must be positive and at most 1");
+  readFloats(in, (size_t)numChannels, binaryFloats, name, weight);
+  if(in.fail())
+    throw StringError(name + ": transformer rmsnorm failed to parse weights");
+}
+
+TransformerRMSNormDesc::TransformerRMSNormDesc(TransformerRMSNormDesc&& other) {
+  *this = std::move(other);
+}
+
+TransformerRMSNormDesc& TransformerRMSNormDesc::operator=(TransformerRMSNormDesc&& other) {
+  name = std::move(other.name);
+  numChannels = other.numChannels;
+  epsilon = other.epsilon;
+  weight = std::move(other.weight);
+  return *this;
+}
+
+//-----------------------------------------------------------------------------
+
+TransformerAttentionDesc::TransformerAttentionDesc()
+  : numHeads(0), numKVHeads(0), qHeadDim(0), vHeadDim(0),
+    useRope(false), learnableRope(false),
+    ropeNumKVHeads(0), ropeNumPairs(0), ropeTheta(0.0f) {}
+
+TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloats) {
+  in >> name;
+  in >> numHeads;
+  in >> numKVHeads;
+  in >> qHeadDim;
+  in >> vHeadDim;
+  int useRopeInt;
+  int learnableRopeInt;
+  in >> useRopeInt;
+  in >> learnableRopeInt;
+  if((useRopeInt != 0 && useRopeInt != 1) ||
+     (learnableRopeInt != 0 && learnableRopeInt != 1))
+    throw StringError(name + ": transformer attention rope flags must be 0 or 1");
+  useRope = useRopeInt != 0;
+  learnableRope = learnableRopeInt != 0;
+
+  if(in.fail())
+    throw StringError(name + ": transformer attention block failed to parse header");
+  if(numHeads < 1 || numKVHeads < 1 || numHeads % numKVHeads != 0)
+    throw StringError(name + ": transformer attention head counts are invalid");
+  if(qHeadDim < 1 || vHeadDim < 1 || qHeadDim % 2 != 0)
+    throw StringError(name + ": transformer attention head dimensions are invalid");
+  if(learnableRope && !useRope)
+    throw StringError(name + ": learnableRope requires useRope");
+
+  preLN = TransformerRMSNormDesc(in, binaryFloats);
+  qProj = MatMulLayerDesc(in, binaryFloats);
+  kProj = MatMulLayerDesc(in, binaryFloats);
+  vProj = MatMulLayerDesc(in, binaryFloats);
+  outProj = MatMulLayerDesc(in, binaryFloats);
+
+  if(qProj.inChannels != preLN.numChannels ||
+     kProj.inChannels != preLN.numChannels ||
+     vProj.inChannels != preLN.numChannels)
+    throw StringError(name + ": q/k/v projection input channels do not match preLN");
+  if(qProj.outChannels != numHeads * qHeadDim)
+    throw StringError(name + ": q projection output channels do not match attention geometry");
+  if(kProj.outChannels != numKVHeads * qHeadDim)
+    throw StringError(name + ": k projection output channels do not match attention geometry");
+  if(vProj.outChannels != numKVHeads * vHeadDim)
+    throw StringError(name + ": v projection output channels do not match attention geometry");
+  if(outProj.inChannels != numHeads * vHeadDim || outProj.outChannels != preLN.numChannels)
+    throw StringError(name + ": output projection channels do not match attention geometry");
+
+  ropeNumKVHeads = 0;
+  ropeNumPairs = 0;
+  ropeTheta = 0.0f;
+  if(useRope) {
+    if(learnableRope) {
+      string ropeFreqsName;
+      int ropeDim2;
+      in >> ropeFreqsName;
+      in >> ropeNumKVHeads;
+      in >> ropeNumPairs;
+      in >> ropeDim2;
+      if(in.fail())
+        throw StringError(name + ": failed to parse learnable rope header");
+      if(ropeNumKVHeads != numKVHeads || ropeNumPairs != qHeadDim / 2 || ropeDim2 != 2)
+        throw StringError(name + ": learnable rope shape does not match attention geometry");
+      readFloats(
+        in,
+        (size_t)ropeNumKVHeads * (size_t)ropeNumPairs * 2,
+        binaryFloats,
+        ropeFreqsName,
+        ropeFreqs
+      );
+    }
+    else {
+      string ropeThetaName;
+      in >> ropeThetaName;
+      in >> ropeTheta;
+      if(in.fail() || !isfinite(ropeTheta) || ropeTheta <= 0.0f)
+        throw StringError(name + ": fixed rope theta must be positive");
+    }
+  }
+  if(in.fail())
+    throw StringError(name + ": transformer attention block parse failure");
+}
+
+TransformerAttentionDesc::TransformerAttentionDesc(TransformerAttentionDesc&& other) {
+  *this = std::move(other);
+}
+
+TransformerAttentionDesc& TransformerAttentionDesc::operator=(TransformerAttentionDesc&& other) {
+  name = std::move(other.name);
+  numHeads = other.numHeads;
+  numKVHeads = other.numKVHeads;
+  qHeadDim = other.qHeadDim;
+  vHeadDim = other.vHeadDim;
+  useRope = other.useRope;
+  learnableRope = other.learnableRope;
+  preLN = std::move(other.preLN);
+  qProj = std::move(other.qProj);
+  kProj = std::move(other.kProj);
+  vProj = std::move(other.vProj);
+  outProj = std::move(other.outProj);
+  ropeNumKVHeads = other.ropeNumKVHeads;
+  ropeNumPairs = other.ropeNumPairs;
+  ropeFreqs = std::move(other.ropeFreqs);
+  ropeTheta = other.ropeTheta;
+  return *this;
+}
+
+void TransformerAttentionDesc::computeRopeCosSin(
+  int nnXLen,
+  int nnYLen,
+  int paddedNNXYLen,
+  vector<float>& cosTable,
+  vector<float>& sinTable
+) const {
+  if(!useRope)
+    throw StringError("computeRopeCosSin called when useRope is false");
+  const int nnXYLen = nnXLen * nnYLen;
+  if(nnXLen < 1 || nnYLen < 1 || paddedNNXYLen < nnXYLen)
+    throw StringError("computeRopeCosSin received invalid board dimensions");
+
+  const int numPairs = qHeadDim / 2;
+  if(learnableRope) {
+    if(ropeNumKVHeads != numKVHeads ||
+       ropeNumPairs != numPairs ||
+       ropeFreqs.size() != (size_t)numKVHeads * (size_t)numPairs * 2)
+      throw StringError("learnable rope descriptor is internally inconsistent");
+    cosTable.assign((size_t)numKVHeads * numPairs * paddedNNXYLen, 0.0f);
+    sinTable.assign((size_t)numKVHeads * numPairs * paddedNNXYLen, 0.0f);
+    for(int h = 0; h < numKVHeads; h++) {
+      for(int p = 0; p < numPairs; p++) {
+        const float freqX = ropeFreqs[((size_t)h * numPairs + p) * 2];
+        const float freqY = ropeFreqs[((size_t)h * numPairs + p) * 2 + 1];
+        for(int y = 0; y < nnYLen; y++) {
+          for(int x = 0; x < nnXLen; x++) {
+            const int xy = y * nnXLen + x;
+            const float angle = (float)x * freqX + (float)y * freqY;
+            const size_t idx = ((size_t)h * numPairs + p) * paddedNNXYLen + xy;
+            cosTable[idx] = cosf(angle);
+            sinTable[idx] = sinf(angle);
+          }
+        }
+      }
+    }
+  }
+  else {
+    if(numPairs % 2 != 0)
+      throw StringError("fixed 2D rope requires an even number of coordinate pairs");
+    const int pairsPerDim = numPairs / 2;
+    const int dimHalf = qHeadDim / 2;
+    cosTable.assign((size_t)numPairs * paddedNNXYLen, 0.0f);
+    sinTable.assign((size_t)numPairs * paddedNNXYLen, 0.0f);
+    for(int p = 0; p < numPairs; p++) {
+      const int coordinatePair = p < pairsPerDim ? p : p - pairsPerDim;
+      const float freq = 1.0f / powf(ropeTheta, (float)(2 * coordinatePair) / (float)dimHalf);
+      for(int y = 0; y < nnYLen; y++) {
+        for(int x = 0; x < nnXLen; x++) {
+          const int xy = y * nnXLen + x;
+          const float angle = (float)(p < pairsPerDim ? y : x) * freq;
+          const size_t idx = (size_t)p * paddedNNXYLen + xy;
+          cosTable[idx] = cosf(angle);
+          sinTable[idx] = sinf(angle);
+        }
+      }
+    }
+  }
+}
+
+//-----------------------------------------------------------------------------
+
+TransformerFFNDesc::TransformerFFNDesc()
+  : numChannels(0), ffnChannels(0), useSwiGLU(false) {}
+
+TransformerFFNDesc::TransformerFFNDesc(istream& in, bool binaryFloats) {
+  in >> name;
+  in >> numChannels;
+  in >> ffnChannels;
+  int useSwiGLUInt;
+  in >> useSwiGLUInt;
+  if(useSwiGLUInt != 0 && useSwiGLUInt != 1)
+    throw StringError(name + ": transformer ffn useSwiGLU flag must be 0 or 1");
+  useSwiGLU = useSwiGLUInt != 0;
+  if(in.fail())
+    throw StringError(name + ": transformer ffn block failed to parse header");
+  if(numChannels < 1 || ffnChannels < 1)
+    throw StringError(name + ": transformer ffn channel counts must be positive");
+
+  preLN = TransformerRMSNormDesc(in, binaryFloats);
+  linear1 = MatMulLayerDesc(in, binaryFloats);
+  if(useSwiGLU)
+    linearGate = MatMulLayerDesc(in, binaryFloats);
+  linear2 = MatMulLayerDesc(in, binaryFloats);
+
+  if(preLN.numChannels != numChannels)
+    throw StringError(name + ": ffn preLN channels do not match trunk channels");
+  if(linear1.inChannels != numChannels || linear1.outChannels != ffnChannels)
+    throw StringError(name + ": ffn linear1 channels do not match header");
+  if(useSwiGLU &&
+     (linearGate.inChannels != numChannels || linearGate.outChannels != ffnChannels))
+    throw StringError(name + ": ffn gate channels do not match header");
+  if(linear2.inChannels != ffnChannels || linear2.outChannels != numChannels)
+    throw StringError(name + ": ffn linear2 channels do not match header");
+  if(in.fail())
+    throw StringError(name + ": transformer ffn block parse failure");
+}
+
+TransformerFFNDesc::TransformerFFNDesc(TransformerFFNDesc&& other) {
+  *this = std::move(other);
+}
+
+TransformerFFNDesc& TransformerFFNDesc::operator=(TransformerFFNDesc&& other) {
+  name = std::move(other.name);
+  numChannels = other.numChannels;
+  ffnChannels = other.ffnChannels;
+  useSwiGLU = other.useSwiGLU;
+  preLN = std::move(other.preLN);
+  linear1 = std::move(other.linear1);
+  linearGate = std::move(other.linearGate);
+  linear2 = std::move(other.linear2);
   return *this;
 }
 
@@ -557,6 +815,13 @@ void NestedBottleneckResidualBlockDesc::iterConvLayers(std::function<void(const 
       NestedBottleneckResidualBlockDesc* desc = (NestedBottleneckResidualBlockDesc*)blocks[i].second.get();
       desc->iterConvLayers(f);
     }
+    else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
+            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
+      // Transformer projections are matmuls, not convolutions.
+    }
+    else {
+      ASSERT_UNREACHABLE;
+    }
   }
   f(postConv);
 }
@@ -639,6 +904,31 @@ static void parseResidualBlockStack(
                    trunkNumChannels));
 
       blocks.push_back(make_pair(NESTED_BOTTLENECK_BLOCK_KIND, std::move(descPtr)));
+    }
+    else if(kind == "transformer_attention_block") {
+      unique_ptr_void descPtr = make_unique_void(new TransformerAttentionDesc(in,binaryFloats));
+      TransformerAttentionDesc& desc = *((TransformerAttentionDesc*)descPtr.get());
+      if(desc.preLN.numChannels != trunkNumChannels ||
+         desc.qProj.inChannels != trunkNumChannels ||
+         desc.outProj.outChannels != trunkNumChannels)
+        throw StringError(
+          name + Global::strprintf(
+                   ": %s transformer attention channels do not match trunkNumChannels (%d)",
+                   desc.name.c_str(),
+                   trunkNumChannels));
+      blocks.push_back(make_pair(TRANSFORMER_ATTENTION_BLOCK_KIND, std::move(descPtr)));
+    }
+    else if(kind == "transformer_ffn_block") {
+      unique_ptr_void descPtr = make_unique_void(new TransformerFFNDesc(in,binaryFloats));
+      TransformerFFNDesc& desc = *((TransformerFFNDesc*)descPtr.get());
+      if(desc.numChannels != trunkNumChannels)
+        throw StringError(
+          name + Global::strprintf(
+                   ": %s transformer ffn channels (%d) do not match trunkNumChannels (%d)",
+                   desc.name.c_str(),
+                   desc.numChannels,
+                   trunkNumChannels));
+      blocks.push_back(make_pair(TRANSFORMER_FFN_BLOCK_KIND, std::move(descPtr)));
     }
     else
       throw StringError(name + ": found unknown block kind: " + kind);
@@ -760,7 +1050,35 @@ void TrunkDesc::iterConvLayers(std::function<void(const ConvLayerDesc& desc)> f)
       NestedBottleneckResidualBlockDesc* desc = (NestedBottleneckResidualBlockDesc*)blocks[i].second.get();
       desc->iterConvLayers(f);
     }
+    else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
+            blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
+      // Transformer projections are matmuls, not convolutions.
+    }
+    else {
+      ASSERT_UNREACHABLE;
+    }
   }
+}
+
+static bool blocksContainTransformerRecursive(
+  const vector<pair<int, unique_ptr_void>>& blocks
+) {
+  for(size_t i = 0; i < blocks.size(); i++) {
+    if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND ||
+       blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND)
+      return true;
+    if(blocks[i].first == NESTED_BOTTLENECK_BLOCK_KIND) {
+      const NestedBottleneckResidualBlockDesc* desc =
+        (const NestedBottleneckResidualBlockDesc*)blocks[i].second.get();
+      if(blocksContainTransformerRecursive(desc->blocks))
+        return true;
+    }
+  }
+  return false;
+}
+
+bool TrunkDesc::hasAnyTransformerBlocks() const {
+  return blocksContainTransformerRecursive(blocks);
 }
 
 //-----------------------------------------------------------------------------
