@@ -105,6 +105,8 @@ struct PreparedPlan {
 // in its CapabilityKey.
 struct Int8ExperimentEligibility {
   bool architectureSignatureMatches = false;
+  bool explicitV104ArchitectureSignatureMatches = false;
+  bool legacyV102ArchitectureSignatureMatches = false;
   bool preparedPlanFingerprintValid = false;
   bool runtimeContractEligible = false;
   bool allTransformerShapesEligible = false;
@@ -119,11 +121,13 @@ struct Int8ExperimentEligibility {
   }
 };
 
-// Weight-free whole-model identity qualified by the checked-in canonical CPU
-// fixture. Recomputed by buildArchitectureDesc(), so independently trained
-// weights and artifact provenance do not affect eligibility.
+// Weight-free whole-model identities qualified by checked-in canonical CPU
+// fixtures. V104 is the production embedded-quantization format. V102 remains
+// a clearly identified compatibility path that quantizes FP32 masters at load.
 const NeuralNetArchitecture::ArchitectureSignature&
 int8QualifiedArchitectureSignature();
+const NeuralNetArchitecture::ArchitectureSignature&
+int8LegacyImplicitArchitectureSignature();
 
 Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& plan);
 

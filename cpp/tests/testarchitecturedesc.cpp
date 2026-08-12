@@ -404,6 +404,21 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   // but preserve the production 24 attention + 24 SwiGLU FFN topology.
   ModelDesc quantModel = makeModel(24,4,8,1,4,0.125f);
   NativeInt8Quant::Metadata quant = NativeInt8Quant::build(quantModel);
+  testAssert(NativeInt8Quant::weightSourceForModel(quantModel) ==
+    NativeInt8Quant::WeightSource::LegacyImplicitV102);
+  testAssert(string(NativeInt8Quant::weightSourceName(
+    NativeInt8Quant::WeightSource::LegacyImplicitV102)) ==
+    "legacy-v102-load-time-quant");
+  quantModel.nativeInt8Quant = quant;
+  bool rejectedMetadataOnLegacy = false;
+  try {
+    (void)NativeInt8Quant::weightSourceForModel(quantModel);
+  }
+  catch(const StringError&) {
+    rejectedMetadataOnLegacy = true;
+  }
+  testAssert(rejectedMetadataOnLegacy);
+  quantModel.nativeInt8Quant = NativeInt8Quant::Metadata();
   testAssert(quant.present());
   testAssert(quant.entries.size() == NativeInt8Quant::REQUIRED_ENTRY_COUNT);
   testAssert(quant.zeroPoint == 0);
@@ -451,6 +466,57 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   }
   testAssert(qkCount == 24 && upCount == 24 && gateCount == 24);
 
+  const NativeInt8Quant::Entry& selectedQk = NativeInt8Quant::requireEntry(
+    quant,2,NativeInt8Quant::Role::QK,
+    quant.entries[0].layerNames,4,8);
+  testAssert(&selectedQk == &quant.entries[0]);
+  testAssert(NativeInt8Quant::weightScale(selectedQk) > 0.0f);
+  const auto rejectedBackendLookup = [&](const NativeInt8Quant::Metadata& metadata,
+                                         uint32_t topologyIndex,
+                                         const vector<string>& names,
+                                         uint32_t k,
+                                         uint32_t n) {
+    try {
+      (void)NativeInt8Quant::requireEntry(
+        metadata,topologyIndex,NativeInt8Quant::Role::QK,names,k,n);
+      return false;
+    }
+    catch(const StringError&) {
+      return true;
+    }
+  };
+  testAssert(rejectedBackendLookup(
+    quant,999,quant.entries[0].layerNames,4,8));
+  testAssert(rejectedBackendLookup(
+    quant,2,vector<string>{"wrong.q","wrong.k"},4,8));
+  testAssert(rejectedBackendLookup(
+    quant,2,quant.entries[0].layerNames,4,9));
+  NativeInt8Quant::Metadata duplicateLookup = quant;
+  duplicateLookup.entries.push_back(quant.entries[0]);
+  testAssert(rejectedBackendLookup(
+    duplicateLookup,2,quant.entries[0].layerNames,4,8));
+
+  ModelDesc explicitSourceModel = makeModel(24,4,8,1,4,0.375f);
+  explicitSourceModel.version = 104;
+  explicitSourceModel.trunk.version = 104;
+  explicitSourceModel.policyHead.version = 104;
+  explicitSourceModel.valueHead.version = 104;
+  explicitSourceModel.nativeInt8Quant =
+    NativeInt8Quant::build(explicitSourceModel);
+  testAssert(NativeInt8Quant::weightSourceForModel(explicitSourceModel) ==
+    NativeInt8Quant::WeightSource::EmbeddedV104);
+  testAssert(string(NativeInt8Quant::weightSourceName(
+    NativeInt8Quant::WeightSource::EmbeddedV104)) == "embedded-v104");
+  explicitSourceModel.nativeInt8Quant = NativeInt8Quant::Metadata();
+  bool rejectedMissingExplicitMetadata = false;
+  try {
+    (void)NativeInt8Quant::weightSourceForModel(explicitSourceModel);
+  }
+  catch(const StringError&) {
+    rejectedMissingExplicitMetadata = true;
+  }
+  testAssert(rejectedMissingExplicitMetadata);
+
   const vector<uint8_t> quantPayload = NativeInt8Quant::encodePayload(quant);
   NativeInt8Quant::Metadata decoded =
     NativeInt8Quant::decodePayload(quantPayload);
@@ -479,6 +545,7 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
 
   string corruptOuterSha = canonicalTrailer;
   corruptOuterSha[corruptOuterSha.size()-1] ^= 1;
+  testAssert(rejectedTrailer("",quantModel));
   testAssert(rejectedTrailer(corruptOuterSha,quantModel));
   testAssert(rejectedTrailer(canonicalTrailer + "\n",quantModel));
   testAssert(rejectedTrailer(
@@ -518,9 +585,9 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
       testAssert(external.nativeInt8Quant.present());
       testAssert(external.nativeInt8Quant.entries.size() ==
         NativeInt8Quant::REQUIRED_ENTRY_COUNT);
-      // NativeInt8Quant::build calls the same perMatrixScale and
-      // quantizeAndPackMatrix helpers used by CUDA's current load-time path.
-      // Byte-equality here is the cross-language Python exporter/runtime gate.
+      // Byte-equality here is the cross-language exporter/runtime gate. CUDA
+      // consumes these validated packed bytes directly and does not rebuild
+      // them from FP32 masters for v104.
       const NativeInt8Quant::Metadata runtimeRebuilt =
         NativeInt8Quant::build(external);
       testAssert(NativeInt8Quant::encodePayload(external.nativeInt8Quant) ==

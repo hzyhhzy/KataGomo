@@ -645,9 +645,26 @@ void Tests::runTransformerProductionPlanTests() {
     "ad026614455c0475b31997f1c5452af99d1eb347713f77950671fc5d1a522f24"
   );
   testAssert(
-    CudaTransformerWinner::int8QualifiedArchitectureSignature() ==
+    CudaTransformerWinner::int8LegacyImplicitArchitectureSignature() ==
     architectureA.signature
   );
+  ModelDesc explicitV104 = makeModel(
+    24,256,768,8,32,0.6f,"explicit-v104-weights");
+  explicitV104.version = 104;
+  explicitV104.trunk.version = 104;
+  explicitV104.policyHead.version = 104;
+  explicitV104.valueHead.version = 104;
+  const ArchitectureDesc architectureV104 = buildArchitectureDesc(explicitV104);
+  testAssert(architectureV104.canonicalEncoding.size() == 4673);
+  testAssert(
+    architectureV104.signature.toHex() ==
+    "bbfa5957d8d87f1225fe4e679be055ff4de4c40c4f8437a19c7be3052c23f49b"
+  );
+  testAssert(
+    CudaTransformerWinner::int8QualifiedArchitectureSignature() ==
+    architectureV104.signature
+  );
+  testAssert(architectureV104.signature != architectureA.signature);
   testAssert(getModelProvenance(weightsA).modelName != getModelProvenance(weightsB).modelName);
   testAssert(getModelProvenance(weightsA).artifactSha256 != getModelProvenance(weightsB).artifactSha256);
 
@@ -732,6 +749,8 @@ void Tests::runTransformerProductionPlanTests() {
     CudaTransformerWinner::evaluateInt8ExperimentEligibility(productionG1A);
   testAssert(int8G1.exactCurrent24LayerModel());
   testAssert(int8G1.architectureSignatureMatches);
+  testAssert(!int8G1.explicitV104ArchitectureSignatureMatches);
+  testAssert(int8G1.legacyV102ArchitectureSignatureMatches);
   testAssert(int8G1.preparedPlanFingerprintValid);
   testAssert(int8G1.runtimeContractEligible);
   testAssert(int8G1.allTransformerRecordsPrepared);
@@ -739,6 +758,15 @@ void Tests::runTransformerProductionPlanTests() {
   testAssert(int8G1.ffnCount == 24);
   testAssert(CudaTransformerWinner::evaluateInt8ExperimentEligibility(
     productionG1B).exactCurrent24LayerModel());
+
+  CudaTransformerWinner::PreparedPlan productionV104 =
+    CudaTransformerWinner::preparePlan(architectureV104,b36,device);
+  const CudaTransformerWinner::Int8ExperimentEligibility int8V104 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(productionV104);
+  testAssert(int8V104.exactCurrent24LayerModel());
+  testAssert(int8V104.architectureSignatureMatches);
+  testAssert(int8V104.explicitV104ArchitectureSignatureMatches);
+  testAssert(!int8V104.legacyV102ArchitectureSignatureMatches);
 
   // Same local shapes and counts but a different semantic block order must
   // not inherit the qualified whole-model INT8 arithmetic recipe.

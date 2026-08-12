@@ -163,6 +163,18 @@ void preparePackedInt8Qk(
   uploadPackedInt8(name,packed,deviceBuffer);
 }
 
+void prepareEmbeddedPackedInt8(
+  const string& name,
+  const NativeInt8Quant::Entry& entry,
+  void*& deviceBuffer,
+  float& scale
+) {
+  // readTrailer() has already hash-bound these exact packed bytes to their
+  // FP32 masters. Do not rebuild or requantize them in the backend.
+  scale = NativeInt8Quant::weightScale(entry);
+  uploadPackedInt8(name,entry.packedWeights,deviceBuffer);
+}
+
 } // namespace
 #endif
 
@@ -459,6 +471,8 @@ struct CudaHandles {
   int preparedInt8DualFfn;
   int activeInt8Qk;
   int activeInt8DualFfn;
+  NativeInt8Quant::WeightSource int8WeightSource;
+  const NativeInt8Quant::Metadata* embeddedInt8Metadata;
   // Construction-only rollback hooks. They are discarded after both handle
   // validation and persistent scratch preparation have committed.
   std::vector<std::function<void()>> int8PreparedCleanupRegistry;
@@ -515,6 +529,8 @@ struct CudaHandles {
       preparedInt8DualFfn(0),
       activeInt8Qk(0),
       activeInt8DualFfn(0),
+      int8WeightSource(NativeInt8Quant::WeightSource::None),
+      embeddedInt8Metadata(nullptr),
       int8PreparedCleanupRegistry(),
 #endif
       expectedWinnerRms(0),
@@ -565,20 +581,40 @@ struct CudaHandles {
       cudaStreamDestroy(stream);
   }
 
-  void configureWinnerExpectations(bool int8RuntimeEnabled) {
+  void configureWinnerExpectations(
+    bool int8RuntimeEnabled,
+    const ModelDesc& modelDesc
+  ) {
     if(transformerPlan == nullptr)
       return;
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    int8WeightSource = NativeInt8Quant::weightSourceForModel(modelDesc);
+    if(int8WeightSource == NativeInt8Quant::WeightSource::EmbeddedV104) {
+      embeddedInt8Metadata = &modelDesc.nativeInt8Quant;
+    }
+    else
+      embeddedInt8Metadata = nullptr;
+    const char* weightSource = NativeInt8Quant::weightSourceName(int8WeightSource);
     if(logger != NULL)
       logger->write(
         string("RENJU15_SM120_INT8_EXPERIMENT_RUNTIME_GATE enabled=") +
-        (int8RuntimeEnabled ? "1" : "0"));
+        (int8RuntimeEnabled ? "1" : "0") + " weight_source=" + weightSource);
+    if(int8RuntimeEnabled &&
+       int8WeightSource == NativeInt8Quant::WeightSource::LegacyImplicitV102 &&
+       logger != NULL)
+      logger->write(
+        "RENJU15_SM120_INT8_LEGACY_COMPAT model_version=102 "
+        "weights=load-time-quant prefer=native-v104-embedded");
     const CudaTransformerWinner::Int8ExperimentEligibility int8Eligibility =
       CudaTransformerWinner::evaluateInt8ExperimentEligibility(*transformerPlan);
     if(int8RuntimeEnabled && logger != NULL)
       logger->write(
         string("RENJU15_SM120_INT8_EXPERIMENT_ELIGIBILITY architecture=") +
         (int8Eligibility.architectureSignatureMatches ? "1" : "0") +
+        " explicit_v104=" +
+        (int8Eligibility.explicitV104ArchitectureSignatureMatches ? "1" : "0") +
+        " legacy_v102=" +
+        (int8Eligibility.legacyV102ArchitectureSignatureMatches ? "1" : "0") +
         " plan_fingerprint=" +
         (int8Eligibility.preparedPlanFingerprintValid ? "1" : "0") +
         " runtime_contract=" +
@@ -591,14 +627,20 @@ struct CudaHandles {
         (int8Eligibility.allTransformerShapesEligible ? "1" : "0"));
     // This first experiment has only been accuracy-qualified for the current
     // 24-attention/24-FFN model on a 15x15 board. Runtime batch remains dynamic.
-    int8ExperimentPlan =
-      int8RuntimeEnabled && int8Eligibility.exactCurrent24LayerModel();
+    const bool modelFormatMatches =
+      (int8WeightSource == NativeInt8Quant::WeightSource::EmbeddedV104 &&
+       int8Eligibility.explicitV104ArchitectureSignatureMatches) ||
+      (int8WeightSource == NativeInt8Quant::WeightSource::LegacyImplicitV102 &&
+       int8Eligibility.legacyV102ArchitectureSignatureMatches);
+    int8ExperimentPlan = int8RuntimeEnabled && modelFormatMatches &&
+      int8Eligibility.exactCurrent24LayerModel();
     if(int8ExperimentPlan) {
       expectedInt8Qk = int8Eligibility.attentionCount;
       expectedInt8DualFfn = int8Eligibility.ffnCount;
     }
 #else
     (void)int8RuntimeEnabled;
+    (void)modelDesc;
 #endif
     for(const CudaTransformerWinner::PreparedRecord& record:
         transformerPlan->records) {
@@ -648,6 +690,30 @@ struct CudaHandles {
   }
 
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  bool usesEmbeddedInt8Weights() const {
+    return int8WeightSource == NativeInt8Quant::WeightSource::EmbeddedV104;
+  }
+
+  const NativeInt8Quant::Entry& requireEmbeddedInt8Entry(
+    uint32_t topologyIndex,
+    NativeInt8Quant::Role role,
+    const vector<string>& layerNames,
+    uint32_t inputChannels,
+    uint32_t outputChannels
+  ) const {
+    if(!usesEmbeddedInt8Weights() || embeddedInt8Metadata == nullptr)
+      throw StringError("CUDA embedded INT8 entry requested without v104 metadata");
+    return NativeInt8Quant::requireEntry(
+      *embeddedInt8Metadata,topologyIndex,role,layerNames,
+      inputChannels,outputChannels);
+  }
+
+  void finishEmbeddedInt8MetadataConsumption() {
+    // Every block has copied its packed bytes to model-owned device buffers.
+    // Avoid retaining a non-owning LoadedModel pointer past construction.
+    embeddedInt8Metadata = nullptr;
+  }
+
   void registerInt8PreparedCleanup(std::function<void()> cleanup) {
     int8PreparedCleanupRegistry.push_back(std::move(cleanup));
   }
@@ -771,7 +837,10 @@ struct CudaHandles {
       logger->write(
         "RENJU15_SM120_INT8_EXPERIMENT_ACTIVE quant=clip4-pt "
         "qk_ops=24 dual_ffn_ops=24 upgate_matrices=48 down=fp16 board=15 "
-        "int8_scratch=persistent-max-batch");
+        "weights=" + string(
+          int8WeightSource == NativeInt8Quant::WeightSource::EmbeddedV104 ?
+            "embedded-v104" : "legacy-v102-load-time-quant") +
+        " int8_scratch=persistent-max-batch");
       loggedInt8Experiment = true;
     }
   }
@@ -1895,15 +1964,19 @@ struct TransformerPlanCursor {
     throw StringError("Prepared CUDA transformer plan ended before block topology");
   }
 
-  CudaTransformerWinner::AttentionRecipe nextAttention() {
-    const uint32_t topologyIndex = nextTopologyIndex(
+  CudaTransformerWinner::AttentionRecipe nextAttention(
+    uint32_t& topologyIndex
+  ) {
+    topologyIndex = nextTopologyIndex(
       NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention);
     return plan == nullptr ? CudaTransformerWinner::AttentionRecipe{} :
       plan->attentionFor(topologyIndex);
   }
 
-  CudaTransformerWinner::FfnRecipe nextFfn() {
-    const uint32_t topologyIndex = nextTopologyIndex(
+  CudaTransformerWinner::FfnRecipe nextFfn(
+    uint32_t& topologyIndex
+  ) {
+    topologyIndex = nextTopologyIndex(
       NeuralNetArchitecture::ArchitectureOpKind::TransformerFFN);
     return plan == nullptr ? CudaTransformerWinner::FfnRecipe{} :
       plan->ffnFor(topologyIndex);
@@ -2345,7 +2418,8 @@ struct TransformerAttentionBlock {
     bool useFP16,
     bool useNHWC,
     const CudaTransformerWinner::AttentionRecipe& selectedRecipe,
-    int fixedBatchSize
+    int fixedBatchSize,
+    uint32_t topologyIndex
   ) :
     name(desc->name),
     numHeads(desc->numHeads),
@@ -2457,21 +2531,31 @@ struct TransformerAttentionBlock {
       }
     }
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-    // Temporary experiment opt-in: derive deterministic PT INT8 bytes from
-    // the source FP32 weights. The production format will require explicit
-    // quantization metadata/capability instead of doing this implicitly.
     const bool int8ShapeEligible = cudaHandles->int8ExperimentPlan &&
       nnXLen == 15 && nnYLen == 15 && useFP16 && useNHWC && useRope &&
       learnableRope && ropeCosSinTable != nullptr && numHeads == 8 &&
       numKVHeads == 8 && qHeadDim == 32 && vHeadDim == 32 &&
       desc->qProj.inChannels == 256 && desc->qProj.outChannels == 256 &&
       desc->kProj.inChannels == 256 && desc->kProj.outChannels == 256;
+    const NativeInt8Quant::Entry* embeddedQkEntry = nullptr;
+    if(int8ShapeEligible && cudaHandles->usesEmbeddedInt8Weights()) {
+      // Metadata mismatch is a model-format failure, not an optional CUDA
+      // preparation miss. Keep this lookup outside the fallback transaction.
+      embeddedQkEntry = &cudaHandles->requireEmbeddedInt8Entry(
+        topologyIndex,NativeInt8Quant::Role::QK,
+        vector<string>{desc->qProj.name,desc->kProj.name},256,512);
+    }
     if(int8ShapeEligible) {
       try {
         float qkScale = 0.0f;
         void* packedQkWeights = nullptr;
-        preparePackedInt8Qk(
-          name + ":int8Qk",desc->qProj,desc->kProj,packedQkWeights,qkScale);
+        if(embeddedQkEntry != nullptr)
+          prepareEmbeddedPackedInt8(
+            name + ":int8Qk",*embeddedQkEntry,packedQkWeights,qkScale);
+        else
+          preparePackedInt8Qk(
+            name + ":int8Qk",desc->qProj,desc->kProj,
+            packedQkWeights,qkScale);
         int8QkWeightBuf.reset(packedQkWeights);
         int8QkKernel.reset(katago_renju15_int8_qk_sm120_create(
           fixedBatchSize * nnXLen * nnYLen,
@@ -2886,7 +2970,8 @@ struct TransformerFFNBlock {
     bool useFP16,
     bool useNHWC,
     const CudaTransformerWinner::FfnRecipe& selectedRecipe,
-    int fixedBatchSize
+    int fixedBatchSize,
+    uint32_t topologyIndex
   ) :
     name(desc->name),
     numChannels(desc->numChannels),
@@ -2965,19 +3050,40 @@ struct TransformerFFNBlock {
       desc->linear1.inChannels == 256 && desc->linear1.outChannels == 768 &&
       desc->linearGate.inChannels == 256 &&
       desc->linearGate.outChannels == 768;
+    const NativeInt8Quant::Entry* embeddedUpEntry = nullptr;
+    const NativeInt8Quant::Entry* embeddedGateEntry = nullptr;
+    if(int8ShapeEligible && cudaHandles->usesEmbeddedInt8Weights()) {
+      // As with QK, a topology/name/shape mismatch is fatal model metadata,
+      // while allocation/upload failures below remain coherent FP16 fallback.
+      embeddedUpEntry = &cudaHandles->requireEmbeddedInt8Entry(
+        topologyIndex,NativeInt8Quant::Role::FfnUp,
+        vector<string>{desc->linear1.name},256,768);
+      embeddedGateEntry = &cudaHandles->requireEmbeddedInt8Entry(
+        topologyIndex,NativeInt8Quant::Role::FfnGate,
+        vector<string>{desc->linearGate.name},256,768);
+    }
     if(int8ShapeEligible) {
       try {
         float upScale = 0.0f;
         float gateScale = 0.0f;
         void* packedUpWeights = nullptr;
-        preparePackedInt8Matrix(
-          name + ":int8Up",desc->linear1.weights,256,768,
-          packedUpWeights,upScale);
+        if(embeddedUpEntry != nullptr)
+          prepareEmbeddedPackedInt8(
+            name + ":int8Up",*embeddedUpEntry,packedUpWeights,upScale);
+        else
+          preparePackedInt8Matrix(
+            name + ":int8Up",desc->linear1.weights,256,768,
+            packedUpWeights,upScale);
         int8UpWeightBuf.reset(packedUpWeights);
         void* packedGateWeights = nullptr;
-        preparePackedInt8Matrix(
-          name + ":int8Gate",desc->linearGate.weights,256,768,
-          packedGateWeights,gateScale);
+        if(embeddedGateEntry != nullptr)
+          prepareEmbeddedPackedInt8(
+            name + ":int8Gate",*embeddedGateEntry,
+            packedGateWeights,gateScale);
+        else
+          preparePackedInt8Matrix(
+            name + ":int8Gate",desc->linearGate.weights,256,768,
+            packedGateWeights,gateScale);
         int8GateWeightBuf.reset(packedGateWeights);
         int8DualFfnKernel.reset(katago_renju15_int8_dual_ffn_sm120_create(
           fixedBatchSize * nnXLen * nnYLen,
@@ -3226,9 +3332,10 @@ BlockStack::BlockStack(
     }
     else if(descBlocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
       TransformerAttentionDesc* blockDesc = (TransformerAttentionDesc*)descBlocks[i].second.get();
+      uint32_t topologyIndex = UINT32_MAX;
       const CudaTransformerWinner::AttentionRecipe selectedRecipe =
         planCursor == nullptr ? CudaTransformerWinner::AttentionRecipe{} :
-        planCursor->nextAttention();
+        planCursor->nextAttention(topologyIndex);
       unique_ptr_void blockPtr = make_unique_void(
         new TransformerAttentionBlock(
           cudaHandles,
@@ -3238,16 +3345,18 @@ BlockStack::BlockStack(
           useFP16,
           useNHWC,
           selectedRecipe,
-          manager->maxBatchSize
+          manager->maxBatchSize,
+          topologyIndex
         )
       );
       blocks.push_back(make_pair(TRANSFORMER_ATTENTION_BLOCK_KIND,std::move(blockPtr)));
     }
     else if(descBlocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
       TransformerFFNDesc* blockDesc = (TransformerFFNDesc*)descBlocks[i].second.get();
+      uint32_t topologyIndex = UINT32_MAX;
       const CudaTransformerWinner::FfnRecipe selectedRecipe =
         planCursor == nullptr ? CudaTransformerWinner::FfnRecipe{} :
-        planCursor->nextFfn();
+        planCursor->nextFfn(topologyIndex);
       unique_ptr_void blockPtr = make_unique_void(
         new TransformerFFNBlock(
           cudaHandles,
@@ -3257,7 +3366,8 @@ BlockStack::BlockStack(
           useFP16,
           useNHWC,
           selectedRecipe,
-          manager->maxBatchSize
+          manager->maxBatchSize,
+          topologyIndex
         )
       );
       blocks.push_back(make_pair(TRANSFORMER_FFN_BLOCK_KIND,std::move(blockPtr)));
@@ -4382,12 +4492,16 @@ struct ComputeHandle {
       cudaHandles->transformerPlan =
         std::make_unique<CudaTransformerWinner::PreparedPlan>(
           CudaTransformerWinner::preparePlan(architecture,runtime,device));
-      cudaHandles->configureWinnerExpectations(context->useINT8);
+      cudaHandles->configureWinnerExpectations(
+        context->useINT8,loadedModel->modelDesc);
     }
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    cudaHandles->finishEmbeddedInt8MetadataConsumption();
+#endif
     cudaHandles->validateWinnerPrepared();
     auto allocateBaseline = [&]() {
       scratch = std::make_unique<ScratchBuffers>(

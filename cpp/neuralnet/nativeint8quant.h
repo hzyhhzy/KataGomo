@@ -36,6 +36,12 @@ enum class RoundingMode : uint32_t {
   RoundTiesToEvenSaturate127 = 1,
 };
 
+enum class WeightSource : uint32_t {
+  None = 0,
+  EmbeddedV104 = 1,
+  LegacyImplicitV102 = 2,
+};
+
 struct Entry {
   uint32_t topologyIndex;
   Role role;
@@ -65,6 +71,12 @@ struct Metadata {
   bool present() const;
 };
 
+// Format-level source classification shared by CPU tests and CUDA setup.
+// V104 without its mandatory trailer is fatal. V102 remains an explicit
+// compatibility classification rather than being confused with v104.
+WeightSource weightSourceForModel(const ModelDesc& model);
+const char* weightSourceName(WeightSource source);
+
 // Deterministically derives the mandatory QK/up/gate metadata from the FP32
 // masters in a native ModelDesc. This is intentionally weight-dependent while
 // architecture/tactic matching remains weight-free.
@@ -73,6 +85,23 @@ Metadata build(const ModelDesc& model);
 // Validates all topology/name/shape/scale/hash/byte bindings against masters.
 // It rejects missing, duplicate, reordered, or extra records.
 void validate(const ModelDesc& model, const Metadata& metadata);
+
+// Backend-facing lookup after model-load validation. This repeats the local
+// topology/name/shape/layout contract at the point of consumption so an
+// accidental block-to-entry wiring error cannot silently upload another
+// layer's bytes. It deliberately does not rebuild or requantize weights.
+const Entry& requireEntry(
+  const Metadata& metadata,
+  uint32_t topologyIndex,
+  Role role,
+  const std::vector<std::string>& layerNames,
+  uint32_t inputChannels,
+  uint32_t outputChannels
+);
+
+// Decode the already-validated IEEE-754 scale bits without recomputing them
+// from FP32 masters.
+float weightScale(const Entry& entry);
 
 // Canonical little-endian payload codec. Exposed so the training exporter and
 // CPU tests can share golden bytes; production model parsing uses readTrailer.

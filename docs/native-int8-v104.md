@@ -39,6 +39,13 @@ retained FP32 masters. The v104 production architecture signature is
 `bbfa5957d8d87f1225fe4e679be055ff4de4c40c4f8437a19c7be3052c23f49b`;
 the corresponding legacy v102 signature remains `ad026614455c0475b31997f1c5452af99d1eb347713f77950671fc5d1a522f24`.
 
-`python/build_v104_int8_trailer.py` is the independent CPU bridge until the
-authoritative training exporter emits this trailer directly. It requires the
-explicit `-int8-pt-clip4` flag; the default training export remains v102.
+After that model-load validation, CUDA resolves each block by topology index,
+role, exact layer names, and K/N, and uploads the embedded packed bytes and
+stored scale directly. It does not quantize the FP32 matrices again during
+backend preparation. Native v102 retains the historical load-time-quantized
+compatibility path and reports `legacy-v102-load-time-quant` in its markers;
+v104 reports `embedded-v104`.
+
+The authoritative training exporter and the independent
+`python/build_v104_int8_trailer.py` bridge both require the explicit
+`-int8-pt-clip4` flag. Default training export remains byte-identical v102.

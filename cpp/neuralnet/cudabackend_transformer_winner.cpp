@@ -339,8 +339,23 @@ FfnRecipe PreparedPlan::ffnFor(const CapabilityKey& key) const {
 }
 
 const ArchitectureSignature& int8QualifiedArchitectureSignature() {
-  // Independently derived from the reviewed production model and reproduced by
-  // the weight-independent 24L/C256/H8/D32/F768 fixture as a canonical lock.
+  // Native v104: same reviewed model architecture plus the explicit-format
+  // version fields that bind mandatory embedded quantization metadata.
+  static const ArchitectureSignature signature{
+    CANONICAL_ARCHITECTURE_SCHEMA_VERSION,
+    std::array<uint8_t,32>{
+      0xbb,0xfa,0x59,0x57,0xd8,0xd8,0x7f,0x12,
+      0x25,0xfe,0x4e,0x67,0x9b,0xe0,0x55,0xff,
+      0x4d,0xe4,0xc4,0x0c,0x4f,0x84,0x37,0xa1,
+      0x9c,0x7b,0xe3,0x05,0x2c,0x23,0xf4,0x9b,
+    }
+  };
+  return signature;
+}
+
+const ArchitectureSignature& int8LegacyImplicitArchitectureSignature() {
+  // Native v102 compatibility identity. It is intentionally separate from
+  // the default v104 contract and never aliases the v104 signature.
   static const ArchitectureSignature signature{
     CANONICAL_ARCHITECTURE_SCHEMA_VERSION,
     std::array<uint8_t,32>{
@@ -355,8 +370,13 @@ const ArchitectureSignature& int8QualifiedArchitectureSignature() {
 
 Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& plan) {
   Int8ExperimentEligibility result;
-  result.architectureSignatureMatches =
+  result.explicitV104ArchitectureSignatureMatches =
     plan.architecture == int8QualifiedArchitectureSignature();
+  result.legacyV102ArchitectureSignatureMatches =
+    plan.architecture == int8LegacyImplicitArchitectureSignature();
+  result.architectureSignatureMatches =
+    result.explicitV104ArchitectureSignatureMatches ||
+    result.legacyV102ArchitectureSignatureMatches;
   std::vector<OpRequest> requests;
   std::vector<PreparedOp> prepared;
   requests.reserve(plan.records.size());
@@ -376,8 +396,11 @@ Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& 
   for(const PreparedRecord& record: plan.records) {
     requests.push_back(record.request);
     prepared.push_back(record.operation);
-    if(record.request.architecture != plan.architecture)
+    if(record.request.architecture != plan.architecture) {
       result.architectureSignatureMatches = false;
+      result.explicitV104ArchitectureSignatureMatches = false;
+      result.legacyV102ArchitectureSignatureMatches = false;
+    }
     const CapabilityKey& key = record.request.key;
     if(key.kind == ArchitectureOpKind::TransformerAttention) {
       const AttentionRecipe recipe = plan.attentionFor(record.request.topologyIndex);

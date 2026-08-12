@@ -339,6 +339,30 @@ bool Metadata::present() const {
   return payloadSchemaVersion != 0;
 }
 
+WeightSource weightSourceForModel(const ModelDesc& model) {
+  if(model.version == (int)MODEL_VERSION) {
+    if(!model.nativeInt8Quant.present())
+      throw StringError("Model v104 is missing mandatory embedded INT8 metadata");
+    return WeightSource::EmbeddedV104;
+  }
+  if(model.version == 102) {
+    if(model.nativeInt8Quant.present())
+      throw StringError("Legacy model v102 unexpectedly contains v104 INT8 metadata");
+    return WeightSource::LegacyImplicitV102;
+  }
+  if(model.nativeInt8Quant.present())
+    throw StringError("INT8 metadata is attached to an unsupported model version");
+  return WeightSource::None;
+}
+
+const char* weightSourceName(WeightSource source) {
+  switch(source) {
+  case WeightSource::EmbeddedV104: return "embedded-v104";
+  case WeightSource::LegacyImplicitV102: return "legacy-v102-load-time-quant";
+  default: return "none";
+  }
+}
+
 Metadata build(const ModelDesc& model) {
   Metadata metadata;
   metadata.payloadSchemaVersion = PAYLOAD_SCHEMA_VERSION;
@@ -374,6 +398,53 @@ void validate(const ModelDesc& model, const Metadata& metadata) {
         "Native INT8 quantization entry " + Global::uint64ToString(i) +
         " does not match its canonical FP32 master/topology binding");
   }
+}
+
+const Entry& requireEntry(
+  const Metadata& metadata,
+  uint32_t topologyIndex,
+  Role role,
+  const vector<string>& layerNames,
+  uint32_t inputChannels,
+  uint32_t outputChannels
+) {
+  if(!metadata.present())
+    throw StringError("Native INT8 backend requires embedded v104 metadata");
+  // readTrailer() already requires the full canonical sequence. Keeping the
+  // exact cardinality here makes this API safe under direct/unit-test use too.
+  if(metadata.entries.size() != REQUIRED_ENTRY_COUNT)
+    throw StringError("Native INT8 backend requires exactly 72 metadata entries");
+  const Entry* found = nullptr;
+  for(const Entry& entry: metadata.entries) {
+    if(entry.topologyIndex == topologyIndex && entry.role == role) {
+      if(found != nullptr)
+        throw StringError("Native INT8 metadata contains a duplicate topology/role entry");
+      found = &entry;
+    }
+  }
+  if(found == nullptr)
+    throw StringError("Native INT8 metadata is missing the requested topology/role entry");
+  if(found->layerNames != layerNames ||
+     found->inputChannels != inputChannels ||
+     found->outputChannels != outputChannels ||
+     found->layout != PackedLayout::OutputMajorKContiguous ||
+     found->zeroPoint != 0 ||
+     metadata.activationClipBits != floatBits(4.0f) ||
+     metadata.activationScaleBits != floatBits(4.0f/127.0f) ||
+     found->activationScaleBits != metadata.activationScaleBits ||
+     found->packedWeights.size() != (size_t)inputChannels*outputChannels)
+    throw StringError("Native INT8 metadata entry does not match backend block contract");
+  (void)weightScale(*found);
+  return *found;
+}
+
+float weightScale(const Entry& entry) {
+  static_assert(sizeof(float) == sizeof(uint32_t),"");
+  float scale;
+  memcpy(&scale,&entry.weightScaleBits,sizeof(scale));
+  if(!(scale > 0.0f) || !isfinite(scale))
+    throw StringError("Native INT8 metadata entry has an invalid weight scale");
+  return scale;
 }
 
 vector<uint8_t> encodePayload(const Metadata& metadata) {
