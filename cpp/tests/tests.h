@@ -17,6 +17,9 @@ namespace Tests {
   // testarchitecturedesc.cpp
   void runArchitectureDescTests();
 
+  // testtransformerproductionplan.cpp
+  void runTransformerProductionPlanTests();
+
   // testnnevalcanary.cpp
   void runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print);
   bool runFP16Test(

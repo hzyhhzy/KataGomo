@@ -256,6 +256,7 @@ add_executable(katago
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testcommon.cpp
   tests/testarchitecturedesc.cpp
+  tests/testtransformerproductionplan.cpp
   tests/testnnevalcanary.cpp
   distributed/client.cpp
   command/commandline.cpp

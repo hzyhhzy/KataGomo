@@ -28,3 +28,10 @@ int MainCmds::testarchitecturedesc(const vector<string>& args) {
   Tests::runArchitectureDescTests();
   return 0;
 }
+
+int MainCmds::testtransformerproductionplan(const vector<string>& args) {
+  if(args.size() != 1 || args[0] != "testtransformerproductionplan")
+    throw StringError("testtransformerproductionplan takes no arguments");
+  Tests::runTransformerProductionPlanTests();
+  return 0;
+}
