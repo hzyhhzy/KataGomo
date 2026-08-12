@@ -31,6 +31,7 @@ enum class PlanarQkvTactic : uint32_t {
 enum class RmsNormTactic : uint32_t {
   GenericHalf = 0,
   Sm120C256Warp4Vec8 = 1,
+  Sm120C384Warp4Vec4x3 = 2,
 };
 
 enum class RopeTactic : uint32_t {
@@ -51,12 +52,14 @@ enum class AttentionTactic : uint32_t {
 enum class DualFfnTactic : uint32_t {
   Disabled = 0,
   Sm120C256F768M128N64K32S3Sw4 = 1,
+  Sm120C384F1024M128N64K32S3Sw4 = 2,
 };
 
 enum class ResidualTactic : uint32_t {
   GenericAdd = 0,
   CublasHgemmBetaOne = 1,
   Sm120M128N128K32S3Sw1 = 2,
+  Sm120C384M128N128K32S3Sw1 = 3,
 };
 
 struct AttentionRecipe {

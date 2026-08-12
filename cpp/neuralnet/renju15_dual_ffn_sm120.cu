@@ -15,6 +15,8 @@ namespace {
 
 constexpr int InputChannels = 256;
 constexpr int FfnChannels = 768;
+constexpr int C384InputChannels = 384;
+constexpr int C384FfnChannels = 1024;
 constexpr int MaxTokenRows = 1 << 20;
 
 using Element = cutlass::half_t;
@@ -50,6 +52,11 @@ constexpr KatagoRenju15DualFfnSm120Descriptor Descriptors[] = {
     "dual-ffn-c256-f768-m128-n64-k32-s3-sw4",
     128,64,32,64,32,32,3,4,InputChannels,FfnChannels,
   },
+  {
+    KATAGO_RENJU15_DUAL_FFN_C384_F1024_M128_N64_K32_S3_SW4,
+    "dual-ffn-c384-f1024-m128-n64-k32-s3-sw4",
+    128,64,32,64,32,32,3,4,C384InputChannels,C384FfnChannels,
+  },
 };
 
 template<typename Gemm>
@@ -58,19 +65,21 @@ typename Gemm::Arguments makeArguments(
   const half* linearWeights,
   const half* gateWeights,
   half* output,
+  int inputChannels,
+  int ffnChannels,
   int tokens) {
   using Layout = cutlass::layout::RowMajor;
   typename Gemm::TensorRefC nullC;
   typename Gemm::TensorRefD nullD;
   return {
     cutlass::gemm::DualGemmMode::kGemm,
-    {tokens, FfnChannels, InputChannels},
-    {reinterpret_cast<const Element*>(input), Layout(InputChannels)},
-    {reinterpret_cast<const Element*>(linearWeights), Layout(FfnChannels)},
+    {tokens, ffnChannels, inputChannels},
+    {reinterpret_cast<const Element*>(input), Layout(inputChannels)},
+    {reinterpret_cast<const Element*>(linearWeights), Layout(ffnChannels)},
     nullC, nullD,
-    {reinterpret_cast<const Element*>(gateWeights), Layout(FfnChannels)},
+    {reinterpret_cast<const Element*>(gateWeights), Layout(ffnChannels)},
     nullC, nullD,
-    {reinterpret_cast<Element*>(output), Layout(FfnChannels)},
+    {reinterpret_cast<Element*>(output), Layout(ffnChannels)},
     {1.0f, 0.0f}, {1.0f, 0.0f}, {}, 1,
   };
 }
@@ -82,6 +91,8 @@ struct StateBase {
     const half* linearWeights,
     const half* gateWeights,
     half* output,
+    int inputChannels,
+    int ffnChannels,
     int tokens,
     cudaStream_t stream) = 0;
 };
@@ -100,10 +111,13 @@ struct State final : StateBase {
     const half* linearWeights,
     const half* gateWeights,
     half* output,
+    int inputChannels,
+    int ffnChannels,
     int tokens,
     cudaStream_t stream) override {
     typename Gemm::Arguments args = makeArguments<Gemm>(
-      input, linearWeights, gateWeights, output, tokens);
+      input, linearWeights, gateWeights, output,
+      inputChannels, ffnChannels, tokens);
     cutlass::Status status;
     if(!initialized) {
       status = op.can_implement(args);
@@ -129,6 +143,8 @@ struct State final : StateBase {
 struct Handle {
   int tactic;
   int fixedTokens;
+  int inputChannels;
+  int ffnChannels;
   const KatagoRenju15DualFfnSm120Descriptor* descriptor;
   std::unique_ptr<StateBase> state;
 };
@@ -144,6 +160,7 @@ const KatagoRenju15DualFfnSm120Descriptor* descriptorForTactic(int tactic) {
 std::unique_ptr<StateBase> stateForTactic(int tactic) {
   switch(tactic) {
   case KATAGO_RENJU15_DUAL_FFN_M128_N64_K32_S3_SW4:
+  case KATAGO_RENJU15_DUAL_FFN_C384_F1024_M128_N64_K32_S3_SW4:
     return std::unique_ptr<StateBase>(new State<Winner>());
   default:
     return nullptr;
@@ -180,6 +197,8 @@ extern "C" void* katago_renju15_dual_ffn_sm120_create(
   Handle* handle = new(std::nothrow) Handle{
     tactic,
     fixedTokenRows,
+    descriptor->inputChannels,
+    descriptor->ffnChannels,
     descriptor,
     std::move(state),
   };
@@ -203,9 +222,10 @@ extern "C" bool katago_renju15_dual_ffn_sm120_request_eligible(
   bool usingFp16,
   bool usingNhwc,
   bool exactNoMask) {
-  return tokenRows > 0 && tokenRows <= MaxTokenRows &&
-    inputChannels == InputChannels &&
-    ffnChannels == FfnChannels &&
+  const bool geometry =
+    (inputChannels == InputChannels && ffnChannels == FfnChannels) ||
+    (inputChannels == C384InputChannels && ffnChannels == C384FfnChannels);
+  return tokenRows > 0 && tokenRows <= MaxTokenRows && geometry &&
     usingFp16 && usingNhwc && exactNoMask;
 }
 
@@ -220,6 +240,8 @@ extern "C" bool katago_renju15_dual_ffn_sm120_supports(
   const Handle* handle = static_cast<const Handle*>(opaque);
   return handle != nullptr &&
     tokenRows == handle->fixedTokens &&
+    inputChannels == handle->inputChannels &&
+    ffnChannels == handle->ffnChannels &&
     katago_renju15_dual_ffn_sm120_request_eligible(
       tokenRows, inputChannels, ffnChannels,
       usingFp16, usingNhwc, exactNoMask);
@@ -239,6 +261,8 @@ extern "C" cudaError_t katago_renju15_dual_ffn_sm120_launch(
      !aligned16(gateWeights) || !aligned16(output))
     return cudaErrorInvalidValue;
   return handle->state->launch(
-    input, linearWeights, gateWeights, output, handle->fixedTokens, stream);
+    input, linearWeights, gateWeights, output,
+    handle->inputChannels, handle->ffnChannels,
+    handle->fixedTokens, stream);
 }
 

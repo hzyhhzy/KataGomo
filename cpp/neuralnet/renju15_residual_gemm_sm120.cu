@@ -13,6 +13,9 @@ namespace {
 constexpr int OutputChannels = 256;
 constexpr int OutProjInputChannels = 256;
 constexpr int FfnDownInputChannels = 768;
+constexpr int C384OutputChannels = 384;
+constexpr int C384OutProjInputChannels = 384;
+constexpr int C384FfnDownInputChannels = 1024;
 constexpr int MaxTokenRows = 1 << 20;
 
 using Element = cutlass::half_t;
@@ -49,6 +52,9 @@ constexpr KatagoRenju15ResidualGemmDescriptor Descriptors[] = {
   {KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3,
    "m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
    OutputChannels},
+  {KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3,
+   "c384-m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
+   C384OutputChannels},
 };
 
 template<typename Gemm>
@@ -57,15 +63,16 @@ typename Gemm::Arguments makeArguments(
   const half* weights,
   half* residual,
   int inputChannels,
+  int outputChannels,
   int fixedTokens) {
   using Layout = cutlass::layout::RowMajor;
   const Element one = Element(1.0f);
   return typename Gemm::Arguments(
-    {fixedTokens, OutputChannels, inputChannels},
+    {fixedTokens, outputChannels, inputChannels},
     {reinterpret_cast<const Element*>(input), Layout(inputChannels)},
-    {reinterpret_cast<const Element*>(weights), Layout(OutputChannels)},
-    {reinterpret_cast<const Element*>(residual), Layout(OutputChannels)},
-    {reinterpret_cast<Element*>(residual), Layout(OutputChannels)},
+    {reinterpret_cast<const Element*>(weights), Layout(outputChannels)},
+    {reinterpret_cast<const Element*>(residual), Layout(outputChannels)},
+    {reinterpret_cast<Element*>(residual), Layout(outputChannels)},
     {one, one},
     1);
 }
@@ -77,6 +84,7 @@ struct StateBase {
     const half* weights,
     half* residual,
     int inputChannels,
+    int outputChannels,
     int fixedTokens,
     cudaStream_t stream) = 0;
 };
@@ -95,10 +103,11 @@ struct State final : StateBase {
     const half* weights,
     half* residual,
     int inputChannels,
+    int outputChannels,
     int fixedTokens,
     cudaStream_t stream) override {
     typename Gemm::Arguments args = makeArguments<Gemm>(
-      input, weights, residual, inputChannels, fixedTokens);
+      input, weights, residual, inputChannels, outputChannels, fixedTokens);
     cutlass::Status status;
     if(!initialized) {
       status = op.can_implement(args);
@@ -125,6 +134,7 @@ struct Handle {
   int family;
   int tactic;
   int inputChannels;
+  int outputChannels;
   int fixedTokens;
   const KatagoRenju15ResidualGemmDescriptor* descriptor;
   std::unique_ptr<StateBase> state;
@@ -141,6 +151,7 @@ const KatagoRenju15ResidualGemmDescriptor* descriptorForTactic(int tactic) {
 std::unique_ptr<StateBase> stateForTactic(int tactic) {
   switch(tactic) {
   case KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3:
+  case KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3:
     return std::unique_ptr<StateBase>(new State<Winner>());
   default:
     return nullptr;
@@ -165,6 +176,20 @@ int inputChannelsForFamily(int family) {
     return OutProjInputChannels;
   if(family == KATAGO_RENJU15_RESIDUAL_GEMM_FFN_DOWN)
     return FfnDownInputChannels;
+  if(family == KATAGO_RENJU15_RESIDUAL_GEMM_C384_OUT_PROJ)
+    return C384OutProjInputChannels;
+  if(family == KATAGO_RENJU15_RESIDUAL_GEMM_C384_FFN_DOWN)
+    return C384FfnDownInputChannels;
+  return 0;
+}
+
+int outputChannelsForFamily(int family) {
+  if(family == KATAGO_RENJU15_RESIDUAL_GEMM_OUT_PROJ ||
+     family == KATAGO_RENJU15_RESIDUAL_GEMM_FFN_DOWN)
+    return OutputChannels;
+  if(family == KATAGO_RENJU15_RESIDUAL_GEMM_C384_OUT_PROJ ||
+     family == KATAGO_RENJU15_RESIDUAL_GEMM_C384_FFN_DOWN)
+    return C384OutputChannels;
   return 0;
 }
 
@@ -178,14 +203,16 @@ extern "C" void* katago_renju15_residual_gemm_sm120_create(
      !isSm120Compatible())
     return nullptr;
   const int inputChannels = inputChannelsForFamily(family);
+  const int outputChannels = outputChannelsForFamily(family);
   const auto* descriptor = descriptorForTactic(tactic);
-  if(inputChannels == 0 || descriptor == nullptr)
+  if(inputChannels == 0 || outputChannels == 0 || descriptor == nullptr ||
+     descriptor->outputChannels != outputChannels)
     return nullptr;
   std::unique_ptr<StateBase> state = stateForTactic(tactic);
   if(state == nullptr)
     return nullptr;
   return new(std::nothrow) Handle{
-    family,tactic,inputChannels,fixedTokenRows,
+    family,tactic,inputChannels,outputChannels,fixedTokenRows,
     descriptor,std::move(state)};
 }
 
@@ -209,7 +236,7 @@ extern "C" bool katago_renju15_residual_gemm_sm120_supports(
   const Handle* handle = static_cast<const Handle*>(opaque);
   return handle != nullptr && matBatchSize == handle->fixedTokens &&
     inputChannels == handle->inputChannels &&
-    outputChannels == OutputChannels && usingFp16 && exactNoMask;
+    outputChannels == handle->outputChannels && usingFp16 && exactNoMask;
 }
 
 extern "C" cudaError_t katago_renju15_residual_gemm_sm120_launch(
@@ -225,6 +252,6 @@ extern "C" cudaError_t katago_renju15_residual_gemm_sm120_launch(
     return cudaErrorInvalidValue;
   return handle->state->launch(
     input, weights, residual, handle->inputChannels,
-    handle->fixedTokens, stream);
+    handle->outputChannels, handle->fixedTokens, stream);
 }
 

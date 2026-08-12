@@ -503,6 +503,27 @@ static void assertWideAttentionRecipe(
   testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
 }
 
+static void assertC384DynamicAttentionRecipe(
+  const CudaTransformerWinner::AttentionRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C384Warp4Vec4x3);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
+  testAssert(recipe.attention == AttentionTactic::Generic);
+  testAssert(recipe.outProjection == ResidualTactic::Sm120C384M128N128K32S3Sw1);
+}
+
+static void assertC384DynamicFfnRecipe(
+  const CudaTransformerWinner::FfnRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C384Warp4Vec4x3);
+  testAssert(recipe.dualFfn == DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4);
+  testAssert(recipe.downProjection == ResidualTactic::Sm120C384M128N128K32S3Sw1);
+}
+
 template<typename AttentionAssertion, typename FfnAssertion>
 static void assertAllTransformerRecipes(
   const ArchitectureDesc& architecture,
@@ -1049,15 +1070,51 @@ void Tests::runTransformerProductionPlanTests() {
     assertB32DynamicAttentionRecipe,assertExactFfnRecipe
   );
 
-  // G6: C384/H12/D32/F1024 stays on the generic-safe production path while
-  // retaining geometry-general planar QKV, learned half2 RoPE, and beta-one
-  // residual GEMMs. No C256/H8/F768-only component may leak into this plan.
+  // G6: C384/H12/D32/F1024 selects a dynamic-M partial specialization for
+  // every representative production bucket. Attention deliberately retains
+  // geometry-general planar QKV, learned half2 RoPE, and cuDNN SDPA, while
+  // C384 RMS, out/down residual GEMMs, and C384/F1024 dual FFN are specialized.
   CudaTransformerWinner::PreparedPlan productionG6 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b36,device);
   testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
     productionG6).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
-    wideArchitecture,productionG6,32,true,assertWideAttentionRecipe,assertGenericFfnRecipe
+    wideArchitecture,productionG6,32,true,
+    assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+  for(int batch: {16,32,36,64,128}) {
+    const RuntimeOpContext bucket = runtimeContext(batch,15,15,MaskMode::None);
+    const CudaTransformerWinner::PreparedPlan bucketPlan =
+      CudaTransformerWinner::preparePlan(wideArchitecture,bucket,device);
+    assertAllTransformerRecipes(
+      wideArchitecture,bucketPlan,32,true,
+      assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+    );
+    const CudaTransformerWinner::PreparedRecord& attention =
+      firstProductionRecord(bucketPlan,ArchitectureOpKind::TransformerAttention);
+    const CudaTransformerWinner::PreparedRecord& ffn =
+      firstProductionRecord(bucketPlan,ArchitectureOpKind::TransformerFFN);
+    testAssert(string(CudaTransformerWinner::tacticName(attention.operation.tactic)) ==
+      "attention-c384-h12-dynamic-sm120");
+    testAssert(string(CudaTransformerWinner::tacticName(ffn.operation.tactic)) ==
+      "ffn-c384-f1024-dynamic-sm120");
+  }
+
+  // An unqualified batch or changed board falls back only the C384 local
+  // specialization. The already-safe generic planar/RoPE/beta-one path
+  // remains available, and C256 exact planning above is unchanged.
+  const RuntimeOpContext b24 = runtimeContext(24,15,15,MaskMode::None);
+  const CudaTransformerWinner::PreparedPlan productionG6B24 =
+    CudaTransformerWinner::preparePlan(wideArchitecture,b24,device);
+  assertAllTransformerRecipes(
+    wideArchitecture,productionG6B24,32,true,
+    assertWideAttentionRecipe,assertGenericFfnRecipe
+  );
+  const CudaTransformerWinner::PreparedPlan productionG6Board19 =
+    CudaTransformerWinner::preparePlan(wideArchitecture,board19,device);
+  assertAllTransformerRecipes(
+    wideArchitecture,productionG6Board19,32,true,
+    assertWideAttentionRecipe,assertGenericFfnRecipe
   );
 
   cout << "Production PreparedPlan fingerprints:" << endl;
@@ -1067,6 +1124,7 @@ void Tests::runTransformerProductionPlanTests() {
   cout << "  G4-B32=" << productionG4.fingerprint.toHex() << endl;
   cout << "  G5-48-layers=" << productionG5.fingerprint.toHex() << endl;
   cout << "  G6-C384-H12-F1024=" << productionG6.fingerprint.toHex() << endl;
+  cout << "  G6-C384-B24-local-fallback=" << productionG6B24.fingerprint.toHex() << endl;
 
   map<ArchitectureOpKind,int> reusableByKind;
   map<ArchitectureOpKind,int> changedByKind;

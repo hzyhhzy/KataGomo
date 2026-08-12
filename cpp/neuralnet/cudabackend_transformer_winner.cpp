@@ -22,12 +22,14 @@ enum AttentionVariant : uint64_t {
   ATTENTION_C256_SM120 = 5,
   ATTENTION_C256_DYNAMIC_SM120 = 6,
   ATTENTION_C256_B36_FA4_SM120 = 7,
+  ATTENTION_C384_DYNAMIC_SM120 = 8,
 };
 
 enum FfnVariant : uint64_t {
   FFN_GENERIC = 1,
   FFN_C256_F768_SM120 = 2,
   FFN_C256_F768_DYNAMIC_SM120 = 3,
+  FFN_C384_F1024_DYNAMIC_SM120 = 4,
 };
 
 struct RegistrationContext {
@@ -74,6 +76,18 @@ bool isC256F768(const CapabilityKey& key) {
     key.auxiliaryChannels == 768 && (key.flags & OP_FLAG_USE_SWIGLU) != 0;
 }
 
+bool isC384Attention(const CapabilityKey& key) {
+  return isSquareMha(key) && key.inChannels == 384 && key.numHeads == 12 &&
+    key.numKVHeads == 12 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
+    key.auxiliaryChannels == 16 && hasLearnedRope(key);
+}
+
+bool isC384F1024(const CapabilityKey& key) {
+  return key.kind == ArchitectureOpKind::TransformerFFN &&
+    key.inChannels == 384 && key.outChannels == 384 &&
+    key.auxiliaryChannels == 1024 && (key.flags & OP_FLAG_USE_SWIGLU) != 0;
+}
+
 bool validatedDynamicRows(const CapabilityKey& key) {
   const int64_t rows = (int64_t)key.batchSize * (int64_t)key.spatialArea;
   constexpr int rowsMeasured[] = {7200,8100,9000,14400,28800};
@@ -82,6 +96,15 @@ bool validatedDynamicRows(const CapabilityKey& key) {
   return std::find(
     std::begin(rowsMeasured),std::end(rowsMeasured),(int)rows
   ) != std::end(rowsMeasured);
+}
+
+bool validatedC384Runtime(const CapabilityKey& key) {
+  constexpr int batches[] = {16,32,36,64,128};
+  if(key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225)
+    return false;
+  return std::find(
+    std::begin(batches),std::end(batches),key.batchSize
+  ) != std::end(batches);
 }
 
 SupportClass matchAttentionSquare(const OpRequest& request, const void*) {
@@ -144,6 +167,13 @@ SupportClass matchAttentionExact(const OpRequest& request, const void* userData)
   return SupportClass::CertifiedFast;
 }
 
+SupportClass matchAttentionC384Dynamic(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  return isHalfNhwcNoMask(request.key) && isC384Attention(request.key) &&
+    isSm120(request,context) && validatedC384Runtime(request.key) ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
 SupportClass matchFfnGeneric(const OpRequest& request, const void*) {
   const CapabilityKey& key = request.key;
   return key.kind == ArchitectureOpKind::TransformerFFN &&
@@ -163,6 +193,13 @@ SupportClass matchFfnDynamic(const OpRequest& request, const void* userData) {
   const RegistrationContext& context = *(const RegistrationContext*)userData;
   return isHalfNhwcNoMask(request.key) && isC256F768(request.key) &&
     isSm120(request,context) && validatedDynamicRows(request.key) ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchFfnC384Dynamic(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  return isHalfNhwcNoMask(request.key) && isC384F1024(request.key) &&
+    isSm120(request,context) && validatedC384Runtime(request.key) ?
     SupportClass::CompatibleOnly : SupportClass::Unsupported;
 }
 
@@ -197,6 +234,12 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
   if(operation == nullptr || operation->tactic.family != ATTENTION_FAMILY)
     return recipe;
   switch(operation->tactic.variant) {
+  case ATTENTION_C384_DYNAMIC_SM120:
+    recipe.rmsNorm = RmsNormTactic::Sm120C384Warp4Vec4x3;
+    recipe.outProjection = ResidualTactic::Sm120C384M128N128K32S3Sw1;
+    recipe.rope = RopeTactic::LearnedHalf2;
+    recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
+    break;
   case ATTENTION_C256_B36_FA4_SM120:
     recipe.rope = RopeTactic::LearnedHalf2;
     recipe.qkvRope = QkvRopeTactic::Sm120C256H8D32M128N128K32S3;
@@ -233,6 +276,11 @@ FfnRecipe ffnRecipe(const PreparedOp* operation) {
   if(operation == nullptr || operation->tactic.family != FFN_FAMILY)
     return recipe;
   switch(operation->tactic.variant) {
+  case FFN_C384_F1024_DYNAMIC_SM120:
+    recipe.rmsNorm = RmsNormTactic::Sm120C384Warp4Vec4x3;
+    recipe.dualFfn = DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
+    recipe.downProjection = ResidualTactic::Sm120C384M128N128K32S3Sw1;
+    break;
   case FFN_C256_F768_DYNAMIC_SM120:
     recipe.dualFfn = DualFfnTactic::Sm120C256F768M128N64K32S3Sw4;
     recipe.downProjection = ResidualTactic::Sm120M128N128K32S3Sw1;
@@ -489,6 +537,9 @@ PreparedPlan preparePlan(
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_B36_FA4_SM120,40,
     "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;qkv-rope=sm120-m128n128k32s3;fa4=b36-s225-tm128-tn128-s1-both16;out=sm120-m128n128k32s3sw1",
     matchAttentionExact,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C384_DYNAMIC_SM120,35,
+    "attention:v1;c384-h12-d32;batch-buckets=16,32,36,64,128;s225;planar=cublas-hgemm-strided-square;rms=sm120-warp4vec4x3;rope=learned-half2;out=sm120-c384-m128n128k32s3sw1",
+    matchAttentionC384Dynamic,&context);
   registerTactic(registry,FFN_FAMILY,FFN_GENERIC,10,
     "ffn:v1;rms=generic-half;down=cublas-beta1",matchFfnGeneric,&context);
   registerTactic(registry,FFN_FAMILY,FFN_C256_F768_SM120,20,
@@ -496,6 +547,9 @@ PreparedPlan preparePlan(
   registerTactic(registry,FFN_FAMILY,FFN_C256_F768_DYNAMIC_SM120,30,
     "ffn:v1;rms=sm120-warp4vec8;dual=sm120-m128n64k32s3sw4;down=sm120-m128n128k32s3sw1",
     matchFfnDynamic,&context);
+  registerTactic(registry,FFN_FAMILY,FFN_C384_F1024_DYNAMIC_SM120,35,
+    "ffn:v1;c384-f1024;batch-buckets=16,32,36,64,128;s225;rms=sm120-warp4vec4x3;dual=sm120-c384-f1024-m128n64k32s3sw4;down=sm120-c384-m128n128k32s3sw1",
+    matchFfnC384Dynamic,&context);
 
   PreparedPlan plan;
   plan.architecture = architecture.signature;
@@ -528,6 +582,7 @@ const char* tacticName(const TacticId& tactic) {
     case ATTENTION_C256_SM120: return "attention-c256-sm120";
     case ATTENTION_C256_DYNAMIC_SM120: return "attention-c256-dynamic-sm120";
     case ATTENTION_C256_B36_FA4_SM120: return "attention-c256-b36-fa4-sm120";
+    case ATTENTION_C384_DYNAMIC_SM120: return "attention-c384-h12-dynamic-sm120";
     default: return "attention-unknown";
     }
   }
@@ -536,6 +591,7 @@ const char* tacticName(const TacticId& tactic) {
     case FFN_GENERIC: return "ffn-generic";
     case FFN_C256_F768_SM120: return "ffn-c256-f768-sm120";
     case FFN_C256_F768_DYNAMIC_SM120: return "ffn-c256-f768-dynamic-sm120";
+    case FFN_C384_F1024_DYNAMIC_SM120: return "ffn-c384-f1024-dynamic-sm120";
     default: return "ffn-unknown";
     }
   }

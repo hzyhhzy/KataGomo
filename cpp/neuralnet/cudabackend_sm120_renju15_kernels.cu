@@ -6,6 +6,7 @@ namespace Renju15Sm120 {
 namespace {
 
 constexpr int Channels = 256;
+constexpr int Channels384 = 384;
 union Half8Pack {
   uint4 packed;
   half2 values[4];
@@ -17,6 +18,11 @@ union Int8Pack {
   int8_t values[8];
 };
 #endif
+
+union Half4Pack {
+  uint2 packed;
+  half2 values[2];
+};
 
 __global__ void rmsNorm256Warp4Vec8Kernel(
   const uint4* __restrict__ input,
@@ -123,6 +129,57 @@ __global__ void rmsNorm256Warp4Vec8Fp16Int8Kernel(
 }
 #endif
 
+__global__ void rmsNorm384Warp4Vec4x3Kernel(
+  const uint2* __restrict__ input,
+  uint2* __restrict__ output,
+  const uint2* __restrict__ gamma,
+  int totalRows,
+  float epsilon
+) {
+  const int warp = threadIdx.x >> 5;
+  const int lane = threadIdx.x & 31;
+  const int row = blockIdx.x * 4 + warp;
+  if(row >= totalRows)
+    return;
+
+  constexpr int vectorsPerRow = Channels384 / 4;
+  constexpr int rounds = vectorsPerRow / 32;
+  Half4Pack in[rounds];
+  Half4Pack g[rounds];
+  Half4Pack out[rounds];
+  float values[rounds][4];
+  float sumSquares = 0.0f;
+#pragma unroll
+  for(int round = 0; round < rounds; round++) {
+    const int vector = lane + round * 32;
+    in[round].packed = input[(std::size_t)row * vectorsPerRow + vector];
+    g[round].packed = gamma[vector];
+#pragma unroll
+    for(int pair = 0; pair < 2; pair++) {
+      const float2 value = __half22float2(in[round].values[pair]);
+      values[round][2 * pair] = value.x;
+      values[round][2 * pair + 1] = value.y;
+      sumSquares += value.x * value.x + value.y * value.y;
+    }
+  }
+  for(int offset = 16; offset > 0; offset >>= 1)
+    sumSquares += __shfl_xor_sync(0xffffffff, sumSquares, offset);
+  const float scale = rsqrtf(sumSquares / (float)Channels384 + epsilon);
+
+#pragma unroll
+  for(int round = 0; round < rounds; round++) {
+#pragma unroll
+    for(int pair = 0; pair < 2; pair++) {
+      const float2 gammaValues = __half22float2(g[round].values[pair]);
+      out[round].values[pair] = __floats2half2_rn(
+        values[round][2 * pair] * scale * gammaValues.x,
+        values[round][2 * pair + 1] * scale * gammaValues.y);
+    }
+    const int vector = lane + round * 32;
+    output[(std::size_t)row * vectorsPerRow + vector] = out[round].packed;
+  }
+}
+
 bool aligned16(const void* pointer) {
   return (reinterpret_cast<std::uintptr_t>(pointer) & 15U) == 0;
 }
@@ -153,7 +210,6 @@ cudaError_t launchRmsNorm256(
   return cudaPeekAtLastError();
 }
 
-
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
 cudaError_t launchRmsNorm256Fp16Int8(
   const half* input,
@@ -180,6 +236,30 @@ cudaError_t launchRmsNorm256Fp16Int8(
   return cudaPeekAtLastError();
 }
 #endif
+
+cudaError_t launchRmsNorm384(
+  const half* input,
+  half* output,
+  const half* gamma,
+  int totalRows,
+  float epsilon,
+  RmsNorm384Tactic tactic,
+  cudaStream_t stream
+) {
+  if(input == nullptr || output == nullptr || gamma == nullptr ||
+     totalRows <= 0 || !aligned16(input) || !aligned16(output) ||
+     !aligned16(gamma))
+    return cudaErrorInvalidValue;
+  if(tactic != RmsNorm384Tactic::Warp4Vec4x3)
+    return cudaErrorNotSupported;
+  const int blocks = (totalRows + 3) / 4;
+  rmsNorm384Warp4Vec4x3Kernel<<<blocks, 128, 0, stream>>>(
+    reinterpret_cast<const uint2*>(input),
+    reinterpret_cast<uint2*>(output),
+    reinterpret_cast<const uint2*>(gamma),
+    totalRows, epsilon);
+  return cudaPeekAtLastError();
+}
 
 } // namespace Renju15Sm120
 

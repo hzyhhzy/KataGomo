@@ -1581,7 +1581,10 @@ struct MatMulLayer {
        CudaTransformerWinner::ResidualTactic::GenericAdd)
       return false;
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
-    if(tactic == CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1 &&
+    const bool specializedSm120 =
+      tactic == CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1 ||
+      tactic == CudaTransformerWinner::ResidualTactic::Sm120C384M128N128K32S3Sw1;
+    if(specializedSm120 &&
        katago_renju15_residual_gemm_sm120_supports(
          preparedKernel,matBatchSize,inChannels,outChannels,true,true)) {
       CUDA_ERR(name.c_str(),katago_renju15_residual_gemm_sm120_launch(
@@ -1607,7 +1610,8 @@ struct MatMulLayer {
     // generic no-mask FP16 fusion by degrading to cuBLAS beta=1 rather than
     // paying a separate projection and residual-add kernel.
     if(tactic != CudaTransformerWinner::ResidualTactic::CublasHgemmBetaOne &&
-       tactic != CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
+       tactic != CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1 &&
+       tactic != CudaTransformerWinner::ResidualTactic::Sm120C384M128N128K32S3Sw1)
       return false;
     const half one = __float2half(1.0f);
     CUBLAS_ERR(name.c_str(),cublasHgemm(
@@ -2208,6 +2212,21 @@ struct TransformerRMSNormLayer {
         countedWinnerRms,cudaHandles->activeWinnerRms);
       return;
     }
+    if(tactic == CudaTransformerWinner::RmsNormTactic::Sm120C384Warp4Vec4x3 &&
+       usingFP16 && numChannels == 384 && maskBuf == nullptr) {
+      CUDA_ERR(name.c_str(),Renju15Sm120::launchRmsNorm384(
+        (const half*)inputBuf,(half*)outputBuf,(const half*)weightBuf,
+        batchSize * xySize,epsilon,Renju15Sm120::RmsNorm384Tactic::Warp4Vec4x3,
+        cudaHandles->stream));
+      if(!cudaHandles->loggedRms && cudaHandles->logger != NULL) {
+        cudaHandles->logger->write(
+          "KATAGO_C384_SM120_RMS_ACTIVE marker=warp4-vec4x3");
+        cudaHandles->loggedRms = true;
+      }
+      cudaHandles->noteWinnerLaunch(
+        countedWinnerRms,cudaHandles->activeWinnerRms);
+      return;
+    }
 #endif
     // RMSNormGammaBetaNHWC with gamma=weight, beta=zero, mask, identity activation.
     if(!usingFP16) {
@@ -2511,6 +2530,13 @@ struct TransformerAttentionBlock {
       outProjectionKernel = katago_renju15_residual_gemm_sm120_create(
         KATAGO_RENJU15_RESIDUAL_GEMM_OUT_PROJ,
         KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3,
+        fixedBatchSize * nnXLen * nnYLen);
+    }
+    else if(recipe.outProjection ==
+       CudaTransformerWinner::ResidualTactic::Sm120C384M128N128K32S3Sw1) {
+      outProjectionKernel = katago_renju15_residual_gemm_sm120_create(
+        KATAGO_RENJU15_RESIDUAL_GEMM_C384_OUT_PROJ,
+        KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3,
         fixedBatchSize * nnXLen * nnYLen);
     }
 #endif
@@ -3011,6 +3037,12 @@ struct TransformerFFNBlock {
         KATAGO_RENJU15_DUAL_FFN_M128_N64_K32_S3_SW4,
         fixedBatchSize * nnXLen * nnYLen);
     }
+    else if(recipe.dualFfn ==
+       CudaTransformerWinner::DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4) {
+      dualFfnKernel = katago_renju15_dual_ffn_sm120_create(
+        KATAGO_RENJU15_DUAL_FFN_C384_F1024_M128_N64_K32_S3_SW4,
+        fixedBatchSize * nnXLen * nnYLen);
+    }
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
     if(recipe.downProjection ==
@@ -3018,6 +3050,13 @@ struct TransformerFFNBlock {
       downProjectionKernel = katago_renju15_residual_gemm_sm120_create(
         KATAGO_RENJU15_RESIDUAL_GEMM_FFN_DOWN,
         KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3,
+        fixedBatchSize * nnXLen * nnYLen);
+    }
+    else if(recipe.downProjection ==
+       CudaTransformerWinner::ResidualTactic::Sm120C384M128N128K32S3Sw1) {
+      downProjectionKernel = katago_renju15_residual_gemm_sm120_create(
+        KATAGO_RENJU15_RESIDUAL_GEMM_C384_FFN_DOWN,
+        KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3,
         fixedBatchSize * nnXLen * nnYLen);
     }
 #endif
@@ -3191,8 +3230,12 @@ struct TransformerFFNBlock {
     }
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
-    if(!usedDualFfn && recipe.dualFfn ==
-         CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4 &&
+    const bool specializedDualFfn =
+      recipe.dualFfn ==
+        CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4 ||
+      recipe.dualFfn ==
+        CudaTransformerWinner::DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
+    if(!usedDualFfn && specializedDualFfn &&
        katago_renju15_dual_ffn_sm120_supports(
          dualFfnKernel,matBatchSize,numChannels,ffnChannels,
          usingFP16,usingNHWC,maskBuf == nullptr)) {
