@@ -241,18 +241,6 @@ class NNEvaluator {
     bool forceMaskAllOnes = false
   );
 
-  // Accuracy-replay accessors. The replay command stops ordinary server
-  // threads before borrowing this immutable initialization state.
-  ComputeContext* getComputeContext() const { return computeContext; }
-  LoadedModel* getLoadedModel() const { return loadedModel; }
-  bool getRequireExactNNLen() const { return requireExactNNLen; }
-  bool getInputsUseNHWC() const { return inputsUseNHWC; }
-  int getBackendNumThreads() const { return backendNumThreads; }
-  int getGpuIdxByServerThread(int threadIdx) const {
-    assert(threadIdx >= 0 && threadIdx < (int)gpuIdxByServerThread.size());
-    return gpuIdxByServerThread[threadIdx];
-  }
-
  private:
   const std::string modelName;
   const std::string modelFileName;

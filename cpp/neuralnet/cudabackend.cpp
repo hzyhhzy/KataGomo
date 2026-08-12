@@ -4642,17 +4642,6 @@ void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
 }
 
-void NeuralNet::getRawNNOutputs(InputBuffers* inputBuffers, RawNNOutputs& out) {
-  out.policy = inputBuffers->policyResults;
-  out.value = inputBuffers->valueResults;
-  out.misc = inputBuffers->scoreValueResults;
-  out.ownership = inputBuffers->ownershipResults;
-  out.policyElts = inputBuffers->singlePolicyResultElts;
-  out.valueElts = inputBuffers->singleValueResultElts;
-  out.miscElts = inputBuffers->singleScoreValueResultElts;
-  out.ownershipElts = inputBuffers->singleOwnershipResultElts;
-}
-
 //---------------------------------------------------------------------------------------
 
 

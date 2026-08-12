@@ -140,12 +140,6 @@ void NeuralNet::getOutput(
   throw StringError("Dummy neural net backend: NeuralNet::getOutput unimplemented");
 }
 
-void NeuralNet::getRawNNOutputs(InputBuffers* buffers, RawNNOutputs& out) {
-  (void)buffers;
-  (void)out;
-  throw StringError("Dummy neural net backend: NeuralNet::getRawNNOutputs unimplemented");
-}
-
 
 
 bool NeuralNet::testEvaluateConv(
