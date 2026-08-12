@@ -734,11 +734,11 @@ void Tests::runTransformerProductionPlanTests() {
   PlanSnapshot planMasked = preparePlan(architectureA,masked,registry);
   assertOnlyTransformerWinnerFallsBack(architectureA,planA,planMasked);
 
-  // C384/H12/D32/F1024 is shape-compatible with generic CUDA only. The two
-  // specialized transformer tactics must reject it, while independent head
+  // The generic fixture registry has no C384 entries, so the real 36-layer
+  // C384/H12/D32/F1024 target is compatible-only here. Independent head
   // operators such as value MatMul 64->3 and ownership Conv 96->1 retain their
   // exact capability key and compatible recipe.
-  ModelDesc wideModel = makeModel(32,384,1024,12,32,0.5f,"c384-h12-f1024");
+  ModelDesc wideModel = makeModel(36,384,1024,12,32,0.5f,"b36c384-h12-f1024");
   ArchitectureDesc wideArchitecture = buildArchitectureDesc(wideModel);
   PlanSnapshot widePlan = preparePlan(wideArchitecture,b36,registry);
   size_t wideAttention = findRequest(
@@ -1070,16 +1070,17 @@ void Tests::runTransformerProductionPlanTests() {
     assertB32DynamicAttentionRecipe,assertExactFfnRecipe
   );
 
-  // G6: C384/H12/D32/F1024 selects a dynamic-M partial specialization for
-  // every representative production bucket. Attention deliberately retains
-  // geometry-general planar QKV, learned half2 RoPE, and cuDNN SDPA, while
-  // C384 RMS, out/down residual GEMMs, and C384/F1024 dual FFN are specialized.
-  CudaTransformerWinner::PreparedPlan productionG6 =
+  // The real b36c384/H12/D32/F1024 target (b36 means 36 transformer layers,
+  // not batch size) selects a dynamic-M partial specialization for every
+  // representative runtime batch. Attention retains geometry-general planar
+  // QKV, learned half2 RoPE, and cuDNN SDPA, while C384 RMS, out/down residual
+  // GEMMs, and C384/F1024 dual FFN are specialized.
+  CudaTransformerWinner::PreparedPlan productionWide36 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b36,device);
   testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
     productionG6).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
-    wideArchitecture,productionG6,32,true,
+    wideArchitecture,productionWide36,36,true,
     assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
   );
   for(int batch: {1,8,16,24,32,36,64,128}) {
@@ -1087,7 +1088,7 @@ void Tests::runTransformerProductionPlanTests() {
     const CudaTransformerWinner::PreparedPlan bucketPlan =
       CudaTransformerWinner::preparePlan(wideArchitecture,bucket,device);
     assertAllTransformerRecipes(
-      wideArchitecture,bucketPlan,32,true,
+      wideArchitecture,bucketPlan,36,true,
       assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
     );
     const CudaTransformerWinner::PreparedRecord& attention =
@@ -1100,20 +1101,67 @@ void Tests::runTransformerProductionPlanTests() {
       "ffn-c384-f1024-dynamic-sm120");
   }
 
+  // Layer count is absent from the local tactic gate. The old 32-layer
+  // development fixture, the real 36-layer target, and a 48-layer stress
+  // fixture have different architecture/whole-plan fingerprints but identical
+  // per-attention and per-FFN capability keys and prepared tactics.
+  const ModelDesc wideModel32 =
+    makeModel(32,384,1024,12,32,0.4f,"c384-h12-f1024-dev32");
+  const ModelDesc wideModel48 =
+    makeModel(48,384,1024,12,32,0.6f,"c384-h12-f1024-stress48");
+  const ArchitectureDesc wideArchitecture32 = buildArchitectureDesc(wideModel32);
+  const ArchitectureDesc wideArchitecture48 = buildArchitectureDesc(wideModel48);
+  const CudaTransformerWinner::PreparedPlan productionWide32 =
+    CudaTransformerWinner::preparePlan(wideArchitecture32,b36,device);
+  const CudaTransformerWinner::PreparedPlan productionWide48 =
+    CudaTransformerWinner::preparePlan(wideArchitecture48,b36,device);
+  assertAllTransformerRecipes(
+    wideArchitecture32,productionWide32,32,true,
+    assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+  assertAllTransformerRecipes(
+    wideArchitecture48,productionWide48,48,true,
+    assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+  testAssert(productionWide32.architecture != productionWide36.architecture);
+  testAssert(productionWide36.architecture != productionWide48.architecture);
+  testAssert(productionWide32.fingerprint != productionWide36.fingerprint);
+  testAssert(productionWide36.fingerprint != productionWide48.fingerprint);
+  const CudaTransformerWinner::PreparedRecord& wide32Attention =
+    firstProductionRecord(productionWide32,ArchitectureOpKind::TransformerAttention);
+  const CudaTransformerWinner::PreparedRecord& wide36Attention =
+    firstProductionRecord(productionWide36,ArchitectureOpKind::TransformerAttention);
+  const CudaTransformerWinner::PreparedRecord& wide48Attention =
+    firstProductionRecord(productionWide48,ArchitectureOpKind::TransformerAttention);
+  const CudaTransformerWinner::PreparedRecord& wide32Ffn =
+    firstProductionRecord(productionWide32,ArchitectureOpKind::TransformerFFN);
+  const CudaTransformerWinner::PreparedRecord& wide36Ffn =
+    firstProductionRecord(productionWide36,ArchitectureOpKind::TransformerFFN);
+  const CudaTransformerWinner::PreparedRecord& wide48Ffn =
+    firstProductionRecord(productionWide48,ArchitectureOpKind::TransformerFFN);
+  testAssert(wide32Attention.request.key == wide36Attention.request.key);
+  testAssert(wide36Attention.request.key == wide48Attention.request.key);
+  testAssert(wide32Ffn.request.key == wide36Ffn.request.key);
+  testAssert(wide36Ffn.request.key == wide48Ffn.request.key);
+  assertPreparedOpIdentity(wide32Attention.operation,wide36Attention.operation);
+  assertPreparedOpIdentity(wide36Attention.operation,wide48Attention.operation);
+  assertPreparedOpIdentity(wide32Ffn.operation,wide36Ffn.operation);
+  assertPreparedOpIdentity(wide36Ffn.operation,wide48Ffn.operation);
+
   // A batch above the staged dynamic range or changed board falls back only the C384 local
   // specialization. The already-safe generic planar/RoPE/beta-one path
   // remains available, and C256 exact planning above is unchanged.
   const RuntimeOpContext b129 = runtimeContext(129,15,15,MaskMode::None);
-  const CudaTransformerWinner::PreparedPlan productionG6B129 =
+  const CudaTransformerWinner::PreparedPlan productionWideB129 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b129,device);
   assertAllTransformerRecipes(
-    wideArchitecture,productionG6B129,32,true,
+    wideArchitecture,productionWideB129,36,true,
     assertWideAttentionRecipe,assertGenericFfnRecipe
   );
-  const CudaTransformerWinner::PreparedPlan productionG6Board19 =
+  const CudaTransformerWinner::PreparedPlan productionWideBoard19 =
     CudaTransformerWinner::preparePlan(wideArchitecture,board19,device);
   assertAllTransformerRecipes(
-    wideArchitecture,productionG6Board19,32,true,
+    wideArchitecture,productionWideBoard19,36,true,
     assertWideAttentionRecipe,assertGenericFfnRecipe
   );
 
@@ -1123,8 +1171,8 @@ void Tests::runTransformerProductionPlanTests() {
   cout << "  G3-dense-mask=" << productionG3.fingerprint.toHex() << endl;
   cout << "  G4-B32=" << productionG4.fingerprint.toHex() << endl;
   cout << "  G5-48-layers=" << productionG5.fingerprint.toHex() << endl;
-  cout << "  G6-C384-H12-F1024=" << productionG6.fingerprint.toHex() << endl;
-  cout << "  G6-C384-B129-local-fallback=" << productionG6B129.fingerprint.toHex() << endl;
+  cout << "  target-36L-C384-H12-F1024=" << productionWide36.fingerprint.toHex() << endl;
+  cout << "  target-C384-B129-local-fallback=" << productionWideB129.fingerprint.toHex() << endl;
 
   map<ArchitectureOpKind,int> reusableByKind;
   map<ArchitectureOpKind,int> changedByKind;
