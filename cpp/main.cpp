@@ -87,6 +87,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::distill(subArgs);
   else if(subcommand == "testgpuerror")
     return MainCmds::testgpuerror(subArgs);
+  else if(subcommand == "testarchitecturedesc")
+    return MainCmds::testarchitecturedesc(subArgs);
   else if(subcommand == "samplesgfs")
     return MainCmds::samplesgfs(subArgs);
   else if(subcommand == "dataminesgfs")

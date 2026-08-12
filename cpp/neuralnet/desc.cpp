@@ -183,8 +183,8 @@ BatchNormLayerDesc::BatchNormLayerDesc(istream& in, bool binaryFloats) {
 
   if(numChannels < 1)
     throw StringError(name + ": numChannels (" + Global::intToString(numChannels) + ") < 1");
-  if(epsilon <= 0)
-    throw StringError(name + ": epsilon (" + Global::floatToString(epsilon) + ") <= 0");
+  if(!isfinite(epsilon) || epsilon <= 0)
+    throw StringError(name + ": epsilon (" + Global::floatToString(epsilon) + ") must be finite and positive");
 
   vector<float> floats;
   readFloats(in, (size_t)numChannels, binaryFloats, name, floats);
@@ -947,6 +947,7 @@ TrunkDesc::TrunkDesc()
     trunkNumChannels(0),
     midNumChannels(0),
     regularNumChannels(0),
+    dilatedNumChannels(0),
     gpoolNumChannels(0) {}
 
 TrunkDesc::TrunkDesc(istream& in, int vrsn, bool binaryFloats) {
@@ -956,7 +957,6 @@ TrunkDesc::TrunkDesc(istream& in, int vrsn, bool binaryFloats) {
   in >> trunkNumChannels;
   in >> midNumChannels;
   in >> regularNumChannels;
-  int dilatedNumChannels; //unused
   in >> dilatedNumChannels;
   in >> gpoolNumChannels;
 
@@ -1011,6 +1011,7 @@ TrunkDesc::TrunkDesc(TrunkDesc&& other) {
   trunkNumChannels = other.trunkNumChannels;
   midNumChannels = other.midNumChannels;
   regularNumChannels = other.regularNumChannels;
+  dilatedNumChannels = other.dilatedNumChannels;
   gpoolNumChannels = other.gpoolNumChannels;
   initialConv = std::move(other.initialConv);
   initialMatMul = std::move(other.initialMatMul);
@@ -1026,6 +1027,7 @@ TrunkDesc& TrunkDesc::operator=(TrunkDesc&& other) {
   trunkNumChannels = other.trunkNumChannels;
   midNumChannels = other.midNumChannels;
   regularNumChannels = other.regularNumChannels;
+  dilatedNumChannels = other.dilatedNumChannels;
   gpoolNumChannels = other.gpoolNumChannels;
   initialConv = std::move(other.initialConv);
   initialMatMul = std::move(other.initialMatMul);
@@ -1380,6 +1382,7 @@ ModelDesc& ModelDesc::operator=(ModelDesc&& other) {
   numValueChannels = other.numValueChannels;
   numScoreValueChannels = other.numScoreValueChannels;
   numOwnershipChannels = other.numOwnershipChannels;
+  onnxHeader = std::move(other.onnxHeader);
   trunk = std::move(other.trunk);
   policyHead = std::move(other.policyHead);
   valueHead = std::move(other.valueHead);

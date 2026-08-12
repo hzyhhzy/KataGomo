@@ -17,6 +17,7 @@ namespace MainCmds {
   int distill(const std::vector<std::string>& args);
 
   int testgpuerror(const std::vector<std::string>& args);
+  int testarchitecturedesc(const std::vector<std::string>& args);
 
 
   int samplesgfs(const std::vector<std::string>& args);

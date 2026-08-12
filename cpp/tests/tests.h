@@ -14,6 +14,9 @@
 class NNEvaluator;
 
 namespace Tests {
+  // testarchitecturedesc.cpp
+  void runArchitectureDescTests();
+
   // testnnevalcanary.cpp
   void runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print);
   bool runFP16Test(

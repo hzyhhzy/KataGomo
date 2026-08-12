@@ -219,6 +219,8 @@ add_executable(katago
   neuralnet/modelversion.cpp
   neuralnet/nneval.cpp
   neuralnet/desc.cpp
+  neuralnet/architecturedesc.cpp
+  neuralnet/cudaopregistry.cpp
   neuralnet/onnxprotoreader.cpp
   ${NEURALNET_BACKEND_SOURCES}
   book/book.cpp
@@ -251,6 +253,7 @@ add_executable(katago
   program/selfplaymanager.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testcommon.cpp
+  tests/testarchitecturedesc.cpp
   tests/testnnevalcanary.cpp
   distributed/client.cpp
   command/commandline.cpp

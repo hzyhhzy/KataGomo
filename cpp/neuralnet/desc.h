@@ -258,6 +258,7 @@ struct TrunkDesc {
   int trunkNumChannels;
   int midNumChannels;      // Currently every plain residual block must have the same number of mid conv channels
   int regularNumChannels;  // Currently every gpool residual block must have the same number of regular conv hannels
+  int dilatedNumChannels;  // Explicit model-format field retained for architecture compatibility signatures
   int gpoolNumChannels;    // Currently every gpooling residual block must have the same number of gpooling conv channels
   ConvLayerDesc initialConv;
   MatMulLayerDesc initialMatMul;

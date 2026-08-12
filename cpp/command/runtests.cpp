@@ -22,4 +22,9 @@
 
 using namespace std;
 
-
+int MainCmds::testarchitecturedesc(const vector<string>& args) {
+  if(args.size() != 1 || args[0] != "testarchitecturedesc")
+    throw StringError("testarchitecturedesc takes no arguments");
+  Tests::runArchitectureDescTests();
+  return 0;
+}
