@@ -99,6 +99,22 @@ struct PreparedPlan {
   FfnRecipe ffnFor(const CudaOpRegistry::CapabilityKey& key) const;
 };
 
+// Construction-time shape contract for the experimental C256 INT8 path.
+// Attention declares independent X/Y runtime dependence (learned RoPE), while
+// FFN deliberately declares area-only dependence and therefore has boardX/Y=0
+// in its CapabilityKey.
+struct Int8ExperimentEligibility {
+  bool allTransformerShapesEligible = false;
+  int attentionCount = 0;
+  int ffnCount = 0;
+
+  bool exactCurrent24LayerModel() const {
+    return allTransformerShapesEligible && attentionCount == 24 && ffnCount == 24;
+  }
+};
+
+Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& plan);
+
 // Stable construction-time ABI identity. Zero means that at least one
 // required runtime version was unavailable. Exact certification separately
 // locks every measured version; this hash prevents a caller from substituting

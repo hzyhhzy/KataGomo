@@ -336,6 +336,36 @@ FfnRecipe PreparedPlan::ffnFor(const CapabilityKey& key) const {
   return ffnRecipe(record != nullptr && record->found ? &record->operation : nullptr);
 }
 
+Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& plan) {
+  Int8ExperimentEligibility result;
+  result.allTransformerShapesEligible = plan.runtime.maskMode == MaskMode::None;
+  for(const PreparedRecord& record: plan.records) {
+    const CapabilityKey& key = record.request.key;
+    if(key.kind == ArchitectureOpKind::TransformerAttention) {
+      const bool eligible = key.boardX == 15 && key.boardY == 15 &&
+        key.spatialArea == 225 && key.inChannels == 256 &&
+        key.outChannels == 256 && key.numHeads == 8 &&
+        key.numKVHeads == 8 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
+        key.maskMode == MaskMode::None;
+      result.allTransformerShapesEligible =
+        result.allTransformerShapesEligible && eligible;
+      if(eligible)
+        result.attentionCount++;
+    }
+    else if(key.kind == ArchitectureOpKind::TransformerFFN) {
+      // FFN keys depend on spatial area, not the independent board axes.
+      const bool eligible = key.spatialArea == 225 &&
+        key.inChannels == 256 && key.outChannels == 256 &&
+        key.auxiliaryChannels == 768 && key.maskMode == MaskMode::None;
+      result.allTransformerShapesEligible =
+        result.allTransformerShapesEligible && eligible;
+      if(eligible)
+        result.ffnCount++;
+    }
+  }
+  return result;
+}
+
 PreparedPlan preparePlan(
   const ArchitectureDesc& architecture,
   const RuntimeOpContext& runtime,

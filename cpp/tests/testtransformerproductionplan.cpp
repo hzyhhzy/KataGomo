@@ -647,6 +647,41 @@ void Tests::runTransformerProductionPlanTests() {
     CudaTransformerWinner::preparePlan(architectureA,b36,device);
   CudaTransformerWinner::PreparedPlan productionG1B =
     CudaTransformerWinner::preparePlan(architectureB,b36,device);
+  const CudaTransformerWinner::Int8ExperimentEligibility int8G1 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(productionG1A);
+  testAssert(int8G1.exactCurrent24LayerModel());
+  testAssert(int8G1.attentionCount == 24);
+  testAssert(int8G1.ffnCount == 24);
+  for(const CudaTransformerWinner::PreparedRecord& record: productionG1A.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerAttention) {
+      testAssert(record.request.key.boardX == 15);
+      testAssert(record.request.key.boardY == 15);
+      testAssert(record.request.key.spatialArea == 225);
+    }
+    else if(record.request.key.kind == ArchitectureOpKind::TransformerFFN) {
+      testAssert(record.request.key.boardX == 0);
+      testAssert(record.request.key.boardY == 0);
+      testAssert(record.request.key.spatialArea == 225);
+    }
+  }
+  CudaTransformerWinner::PreparedPlan wrongInt8Area = productionG1A;
+  for(CudaTransformerWinner::PreparedRecord& record: wrongInt8Area.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerFFN) {
+      record.request.key.spatialArea = 226;
+      break;
+    }
+  }
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    wrongInt8Area).exactCurrent24LayerModel());
+  CudaTransformerWinner::PreparedPlan wrongInt8Width = productionG1A;
+  for(CudaTransformerWinner::PreparedRecord& record: wrongInt8Width.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerAttention) {
+      record.request.key.inChannels = 384;
+      break;
+    }
+  }
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    wrongInt8Width).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architectureA,productionG1A,24,true,assertExactAttentionRecipe,assertExactFfnRecipe
   );

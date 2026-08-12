@@ -559,42 +559,21 @@ struct CudaHandles {
       logger->write(
         string("RENJU15_SM120_INT8_EXPERIMENT_RUNTIME_GATE enabled=") +
         (int8RuntimeEnabled ? "1" : "0"));
-    int candidateInt8Qk = 0;
-    int candidateInt8DualFfn = 0;
-    bool allInt8ShapesEligible =
-      transformerPlan->runtime.maskMode == CudaOpRegistry::MaskMode::None;
-    for(const CudaTransformerWinner::PreparedRecord& record:
-        transformerPlan->records) {
-      const auto& key = record.request.key;
-      if(key.kind ==
-         NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention) {
-        const bool eligible = key.boardX == 15 && key.boardY == 15 &&
-          key.spatialArea == 225 && key.inChannels == 256 &&
-          key.outChannels == 256 && key.numHeads == 8 &&
-          key.numKVHeads == 8 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
-          key.maskMode == CudaOpRegistry::MaskMode::None;
-        allInt8ShapesEligible = allInt8ShapesEligible && eligible;
-        if(eligible)
-          candidateInt8Qk++;
-      }
-      else if(key.kind ==
-              NeuralNetArchitecture::ArchitectureOpKind::TransformerFFN) {
-        const bool eligible = key.boardX == 15 && key.boardY == 15 &&
-          key.spatialArea == 225 && key.inChannels == 256 &&
-          key.outChannels == 256 && key.auxiliaryChannels == 768 &&
-          key.maskMode == CudaOpRegistry::MaskMode::None;
-        allInt8ShapesEligible = allInt8ShapesEligible && eligible;
-        if(eligible)
-          candidateInt8DualFfn++;
-      }
-    }
+    const CudaTransformerWinner::Int8ExperimentEligibility int8Eligibility =
+      CudaTransformerWinner::evaluateInt8ExperimentEligibility(*transformerPlan);
+    if(int8RuntimeEnabled && logger != NULL)
+      logger->write(
+        "RENJU15_SM120_INT8_EXPERIMENT_ELIGIBILITY attention=" +
+        Global::intToString(int8Eligibility.attentionCount) + " ffn=" +
+        Global::intToString(int8Eligibility.ffnCount) + " all=" +
+        (int8Eligibility.allTransformerShapesEligible ? "1" : "0"));
     // This first experiment has only been accuracy-qualified for the current
     // 24-attention/24-FFN model on a 15x15 board. Runtime batch remains dynamic.
-    int8ExperimentPlan = int8RuntimeEnabled && allInt8ShapesEligible &&
-      candidateInt8Qk == 24 && candidateInt8DualFfn == 24;
+    int8ExperimentPlan =
+      int8RuntimeEnabled && int8Eligibility.exactCurrent24LayerModel();
     if(int8ExperimentPlan) {
-      expectedInt8Qk = candidateInt8Qk;
-      expectedInt8DualFfn = candidateInt8DualFfn;
+      expectedInt8Qk = int8Eligibility.attentionCount;
+      expectedInt8DualFfn = int8Eligibility.ffnCount;
     }
 #endif
     for(const CudaTransformerWinner::PreparedRecord& record:
