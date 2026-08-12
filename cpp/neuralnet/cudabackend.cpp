@@ -331,7 +331,9 @@ struct CudaHandles {
   bool loggedFfnDown;
   bool loggedCublasResidual;
   bool loggedWinner;
+#if KATAGO_CUDA_HAS_SDPA
   std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
+#endif
   bool exactWinnerPlan;
   int expectedWinnerRms;
   int expectedWinnerQkvRope;
@@ -370,7 +372,9 @@ struct CudaHandles {
       loggedFfnDown(false),
       loggedCublasResidual(false),
       loggedWinner(false),
+#if KATAGO_CUDA_HAS_SDPA
       loggedSdpaKeys(),
+#endif
       exactWinnerPlan(false),
       expectedWinnerRms(0),
       expectedWinnerQkvRope(0),
