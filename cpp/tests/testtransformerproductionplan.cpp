@@ -942,6 +942,29 @@ void Tests::runTransformerProductionPlanTests() {
   testAssert(int8V104.explicitV104ArchitectureSignatureMatches);
   testAssert(!int8V104.legacyV102ArchitectureSignatureMatches);
 
+  // Combined INT8+C384 integration contract: same-GPU evaluator concurrency
+  // is transported through RuntimeOpContext for launch-time C384 policy only.
+  // It must neither alter the weight-free v104 model identity nor disable the
+  // qualified C256 INT8 recipe. Each prepared plan retains the requested lane
+  // count for diagnostics/dispatch while remaining independently eligible.
+  for(uint32_t sameGpuConcurrency: {1u,2u,3u}) {
+    RuntimeOpContext concurrentRuntime = b36;
+    concurrentRuntime.streamCount = sameGpuConcurrency;
+    const CudaTransformerWinner::PreparedPlan concurrentV104 =
+      CudaTransformerWinner::preparePlan(
+        architectureV104,concurrentRuntime,device);
+    testAssert(concurrentV104.runtime.streamCount == sameGpuConcurrency);
+    testAssert(concurrentV104.architecture == architectureV104.signature);
+    const CudaTransformerWinner::Int8ExperimentEligibility concurrentEligibility =
+      CudaTransformerWinner::evaluateInt8ExperimentEligibility(concurrentV104);
+    testAssert(concurrentEligibility.exactCurrent24LayerModel());
+    testAssert(concurrentEligibility.explicitV104ArchitectureSignatureMatches);
+    assertAllTransformerRecipes(
+      architectureV104,concurrentV104,24,true,
+      assertExactAttentionRecipe,assertExactFfnRecipe
+    );
+  }
+
   // Same local shapes and counts but a different semantic block order must
   // not inherit the qualified whole-model INT8 arithmetic recipe.
   ModelDesc reorderedModel = makeModel(
@@ -1231,10 +1254,40 @@ void Tests::runTransformerProductionPlanTests() {
   // and do not prepare never-launched specialized handles.
   CudaTransformerWinner::PreparedPlan productionWide36 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b36,device);
-  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
-    productionG6).exactCurrent24LayerModel());
+  const CudaTransformerWinner::Int8ExperimentEligibility wideInt8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(productionWide36);
+  testAssert(!wideInt8.exactCurrent24LayerModel());
+  testAssert(!wideInt8.architectureSignatureMatches);
+  testAssert(!wideInt8.explicitV104ArchitectureSignatureMatches);
+  testAssert(!wideInt8.legacyV102ArchitectureSignatureMatches);
   assertAllTransformerRecipes(
     wideArchitecture,productionWide36,36,true,
+    assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+
+  // A v104 wire version does not make a structurally different C384 model
+  // eligible for the C256 INT8 runtime plan. Independent model-format
+  // validation still applies to every v104 model, but the exact
+  // C256/H8/F768 architecture gate remains false while all 36 C384 records
+  // select their measured FP16 recipes. Therefore CudaHandles cannot enable
+  // int8ExperimentPlan or its scratch/embedded-entry consumption paths.
+  ModelDesc wideModelV104 =
+    makeModel(36,384,1024,12,32,0.7f,"b36c384-h12-f1024-v104");
+  wideModelV104.version = 104;
+  wideModelV104.trunk.version = 104;
+  wideModelV104.policyHead.version = 104;
+  wideModelV104.valueHead.version = 104;
+  const ArchitectureDesc wideArchitectureV104 = buildArchitectureDesc(wideModelV104);
+  const CudaTransformerWinner::PreparedPlan productionWideV104 =
+    CudaTransformerWinner::preparePlan(wideArchitectureV104,b36,device);
+  const CudaTransformerWinner::Int8ExperimentEligibility wideV104Int8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(productionWideV104);
+  testAssert(!wideV104Int8.exactCurrent24LayerModel());
+  testAssert(!wideV104Int8.architectureSignatureMatches);
+  testAssert(!wideV104Int8.explicitV104ArchitectureSignatureMatches);
+  testAssert(!wideV104Int8.legacyV102ArchitectureSignatureMatches);
+  assertAllTransformerRecipes(
+    wideArchitectureV104,productionWideV104,36,true,
     assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
   );
   for(int batch: {1,8,16,24,32,36,64,128,129,256,512,4660}) {
