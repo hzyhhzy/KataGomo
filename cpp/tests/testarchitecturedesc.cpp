@@ -8,6 +8,8 @@
 #include "../neuralnet/architecturedesc.h"
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/desc.h"
+#include "../neuralnet/modelversion.h"
+#include "../neuralnet/nativeint8quant.h"
 
 using namespace std;
 using namespace NeuralNetArchitecture;
@@ -233,7 +235,14 @@ static TacticRegistration registration(
 
 }  // namespace
 
-void Tests::runArchitectureDescTests() {
+void Tests::runArchitectureDescTests(const string& nativeModelFile) {
+  static_assert(NNModelVersion::defaultModelVersion == 102,
+    "Explicit INT8 must not change the default exporter/model version");
+  testAssert(NNModelVersion::getInputsVersion(104) == 101);
+  testAssert(NNModelVersion::getNumSpatialFeatures(104) ==
+    NNModelVersion::getNumSpatialFeatures(102));
+  testAssert(NNModelVersion::getNumGlobalFeatures(104) ==
+    NNModelVersion::getNumGlobalFeatures(102));
   static_assert(is_trivially_copyable<OpRequest>::value,"OpRequest should be POD-like");
   static_assert(is_trivially_copyable<CapabilityKey>::value,"CapabilityKey should be POD-like");
   static_assert(is_trivially_copyable<TacticId>::value,"TacticId should be POD-like");
@@ -390,5 +399,146 @@ void Tests::runArchitectureDescTests() {
   PlanFingerprint planChanged = fingerprintPreparedPlan(oneRequest,onePrepared);
   testAssert(planA != planChanged);
 
-  cout << "Architecture descriptor and CUDA op registry tests passed" << endl;
+  // v104 embeds deterministic clip4/per-tensor signed-int8 bytes while
+  // retaining and binding every canonical FP32 master. Keep this fixture small
+  // but preserve the production 24 attention + 24 SwiGLU FFN topology.
+  ModelDesc quantModel = makeModel(24,4,8,1,4,0.125f);
+  NativeInt8Quant::Metadata quant = NativeInt8Quant::build(quantModel);
+  testAssert(quant.present());
+  testAssert(quant.entries.size() == NativeInt8Quant::REQUIRED_ENTRY_COUNT);
+  testAssert(quant.zeroPoint == 0);
+  testAssert(quant.activationClipBits == 0x40800000U);
+  testAssert(quant.activationScaleBits == 0x3D010204U);
+  for(uint32_t layer = 0; layer < 24; layer++) {
+    const size_t base = (size_t)layer * 3;
+    testAssert(quant.entries[base].topologyIndex == 2 + layer*2);
+    testAssert(quant.entries[base].role == NativeInt8Quant::Role::QK);
+    testAssert(quant.entries[base+1].topologyIndex == 3 + layer*2);
+    testAssert(quant.entries[base+1].role == NativeInt8Quant::Role::FfnUp);
+    testAssert(quant.entries[base+2].topologyIndex == 3 + layer*2);
+    testAssert(quant.entries[base+2].role == NativeInt8Quant::Role::FfnGate);
+  }
+  size_t qkCount = 0;
+  size_t upCount = 0;
+  size_t gateCount = 0;
+  for(const NativeInt8Quant::Entry& entry: quant.entries) {
+    if(entry.role == NativeInt8Quant::Role::QK) {
+      qkCount++;
+      testAssert(entry.layerNames.size() == 2);
+      testAssert(entry.outputChannels == 8);
+    }
+    else if(entry.role == NativeInt8Quant::Role::FfnUp) {
+      upCount++;
+      testAssert(entry.layerNames.size() == 1);
+      testAssert(entry.outputChannels == 8);
+    }
+    else if(entry.role == NativeInt8Quant::Role::FfnGate) {
+      gateCount++;
+      testAssert(entry.layerNames.size() == 1);
+      testAssert(entry.outputChannels == 8);
+    }
+    else
+      testAssert(false);
+    testAssert(entry.inputChannels == 4);
+    testAssert(entry.zeroPoint == 0);
+    testAssert(entry.layout ==
+      NativeInt8Quant::PackedLayout::OutputMajorKContiguous);
+    testAssert(entry.activationScaleBits == quant.activationScaleBits);
+    testAssert(entry.packedWeights.size() ==
+      (size_t)entry.inputChannels * entry.outputChannels);
+    for(int8_t value: entry.packedWeights)
+      testAssert(value != (int8_t)-128);
+  }
+  testAssert(qkCount == 24 && upCount == 24 && gateCount == 24);
+
+  const vector<uint8_t> quantPayload = NativeInt8Quant::encodePayload(quant);
+  NativeInt8Quant::Metadata decoded =
+    NativeInt8Quant::decodePayload(quantPayload);
+  NativeInt8Quant::validate(quantModel,decoded);
+  testAssert(NativeInt8Quant::encodePayload(decoded) == quantPayload);
+
+  stringstream trailerStream(ios::in | ios::out | ios::binary);
+  NativeInt8Quant::writeTrailer(trailerStream,quant);
+  const string canonicalTrailer = trailerStream.str();
+  testAssert(canonicalTrailer.find(
+    "@KATAGO_QUANT_TRAILER@ 1 ") == 0);
+  trailerStream.seekg(0);
+  decoded = NativeInt8Quant::readTrailer(trailerStream,quantModel);
+  NativeInt8Quant::validate(quantModel,decoded);
+
+  const auto rejectedTrailer = [&](const string& bytes, const ModelDesc& model) {
+    stringstream input(bytes,ios::in | ios::binary);
+    try {
+      (void)NativeInt8Quant::readTrailer(input,model);
+      return false;
+    }
+    catch(const StringError&) {
+      return true;
+    }
+  };
+
+  string corruptOuterSha = canonicalTrailer;
+  corruptOuterSha[corruptOuterSha.size()-1] ^= 1;
+  testAssert(rejectedTrailer(corruptOuterSha,quantModel));
+  testAssert(rejectedTrailer(canonicalTrailer + "\n",quantModel));
+  testAssert(rejectedTrailer(
+    canonicalTrailer.substr(0,canonicalTrailer.size()-1),quantModel));
+  testAssert(rejectedTrailer(
+    "@KATAGO_QUANT_TRAILER@ 2 1 " + string(64,'0') + " @BIN@x",
+    quantModel));
+
+  NativeInt8Quant::Metadata badEntry = NativeInt8Quant::build(quantModel);
+  badEntry.entries[0].packedWeights[0] ^= 1;
+  stringstream badEntryStream(ios::in | ios::out | ios::binary);
+  NativeInt8Quant::writeTrailer(badEntryStream,badEntry);
+  testAssert(rejectedTrailer(badEntryStream.str(),quantModel));
+
+  NativeInt8Quant::Metadata reordered = NativeInt8Quant::build(quantModel);
+  std::swap(reordered.entries[0],reordered.entries[1]);
+  stringstream reorderedStream(ios::in | ios::out | ios::binary);
+  NativeInt8Quant::writeTrailer(reorderedStream,reordered);
+  testAssert(rejectedTrailer(reorderedStream.str(),quantModel));
+
+  // A different trained weight tensor with identical architecture must not be
+  // allowed to reuse bytes bound to the original master.
+  TransformerAttentionDesc* firstAttention = (TransformerAttentionDesc*)
+    quantModel.trunk.blocks[0].second.get();
+  firstAttention->qProj.weights[0] += 0.03125f;
+  testAssert(rejectedTrailer(canonicalTrailer,quantModel));
+
+  // Optional integration gate for a real native model. V104 loading reaches
+  // the strict EOF parser and recomputes all 72 master/packed hashes. The v102
+  // branch proves that legacy native artifacts still require no trailer.
+  if(!nativeModelFile.empty()) {
+    ModelDesc external;
+    ModelDesc::loadFromFileMaybeGZipped(nativeModelFile,external,"");
+    const string externalArchitecture =
+      buildArchitectureDesc(external).signature.toHex();
+    if(external.version == (int)NativeInt8Quant::MODEL_VERSION) {
+      testAssert(external.nativeInt8Quant.present());
+      testAssert(external.nativeInt8Quant.entries.size() ==
+        NativeInt8Quant::REQUIRED_ENTRY_COUNT);
+      // NativeInt8Quant::build calls the same perMatrixScale and
+      // quantizeAndPackMatrix helpers used by CUDA's current load-time path.
+      // Byte-equality here is the cross-language Python exporter/runtime gate.
+      const NativeInt8Quant::Metadata runtimeRebuilt =
+        NativeInt8Quant::build(external);
+      testAssert(NativeInt8Quant::encodePayload(external.nativeInt8Quant) ==
+        NativeInt8Quant::encodePayload(runtimeRebuilt));
+      testAssert(externalArchitecture ==
+        "bbfa5957d8d87f1225fe4e679be055ff4de4c40c4f8437a19c7be3052c23f49b");
+      cout << "Loaded and validated native v104 model: " <<
+        nativeModelFile << endl;
+    }
+    else {
+      testAssert(external.version == 102);
+      testAssert(!external.nativeInt8Quant.present());
+      testAssert(externalArchitecture ==
+        "ad026614455c0475b31997f1c5452af99d1eb347713f77950671fc5d1a522f24");
+      cout << "Loaded unchanged legacy native v102 model: " <<
+        nativeModelFile << endl;
+    }
+  }
+
+  cout << "Architecture descriptor, CUDA op registry, and native INT8 trailer tests passed" << endl;
 }

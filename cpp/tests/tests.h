@@ -15,7 +15,7 @@ class NNEvaluator;
 
 namespace Tests {
   // testarchitecturedesc.cpp
-  void runArchitectureDescTests();
+  void runArchitectureDescTests(const std::string& nativeModelFile = "");
 
   // testtransformerproductionplan.cpp
   void runTransformerProductionPlanTests();

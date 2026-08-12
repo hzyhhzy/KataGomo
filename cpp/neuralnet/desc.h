@@ -11,6 +11,7 @@
 #include "../game/rules.h"
 #include "../neuralnet/activations.h"
 #include "../neuralnet/onnxprotoreader.h"
+#include "../neuralnet/nativeint8quant.h"
 
 struct ConvLayerDesc {
   std::string name;
@@ -349,6 +350,7 @@ struct ModelDesc {
   TrunkDesc trunk;
   PolicyHeadDesc policyHead;
   ValueHeadDesc valueHead;
+  NativeInt8Quant::Metadata nativeInt8Quant;
 
   ModelDesc();
   ~ModelDesc();

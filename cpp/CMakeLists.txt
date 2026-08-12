@@ -354,6 +354,7 @@ add_executable(katago
   neuralnet/nneval.cpp
   neuralnet/int8policy.cpp
   neuralnet/desc.cpp
+  neuralnet/nativeint8quant.cpp
   neuralnet/architecturedesc.cpp
   neuralnet/cudaopregistry.cpp
   neuralnet/cudabackend_transformer_winner.cpp

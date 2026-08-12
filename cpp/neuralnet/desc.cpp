@@ -7,6 +7,7 @@
 #include "../core/global.h"
 #include "../core/fileutils.h"
 #include "../neuralnet/modelversion.h"
+#include "../neuralnet/nativeint8quant.h"
 #include "../neuralnet/nninterface.h"
 
 using namespace std;
@@ -1310,6 +1311,8 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net is from an extremely old version of KataGo and is no longer supported by the engine. Model version: " + Global::intToString(version));
   if(version > NNModelVersion::latestModelVersionImplemented)
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));
+  if(version == (int)NativeInt8Quant::MODEL_VERSION && !binaryFloats)
+    throw StringError("Model v104 explicit INT8 metadata is supported only in native .bin/.bin.gz format");
 
   in >> numInputChannels;
   if(in.fail())
@@ -1365,6 +1368,9 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
                ": trunk.trunkNumChannels (%d) != valueHead.v1Conv.inChannels (%d)",
                trunk.trunkNumChannels,
                valueHead.v1Conv.inChannels));
+
+  if(version == (int)NativeInt8Quant::MODEL_VERSION)
+    nativeInt8Quant = NativeInt8Quant::readTrailer(in,*this);
 }
 
 ModelDesc::~ModelDesc() {}
@@ -1386,6 +1392,7 @@ ModelDesc& ModelDesc::operator=(ModelDesc&& other) {
   trunk = std::move(other.trunk);
   policyHead = std::move(other.policyHead);
   valueHead = std::move(other.valueHead);
+  nativeInt8Quant = std::move(other.nativeInt8Quant);
   return *this;
 }
 
@@ -1483,6 +1490,8 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
   descBuf.onnxHeader.load(onnxFile);
 
   descBuf.version = descBuf.onnxHeader.modelVersion;
+  if(descBuf.version == (int)NativeInt8Quant::MODEL_VERSION)
+    throw StringError("Model v104 explicit INT8 metadata is supported only in native .bin/.bin.gz format");
   descBuf.name = descBuf.onnxHeader.modelName;
   descBuf.numInputChannels = descBuf.onnxHeader.num_spatial_inputs;
   descBuf.numInputGlobalChannels = descBuf.onnxHeader.num_global_inputs;
@@ -1498,10 +1507,10 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
 }
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 103, "");
+  static_assert(NNModelVersion::latestModelVersionImplemented == 104, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 103) {
+  if(version <= 104) {
   }
   else {
     ASSERT_UNREACHABLE;

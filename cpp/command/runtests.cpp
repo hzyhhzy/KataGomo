@@ -23,9 +23,9 @@
 using namespace std;
 
 int MainCmds::testarchitecturedesc(const vector<string>& args) {
-  if(args.size() != 1 || args[0] != "testarchitecturedesc")
-    throw StringError("testarchitecturedesc takes no arguments");
-  Tests::runArchitectureDescTests();
+  if((args.size() != 1 && args.size() != 2) || args[0] != "testarchitecturedesc")
+    throw StringError("testarchitecturedesc takes at most one native model path");
+  Tests::runArchitectureDescTests(args.size() == 2 ? args[1] : "");
   return 0;
 }
 
