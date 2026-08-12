@@ -567,6 +567,14 @@ void Tests::runTransformerProductionPlanTests() {
   ArchitectureDesc architectureB = buildArchitectureDesc(weightsB);
   testAssert(architectureA.signature == architectureB.signature);
   testAssert(architectureA.canonicalEncoding == architectureB.canonicalEncoding);
+  testAssert(
+    architectureA.signature.toHex() ==
+    "b1e858d6d8d5faa493bfdce7f593fadacb30796e85a1d452ebc9bcc41dd483dc"
+  );
+  testAssert(
+    CudaTransformerWinner::int8QualifiedArchitectureSignature() ==
+    architectureA.signature
+  );
   testAssert(getModelProvenance(weightsA).modelName != getModelProvenance(weightsB).modelName);
   testAssert(getModelProvenance(weightsA).artifactSha256 != getModelProvenance(weightsB).artifactSha256);
 
@@ -650,8 +658,30 @@ void Tests::runTransformerProductionPlanTests() {
   const CudaTransformerWinner::Int8ExperimentEligibility int8G1 =
     CudaTransformerWinner::evaluateInt8ExperimentEligibility(productionG1A);
   testAssert(int8G1.exactCurrent24LayerModel());
+  testAssert(int8G1.architectureSignatureMatches);
+  testAssert(int8G1.preparedPlanFingerprintValid);
   testAssert(int8G1.attentionCount == 24);
   testAssert(int8G1.ffnCount == 24);
+  testAssert(CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    productionG1B).exactCurrent24LayerModel());
+
+  // Same local shapes and counts but a different semantic block order must
+  // not inherit the qualified whole-model INT8 arithmetic recipe.
+  ModelDesc reorderedModel = makeModel(
+    24,256,768,8,32,0.4f,"reordered-attention-ffn");
+  std::swap(reorderedModel.trunk.blocks[1],reorderedModel.trunk.blocks[2]);
+  ArchitectureDesc reorderedArchitecture = buildArchitectureDesc(reorderedModel);
+  testAssert(reorderedArchitecture.signature != architectureA.signature);
+  CudaTransformerWinner::PreparedPlan reorderedPlan =
+    CudaTransformerWinner::preparePlan(reorderedArchitecture,b36,device);
+  const CudaTransformerWinner::Int8ExperimentEligibility reorderedInt8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(reorderedPlan);
+  testAssert(!reorderedInt8.architectureSignatureMatches);
+  testAssert(reorderedInt8.preparedPlanFingerprintValid);
+  testAssert(reorderedInt8.allTransformerShapesEligible);
+  testAssert(reorderedInt8.attentionCount == 24);
+  testAssert(reorderedInt8.ffnCount == 24);
+  testAssert(!reorderedInt8.exactCurrent24LayerModel());
   for(const CudaTransformerWinner::PreparedRecord& record: productionG1A.records) {
     if(record.request.key.kind == ArchitectureOpKind::TransformerAttention) {
       testAssert(record.request.key.boardX == 15);
@@ -682,6 +712,24 @@ void Tests::runTransformerProductionPlanTests() {
   }
   testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
     wrongInt8Width).exactCurrent24LayerModel());
+  CudaTransformerWinner::PreparedPlan wrongInt8Fingerprint = productionG1A;
+  wrongInt8Fingerprint.fingerprint.digest[0] ^= 1;
+  const CudaTransformerWinner::Int8ExperimentEligibility badFingerprintInt8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+      wrongInt8Fingerprint);
+  testAssert(badFingerprintInt8.architectureSignatureMatches);
+  testAssert(!badFingerprintInt8.preparedPlanFingerprintValid);
+  testAssert(!badFingerprintInt8.exactCurrent24LayerModel());
+  CudaTransformerWinner::PreparedPlan wrongRuntimeBoard = productionG1A;
+  wrongRuntimeBoard.runtime.boardX = 9;
+  wrongRuntimeBoard.runtime.boardY = 25;
+  const CudaTransformerWinner::Int8ExperimentEligibility badRuntimeBoardInt8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+      wrongRuntimeBoard);
+  testAssert(badRuntimeBoardInt8.architectureSignatureMatches);
+  testAssert(badRuntimeBoardInt8.preparedPlanFingerprintValid);
+  testAssert(!badRuntimeBoardInt8.allTransformerShapesEligible);
+  testAssert(!badRuntimeBoardInt8.exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architectureA,productionG1A,24,true,assertExactAttentionRecipe,assertExactFfnRecipe
   );
@@ -751,6 +799,8 @@ void Tests::runTransformerProductionPlanTests() {
   // blocks still select the same recipes and exact local prepared operations.
   CudaTransformerWinner::PreparedPlan productionG5 =
     CudaTransformerWinner::preparePlan(architecture48,b36,device);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    productionG5).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architecture48,productionG5,48,true,assertExactAttentionRecipe,assertExactFfnRecipe
   );
@@ -777,6 +827,8 @@ void Tests::runTransformerProductionPlanTests() {
   // QKV, learned half2 RoPE, and cuBLAS beta-one residual pieces remain active.
   CudaTransformerWinner::PreparedPlan productionG2 =
     CudaTransformerWinner::preparePlan(architectureA,board19,device);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    productionG2).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architectureA,productionG2,24,true,
     assertC256StaticAttentionRecipe,assertC256StaticFfnRecipe
@@ -786,6 +838,8 @@ void Tests::runTransformerProductionPlanTests() {
   // The no-mask RMS/FA/fused-QKV/beta-one/dual/down tactics all fail closed.
   CudaTransformerWinner::PreparedPlan productionG3 =
     CudaTransformerWinner::preparePlan(architectureA,masked,device);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    productionG3).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architectureA,productionG3,24,false,
     assertMaskSafeAttentionRecipe,assertDisabledFfnRecipe
@@ -796,6 +850,10 @@ void Tests::runTransformerProductionPlanTests() {
   // or the B36-only fused QKV+RoPE recipe.
   CudaTransformerWinner::PreparedPlan productionG4 =
     CudaTransformerWinner::preparePlan(architectureA,b32,device);
+  // Batch is intentionally runtime-dynamic and does not alter architecture
+  // qualification; kernel support handles actual-M independently.
+  testAssert(CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    productionG4).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architectureA,productionG4,24,true,
     assertB32DynamicAttentionRecipe,assertExactFfnRecipe
@@ -806,6 +864,8 @@ void Tests::runTransformerProductionPlanTests() {
   // residual GEMMs. No C256/H8/F768-only component may leak into this plan.
   CudaTransformerWinner::PreparedPlan productionG6 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b36,device);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    productionG6).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     wideArchitecture,productionG6,32,true,assertWideAttentionRecipe,assertGenericFfnRecipe
   );

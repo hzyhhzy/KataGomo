@@ -587,7 +587,11 @@ struct CudaHandles {
       CudaTransformerWinner::evaluateInt8ExperimentEligibility(*transformerPlan);
     if(int8RuntimeEnabled && logger != NULL)
       logger->write(
-        "RENJU15_SM120_INT8_EXPERIMENT_ELIGIBILITY attention=" +
+        string("RENJU15_SM120_INT8_EXPERIMENT_ELIGIBILITY architecture=") +
+        (int8Eligibility.architectureSignatureMatches ? "1" : "0") +
+        " plan_fingerprint=" +
+        (int8Eligibility.preparedPlanFingerprintValid ? "1" : "0") +
+        " attention=" +
         Global::intToString(int8Eligibility.attentionCount) + " ffn=" +
         Global::intToString(int8Eligibility.ffnCount) + " all=" +
         (int8Eligibility.allTransformerShapesEligible ? "1" : "0"));

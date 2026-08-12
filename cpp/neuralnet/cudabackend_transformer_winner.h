@@ -104,14 +104,23 @@ struct PreparedPlan {
 // FFN deliberately declares area-only dependence and therefore has boardX/Y=0
 // in its CapabilityKey.
 struct Int8ExperimentEligibility {
+  bool architectureSignatureMatches = false;
+  bool preparedPlanFingerprintValid = false;
   bool allTransformerShapesEligible = false;
   int attentionCount = 0;
   int ffnCount = 0;
 
   bool exactCurrent24LayerModel() const {
-    return allTransformerShapesEligible && attentionCount == 24 && ffnCount == 24;
+    return architectureSignatureMatches && preparedPlanFingerprintValid &&
+      allTransformerShapesEligible && attentionCount == 24 && ffnCount == 24;
   }
 };
+
+// Weight-free whole-model identity qualified by the checked-in canonical CPU
+// fixture. Recomputed by buildArchitectureDesc(), so independently trained
+// weights and artifact provenance do not affect eligibility.
+const NeuralNetArchitecture::ArchitectureSignature&
+int8QualifiedArchitectureSignature();
 
 Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& plan);
 
