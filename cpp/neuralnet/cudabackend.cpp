@@ -417,6 +417,8 @@ struct CudaHandles {
   bool loggedInt8Qk;
   bool loggedInt8DualFfn;
   bool loggedInt8Experiment;
+  uint64_t int8HotPathHostAllocations;
+  uint64_t int8HotPathDeviceAllocations;
   bool loggedOutProjection;
   bool loggedFfnDown;
   bool loggedCublasResidual;
@@ -470,6 +472,8 @@ struct CudaHandles {
       loggedInt8Qk(false),
       loggedInt8DualFfn(false),
       loggedInt8Experiment(false),
+      int8HotPathHostAllocations(0),
+      int8HotPathDeviceAllocations(0),
       loggedOutProjection(false),
       loggedFfnDown(false),
       loggedCublasResidual(false),
@@ -691,7 +695,11 @@ struct CudaHandles {
        activeInt8DualFfn == expectedInt8DualFfn) {
       logger->write(
         "RENJU15_SM120_INT8_EXPERIMENT_ACTIVE quant=clip4-pt "
-        "qk_ops=24 dual_ffn_ops=24 upgate_matrices=48 down=fp16 board=15");
+        "qk_ops=24 dual_ffn_ops=24 upgate_matrices=48 down=fp16 board=15 "
+        "hot_host_allocations=" +
+        Global::uint64ToString(int8HotPathHostAllocations) +
+        " hot_device_allocations=" +
+        Global::uint64ToString(int8HotPathDeviceAllocations));
       loggedInt8Experiment = true;
     }
   }
@@ -844,6 +852,13 @@ struct ScratchBuffers {
   // Not scratch, but convenient to have here
   void* zeroBuf;
   void* oneBuf;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  // One persistent pair per ComputeHandle/owned stream. Transformer blocks are
+  // sequential on that stream, so all layers and all actual batch sizes reuse
+  // these max-batch allocations without lifetime overlap or allocator lookup.
+  void* int8NormBuf;
+  void* int8QkTempBuf;
+#endif
 
   ScratchBuffers() = delete;
   ScratchBuffers(const ScratchBuffers&) = delete;
@@ -853,7 +868,14 @@ struct ScratchBuffers {
     : batchXYFloatBytes((size_t)maxBatchSize * nnXLen * nnYLen * sizeof(float)),
       batchFloatBytes((size_t)maxBatchSize * sizeof(float)),
       batchXYBytes((size_t)maxBatchSize * nnXLen * nnYLen * (useFP16 ? sizeof(half_t) : sizeof(float))),
-      batchBytes((size_t)maxBatchSize * (useFP16 ? sizeof(half_t) : sizeof(float)))
+      batchBytes((size_t)maxBatchSize * (useFP16 ? sizeof(half_t) : sizeof(float))),
+      allocator(nullptr),
+      zeroBuf(nullptr),
+      oneBuf(nullptr)
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      , int8NormBuf(nullptr),
+      int8QkTempBuf(nullptr)
+#endif
   {
     std::function<void*(size_t)> allocateFunc = [](size_t size) {
       void* buf;
@@ -864,11 +886,42 @@ struct ScratchBuffers {
       cudaFree(buf);
     };
 
-    allocator = new SimpleAllocator<void*>(allocateFunc, releaseFunc);
-
-    CudaUtils::hostMallocZeroOneBufs(zeroBuf, oneBuf, useFP16);
+    try {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      // The experiment is restricted to C=256 and S=225; allocate once at
+      // ComputeHandle construction. No inference apply call performs cudaMalloc.
+      const size_t maxTokenRows = (size_t)maxBatchSize * nnXLen * nnYLen;
+      CUDA_ERR("ScratchBuffers:int8Norm",cudaMalloc(
+        &int8NormBuf,maxTokenRows * 256));
+      CUDA_ERR("ScratchBuffers:int8QkTemp",cudaMalloc(
+        &int8QkTempBuf,maxTokenRows * 512 * sizeof(half)));
+#endif
+      allocator = new SimpleAllocator<void*>(allocateFunc, releaseFunc);
+      CudaUtils::hostMallocZeroOneBufs(zeroBuf, oneBuf, useFP16);
+    }
+    catch(...) {
+      delete allocator;
+      allocator = nullptr;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      cudaFree(int8QkTempBuf);
+      cudaFree(int8NormBuf);
+      int8QkTempBuf = nullptr;
+      int8NormBuf = nullptr;
+#endif
+      if(zeroBuf != nullptr)
+        free(zeroBuf);
+      if(oneBuf != nullptr)
+        free(oneBuf);
+      zeroBuf = nullptr;
+      oneBuf = nullptr;
+      throw;
+    }
   }
   ~ScratchBuffers() {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    cudaFree(int8QkTempBuf);
+    cudaFree(int8NormBuf);
+#endif
     delete allocator;
     free(zeroBuf);
     free(oneBuf);
@@ -2361,13 +2414,10 @@ struct TransformerAttentionBlock {
       katago_renju15_int8_qk_sm120_supports(
         int8QkKernel,matBatchSize,inChannels,qTotalDim,kTotalDim,
         usingFP16,usingNHWC,maskBuf == nullptr);
-    std::unique_ptr<SizedBuf<void*>> int8NormBuf;
     if(useInt8Qk) {
-      int8NormBuf = std::make_unique<SizedBuf<void*>>(
-        scratch->allocator,(size_t)matBatchSize * inChannels);
       preLN.applyFp16Int8(
         cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
-        int8NormBuf->buf,maskBuf);
+        scratch->int8NormBuf,maskBuf);
     }
     else
 #endif
@@ -2395,16 +2445,12 @@ struct TransformerAttentionBlock {
 
     bool usedFusedQkvRope = false;
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-    std::unique_ptr<SizedBuf<void*>> int8QkContiguousBuf;
     if(useInt8Qk) {
-      int8QkContiguousBuf = std::make_unique<SizedBuf<void*>>(
-        scratch->allocator,(size_t)matBatchSize * (qTotalDim + kTotalDim) *
-          sizeof(half));
       CUDA_ERR(name.c_str(),katago_renju15_int8_qk_sm120_launch(
-        int8QkKernel,matBatchSize,(const int8_t*)int8NormBuf->buf,
-        (half*)int8QkContiguousBuf->buf,cudaHandles->stream));
+        int8QkKernel,matBatchSize,(const int8_t*)scratch->int8NormBuf,
+        (half*)scratch->int8QkTempBuf,cudaHandles->stream));
       CUDA_ERR(name.c_str(),katago_renju15_int8_qk_split_rope_sm120_launch(
-        (const half*)int8QkContiguousBuf->buf,(half*)qData,(half*)kData,
+        (const half*)scratch->int8QkTempBuf,(half*)qData,(half*)kData,
         (const half2*)ropeCosSinTable,batchSize,seqLen,cudaHandles->stream));
       // V intentionally remains on the FP16 path for this accuracy contract.
       vProj.apply(cudaHandles,scratch,matBatchSize,trunkScratchBuf,vData,
@@ -2849,13 +2895,10 @@ struct TransformerFFNBlock {
       katago_renju15_int8_dual_ffn_sm120_supports(
         int8DualFfnKernel,matBatchSize,numChannels,ffnChannels,
         usingFP16,usingNHWC,maskBuf == nullptr);
-    std::unique_ptr<SizedBuf<void*>> int8NormBuf;
     if(useInt8DualFfn) {
-      int8NormBuf = std::make_unique<SizedBuf<void*>>(
-        scratch->allocator,(size_t)matBatchSize * numChannels);
       preLN.applyFp16Int8(
         cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
-        int8NormBuf->buf,maskBuf);
+        scratch->int8NormBuf,maskBuf);
     }
     else
 #endif
@@ -2874,7 +2917,7 @@ struct TransformerFFNBlock {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(useInt8DualFfn) {
       CUDA_ERR(name.c_str(),katago_renju15_int8_dual_ffn_sm120_launch(
-        int8DualFfnKernel,matBatchSize,(const int8_t*)int8NormBuf->buf,
+        int8DualFfnKernel,matBatchSize,(const int8_t*)scratch->int8NormBuf,
         (half*)ffnBuf.buf,cudaHandles->stream));
       usedDualFfn = true;
       if(!cudaHandles->loggedInt8DualFfn && cudaHandles->logger != NULL) {
