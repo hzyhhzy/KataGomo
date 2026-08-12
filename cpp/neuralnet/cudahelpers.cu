@@ -2259,9 +2259,10 @@ void customCudaFlashAttention(
 //--------------------------------------------------------------------------------------------------------------
 // Convert mask [batchSize, seqLen] (0/1) into a fully-materialized additive attention bias of shape
 // [batchSize, seqLen, seqLen] suitable for cuDNN SDPA's `[B, 1, S, S]` bias input.
-//   bias[b, q, k] = (mask[b, k] != 0 ? 0 : -1e4).
-// Note: the q dim is fully replicated since the mask only depends on k. Using -1e4 (well within FP16
-// max ~65504) avoids -inf-minus-inf NaNs in cuDNN's softmax.
+//   bias[b, q, k] = (mask[b, k] != 0 ? 0 : -3e4).
+// Note: the q dim is fully replicated since the mask only depends on k. The finite value avoids
+// problematic infinity arithmetic, fits in half, and underflows to zero after softmax subtraction
+// for every realistic attention-logit range.
 //
 // Threading: one thread per (b, q, k). Inner-most (warp) axis = k so we write contiguous bytes per
 // (b, q) row. Each thread broadcast-reads mask[b, k], so within a warp all 32 lanes read consecutive
@@ -2275,7 +2276,7 @@ void maskToAttnBiasFullKernel(const float* mask, float* outBias, int seqLen) {
   if(k >= seqLen)
     return;
   float m = mask[b * seqLen + k];
-  outBias[((size_t)b * seqLen + q) * seqLen + k] = (m != 0.0f) ? 0.0f : -1e4f;
+  outBias[((size_t)b * seqLen + q) * seqLen + k] = (m != 0.0f) ? 0.0f : -3e4f;
 }
 
 __global__
@@ -2287,23 +2288,27 @@ void maskToAttnBiasFullHalfKernel(const half* mask, half* outBias, int seqLen) {
   if(k >= seqLen)
     return;
   float m = __half2float(mask[b * seqLen + k]);
-  outBias[((size_t)b * seqLen + q) * seqLen + k] = __float2half((m != 0.0f) ? 0.0f : -1e4f);
+  outBias[((size_t)b * seqLen + q) * seqLen + k] = __float2half((m != 0.0f) ? 0.0f : -3e4f);
 #endif
 }
 
-void customCudaMaskToAttnBiasFull(const float* mask, float* outBias, int batchSize, int seqLen) {
+void customCudaMaskToAttnBiasFull(
+  const float* mask, float* outBias, int batchSize, int seqLen, cudaStream_t stream
+) {
   if(batchSize <= 0 || seqLen <= 0)
     return;
   int threads = 128;
   dim3 blocks((seqLen + threads - 1) / threads, seqLen, batchSize);
-  maskToAttnBiasFullKernel<<<blocks, threads>>>(mask, outBias, seqLen);
+  maskToAttnBiasFullKernel<<<blocks, threads,0,stream>>>(mask, outBias, seqLen);
 }
-void customCudaMaskToAttnBiasFull(const half* mask, half* outBias, int batchSize, int seqLen) {
+void customCudaMaskToAttnBiasFull(
+  const half* mask, half* outBias, int batchSize, int seqLen, cudaStream_t stream
+) {
   if(batchSize <= 0 || seqLen <= 0)
     return;
   int threads = 128;
   dim3 blocks((seqLen + threads - 1) / threads, seqLen, batchSize);
-  maskToAttnBiasFullHalfKernel<<<blocks, threads>>>(mask, outBias, seqLen);
+  maskToAttnBiasFullHalfKernel<<<blocks, threads,0,stream>>>(mask, outBias, seqLen);
 }
 
 //--------------------------------------------------------------------------------------------------------------

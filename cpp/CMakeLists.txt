@@ -34,6 +34,8 @@ set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
 set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
 set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 29. Compiling with this will use more memory and slow down KataGo, even when playing on boards of size 19.")
+set(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA 1 CACHE BOOL
+  "Enable the vendored cuDNN Frontend FP16 scaled-dot-product-attention path in the CUDA backend")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -291,7 +293,22 @@ if(USE_BACKEND STREQUAL "CUDA")
   endif()
   find_library(CUDNN_LIBRARY cudnn HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_LIBRARY_DIR} PATH_SUFFIXES lib64)
   include_directories(SYSTEM ${CUDAToolkit_INCLUDE_DIRS} ${CUDNN_INCLUDE_DIR}) #SYSTEM is for suppressing some compiler warnings in thrust libraries
-  target_link_libraries(katago CUDA::cublas ${CUDNN_LIBRARY})
+  if(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/cudnn-frontend/include/cudnn_frontend.h")
+      message(FATAL_ERROR
+        "KATAGO_ENABLE_CUDNN_FRONTEND_SDPA requires external/cudnn-frontend/include/cudnn_frontend.h")
+    endif()
+    target_compile_definitions(katago PRIVATE KATAGO_ENABLE_CUDNN_FRONTEND_SDPA=1)
+    target_include_directories(katago SYSTEM PRIVATE external/cudnn-frontend/include)
+    # cuDNN Frontend's experimental OSS-engine headers contain inline NVRTC/driver references.
+    # They are pulled into this translation unit even though SDPA uses cuDNN heuristics.
+    target_link_libraries(katago CUDA::cublas CUDA::cublasLt ${CUDNN_LIBRARY} CUDA::nvrtc CUDA::cuda_driver)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      set_source_files_properties(neuralnet/cudabackend.cpp PROPERTIES COMPILE_OPTIONS "-Wno-null-dereference")
+    endif()
+  else()
+    target_link_libraries(katago CUDA::cublas ${CUDNN_LIBRARY})
+  endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)
   find_package(CUDAToolkit REQUIRED)

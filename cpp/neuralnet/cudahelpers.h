@@ -67,12 +67,13 @@ void customCudaApplyRoPE(
 
 //Convert a [batchSize, seqLen] mask (0/1) into a fully-materialized additive attention bias of shape
 //[batchSize, seqLen, seqLen] suitable for cuDNN SDPA's [B, 1, S, S] bias input:
-//  bias[b, q, k] = (mask[b, k] != 0 ? 0 : -1e4).
+//  bias[b, q, k] = (mask[b, k] != 0 ? 0 : -3e4).
 //cuDNN doesn't currently have plans for the [B, 1, 1, S] broadcast-over-q variant for our shape,
-//so we materialize the full bias. Using -1e4 (well within FP16 max ~65504) avoids -inf-minus-inf
-//NaNs in cuDNN's softmax.
-void customCudaMaskToAttnBiasFull(const float* mask, float* outBias, int batchSize, int seqLen);
-void customCudaMaskToAttnBiasFull(const half* mask, half* outBias, int batchSize, int seqLen);
+//so we materialize the full bias. The bias dtype matches Q/K/V (half on the SDPA route).
+void customCudaMaskToAttnBiasFull(
+  const float* mask, float* outBias, int batchSize, int seqLen, cudaStream_t stream);
+void customCudaMaskToAttnBiasFull(
+  const half* mask, half* outBias, int batchSize, int seqLen, cudaStream_t stream);
 
 //FlashAttention-style scaled dot product attention with online softmax.
 //Layout (BSHD, matching CUDA backend's Q/K/V buffers from MatMulLayer):

@@ -2,9 +2,15 @@
 #include "../neuralnet/cudaerrorcheck.h"
 #include "../neuralnet/cudaincludes.h"
 
-// The dependency-minimal generic fallback uses the in-tree online-softmax
-// attention kernel. Shape-specific attention will be selected separately.
-#define KATAGO_CUDA_HAS_SDPA 0
+// cuDNN Frontend is vendored and header-only. Include it before KataGo headers because it bundles
+// nlohmann/json 3.11.x under the same include guard as KataGo's older copy. The source-level version
+// gate preserves the in-tree fallback when building against older cuDNN headers.
+#if defined(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA) && KATAGO_ENABLE_CUDNN_FRONTEND_SDPA && CUDNN_VERSION >= 8903
+  #define KATAGO_CUDA_HAS_SDPA 1
+  #include <cudnn_frontend.h>
+#else
+  #define KATAGO_CUDA_HAS_SDPA 0
+#endif
 
 #include "../neuralnet/cudahelpers.h"
 #include "../neuralnet/cudautils.h"
@@ -14,9 +20,14 @@
 #include "../neuralnet/nneval.h"
 #include "../neuralnet/desc.h"
 
+#include "../core/hash.h"
 #include "../core/simpleallocator.h"
 
 #include "../external/half-2.2.0/include/half.hpp"
+
+#include <cmath>
+#include <memory>
+#include <unordered_map>
 
 //------------------------
 #include "../core/using.h"
@@ -45,10 +56,11 @@ void NeuralNet::globalCleanup() {
 //   element at (n, xy, h, d) lives at offset (h*headDim + d) + (n*seqLen + xy) * (numHeads*headDim).
 //
 // Masking: when a mask is present, we build a fully-materialized additive attention bias of shape
-// [B, 1, S, S] from the [B, S] mask: bias[b,q,k] = (mask[b,k] != 0 ? 0 : -1e4). cudnn does not have
+// [B, 1, S, S] from the [B, S] mask: bias[b,q,k] = (mask[b,k] != 0 ? 0 : -3e4). cudnn does not have
 // plans for the [B,1,1,S] broadcast pattern that would let us avoid this materialization, but the
 // full bias is correct for arbitrary (non-prefix) masks, which we need to support sub-board games.
-// The bias is built once per inference (the mask is the same across all 20 attention blocks).
+// The bias dtype is FP16, exactly matching Q/K/V. A float bias with half Q/K/V can pass graph
+// validation on cuDNN 9.x and then be reinterpreted incorrectly by the fused kernel.
 //
 // When mask is NULL (full-board, requireExactNNLen case), we build a no-bias graph instead, which
 // avoids both the extra memory and the bias build kernel.
@@ -115,45 +127,55 @@ struct SDPAGraphKeyHash {
 
 struct SDPAGraphCache {
   std::unordered_map<SDPAGraphKey, std::shared_ptr<SDPAPlanForBatchSize>, SDPAGraphKeyHash> plansByKey;
-  bool sdpaSupported;
-  string disableReason;
+  // A capability miss is local to the full key. An unsupported mask mode, sequence length, or batch
+  // must not disable SDPA for another otherwise-supported attention shape on the same handle.
+  std::unordered_map<SDPAGraphKey, string, SDPAGraphKeyHash> unsupportedByKey;
 
   SDPAGraphCache() :
     plansByKey(),
-    sdpaSupported(true),
-    disableReason()
+    unsupportedByKey()
   {}
 
   // Build (or fetch from cache) an execution plan for the given attention shape + batchSize + hasMask.
-  // Returns nullptr if SDPA is not supported for this configuration; caller should use fallback.
-  // On a build failure during warmup, SDPA is disabled going forward and nullptr is returned (the
-  // caller falls back to the custom kernel); outside of warmup such a failure is fatal. logger (if
-  // non-NULL) is used to report a disable.
-  std::shared_ptr<SDPAPlanForBatchSize> getOrBuildPlan(cudnnHandle_t cudnn, const SDPAGraphKey& key, Logger* logger, bool isWarmup) {
-    if(!sdpaSupported)
-      return nullptr;
-
-    // Cuda graphs for SDPA path only well-tested for FP16/BF16; FP32 uses fallback
+  // Construction and support-check failures happen before graph execution and are safely cached as
+  // fallback decisions. Once execute is called, a failure is fatal because work might be enqueued.
+  std::shared_ptr<SDPAPlanForBatchSize> getOrBuildPlan(cudnnHandle_t cudnn, const SDPAGraphKey& key, Logger* logger) {
+    // This route intentionally handles only half IO with FP32 accumulation. FP32 uses the in-tree
+    // online-softmax implementation without trying to construct a frontend graph.
     if(!key.usingFP16)
       return nullptr;
 
     auto it = plansByKey.find(key);
     if(it != plansByKey.end())
       return it->second;
+    if(unsupportedByKey.find(key) != unsupportedByKey.end())
+      return nullptr;
 
     namespace fe = cudnn_frontend;
 
-    // Disable SDPA and report the reason. Outside of warmup a build failure is fatal; during warmup
-    // we tolerate it and fall back to the custom kernel (returning nullptr to the caller).
-    auto disable = [&](const string& reason) -> std::shared_ptr<SDPAPlanForBatchSize> {
-      if(!isWarmup)
-        throw StringError(reason);
-      sdpaSupported = false;
-      disableReason = reason;
+    auto rejectForKey = [&](const string& reason) -> std::shared_ptr<SDPAPlanForBatchSize> {
+      unsupportedByKey[key] = reason;
       if(logger != NULL)
-        logger->write("Cuda backend: disabling cudnn SDPA and falling back to custom attention kernel: " + reason);
+        logger->write(
+          "Cuda backend: cudnn SDPA unavailable for B=" + Global::intToString(key.batchSize) +
+          " Hq=" + Global::intToString(key.numHeads) +
+          " Hkv=" + Global::intToString(key.numKVHeads) +
+          " S=" + Global::intToString(key.seqLen) +
+          " Dq=" + Global::intToString(key.qHeadDim) +
+          " Dv=" + Global::intToString(key.vHeadDim) +
+          " mask=" + Global::boolToString(key.hasMask) +
+          "; using custom attention fallback: " + reason
+        );
       return nullptr;
     };
+
+    // Keep a runtime-library check in addition to the compile-time header gate. This makes a
+    // mismatched deployment fail closed to the generic attention implementation.
+    if(cudnnGetVersion() < 8903)
+      return rejectForKey("runtime cuDNN is older than 8.9.3");
+    if(key.batchSize <= 0 || key.seqLen <= 0 || key.numHeads <= 0 || key.numKVHeads <= 0 ||
+       key.qHeadDim <= 0 || key.vHeadDim <= 0 || key.numHeads % key.numKVHeads != 0)
+      return rejectForKey("invalid or unsupported attention dimensions");
     auto plan = std::make_shared<SDPAPlanForBatchSize>();
     plan->hasMask = key.hasMask;
     auto graph = std::make_shared<fe::graph::Graph>();
@@ -237,24 +259,26 @@ struct SDPAGraphCache {
 
     auto status = graph->validate();
     if(status.is_bad())
-      return disable(string("cudnn SDPA graph validate failed: ") + status.get_message());
+      return rejectForKey(string("graph validate failed: ") + status.get_message());
     status = graph->build_operation_graph(cudnn);
     if(status.is_bad())
-      return disable(string("cudnn SDPA build_operation_graph failed: ") + status.get_message());
+      return rejectForKey(string("build_operation_graph failed: ") + status.get_message());
     status = graph->create_execution_plans({fe::HeurMode_t::A});
     if(status.is_bad())
-      return disable(string("cudnn SDPA create_execution_plans failed: ") + status.get_message());
+      return rejectForKey(string("create_execution_plans failed: ") + status.get_message());
     status = graph->check_support(cudnn);
     if(status.is_bad())
-      return disable(string("cudnn SDPA check_support failed: ") + status.get_message());
+      return rejectForKey(string("check_support failed: ") + status.get_message());
     status = graph->build_plans(cudnn);
     if(status.is_bad())
-      return disable(string("cudnn SDPA build_plans failed: ") + status.get_message());
+      return rejectForKey(string("build_plans failed: ") + status.get_message());
 
     int64_t ws = 0;
     status = graph->get_workspace_size(ws);
     if(status.is_bad())
-      return disable(string("cudnn SDPA get_workspace_size failed: ") + status.get_message());
+      return rejectForKey(string("get_workspace_size failed: ") + status.get_message());
+    if(ws < 0)
+      return rejectForKey("get_workspace_size returned a negative size");
 
     plan->graph = graph;
     plan->workspaceBytes = ws;
@@ -272,24 +296,26 @@ struct SDPAGraphCache {
 struct CudaHandles {
   cublasHandle_t cublas;
   cudnnHandle_t cudnn;
+  // Commit C stays on CUDA's per-thread default stream so it remains independently buildable.
+  // Commit D replaces this token with a stream owned by each ComputeHandle.
+  cudaStream_t stream;
   const int majorComputeCapability;
   const int minorComputeCapability;
   std::unique_ptr<SDPAGraphCache> sdpaCache;
   // Logger for this handle's server thread; may be NULL. Used to report cudnn SDPA falling back.
   Logger* logger;
-  // Set while warming up (see NNEvaluator::maybeWarmupComputeHandle). When true, a failed cudnn SDPA
-  // execution is tolerated (fall back to the custom kernel); when false such a failure is fatal.
-  bool isWarmup;
 
   CudaHandles(int major, int minor)
-    : majorComputeCapability(major),
+    : stream(cudaStreamPerThread),
+      majorComputeCapability(major),
       minorComputeCapability(minor),
       sdpaCache(std::make_unique<SDPAGraphCache>()),
-      logger(NULL),
-      isWarmup(false)
+      logger(NULL)
   {
     CUBLAS_ERR("CudaHandles",cublasCreate(&cublas));
     CUDNN_ERR("CudaHandles",cudnnCreate(&cudnn));
+    CUBLAS_ERR("CudaHandles",cublasSetStream(cublas,stream));
+    CUDNN_ERR("CudaHandles",cudnnSetStream(cudnn,stream));
   }
 
   ~CudaHandles() {
@@ -1728,7 +1754,7 @@ struct TransformerAttentionBlock {
     if(usingFP16 && sdpaCache != NULL) {
       bool hasMask = (maskBuf != NULL);
       SDPAGraphKey sdpaKey = {numHeads, numKVHeads, qHeadDim, vHeadDim, seqLen, batchSize, hasMask, usingFP16};
-      auto plan = sdpaCache->getOrBuildPlan(cudaHandles->cudnn, sdpaKey, cudaHandles->logger, cudaHandles->isWarmup);
+      auto plan = sdpaCache->getOrBuildPlan(cudaHandles->cudnn, sdpaKey, cudaHandles->logger);
       if(plan != nullptr) {
         std::unordered_map<int64_t, void*> variant_pack = {
           {SDPAPlanForBatchSize::Q_UID, qBuf.buf},
@@ -1737,34 +1763,36 @@ struct TransformerAttentionBlock {
           {SDPAPlanForBatchSize::O_UID, attnOutBuf.buf},
         };
 
-        // When a mask is present, materialize a [B, 1, S, S] additive bias: bias[b,q,k] = (mask[b,k] != 0 ? 0 : -1e4).
-        // For our test model (B=16, S=361) this is ~4 MB; the bias only depends on the mask, but
-        // we rebuild it per attention block for simplicity (the mask kernel itself is cheap).
-        SizedBuf<void*> biasBuf(scratch->allocator, hasMask ? (size_t)batchSize * seqLen * seqLen * bytesPerElt : 1);
+        // Variable-board inference materializes a half [B,1,S,S] additive key bias. Exact-board
+        // inference receives maskBuf=NULL and allocates no bias tensor.
+        std::unique_ptr<SizedBuf<void*>> biasBuf;
         if(hasMask) {
-          customCudaMaskToAttnBiasFull((const half*)maskBuf, (half*)biasBuf.buf, batchSize, seqLen);
-          variant_pack[SDPAPlanForBatchSize::BIAS_UID] = biasBuf.buf;
+          biasBuf = std::make_unique<SizedBuf<void*>>(
+            scratch->allocator,
+            (size_t)batchSize * seqLen * seqLen * bytesPerElt
+          );
+          customCudaMaskToAttnBiasFull(
+            (const half*)maskBuf,
+            (half*)biasBuf->buf,
+            batchSize,
+            seqLen,
+            cudaHandles->stream
+          );
+          CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+          variant_pack[SDPAPlanForBatchSize::BIAS_UID] = biasBuf->buf;
         }
 
-        // Workspace from cudnn (separate from the conv workspace - different shape and lifetime).
-        SizedBuf<void*> sdpaWs(scratch->allocator, (size_t)plan->workspaceBytes);
+        // Allocate one byte when cuDNN reports no workspace because cudaMalloc(0) is not portable.
+        const size_t sdpaWorkspaceBytes =
+          plan->workspaceBytes > 0 ? (size_t)plan->workspaceBytes : (size_t)1;
+        SizedBuf<void*> sdpaWs(scratch->allocator,sdpaWorkspaceBytes);
 
         auto status = plan->graph->execute(cudaHandles->cudnn, variant_pack, sdpaWs.buf);
-        if(status.is_bad()) {
-          string reason = string("cudnn SDPA execute failed: ") + status.get_message();
-          // During warmup we tolerate this: disable SDPA from here on and fall through to the custom
-          // kernel. Outside of warmup a failure here is fatal - the plan was already validated and
-          // built, so an execute failure means something is genuinely wrong.
-          if(!cudaHandles->isWarmup)
-            throw StringError(reason);
-          sdpaCache->sdpaSupported = false;
-          sdpaCache->disableReason = reason;
-          if(cudaHandles->logger != NULL)
-            cudaHandles->logger->write("Cuda backend: disabling cudnn SDPA and falling back to custom attention kernel: " + reason);
-        }
-        else {
-          usedSDPA = true;
-        }
+        // Capability misses fall back before this point. Retrying another kernel after execute may
+        // have partially enqueued work, so an execution error is deliberately fatal.
+        if(status.is_bad())
+          throw StringError(string("cudnn SDPA execute failed: ") + status.get_message());
+        usedSDPA = true;
       }
     }
 #endif
@@ -3168,6 +3196,9 @@ ComputeHandle* NeuralNet::createComputeHandle(
   ComputeHandle* gpuHandle = new ComputeHandle(
     context,loadedModel,prop.major,prop.minor,maxBatchSize,requireExactNNLen,inputsUseNHWC,useFP16,useNHWC
   );
+  // SDPA plans are selected lazily on the first preflight, after model construction. The evaluator
+  // logger therefore outlives every capability-probe message emitted by this handle.
+  gpuHandle->cudaHandles->logger = logger;
   return gpuHandle;
 }
 
