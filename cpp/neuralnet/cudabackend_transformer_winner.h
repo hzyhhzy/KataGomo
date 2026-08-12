@@ -106,13 +106,16 @@ struct PreparedPlan {
 struct Int8ExperimentEligibility {
   bool architectureSignatureMatches = false;
   bool preparedPlanFingerprintValid = false;
+  bool runtimeContractEligible = false;
   bool allTransformerShapesEligible = false;
+  bool allTransformerRecordsPrepared = false;
   int attentionCount = 0;
   int ffnCount = 0;
 
   bool exactCurrent24LayerModel() const {
     return architectureSignatureMatches && preparedPlanFingerprintValid &&
-      allTransformerShapesEligible && attentionCount == 24 && ffnCount == 24;
+      runtimeContractEligible && allTransformerShapesEligible &&
+      allTransformerRecordsPrepared && attentionCount == 24 && ffnCount == 24;
   }
 };
 

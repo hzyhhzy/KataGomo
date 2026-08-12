@@ -545,6 +545,20 @@ static const CudaTransformerWinner::PreparedRecord& firstProductionRecord(
   return plan.records[0];
 }
 
+static void refreshProductionPlanFingerprint(
+  CudaTransformerWinner::PreparedPlan& plan
+) {
+  vector<OpRequest> requests;
+  vector<PreparedOp> prepared;
+  requests.reserve(plan.records.size());
+  prepared.reserve(plan.records.size());
+  for(const CudaTransformerWinner::PreparedRecord& record: plan.records) {
+    requests.push_back(record.request);
+    prepared.push_back(record.operation);
+  }
+  plan.fingerprint = fingerprintPreparedPlan(requests,prepared);
+}
+
 }  // namespace
 
 void Tests::runTransformerProductionPlanTests() {
@@ -667,6 +681,8 @@ void Tests::runTransformerProductionPlanTests() {
   testAssert(int8G1.exactCurrent24LayerModel());
   testAssert(int8G1.architectureSignatureMatches);
   testAssert(int8G1.preparedPlanFingerprintValid);
+  testAssert(int8G1.runtimeContractEligible);
+  testAssert(int8G1.allTransformerRecordsPrepared);
   testAssert(int8G1.attentionCount == 24);
   testAssert(int8G1.ffnCount == 24);
   testAssert(CudaTransformerWinner::evaluateInt8ExperimentEligibility(
@@ -735,8 +751,95 @@ void Tests::runTransformerProductionPlanTests() {
       wrongRuntimeBoard);
   testAssert(badRuntimeBoardInt8.architectureSignatureMatches);
   testAssert(badRuntimeBoardInt8.preparedPlanFingerprintValid);
-  testAssert(!badRuntimeBoardInt8.allTransformerShapesEligible);
+  testAssert(!badRuntimeBoardInt8.runtimeContractEligible);
   testAssert(!badRuntimeBoardInt8.exactCurrent24LayerModel());
+
+  // The arithmetic gate is stricter than the weight-free architecture: every
+  // transformer record must describe the exact FP16/F32 SM120 contract and a
+  // prepared SM120 recipe. The plan fingerprint intentionally does not encode
+  // found, so eligibility must reject that state independently.
+  CudaTransformerWinner::PreparedPlan missingPreparedRecord = productionG1A;
+  for(CudaTransformerWinner::PreparedRecord& record: missingPreparedRecord.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerAttention) {
+      record.found = false;
+      break;
+    }
+  }
+  const CudaTransformerWinner::Int8ExperimentEligibility missingPreparedInt8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(missingPreparedRecord);
+  testAssert(missingPreparedInt8.preparedPlanFingerprintValid);
+  testAssert(!missingPreparedInt8.allTransformerRecordsPrepared);
+  testAssert(!missingPreparedInt8.exactCurrent24LayerModel());
+
+  RuntimeOpContext sm89Runtime = b36;
+  sm89Runtime.deviceComputeCapability = 89;
+  CudaTransformerWinner::DeviceCapability sm89Device = device;
+  sm89Device.computeCapability = 89;
+  sm89Device.specializedSm120KernelsAvailable = false;
+  const CudaTransformerWinner::Int8ExperimentEligibility sm89Int8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+      CudaTransformerWinner::preparePlan(architectureA,sm89Runtime,sm89Device));
+  testAssert(!sm89Int8.runtimeContractEligible);
+  testAssert(!sm89Int8.allTransformerRecordsPrepared);
+  testAssert(!sm89Int8.exactCurrent24LayerModel());
+
+  RuntimeOpContext fp32Runtime = b36;
+  fp32Runtime.inputType = NumericType::Float32;
+  fp32Runtime.outputType = NumericType::Float32;
+  const CudaTransformerWinner::Int8ExperimentEligibility fp32Int8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+      CudaTransformerWinner::preparePlan(architectureA,fp32Runtime,device));
+  testAssert(!fp32Int8.runtimeContractEligible);
+  testAssert(!fp32Int8.allTransformerRecordsPrepared);
+  testAssert(!fp32Int8.exactCurrent24LayerModel());
+
+  RuntimeOpContext nchwRuntime = b36;
+  nchwRuntime.layout = TensorLayout::NCHW;
+  const CudaTransformerWinner::Int8ExperimentEligibility nchwInt8 =
+    CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+      CudaTransformerWinner::preparePlan(architectureA,nchwRuntime,device));
+  testAssert(!nchwInt8.runtimeContractEligible);
+  testAssert(!nchwInt8.allTransformerRecordsPrepared);
+  testAssert(!nchwInt8.exactCurrent24LayerModel());
+
+  RuntimeOpContext nhwcRuntime = b36;
+  nhwcRuntime.layout = TensorLayout::NHWC;
+  testAssert(CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    CudaTransformerWinner::preparePlan(
+      architectureA,nhwcRuntime,device)).exactCurrent24LayerModel());
+
+  CudaTransformerWinner::PreparedPlan missingLearnedRope = productionG1A;
+  for(CudaTransformerWinner::PreparedRecord& record: missingLearnedRope.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerAttention) {
+      record.request.key.flags &= ~OP_FLAG_LEARNABLE_ROPE;
+      break;
+    }
+  }
+  refreshProductionPlanFingerprint(missingLearnedRope);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    missingLearnedRope).exactCurrent24LayerModel());
+
+  CudaTransformerWinner::PreparedPlan missingSwiGlu = productionG1A;
+  for(CudaTransformerWinner::PreparedRecord& record: missingSwiGlu.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerFFN) {
+      record.request.key.flags &= ~OP_FLAG_USE_SWIGLU;
+      break;
+    }
+  }
+  refreshProductionPlanFingerprint(missingSwiGlu);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    missingSwiGlu).exactCurrent24LayerModel());
+
+  CudaTransformerWinner::PreparedPlan wrongRmsContract = productionG1A;
+  for(CudaTransformerWinner::PreparedRecord& record: wrongRmsContract.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerFFN) {
+      record.request.key.semanticScalar0Bits ^= 1;
+      break;
+    }
+  }
+  refreshProductionPlanFingerprint(wrongRmsContract);
+  testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
+    wrongRmsContract).exactCurrent24LayerModel());
   assertAllTransformerRecipes(
     architectureA,productionG1A,24,true,assertExactAttentionRecipe,assertExactFfnRecipe
   );

@@ -591,6 +591,10 @@ struct CudaHandles {
         (int8Eligibility.architectureSignatureMatches ? "1" : "0") +
         " plan_fingerprint=" +
         (int8Eligibility.preparedPlanFingerprintValid ? "1" : "0") +
+        " runtime_contract=" +
+        (int8Eligibility.runtimeContractEligible ? "1" : "0") +
+        " records_prepared=" +
+        (int8Eligibility.allTransformerRecordsPrepared ? "1" : "0") +
         " attention=" +
         Global::intToString(int8Eligibility.attentionCount) + " ffn=" +
         Global::intToString(int8Eligibility.ffnCount) + " all=" +

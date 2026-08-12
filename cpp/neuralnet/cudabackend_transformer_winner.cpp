@@ -12,6 +12,7 @@ namespace {
 
 constexpr uint64_t ATTENTION_FAMILY = 0x4B41544154544E31ULL; // KATATTN1
 constexpr uint64_t FFN_FAMILY = 0x4B415446464E3031ULL;       // KATFFN01
+constexpr uint32_t RMS_EPSILON_1E6_BITS = 0x358637BDu;
 
 enum AttentionVariant : uint64_t {
   ATTENTION_SQUARE_GENERIC = 1,
@@ -360,9 +361,18 @@ Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& 
   std::vector<PreparedOp> prepared;
   requests.reserve(plan.records.size());
   prepared.reserve(plan.records.size());
-  result.allTransformerShapesEligible =
+  const bool runtimeLayoutEligible =
+    plan.runtime.layout == TensorLayout::NHWC ||
+    plan.runtime.layout == TensorLayout::BSH;
+  result.runtimeContractEligible =
     plan.runtime.boardX == 15 && plan.runtime.boardY == 15 &&
-    plan.runtime.maskMode == MaskMode::None;
+    plan.runtime.maskMode == MaskMode::None &&
+    plan.runtime.inputType == NumericType::Float16 &&
+    plan.runtime.outputType == NumericType::Float16 &&
+    plan.runtime.computeType == NumericType::Float32 && runtimeLayoutEligible &&
+    plan.runtime.deviceComputeCapability == 120 && plan.runtime.batchSize > 0;
+  result.allTransformerShapesEligible = true;
+  result.allTransformerRecordsPrepared = true;
   for(const PreparedRecord& record: plan.records) {
     requests.push_back(record.request);
     prepared.push_back(record.operation);
@@ -370,23 +380,55 @@ Int8ExperimentEligibility evaluateInt8ExperimentEligibility(const PreparedPlan& 
       result.architectureSignatureMatches = false;
     const CapabilityKey& key = record.request.key;
     if(key.kind == ArchitectureOpKind::TransformerAttention) {
-      const bool eligible = key.boardX == 15 && key.boardY == 15 &&
+      const AttentionRecipe recipe = plan.attentionFor(record.request.topologyIndex);
+      const bool layoutEligible = key.layout == TensorLayout::NHWC ||
+        key.layout == TensorLayout::BSH;
+      const bool eligible = key.schemaVersion == CAPABILITY_KEY_SCHEMA_VERSION &&
+        key.inputType == NumericType::Float16 &&
+        key.outputType == NumericType::Float16 &&
+        key.computeType == NumericType::Float32 && layoutEligible &&
+        key.deviceComputeCapability == 120 && key.batchSize > 0 &&
+        key.boardX == 15 && key.boardY == 15 &&
         key.spatialArea == 225 && key.inChannels == 256 &&
         key.outChannels == 256 && key.numHeads == 8 &&
         key.numKVHeads == 8 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
-        key.maskMode == MaskMode::None;
+        key.auxiliaryChannels == 16 && key.maskMode == MaskMode::None &&
+        key.semanticScalar0Bits == RMS_EPSILON_1E6_BITS &&
+        (key.flags & OP_FLAG_USE_ROPE) != 0 &&
+        (key.flags & OP_FLAG_LEARNABLE_ROPE) != 0;
+      const bool preparedForInt8 = record.found &&
+        record.operation.support != SupportClass::Unsupported &&
+        recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8 &&
+        recipe.rope == RopeTactic::LearnedHalf2;
       result.allTransformerShapesEligible =
         result.allTransformerShapesEligible && eligible;
+      result.allTransformerRecordsPrepared =
+        result.allTransformerRecordsPrepared && preparedForInt8;
       if(eligible)
         result.attentionCount++;
     }
     else if(key.kind == ArchitectureOpKind::TransformerFFN) {
+      const FfnRecipe recipe = plan.ffnFor(record.request.topologyIndex);
+      const bool layoutEligible = key.layout == TensorLayout::NHWC ||
+        key.layout == TensorLayout::BSH;
       // FFN keys depend on spatial area, not the independent board axes.
-      const bool eligible = key.spatialArea == 225 &&
+      const bool eligible = key.schemaVersion == CAPABILITY_KEY_SCHEMA_VERSION &&
+        key.inputType == NumericType::Float16 &&
+        key.outputType == NumericType::Float16 &&
+        key.computeType == NumericType::Float32 && layoutEligible &&
+        key.deviceComputeCapability == 120 && key.batchSize > 0 &&
+        key.spatialArea == 225 && key.boardX == 0 && key.boardY == 0 &&
         key.inChannels == 256 && key.outChannels == 256 &&
-        key.auxiliaryChannels == 768 && key.maskMode == MaskMode::None;
+        key.auxiliaryChannels == 768 && key.maskMode == MaskMode::None &&
+        key.semanticScalar0Bits == RMS_EPSILON_1E6_BITS &&
+        (key.flags & OP_FLAG_USE_SWIGLU) != 0;
+      const bool preparedForInt8 = record.found &&
+        record.operation.support != SupportClass::Unsupported &&
+        recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8;
       result.allTransformerShapesEligible =
         result.allTransformerShapesEligible && eligible;
+      result.allTransformerRecordsPrepared =
+        result.allTransformerRecordsPrepared && preparedForInt8;
       if(eligible)
         result.ffnCount++;
     }
