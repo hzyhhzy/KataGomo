@@ -176,6 +176,22 @@ NNBatchDispatchPlan getNNBatchDispatchPlan(
   return plan;
 }
 
+int getSameGpuEvaluatorConcurrency(
+  const vector<int>& gpuIdxByServerThread,
+  int serverThreadIdx
+) {
+  assert(serverThreadIdx >= 0 && serverThreadIdx < (int)gpuIdxByServerThread.size());
+  const auto normalizeGpuIdx = [](int gpuIdx) { return gpuIdx < 0 ? 0 : gpuIdx; };
+  const int targetGpuIdx = normalizeGpuIdx(gpuIdxByServerThread[serverThreadIdx]);
+  int concurrency = 0;
+  for(int gpuIdx : gpuIdxByServerThread) {
+    if(normalizeGpuIdx(gpuIdx) == targetGpuIdx)
+      concurrency += 1;
+  }
+  assert(concurrency >= 1);
+  return concurrency;
+}
+
 //-------------------------------------------------------------------------------------
 
 NNEvaluator::NNEvaluator(
@@ -670,6 +686,7 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
           inputsUseNHWC,
           gpuIdxByServerThread[threadIdx],
           threadIdx,
+          getSameGpuEvaluatorConcurrency(gpuIdxByServerThread,threadIdx),
           backendNumThreads
         );
 
@@ -788,6 +805,7 @@ void NNEvaluator::serve(
       inputsUseNHWC,
       gpuIdxForThisThread,
       serverThreadIdx,
+      getSameGpuEvaluatorConcurrency(gpuIdxByServerThread,serverThreadIdx),
       backendNumThreads
     );
 

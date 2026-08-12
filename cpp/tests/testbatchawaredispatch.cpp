@@ -38,6 +38,18 @@ static void assertDispatchPlan(
 }  // namespace
 
 void Tests::runBatchAwareDispatchTests() {
+  // Evaluator concurrency is local to one normalized physical device. The
+  // default CUDA ordinal -1 aliases GPU 0; lanes on other GPUs are not counted.
+  testAssert(getSameGpuEvaluatorConcurrency({0},0) == 1);
+  testAssert(getSameGpuEvaluatorConcurrency({0,0},0) == 2);
+  testAssert(getSameGpuEvaluatorConcurrency({0,0},1) == 2);
+  testAssert(getSameGpuEvaluatorConcurrency({0,1},0) == 1);
+  testAssert(getSameGpuEvaluatorConcurrency({0,1},1) == 1);
+  testAssert(getSameGpuEvaluatorConcurrency({-1,0,1},0) == 2);
+  testAssert(getSameGpuEvaluatorConcurrency({-1,0,1},1) == 2);
+  testAssert(getSameGpuEvaluatorConcurrency({-1,0,1},2) == 1);
+  testAssert(getSameGpuEvaluatorConcurrency({2,2,2,3},1) == 3);
+
   // Fixed-B planning for the qualification boundary cases. A 37-row arrival is
   // represented below as one full B36 launch followed by one logical row.
   assertDispatchPlan(true,1,36,35);

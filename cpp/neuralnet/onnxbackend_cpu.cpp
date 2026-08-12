@@ -185,8 +185,10 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
   int serverThreadIdx,
+  int sameGpuEvaluatorConcurrency,
   int backendNumThreads
 ) {
+  (void)sameGpuEvaluatorConcurrency;
   if(inputsUseNHWC) throw StringError("ONNX backend: inputsUseNHWC = false required");
   
   // We ignore gpuIdxForThisThread for CPU backend

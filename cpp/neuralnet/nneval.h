@@ -52,6 +52,15 @@ NNBatchDispatchPlan getNNBatchDispatchPlan(
   int maxBatchSize
 );
 
+// Number of evaluator lanes sharing the same physical GPU as serverThreadIdx.
+// CUDA's default ordinal (-1) is normalized to GPU 0. This is evaluator
+// topology, separate from backend CPU thread counts and from the one stream
+// owned by each ComputeHandle.
+int getSameGpuEvaluatorConcurrency(
+  const std::vector<int>& gpuIdxByServerThread,
+  int serverThreadIdx
+);
+
 struct NNEvalBenchmarkResult {
   int batchSize;
   int numServerThreads;

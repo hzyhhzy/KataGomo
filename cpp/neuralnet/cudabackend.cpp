@@ -4616,7 +4616,9 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
   int serverThreadIdx,
+  int sameGpuEvaluatorConcurrency,
   int backendNumThreads) {
+  (void)backendNumThreads;
   //Use whatever CUDA believes GPU 0 to be.
   if(gpuIdxForThisThread == -1)
     gpuIdxForThisThread = 0;
@@ -4688,7 +4690,7 @@ ComputeHandle* NeuralNet::createComputeHandle(
   ComputeHandle* gpuHandle = new ComputeHandle(
     context,loadedModel,prop.major,prop.minor,prop.warpSize,
     (size_t)prop.sharedMemPerBlockOptin,maxBatchSize,requireExactNNLen,
-    inputsUseNHWC,useFP16,useNHWC,backendNumThreads,logger
+    inputsUseNHWC,useFP16,useNHWC,sameGpuEvaluatorConcurrency,logger
   );
   // SDPA plans are selected lazily on the first preflight, after model construction. The evaluator
   // logger therefore outlives every capability-probe message emitted by this handle.

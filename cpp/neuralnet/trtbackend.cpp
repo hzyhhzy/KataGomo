@@ -1552,8 +1552,10 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
   int serverThreadIdx,
+  int sameGpuEvaluatorConcurrency,
   int backendNumThreads
 ) {
+  (void)sameGpuEvaluatorConcurrency;
   (void)backendNumThreads;
 
   if(inputsUseNHWC) {

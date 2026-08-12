@@ -90,6 +90,7 @@ namespace NeuralNet {
     bool inputsUseNHWC,
     int gpuIdxForThisThread,
     int serverThreadIdx,
+    int sameGpuEvaluatorConcurrency,
     int backendNumThreads
   );
   void freeComputeHandle(ComputeHandle* computeHandle);

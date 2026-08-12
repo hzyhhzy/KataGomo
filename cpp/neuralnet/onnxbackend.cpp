@@ -206,8 +206,12 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool requireExactNNLen,
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
-  int serverThreadIdx
+  int serverThreadIdx,
+  int sameGpuEvaluatorConcurrency,
+  int backendNumThreads
 ) {
+  (void)sameGpuEvaluatorConcurrency;
+  (void)backendNumThreads;
   if(inputsUseNHWC) throw StringError("ONNX backend: inputsUseNHWC = false required");
   
   // We ignore gpuIdxForThisThread for CPU backend, and use 0 for DirectML (implied).
