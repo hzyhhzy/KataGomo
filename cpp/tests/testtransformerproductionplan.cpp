@@ -99,7 +99,9 @@ static unique_ptr_void makeAttention(
   setMatMul(desc->outProj,heads * headDim,channels,weight + 0.03f);
   desc->ropeNumKVHeads = heads;
   desc->ropeNumPairs = headDim / 2;
-  desc->ropeFreqs.assign(1,weight + 0.04f);
+  desc->ropeFreqs.assign(
+    (size_t)desc->ropeNumKVHeads * desc->ropeNumPairs * 2,
+    weight + 0.04f);
   return make_unique_void(desc);
 }
 
@@ -143,10 +145,10 @@ static ModelDesc makeModel(
   model.trunk.numBlocks = logicalLayers * 2;
   model.trunk.trunkNumChannels = channels;
   model.trunk.midNumChannels = channels;
-  model.trunk.regularNumChannels = channels;
-  model.trunk.dilatedNumChannels = 0;
-  model.trunk.gpoolNumChannels = channels;
-  setConv(model.trunk.initialConv,22,channels,1,weightSeed);
+  model.trunk.regularNumChannels = 192;
+  model.trunk.dilatedNumChannels = 64;
+  model.trunk.gpoolNumChannels = 64;
+  setConv(model.trunk.initialConv,22,channels,3,weightSeed);
   setMatMul(model.trunk.initialMatMul,39,channels,weightSeed);
   for(int i = 0; i < logicalLayers; i++) {
     model.trunk.blocks.push_back(make_pair(
@@ -178,12 +180,12 @@ static ModelDesc makeModel(
   setConv(model.valueHead.v1Conv,channels,96,1,weightSeed);
   setBatchNorm(model.valueHead.v1BN,96,false,true,weightSeed);
   setActivation(model.valueHead.v1Activation,ACTIVATION_SILU,weightSeed);
-  setMatMul(model.valueHead.v2Mul,96 * 3,64,weightSeed);
-  setMatBias(model.valueHead.v2Bias,64,weightSeed);
+  setMatMul(model.valueHead.v2Mul,96 * 3,128,weightSeed);
+  setMatBias(model.valueHead.v2Bias,128,weightSeed);
   setActivation(model.valueHead.v2Activation,ACTIVATION_SILU,weightSeed);
-  setMatMul(model.valueHead.v3Mul,64,3,weightSeed);
+  setMatMul(model.valueHead.v3Mul,128,3,weightSeed);
   setMatBias(model.valueHead.v3Bias,3,weightSeed);
-  setMatMul(model.valueHead.sv3Mul,64,6,weightSeed);
+  setMatMul(model.valueHead.sv3Mul,128,6,weightSeed);
   setMatBias(model.valueHead.sv3Bias,6,weightSeed);
   setConv(model.valueHead.vOwnershipConv,96,1,1,weightSeed);
   return model;
@@ -567,9 +569,14 @@ void Tests::runTransformerProductionPlanTests() {
   ArchitectureDesc architectureB = buildArchitectureDesc(weightsB);
   testAssert(architectureA.signature == architectureB.signature);
   testAssert(architectureA.canonicalEncoding == architectureB.canonicalEncoding);
+  // This weight-free fixture mirrors REAL_MODEL_ARCHITECTURE_MANIFEST.json,
+  // independently derived from reviewed.bin.gz with SHA-256
+  // 40cfa5ab15e23b12d065a2b4611e6b9aad0e02ade724c91657851acc53ffd4c6.
+  // Lock both the canonical byte count and digest so field/schema drift fails loudly.
+  testAssert(architectureA.canonicalEncoding.size() == 4673);
   testAssert(
     architectureA.signature.toHex() ==
-    "b1e858d6d8d5faa493bfdce7f593fadacb30796e85a1d452ebc9bcc41dd483dc"
+    "ad026614455c0475b31997f1c5452af99d1eb347713f77950671fc5d1a522f24"
   );
   testAssert(
     CudaTransformerWinner::int8QualifiedArchitectureSignature() ==
@@ -638,8 +645,8 @@ void Tests::runTransformerProductionPlanTests() {
   );
   testAssert(widePlan.prepared[wideAttention].support == SupportClass::CompatibleOnly);
   testAssert(widePlan.prepared[wideFFN].support == SupportClass::CompatibleOnly);
-  size_t baseV3 = findRequest(planA,ArchitectureOpKind::MatMul,64,3);
-  size_t wideV3 = findRequest(widePlan,ArchitectureOpKind::MatMul,64,3);
+  size_t baseV3 = findRequest(planA,ArchitectureOpKind::MatMul,128,3);
+  size_t wideV3 = findRequest(widePlan,ArchitectureOpKind::MatMul,128,3);
   size_t baseOwnership = findRequest(planA,ArchitectureOpKind::Conv2D,96,1);
   size_t wideOwnership = findRequest(widePlan,ArchitectureOpKind::Conv2D,96,1);
   testAssert(planA.requests[baseV3].key == widePlan.requests[wideV3].key);
