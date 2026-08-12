@@ -28,6 +28,19 @@ struct InputBuffers;
 // A handle to the loaded neural network model.
 struct LoadedModel;
 
+// Host views of the raw per-row head tensors from the most recent getOutput.
+// Element counts are per physical row and storage remains owned by InputBuffers.
+struct RawNNOutputs {
+  const float* policy;
+  const float* value;
+  const float* misc;
+  const float* ownership;
+  size_t policyElts;
+  size_t valueElts;
+  size_t miscElts;
+  size_t ownershipElts;
+};
+
 // Generic interface to neural net inference.
 // There is a single CUDA backend.
 namespace NeuralNet {
@@ -124,6 +137,8 @@ namespace NeuralNet {
     std::vector<NNOutput*>& outputs,
     float* outputPolicys
   );
+
+  void getRawNNOutputs(InputBuffers* buffers, RawNNOutputs& out);
 
   // Time only repeated device forwards. Host inputs must already have been
   // staged into `buffers` by one getOutput call. Transfers and postprocessing

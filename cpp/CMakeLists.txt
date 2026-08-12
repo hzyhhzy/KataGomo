@@ -395,6 +395,7 @@ add_executable(katago
   command/analysis.cpp
   command/benchmark.cpp
   command/benchmarknn.cpp
+  command/replaynn15.cpp
   command/contribute.cpp
   command/evalsgf.cpp
   command/gatekeeper.cpp
