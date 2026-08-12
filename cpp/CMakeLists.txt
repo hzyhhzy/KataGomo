@@ -50,7 +50,10 @@ if(USE_BACKEND STREQUAL "CUDA")
     neuralnet/cudahelpers.cu
   )
 # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
-  if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+  set(KATAGO_CUDA_ARCHITECTURES "" CACHE STRING "Override CUDA architectures (for example: 120 for RTX 5090)")
+  if(NOT KATAGO_CUDA_ARCHITECTURES STREQUAL "")
+    set(CMAKE_CUDA_ARCHITECTURES ${KATAGO_CUDA_ARCHITECTURES})
+  elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
     set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 88 89 90 100 110 103 120 121)
     set(CMAKE_CUDA_FLAGS "-Wno-deprecated-gpu-targets")
   elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
@@ -253,6 +256,7 @@ add_executable(katago
   command/commandline.cpp
   command/analysis.cpp
   command/benchmark.cpp
+  command/benchmarknn.cpp
   command/contribute.cpp
   command/evalsgf.cpp
   command/gatekeeper.cpp

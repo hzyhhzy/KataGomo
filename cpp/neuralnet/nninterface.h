@@ -123,6 +123,20 @@ namespace NeuralNet {
     float* outputPolicys
   );
 
+  // Time only repeated device forwards. Host inputs must already have been
+  // staged into `buffers` by one getOutput call. Transfers and postprocessing
+  // are excluded from the recorded CUDA-event durations.
+  bool benchmarkOutput(
+    ComputeHandle* computeHandle,
+    InputBuffers* buffers,
+    NNResultBuf** inputBufs,
+    int batchSize,
+    int numWarmups,
+    int numIterations,
+    bool forceMaskAllOnes,
+    std::vector<double>& iterationSeconds
+  );
+
 
   //FOR TESTING -----------------------------------------------------------------------
   //For all of the below, the input buffers must have exactly the size expected of the input for the operation.

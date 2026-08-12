@@ -2,6 +2,10 @@
 #include "../neuralnet/cudaerrorcheck.h"
 #include "../neuralnet/cudaincludes.h"
 
+// The dependency-minimal generic fallback uses the in-tree online-softmax
+// attention kernel. Shape-specific attention will be selected separately.
+#define KATAGO_CUDA_HAS_SDPA 0
+
 #include "../neuralnet/cudahelpers.h"
 #include "../neuralnet/cudautils.h"
 #include "../neuralnet/modelversion.h"
@@ -31,15 +35,258 @@ void NeuralNet::globalCleanup() {
   cudaDeviceReset();
 }
 
+//---------------------------------------------------------------------------------
+// cudnn SDPA support. Graphs + execution plans cached lazily per (batchSize, hasMask).
+// Used only when useFP16=true and cudnn supports SDPA at runtime. Otherwise falls back to
+// customCudaFlashAttention (see cudahelpers).
+//
+// Tensor layout: BSHD physical, with strides chosen so that the (B,H,S,D)-dim graph view matches
+// the existing CUDA backend's Q/K/V/output buffers from MatMulLayer:
+//   element at (n, xy, h, d) lives at offset (h*headDim + d) + (n*seqLen + xy) * (numHeads*headDim).
+//
+// Masking: when a mask is present, we build a fully-materialized additive attention bias of shape
+// [B, 1, S, S] from the [B, S] mask: bias[b,q,k] = (mask[b,k] != 0 ? 0 : -1e4). cudnn does not have
+// plans for the [B,1,1,S] broadcast pattern that would let us avoid this materialization, but the
+// full bias is correct for arbitrary (non-prefix) masks, which we need to support sub-board games.
+// The bias is built once per inference (the mask is the same across all 20 attention blocks).
+//
+// When mask is NULL (full-board, requireExactNNLen case), we build a no-bias graph instead, which
+// avoids both the extra memory and the bias build kernel.
+
+#if KATAGO_CUDA_HAS_SDPA
+struct SDPAPlanForBatchSize {
+  std::shared_ptr<cudnn_frontend::graph::Graph> graph;
+  int64_t workspaceBytes;
+  bool hasMask;  // true if the graph expects a bias variant-pack entry
+
+  // UIDs for the variant pack, fixed at graph build time.
+  static constexpr int64_t Q_UID = 1;
+  static constexpr int64_t K_UID = 2;
+  static constexpr int64_t V_UID = 3;
+  static constexpr int64_t O_UID = 4;
+  static constexpr int64_t BIAS_UID = 5;
+};
+
+// Full discriminating key for an SDPA execution plan. Every field that changes the cudnn graph shape
+// must be here: if any attention layer in a future model differs in head count/dim/seqLen, it gets its
+// own plan rather than incorrectly reusing another layer's. (batchSize and hasMask vary at runtime.)
+struct SDPAGraphKey {
+  int numHeads;
+  int numKVHeads;
+  int qHeadDim;
+  int vHeadDim;
+  int seqLen;
+  int batchSize;
+  bool hasMask;
+  bool usingFP16;
+
+  bool operator==(const SDPAGraphKey& o) const {
+    return
+      numHeads == o.numHeads &&
+      numKVHeads == o.numKVHeads &&
+      qHeadDim == o.qHeadDim &&
+      vHeadDim == o.vHeadDim &&
+      seqLen == o.seqLen &&
+      batchSize == o.batchSize &&
+      hasMask == o.hasMask &&
+      usingFP16 == o.usingFP16;
+  }
+};
+struct SDPAGraphKeyHash {
+  uint64_t operator()(const SDPAGraphKey& k) const noexcept {
+    uint64_t acc = (uint64_t)123456789;
+    auto mix = [&acc](uint64_t x) {
+      acc += x;
+      acc += acc << 13;
+      acc ^= acc >> 6;
+    };
+    mix((uint64_t)k.numHeads);
+    mix((uint64_t)k.numKVHeads);
+    mix((uint64_t)k.qHeadDim);
+    mix((uint64_t)k.vHeadDim);
+    mix((uint64_t)k.seqLen);
+    mix((uint64_t)k.batchSize);
+    mix(k.hasMask ? 1 : 0);
+    mix(k.usingFP16 ? 1 : 0);
+    acc = Hash::basicLCong(acc);
+    return (size_t)(acc ^ (acc >> 32));
+  }
+};
+
+struct SDPAGraphCache {
+  std::unordered_map<SDPAGraphKey, std::shared_ptr<SDPAPlanForBatchSize>, SDPAGraphKeyHash> plansByKey;
+  bool sdpaSupported;
+  string disableReason;
+
+  SDPAGraphCache() :
+    plansByKey(),
+    sdpaSupported(true),
+    disableReason()
+  {}
+
+  // Build (or fetch from cache) an execution plan for the given attention shape + batchSize + hasMask.
+  // Returns nullptr if SDPA is not supported for this configuration; caller should use fallback.
+  // On a build failure during warmup, SDPA is disabled going forward and nullptr is returned (the
+  // caller falls back to the custom kernel); outside of warmup such a failure is fatal. logger (if
+  // non-NULL) is used to report a disable.
+  std::shared_ptr<SDPAPlanForBatchSize> getOrBuildPlan(cudnnHandle_t cudnn, const SDPAGraphKey& key, Logger* logger, bool isWarmup) {
+    if(!sdpaSupported)
+      return nullptr;
+
+    // Cuda graphs for SDPA path only well-tested for FP16/BF16; FP32 uses fallback
+    if(!key.usingFP16)
+      return nullptr;
+
+    auto it = plansByKey.find(key);
+    if(it != plansByKey.end())
+      return it->second;
+
+    namespace fe = cudnn_frontend;
+
+    // Disable SDPA and report the reason. Outside of warmup a build failure is fatal; during warmup
+    // we tolerate it and fall back to the custom kernel (returning nullptr to the caller).
+    auto disable = [&](const string& reason) -> std::shared_ptr<SDPAPlanForBatchSize> {
+      if(!isWarmup)
+        throw StringError(reason);
+      sdpaSupported = false;
+      disableReason = reason;
+      if(logger != NULL)
+        logger->write("Cuda backend: disabling cudnn SDPA and falling back to custom attention kernel: " + reason);
+      return nullptr;
+    };
+    auto plan = std::make_shared<SDPAPlanForBatchSize>();
+    plan->hasMask = key.hasMask;
+    auto graph = std::make_shared<fe::graph::Graph>();
+
+    bool useFP16 = key.usingFP16;
+
+    fe::DataType_t ioType = useFP16 ? fe::DataType_t::HALF : fe::DataType_t::FLOAT;
+    graph->set_io_data_type(ioType)
+      .set_intermediate_data_type(fe::DataType_t::FLOAT)
+      .set_compute_data_type(fe::DataType_t::FLOAT);
+
+    int64_t B = key.batchSize;
+    int64_t Hq = key.numHeads;
+    int64_t Hkv = key.numKVHeads;
+    int64_t S = key.seqLen;
+    int64_t Dq = key.qHeadDim;
+    int64_t Dv = key.vHeadDim;
+
+    // BSHD physical layout, with logical dim ordering (B, H, S, D):
+    // stride for B = S * H_inner * D
+    // stride for H = D
+    // stride for S = H_inner * D
+    // stride for D = 1
+    // where H_inner is the number of heads packed for this tensor (numHeads or numKVHeads).
+    int64_t qHinner = key.numHeads;
+    int64_t kHinner = key.numKVHeads;
+    int64_t vHinner = key.numKVHeads;
+
+    auto Q = graph->tensor(
+      fe::graph::Tensor_attributes()
+      .set_name("Q")
+      .set_uid(SDPAPlanForBatchSize::Q_UID)
+      .set_dim({B, Hq, S, Dq})
+      .set_stride({S * qHinner * Dq, Dq, qHinner * Dq, 1})
+    );
+    auto K = graph->tensor(
+      fe::graph::Tensor_attributes()
+      .set_name("K")
+      .set_uid(SDPAPlanForBatchSize::K_UID)
+      .set_dim({B, Hkv, S, Dq})
+      .set_stride({S * kHinner * Dq, Dq, kHinner * Dq, 1})
+    );
+    auto V = graph->tensor(
+      fe::graph::Tensor_attributes()
+      .set_name("V")
+      .set_uid(SDPAPlanForBatchSize::V_UID)
+      .set_dim({B, Hkv, S, Dv})
+      .set_stride({S * vHinner * Dv, Dv, vHinner * Dv, 1})
+    );
+
+    float scale = 1.0f / std::sqrt((float)key.qHeadDim);
+    auto sdpa_options = (
+      fe::graph::SDPA_attributes()
+      .set_name("sdpa_fwd")
+      .set_generate_stats(false)
+      .set_attn_scale(scale)
+    );
+
+    if(key.hasMask) {
+      // Full [B, 1, S, S] additive bias, broadcast over heads only. Per cudnn 9.8 empirical
+      // testing the broadcast-over-q variant ([B,1,1,S]) has no supported plans for our shape.
+      auto bias = graph->tensor(
+        fe::graph::Tensor_attributes()
+        .set_name("bias")
+        .set_uid(SDPAPlanForBatchSize::BIAS_UID)
+        .set_dim({B, 1, S, S})
+        .set_stride({S * S, S * S, S, 1})
+      );
+      sdpa_options.set_bias(bias);
+    }
+
+    auto [O, Stats] = graph->sdpa(Q, K, V, sdpa_options);
+    (void)Stats;
+
+    // Output O also uses BSHD physical layout (matches what outProj expects).
+    int64_t oHinner = key.numHeads;
+    O->set_output(true)
+      .set_dim({B, Hq, S, Dv})
+      .set_stride({S * oHinner * Dv, Dv, oHinner * Dv, 1})
+      .set_uid(SDPAPlanForBatchSize::O_UID);
+
+    auto status = graph->validate();
+    if(status.is_bad())
+      return disable(string("cudnn SDPA graph validate failed: ") + status.get_message());
+    status = graph->build_operation_graph(cudnn);
+    if(status.is_bad())
+      return disable(string("cudnn SDPA build_operation_graph failed: ") + status.get_message());
+    status = graph->create_execution_plans({fe::HeurMode_t::A});
+    if(status.is_bad())
+      return disable(string("cudnn SDPA create_execution_plans failed: ") + status.get_message());
+    status = graph->check_support(cudnn);
+    if(status.is_bad())
+      return disable(string("cudnn SDPA check_support failed: ") + status.get_message());
+    status = graph->build_plans(cudnn);
+    if(status.is_bad())
+      return disable(string("cudnn SDPA build_plans failed: ") + status.get_message());
+
+    int64_t ws = 0;
+    status = graph->get_workspace_size(ws);
+    if(status.is_bad())
+      return disable(string("cudnn SDPA get_workspace_size failed: ") + status.get_message());
+
+    plan->graph = graph;
+    plan->workspaceBytes = ws;
+    plansByKey[key] = plan;
+    return plan;
+  }
+};
+#else
+struct SDPAGraphCache {
+  SDPAGraphCache() {}
+};
+#endif
+
+
 struct CudaHandles {
   cublasHandle_t cublas;
   cudnnHandle_t cudnn;
   const int majorComputeCapability;
   const int minorComputeCapability;
+  std::unique_ptr<SDPAGraphCache> sdpaCache;
+  // Logger for this handle's server thread; may be NULL. Used to report cudnn SDPA falling back.
+  Logger* logger;
+  // Set while warming up (see NNEvaluator::maybeWarmupComputeHandle). When true, a failed cudnn SDPA
+  // execution is tolerated (fall back to the custom kernel); when false such a failure is fatal.
+  bool isWarmup;
 
   CudaHandles(int major, int minor)
     : majorComputeCapability(major),
-      minorComputeCapability(minor)
+      minorComputeCapability(minor),
+      sdpaCache(std::make_unique<SDPAGraphCache>()),
+      logger(NULL),
+      isWarmup(false)
   {
     CUBLAS_ERR("CudaHandles",cublasCreate(&cublas));
     CUDNN_ERR("CudaHandles",cudnnCreate(&cudnn));
@@ -811,7 +1058,7 @@ struct NormActConv {
   ) const {
     norm.apply(cudaHandles,batchSize,inBuf,maskBuf,inScratchBuf);
 #ifdef DEBUG_INTERMEDIATE_VALUES
-    CudaUtils::debugPrint4D(string("AFTER NORM "), inScratchBuf, batchSize, inChannels, nnXLen, nnYLen, usingNHWC, usingFP16);
+    CudaUtils::debugPrint3D(string("AFTER NORM "), inScratchBuf, batchSize, inChannels, nnXLen*nnYLen, usingNHWC, usingFP16);
 #endif
     conv.apply(cudaHandles,batchSize,accumulate,inScratchBuf,outBuf,workspaceBuf,workspaceBytes);
   }
@@ -1131,6 +1378,568 @@ struct NestedBottleneckResidualBlock {
 
 //------------------------------------------------------------------------------
 
+struct TransformerRMSNormLayer {
+  const string name;
+  const int numChannels;
+  const float epsilon;
+  const bool usingFP16;
+  void* weightBuf;
+  void* zeroBetaBuf;
+
+  TransformerRMSNormLayer() = delete;
+  TransformerRMSNormLayer(const TransformerRMSNormLayer&) = delete;
+  TransformerRMSNormLayer& operator=(const TransformerRMSNormLayer&) = delete;
+
+  TransformerRMSNormLayer(
+    CudaHandles* cudaHandles,
+    const TransformerRMSNormDesc* desc,
+    bool useFP16
+  ) :
+    name(desc->name),
+    numChannels(desc->numChannels),
+    epsilon(desc->epsilon),
+    usingFP16(useFP16)
+  {
+    (void)cudaHandles;
+    if((int)desc->weight.size() != numChannels)
+      throw StringError(name + ": RMSNorm weight count does not match numChannels");
+    CudaUtils::mallocAndCopyToDevice(name, desc->weight, weightBuf, useFP16);
+    // Allocate a zero buffer for beta (TransformerRMSNorm has no bias)
+    vector<float> zeros(numChannels, 0.0f);
+    CudaUtils::mallocAndCopyToDevice(name + ":zeroBeta", zeros, zeroBetaBuf, useFP16);
+  }
+
+  ~TransformerRMSNormLayer() {
+    cudaFree(weightBuf);
+    cudaFree(zeroBetaBuf);
+  }
+
+  // Apply RMSNorm on NHWC data [N, XY, C], applying mask [N, XY] to zero padded positions.
+  // Uses the RMSNormGammaBeta kernel with gamma=weight, beta=0, no activation.
+  void apply(
+    CudaHandles* cudaHandles,
+    int batchSize,
+    int xySize,
+    void* inputBuf,
+    void* outputBuf,
+    const void* maskBuf
+  ) const {
+    (void)cudaHandles;
+    // RMSNormGammaBetaNHWC with gamma=weight, beta=zero, mask, identity activation.
+    if(!usingFP16) {
+      customCudaRMSNormGammaBetaNHWC(
+        (const float*)inputBuf, (float*)outputBuf,
+        (const float*)weightBuf, (const float*)zeroBetaBuf,
+        (const float*)maskBuf,
+        batchSize, xySize, numChannels, epsilon, ACTIVATION_IDENTITY);
+    }
+    else {
+      customCudaRMSNormGammaBetaNHWC(
+        (const half*)inputBuf, (half*)outputBuf,
+        (const half*)weightBuf, (const half*)zeroBetaBuf,
+        (const half*)maskBuf,
+        batchSize, xySize, numChannels, epsilon, ACTIVATION_IDENTITY);
+    }
+    CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+  }
+};
+
+//------------------------------------------------------------------------------
+
+#if 0
+// Gom2026 v101/v102/v103 uses BatchNorm at the trunk tip. Keep the unrelated
+// newer trunk-RMSNorm implementation out of this minimal transformer port.
+struct RMSNormLayer {
+  const string name;
+  const int numChannels;
+  const bool spatial;
+  const int activation;
+  const float epsilon;
+  const int nnXLen;
+  const int nnYLen;
+  const bool usingFP16;
+  const bool usingNHWC;
+
+  void* gammaBuf;
+  void* betaBuf;
+
+  RMSNormLayer() = delete;
+  RMSNormLayer(const RMSNormLayer&) = delete;
+  RMSNormLayer& operator=(const RMSNormLayer&) = delete;
+
+  RMSNormLayer(
+    CudaHandles* cudaHandles,
+    const RMSNormLayerDesc* desc,
+    int act,
+    int nnX,
+    int nnY,
+    bool useFP16,
+    bool useNHWC
+  ) :
+    name(desc->name),
+    numChannels(desc->numChannels),
+    spatial(desc->spatial),
+    activation(act),
+    epsilon(desc->epsilon),
+    nnXLen(nnX),
+    nnYLen(nnY),
+    usingFP16(useFP16),
+    usingNHWC(useNHWC)
+  {
+    (void)cudaHandles;
+    testAssert((int)desc->gamma.size() == numChannels);
+    testAssert((int)desc->beta.size() == numChannels);
+    CudaUtils::mallocAndCopyToDevice(name, desc->gamma, gammaBuf, useFP16);
+    CudaUtils::mallocAndCopyToDevice(name, desc->beta, betaBuf, useFP16);
+  }
+
+  ~RMSNormLayer() {
+    cudaFree(gammaBuf);
+    cudaFree(betaBuf);
+  }
+
+  void apply(
+    CudaHandles* cudaHandles,
+    ScratchBuffers* scratch,
+    int batchSize,
+    void* inputBuf,
+    void* outputBuf,
+    const void* maskBuf,
+    const float* maskSumBuf
+  ) const {
+    (void)cudaHandles;
+    int xySize = nnXLen * nnYLen;
+    if(!spatial) {
+      if(!usingFP16) {
+        if(!usingNHWC)
+          customCudaRMSNormGammaBetaNCHW(
+            (const float*)inputBuf, (float*)outputBuf, (const float*)gammaBuf, (const float*)betaBuf,
+            (const float*)maskBuf, batchSize, numChannels, xySize, epsilon, activation);
+        else
+          customCudaRMSNormGammaBetaNHWC(
+            (const float*)inputBuf, (float*)outputBuf, (const float*)gammaBuf, (const float*)betaBuf,
+            (const float*)maskBuf, batchSize, xySize, numChannels, epsilon, activation);
+      }
+      else {
+        if(!usingNHWC)
+          customCudaRMSNormGammaBetaNCHW(
+            (const half*)inputBuf, (half*)outputBuf, (const half*)gammaBuf, (const half*)betaBuf,
+            (const half*)maskBuf, batchSize, numChannels, xySize, epsilon, activation);
+        else
+          customCudaRMSNormGammaBetaNHWC(
+            (const half*)inputBuf, (half*)outputBuf, (const half*)gammaBuf, (const half*)betaBuf,
+            (const half*)maskBuf, batchSize, xySize, numChannels, epsilon, activation);
+      }
+    }
+    else {
+      // Allocate temp buffer for spatial reduction from scratch (float regardless of FP16 mode).
+      // Holds per-block partial sums plus the final reduced value per batch element; see
+      // SPATIAL_RMSNORM_BLOCKS_PER_BATCH in cudahelpers.cu (partialStride = that + 1).
+      SizedBuf<void*> sumSqBuf(scratch->allocator, (size_t)batchSize * CUDA_SPATIAL_RMSNORM_SUMSQ_STRIDE * sizeof(float));
+      if(!usingFP16) {
+        if(!usingNHWC)
+          customCudaSpatialRMSNormNCHW(
+            (const float*)inputBuf, (float*)outputBuf, (const float*)gammaBuf, (const float*)betaBuf,
+            (const float*)maskBuf, maskSumBuf, batchSize, numChannels, xySize, epsilon, activation, (float*)sumSqBuf.buf);
+        else
+          customCudaSpatialRMSNormNHWC(
+            (const float*)inputBuf, (float*)outputBuf, (const float*)gammaBuf, (const float*)betaBuf,
+            (const float*)maskBuf, maskSumBuf, batchSize, xySize, numChannels, epsilon, activation, (float*)sumSqBuf.buf);
+      }
+      else {
+        if(!usingNHWC)
+          customCudaSpatialRMSNormNCHW(
+            (const half*)inputBuf, (half*)outputBuf, (const half*)gammaBuf, (const half*)betaBuf,
+            (const half*)maskBuf, maskSumBuf, batchSize, numChannels, xySize, epsilon, activation, (float*)sumSqBuf.buf);
+        else
+          customCudaSpatialRMSNormNHWC(
+            (const half*)inputBuf, (half*)outputBuf, (const half*)gammaBuf, (const half*)betaBuf,
+            (const half*)maskBuf, maskSumBuf, batchSize, xySize, numChannels, epsilon, activation, (float*)sumSqBuf.buf);
+      }
+    }
+    CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+  }
+};
+
+//------------------------------------------------------------------------------
+#endif
+
+struct TransformerAttentionBlock {
+  const string name;
+  const int numHeads;
+  const int numKVHeads;
+  const int qHeadDim;
+  const int vHeadDim;
+  const bool useRope;
+  const bool learnableRope;
+  const int inChannels;
+
+  const int nnXLen;
+  const int nnYLen;
+  const bool usingFP16;
+  const bool usingNHWC;
+
+  const TransformerRMSNormLayer preLN;
+  const MatMulLayer qProj;
+  const MatMulLayer kProj;
+  const MatMulLayer vProj;
+  const MatMulLayer outProj;
+
+  // Precomputed RoPE cos/sin tables on device
+  void* ropeCosTable;
+  void* ropeSinTable;
+  int ropeNumPairs;
+
+  TransformerAttentionBlock() = delete;
+  TransformerAttentionBlock(const TransformerAttentionBlock&) = delete;
+  TransformerAttentionBlock& operator=(const TransformerAttentionBlock&) = delete;
+
+  TransformerAttentionBlock(
+    CudaHandles* cudaHandles,
+    const TransformerAttentionDesc* desc,
+    int nnX,
+    int nnY,
+    bool useFP16,
+    bool useNHWC
+  ) :
+    name(desc->name),
+    numHeads(desc->numHeads),
+    numKVHeads(desc->numKVHeads),
+    qHeadDim(desc->qHeadDim),
+    vHeadDim(desc->vHeadDim),
+    useRope(desc->useRope),
+    learnableRope(desc->learnableRope),
+    inChannels(desc->qProj.inChannels),
+    nnXLen(nnX),
+    nnYLen(nnY),
+    usingFP16(useFP16),
+    usingNHWC(useNHWC),
+    preLN(cudaHandles, &desc->preLN, useFP16),
+    qProj(cudaHandles, &desc->qProj, useFP16),
+    kProj(cudaHandles, &desc->kProj, useFP16),
+    vProj(cudaHandles, &desc->vProj, useFP16),
+    outProj(cudaHandles, &desc->outProj, useFP16),
+    ropeCosTable(NULL),
+    ropeSinTable(NULL),
+    ropeNumPairs(0)
+  {
+    if(!useNHWC) {
+      throw StringError("Transformer blocks with NCHW layout are not yet supported by the CUDA backend");
+    }
+    if(useRope) {
+      ropeNumPairs = qHeadDim / 2;
+      int seqLen = nnXLen * nnYLen;
+      vector<float> cosTableData;
+      vector<float> sinTableData;
+      desc->computeRopeCosSin(nnXLen, nnYLen, seqLen, cosTableData, sinTableData);
+      CudaUtils::mallocAndCopyToDevice(name + ":ropeCos", cosTableData.data(), (int)cosTableData.size(), ropeCosTable, useFP16);
+      CudaUtils::mallocAndCopyToDevice(name + ":ropeSin", sinTableData.data(), (int)sinTableData.size(), ropeSinTable, useFP16);
+    }
+  }
+
+  ~TransformerAttentionBlock() {
+    if(ropeCosTable != NULL) cudaFree(ropeCosTable);
+    if(ropeSinTable != NULL) cudaFree(ropeSinTable);
+  }
+
+  size_t requiredWorkspaceBytes(
+    CudaHandles* cudaHandles,
+    int batchSize
+  ) const {
+    (void)cudaHandles;
+    (void)batchSize;
+    return 0;
+  }
+
+  void apply(
+    CudaHandles* cudaHandles,
+    ScratchBuffers* scratch,
+    int batchSize,
+    void* trunkBuf,
+    void* trunkScratchBuf,
+    void* maskBuf,
+    float* maskSumBuf,
+    void* workspaceBuf,
+    size_t workspaceBytes
+  ) const {
+    (void)maskSumBuf;
+    (void)workspaceBuf;
+    (void)workspaceBytes;
+
+    int seqLen = nnXLen * nnYLen;
+    int qTotalDim = numHeads * qHeadDim;
+    int kTotalDim = numKVHeads * qHeadDim;
+    int vTotalDim = numKVHeads * vHeadDim;
+    size_t bytesPerElt = usingFP16 ? sizeof(half) : sizeof(float);
+
+    // NHWC: trunk is [N, XY, C]. RMSNorm + mask zeroing.
+    preLN.apply(cudaHandles, batchSize, seqLen, trunkBuf, trunkScratchBuf, maskBuf);
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint3D("CUDA Attn RMSNorm out", trunkScratchBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#endif
+
+    // Step 2: Q/K/V projections
+    // trunkScratchBuf is [N, XY, C] NHWC = [C, N*seqLen] column-major.
+    // MatMulLayer expects input as [inChannels, batchSize], which matches.
+    int matBatchSize = batchSize * seqLen;
+
+    SizedBuf<void*> qBuf(scratch->allocator, (size_t)qTotalDim * matBatchSize * bytesPerElt);
+    SizedBuf<void*> kBuf(scratch->allocator, (size_t)kTotalDim * matBatchSize * bytesPerElt);
+    SizedBuf<void*> vBuf(scratch->allocator, (size_t)vTotalDim * matBatchSize * bytesPerElt);
+
+    qProj.apply(cudaHandles, scratch, matBatchSize, trunkScratchBuf, qBuf.buf, workspaceBuf, workspaceBytes);
+    kProj.apply(cudaHandles, scratch, matBatchSize, trunkScratchBuf, kBuf.buf, workspaceBuf, workspaceBytes);
+    vProj.apply(cudaHandles, scratch, matBatchSize, trunkScratchBuf, vBuf.buf, workspaceBuf, workspaceBytes);
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint2D("CUDA Attn Q", qBuf.buf, matBatchSize, qTotalDim, usingFP16);
+#endif
+
+    // Step 3: Apply RoPE to Q and K
+    // Q is [qTotalDim, seqLen*batchSize] column-major = [batchSize*seqLen, qTotalDim] row-major
+    if(useRope) {
+      if(!usingFP16) {
+        customCudaApplyRoPE((float*)qBuf.buf, (const float*)ropeCosTable, (const float*)ropeSinTable,
+          batchSize, seqLen, numHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope);
+        customCudaApplyRoPE((float*)kBuf.buf, (const float*)ropeCosTable, (const float*)ropeSinTable,
+          batchSize, seqLen, numKVHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope);
+      }
+      else {
+        customCudaApplyRoPE((half*)qBuf.buf, (const half*)ropeCosTable, (const half*)ropeSinTable,
+          batchSize, seqLen, numHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope);
+        customCudaApplyRoPE((half*)kBuf.buf, (const half*)ropeCosTable, (const half*)ropeSinTable,
+          batchSize, seqLen, numKVHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope);
+      }
+      CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+    }
+
+    // Step 4: Scaled dot-product attention.
+    // We use cudnn SDPA (FlashAttention-style, fused, no score-matrix materialization) when available
+    // (FP16 + cudnn >= 8.9.3 + supported GPU). Otherwise fall back to a custom online-softmax CUDA kernel.
+    // Both paths consume Q/K/V in BSHD layout and produce attnOut in the same layout as expected by outProj:
+    //   attnOut: [numHeads*vHeadDim, seqLen*batchSize] col-major = [batchSize*seqLen, numHeads*vHeadDim] row-major.
+
+    SizedBuf<void*> attnOutBuf(scratch->allocator, (size_t)numHeads * vHeadDim * seqLen * batchSize * bytesPerElt);
+
+    bool usedSDPA = false;
+#if KATAGO_CUDA_HAS_SDPA
+    SDPAGraphCache* sdpaCache = cudaHandles->sdpaCache.get();
+    if(usingFP16 && sdpaCache != NULL) {
+      bool hasMask = (maskBuf != NULL);
+      SDPAGraphKey sdpaKey = {numHeads, numKVHeads, qHeadDim, vHeadDim, seqLen, batchSize, hasMask, usingFP16};
+      auto plan = sdpaCache->getOrBuildPlan(cudaHandles->cudnn, sdpaKey, cudaHandles->logger, cudaHandles->isWarmup);
+      if(plan != nullptr) {
+        std::unordered_map<int64_t, void*> variant_pack = {
+          {SDPAPlanForBatchSize::Q_UID, qBuf.buf},
+          {SDPAPlanForBatchSize::K_UID, kBuf.buf},
+          {SDPAPlanForBatchSize::V_UID, vBuf.buf},
+          {SDPAPlanForBatchSize::O_UID, attnOutBuf.buf},
+        };
+
+        // When a mask is present, materialize a [B, 1, S, S] additive bias: bias[b,q,k] = (mask[b,k] != 0 ? 0 : -1e4).
+        // For our test model (B=16, S=361) this is ~4 MB; the bias only depends on the mask, but
+        // we rebuild it per attention block for simplicity (the mask kernel itself is cheap).
+        SizedBuf<void*> biasBuf(scratch->allocator, hasMask ? (size_t)batchSize * seqLen * seqLen * bytesPerElt : 1);
+        if(hasMask) {
+          customCudaMaskToAttnBiasFull((const half*)maskBuf, (half*)biasBuf.buf, batchSize, seqLen);
+          variant_pack[SDPAPlanForBatchSize::BIAS_UID] = biasBuf.buf;
+        }
+
+        // Workspace from cudnn (separate from the conv workspace - different shape and lifetime).
+        SizedBuf<void*> sdpaWs(scratch->allocator, (size_t)plan->workspaceBytes);
+
+        auto status = plan->graph->execute(cudaHandles->cudnn, variant_pack, sdpaWs.buf);
+        if(status.is_bad()) {
+          string reason = string("cudnn SDPA execute failed: ") + status.get_message();
+          // During warmup we tolerate this: disable SDPA from here on and fall through to the custom
+          // kernel. Outside of warmup a failure here is fatal - the plan was already validated and
+          // built, so an execute failure means something is genuinely wrong.
+          if(!cudaHandles->isWarmup)
+            throw StringError(reason);
+          sdpaCache->sdpaSupported = false;
+          sdpaCache->disableReason = reason;
+          if(cudaHandles->logger != NULL)
+            cudaHandles->logger->write("Cuda backend: disabling cudnn SDPA and falling back to custom attention kernel: " + reason);
+        }
+        else {
+          usedSDPA = true;
+        }
+      }
+    }
+#endif
+
+    if(!usedSDPA) {
+      if(!usingFP16) {
+        customCudaFlashAttention(
+          (const float*)qBuf.buf, (const float*)kBuf.buf, (const float*)vBuf.buf,
+          (const float*)maskBuf, (float*)attnOutBuf.buf,
+          batchSize, seqLen, numHeads, numKVHeads, qHeadDim, vHeadDim);
+      }
+      else {
+        customCudaFlashAttention(
+          (const half*)qBuf.buf, (const half*)kBuf.buf, (const half*)vBuf.buf,
+          (const half*)maskBuf, (half*)attnOutBuf.buf,
+          batchSize, seqLen, numHeads, numKVHeads, qHeadDim, vHeadDim);
+      }
+      CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+    }
+
+    // Step 5: Output projection
+    // attnOutBuf is [numHeads*vHeadDim, seqLen*batchSize] col-major
+    // outProj maps to [inChannels, seqLen*batchSize]
+    outProj.apply(cudaHandles, scratch, matBatchSize, attnOutBuf.buf, trunkScratchBuf, workspaceBuf, workspaceBytes);
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint3D("CUDA Attn outProj", trunkScratchBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#endif
+
+    // Step 6: Residual addition: trunk += trunkScratch * mask
+    // NHWC: trunk is [N, XY, C], mask is [N, XY]
+    if(!usingFP16) {
+      customCudaMaskedResidualAddNHWC((float*)trunkBuf, (const float*)trunkScratchBuf, (const float*)maskBuf, batchSize, seqLen, inChannels);
+    }
+    else {
+      customCudaMaskedResidualAddNHWC((half*)trunkBuf, (const half*)trunkScratchBuf, (const half*)maskBuf, batchSize, seqLen, inChannels);
+    }
+    CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint3D("CUDA Attn residual", trunkBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#endif
+  }
+};
+
+//------------------------------------------------------------------------------
+
+struct TransformerFFNBlock {
+  const string name;
+  const int numChannels;
+  const int ffnChannels;
+  const bool useSwiGLU;
+
+  const int nnXLen;
+  const int nnYLen;
+  const bool usingFP16;
+  const bool usingNHWC;
+
+  const TransformerRMSNormLayer preLN;
+  const MatMulLayer linear1;
+  std::unique_ptr<MatMulLayer> linearGate;
+  const MatMulLayer linear2;
+
+  TransformerFFNBlock() = delete;
+  TransformerFFNBlock(const TransformerFFNBlock&) = delete;
+  TransformerFFNBlock& operator=(const TransformerFFNBlock&) = delete;
+
+  TransformerFFNBlock(
+    CudaHandles* cudaHandles,
+    const TransformerFFNDesc* desc,
+    int nnX,
+    int nnY,
+    bool useFP16,
+    bool useNHWC
+  ) :
+    name(desc->name),
+    numChannels(desc->numChannels),
+    ffnChannels(desc->ffnChannels),
+    useSwiGLU(desc->useSwiGLU),
+    nnXLen(nnX),
+    nnYLen(nnY),
+    usingFP16(useFP16),
+    usingNHWC(useNHWC),
+    preLN(cudaHandles, &desc->preLN, useFP16),
+    linear1(cudaHandles, &desc->linear1, useFP16),
+    linear2(cudaHandles, &desc->linear2, useFP16)
+  {
+    if(!useSwiGLU) {
+      throw StringError("Non-SwiGLU transformer FFN is not yet supported in CUDA backend");
+    }
+    linearGate = std::make_unique<MatMulLayer>(cudaHandles, &desc->linearGate, useFP16);
+    if(!useNHWC) {
+      throw StringError("Transformer blocks with NCHW layout are not yet supported by the CUDA backend");
+    }
+  }
+
+  ~TransformerFFNBlock()
+  {}
+
+  size_t requiredWorkspaceBytes(
+    CudaHandles* cudaHandles,
+    int batchSize
+  ) const {
+    (void)cudaHandles;
+    (void)batchSize;
+    return 0;
+  }
+
+  void apply(
+    CudaHandles* cudaHandles,
+    ScratchBuffers* scratch,
+    int batchSize,
+    void* trunkBuf,
+    void* trunkScratchBuf,
+    void* maskBuf,
+    float* maskSumBuf,
+    void* workspaceBuf,
+    size_t workspaceBytes
+  ) const {
+    (void)maskSumBuf;
+
+    int seqLen = nnXLen * nnYLen;
+    int matBatchSize = batchSize * seqLen;
+    size_t bytesPerElt = usingFP16 ? sizeof(half) : sizeof(float);
+
+    // Step 1: RMSNorm
+    preLN.apply(cudaHandles, batchSize, seqLen, trunkBuf, trunkScratchBuf, maskBuf);
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint3D("CUDA FFN RMSNorm out", trunkScratchBuf, batchSize, numChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#endif
+
+    // Step 2: linear1 projection
+    SizedBuf<void*> ffnBuf(scratch->allocator, (size_t)ffnChannels * matBatchSize * bytesPerElt);
+    linear1.apply(cudaHandles, scratch, matBatchSize, trunkScratchBuf, ffnBuf.buf, workspaceBuf, workspaceBytes);
+
+    // Step 3: SwiGLU
+    {
+      SizedBuf<void*> gateBuf(scratch->allocator, (size_t)ffnChannels * matBatchSize * bytesPerElt);
+      linearGate->apply(cudaHandles, scratch, matBatchSize, trunkScratchBuf, gateBuf.buf, workspaceBuf, workspaceBytes);
+
+      int totalSize = (int)((size_t)ffnChannels * matBatchSize);
+      if(!usingFP16) {
+        customCudaSwiGLU((const float*)ffnBuf.buf, (const float*)gateBuf.buf, (float*)ffnBuf.buf, totalSize);
+      }
+      else {
+        customCudaSwiGLU((const half*)ffnBuf.buf, (const half*)gateBuf.buf, (half*)ffnBuf.buf, totalSize);
+      }
+      CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+    }
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint2D("CUDA FFN SwiGLU", ffnBuf.buf, matBatchSize, ffnChannels, usingFP16);
+#endif
+
+    // Step 4: linear2 projection back to trunk channels
+    linear2.apply(cudaHandles, scratch, matBatchSize, ffnBuf.buf, trunkScratchBuf, workspaceBuf, workspaceBytes);
+
+    // Step 5: Residual addition: trunk += trunkScratch * mask
+    if(!usingFP16) {
+      customCudaMaskedResidualAddNHWC((float*)trunkBuf, (const float*)trunkScratchBuf, (const float*)maskBuf, batchSize, seqLen, numChannels);
+    }
+    else {
+      customCudaMaskedResidualAddNHWC((half*)trunkBuf, (const half*)trunkScratchBuf, (const half*)maskBuf, batchSize, seqLen, numChannels);
+    }
+    CUDA_ERR(name.c_str(), cudaPeekAtLastError());
+
+#ifdef DEBUG_INTERMEDIATE_VALUES
+    CudaUtils::debugPrint3D("CUDA FFN residual", trunkBuf, batchSize, numChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#endif
+  }
+};
+
+//------------------------------------------------------------------------------
+
 BlockStack::BlockStack(
   CudaHandles* cudaHandles,
   CudnnManager* manager,
@@ -1196,6 +2005,34 @@ BlockStack::BlockStack(
       );
       blocks.push_back(make_pair(NESTED_BOTTLENECK_BLOCK_KIND,std::move(blockPtr)));
     }
+    else if(descBlocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+      TransformerAttentionDesc* blockDesc = (TransformerAttentionDesc*)descBlocks[i].second.get();
+      unique_ptr_void blockPtr = make_unique_void(
+        new TransformerAttentionBlock(
+          cudaHandles,
+          blockDesc,
+          nnXLen,
+          nnYLen,
+          useFP16,
+          useNHWC
+        )
+      );
+      blocks.push_back(make_pair(TRANSFORMER_ATTENTION_BLOCK_KIND,std::move(blockPtr)));
+    }
+    else if(descBlocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
+      TransformerFFNDesc* blockDesc = (TransformerFFNDesc*)descBlocks[i].second.get();
+      unique_ptr_void blockPtr = make_unique_void(
+        new TransformerFFNBlock(
+          cudaHandles,
+          blockDesc,
+          nnXLen,
+          nnYLen,
+          useFP16,
+          useNHWC
+        )
+      );
+      blocks.push_back(make_pair(TRANSFORMER_FFN_BLOCK_KIND,std::move(blockPtr)));
+    }
     else {
       ASSERT_UNREACHABLE;
     }
@@ -1227,6 +2064,16 @@ size_t BlockStack::requiredWorkspaceBytes(
       b = block->requiredWorkspaceBytes(cudaHandles,batchSize);
       bytes = std::max(bytes,b);
     }
+    else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+      TransformerAttentionBlock* block = (TransformerAttentionBlock*)blocks[i].second.get();
+      b = block->requiredWorkspaceBytes(cudaHandles,batchSize);
+      bytes = std::max(bytes,b);
+    }
+    else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
+      TransformerFFNBlock* block = (TransformerFFNBlock*)blocks[i].second.get();
+      b = block->requiredWorkspaceBytes(cudaHandles,batchSize);
+      bytes = std::max(bytes,b);
+    }
     else {
       ASSERT_UNREACHABLE;
     }
@@ -1248,7 +2095,7 @@ void BlockStack::apply(
 
   for(int i = 0; i<blocks.size(); i++) {
 #ifdef DEBUG_INTERMEDIATE_VALUES
-    CudaUtils::debugPrint4D(string("Blockstack before block " + Global::intToString(i)), trunkBuf, batchSize, trunkNumChannels, nnXLen, nnYLen, usingNHWC, usingFP16);
+    CudaUtils::debugPrint3D("CUDA Blockstack block " + Global::intToString(i), trunkBuf, batchSize, trunkNumChannels, nnXLen*nnYLen, usingNHWC, usingFP16, maskBuf);
 #endif
 
     if(blocks[i].first == ORDINARY_BLOCK_KIND) {
@@ -1280,6 +2127,34 @@ void BlockStack::apply(
     }
     else if(blocks[i].first == NESTED_BOTTLENECK_BLOCK_KIND) {
       NestedBottleneckResidualBlock* block = (NestedBottleneckResidualBlock*)blocks[i].second.get();
+      block->apply(
+        cudaHandles,
+        scratch,
+        batchSize,
+        trunkBuf,
+        trunkScratchBuf,
+        maskBuf,
+        maskSumBuf,
+        workspaceBuf,
+        workspaceBytes
+      );
+    }
+    else if(blocks[i].first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+      TransformerAttentionBlock* block = (TransformerAttentionBlock*)blocks[i].second.get();
+      block->apply(
+        cudaHandles,
+        scratch,
+        batchSize,
+        trunkBuf,
+        trunkScratchBuf,
+        maskBuf,
+        maskSumBuf,
+        workspaceBuf,
+        workspaceBytes
+      );
+    }
+    else if(blocks[i].first == TRANSFORMER_FFN_BLOCK_KIND) {
+      TransformerFFNBlock* block = (TransformerFFNBlock*)blocks[i].second.get();
       block->apply(
         cudaHandles,
         scratch,
@@ -1399,7 +2274,7 @@ struct Trunk {
     initialConv->apply(cudaHandles,batchSize,false,inputBuf,trunkScratch.buf,workspaceBuf,workspaceBytes);
 
     #ifdef DEBUG_INTERMEDIATE_VALUES
-    CudaUtils::debugPrint4D(string("After initial conv"), trunkScratch.buf, batchSize, trunkNumChannels, nnXLen, nnYLen, usingNHWC, usingFP16);
+    CudaUtils::debugPrint3D(string("After initial conv"), trunkScratch.buf, batchSize, trunkNumChannels, nnXLen*nnYLen, usingNHWC, usingFP16);
     #endif
 
     //Feed the matmul into trunkBuf
@@ -2264,6 +3139,15 @@ ComputeHandle* NeuralNet::createComputeHandle(
       useNHWC = true;
   }
 
+  // Transformer matmuls use a channel-contiguous [B,S,C] view. This is also
+  // required for the FP32 correctness fallback, where NHWC would otherwise
+  // remain disabled under the ordinary auto heuristic.
+  if(loadedModel->modelDesc.trunk.hasAnyTransformerBlocks() && !useNHWC) {
+    useNHWC = true;
+    if(logger != NULL)
+      logger->write("Cuda backend: forcing NHWC for transformer trunk");
+  }
+
   if(logger != NULL) {
     logger->write(
       "Cuda backend thread " + Global::intToString(serverThreadIdx) + ": Found GPU " + string(prop.name)
@@ -2554,6 +3438,146 @@ void NeuralNet::getOutput(
     }
   }
 
+}
+
+static void cudaUploadBenchmarkInputs(ComputeHandle* gpuHandle, InputBuffers* inputBuffers, int batchSize) {
+  Buffers* buffers = gpuHandle->buffers.get();
+  if(!gpuHandle->usingFP16) {
+    CUDA_ERR("benchmarkOutput",cudaMemcpy(buffers->inputBuf, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice));
+    CUDA_ERR("benchmarkOutput",cudaMemcpy(buffers->inputGlobalBuf, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice));
+  }
+  else {
+    CUDA_ERR("benchmarkOutput",cudaMemcpy(buffers->inputBufFloat, inputBuffers->userInputBuffer, inputBuffers->singleInputBytes*batchSize, cudaMemcpyHostToDevice));
+    CUDA_ERR("benchmarkOutput",cudaMemcpy(buffers->inputGlobalBufFloat, inputBuffers->userInputGlobalBuffer, inputBuffers->singleInputGlobalBytes*batchSize, cudaMemcpyHostToDevice));
+
+    customCudaCopyToHalf((const float*)buffers->inputBufFloat,(half*)buffers->inputBuf,inputBuffers->singleInputElts*batchSize);
+    CUDA_ERR("benchmarkOutput",cudaPeekAtLastError());
+    customCudaCopyToHalf((const float*)buffers->inputGlobalBufFloat,(half*)buffers->inputGlobalBuf,inputBuffers->singleInputGlobalElts*batchSize);
+    CUDA_ERR("benchmarkOutput",cudaPeekAtLastError());
+  }
+}
+
+static void cudaPrepareBenchmarkHostInputs(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  NNResultBuf** inputBufs,
+  int batchSize
+) {
+  const int nnXLen = gpuHandle->nnXLen;
+  const int nnYLen = gpuHandle->nnYLen;
+  const int version = gpuHandle->model->version;
+  const int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(version);
+  const int numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(version);
+  for(int nIdx = 0; nIdx < batchSize; nIdx++) {
+    if(inputBufs[nIdx] == NULL || inputBufs[nIdx]->rowSpatial == NULL || inputBufs[nIdx]->rowGlobal == NULL)
+      throw StringError("benchmarkOutput: null input row");
+    float* rowSpatialInput = inputBuffers->userInputBuffer + inputBuffers->singleInputElts * nIdx;
+    float* rowGlobalInput = inputBuffers->userInputGlobalBuffer + inputBuffers->singleInputGlobalElts * nIdx;
+    std::copy(inputBufs[nIdx]->rowGlobal,inputBufs[nIdx]->rowGlobal+numGlobalFeatures,rowGlobalInput);
+    SymmetryHelpers::copyInputsWithSymmetry(
+      inputBufs[nIdx]->rowSpatial,
+      rowSpatialInput,
+      1,
+      nnYLen,
+      nnXLen,
+      numSpatialFeatures,
+      gpuHandle->inputsUseNHWC,
+      inputBufs[nIdx]->symmetry
+    );
+  }
+}
+
+bool NeuralNet::benchmarkOutput(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  NNResultBuf** inputBufs,
+  int batchSize,
+  int numWarmups,
+  int numIterations,
+  bool forceMaskAllOnes,
+  vector<double>& iterationSeconds
+) {
+  assert(batchSize > 0 && batchSize <= inputBuffers->maxBatchSize);
+  if(numWarmups < 0 || numIterations <= 0)
+    throw StringError("benchmarkOutput: invalid warmup/iteration count");
+
+  iterationSeconds.clear();
+
+  // One-time host packing and H2D preparation, excluded from the timed loop.
+  cudaPrepareBenchmarkHostInputs(gpuHandle,inputBuffers,inputBufs,batchSize);
+  cudaUploadBenchmarkInputs(gpuHandle, inputBuffers, batchSize);
+
+  Buffers* buffers = gpuHandle->buffers.get();
+  ScratchBuffers* scratch = gpuHandle->scratch.get();
+  const bool effectiveRequireExactNNLen =
+    gpuHandle->requireExactNNLen && !forceMaskAllOnes;
+
+  for(int w = 0; w < numWarmups; w++) {
+    gpuHandle->model->apply(
+      gpuHandle->cudaHandles.get(),
+      scratch,
+      batchSize,
+      effectiveRequireExactNNLen,
+      buffers->inputBuf,
+      buffers->inputGlobalBuf,
+      buffers->policyBuf,
+      buffers->valueBuf,
+      buffers->scoreValueBuf,
+      buffers->ownershipBuf,
+      buffers->workspaceBuf,
+      buffers->workspaceBytes
+    );
+  }
+  CUDA_ERR("benchmarkOutput",cudaDeviceSynchronize());
+
+  std::vector<cudaEvent_t> startEvents(numIterations);
+  std::vector<cudaEvent_t> endEvents(numIterations);
+  for(int i = 0; i < numIterations; i++) {
+    CUDA_ERR("benchmarkOutput",cudaEventCreate(&startEvents[i]));
+    CUDA_ERR("benchmarkOutput",cudaEventCreate(&endEvents[i]));
+  }
+
+  try {
+    for(int i = 0; i < numIterations; i++) {
+      CUDA_ERR("benchmarkOutput",cudaEventRecord(startEvents[i]));
+      gpuHandle->model->apply(
+        gpuHandle->cudaHandles.get(),
+        scratch,
+        batchSize,
+        effectiveRequireExactNNLen,
+        buffers->inputBuf,
+        buffers->inputGlobalBuf,
+        buffers->policyBuf,
+        buffers->valueBuf,
+        buffers->scoreValueBuf,
+        buffers->ownershipBuf,
+        buffers->workspaceBuf,
+        buffers->workspaceBytes
+      );
+      CUDA_ERR("benchmarkOutput",cudaEventRecord(endEvents[i]));
+    }
+    CUDA_ERR("benchmarkOutput",cudaDeviceSynchronize());
+
+    iterationSeconds.reserve(numIterations);
+    for(int i = 0; i < numIterations; i++) {
+      float milliseconds = 0.0f;
+      CUDA_ERR("benchmarkOutput",cudaEventElapsedTime(&milliseconds,startEvents[i],endEvents[i]));
+      iterationSeconds.push_back((double)milliseconds / 1000.0);
+    }
+  }
+  catch(...) {
+    for(int i = 0; i < numIterations; i++) {
+      cudaEventDestroy(startEvents[i]);
+      cudaEventDestroy(endEvents[i]);
+    }
+    throw;
+  }
+
+  for(int i = 0; i < numIterations; i++) {
+    cudaEventDestroy(startEvents[i]);
+    cudaEventDestroy(endEvents[i]);
+  }
+  return true;
 }
 
 //TESTING ----------------------------------------------------------------------------------

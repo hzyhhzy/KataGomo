@@ -2,7 +2,35 @@
 #include "../neuralnet/modelversion.h"
 #include "../game/gamelogic.h"
 
+#include <algorithm>
+#include <exception>
+#include <mutex>
+#include <thread>
+
 using namespace std;
+
+#ifndef USE_CUDA_BACKEND
+bool NeuralNet::benchmarkOutput(
+  ComputeHandle* computeHandle,
+  InputBuffers* buffers,
+  NNResultBuf** inputBufs,
+  int batchSize,
+  int numWarmups,
+  int numIterations,
+  bool forceMaskAllOnes,
+  vector<double>& iterationSeconds
+) {
+  (void)computeHandle;
+  (void)buffers;
+  (void)inputBufs;
+  (void)batchSize;
+  (void)numWarmups;
+  (void)numIterations;
+  (void)forceMaskAllOnes;
+  iterationSeconds.clear();
+  return false;
+}
+#endif
 
 //-------------------------------------------------------------------------------------
 
@@ -402,6 +430,151 @@ void NNEvaluator::killServerThreads() {
   assert(numOngoingEvals == 0);
   assert(numWaitingEvals == 0);
   assert(numEvalsToAwaken == 0);
+}
+
+NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
+  int numWarmups,
+  int numIterations,
+  bool forceMaskAllOnes
+) {
+  if(numIterations <= 0)
+    throw StringError("benchmarknn requires numIterations > 0");
+  if(numWarmups < 0)
+    throw StringError("benchmarknn requires numWarmups >= 0");
+  if(debugSkipNeuralNet || loadedModel == NULL || computeContext == NULL)
+    throw StringError("benchmarknn requires a real neural net model");
+  if(!serverThreads.empty())
+    throw StringError("benchmarknn requires ordinary evaluator server threads to be stopped");
+  if(forceMaskAllOnes && !requireExactNNLen)
+    throw StringError(
+      "benchmarknn --force-mask-all-ones requires an exact-board evaluator; "
+      "remove requireMaxBoardSize=false from the config"
+    );
+
+  const int benchmarkThreadCount = (int)gpuIdxByServerThread.size();
+  const int batchSize = maxNumRows;
+  if(benchmarkThreadCount <= 0 || batchSize <= 0)
+    throw StringError("benchmarknn: invalid server/batch topology");
+  if(benchmarkThreadCount != 1)
+    throw StringError(
+      "benchmarknn generic CUDA bring-up currently certifies exactly one NN server thread; "
+      "independent per-handle CUDA streams are required before multi-server results are valid"
+    );
+
+  NNEvalBenchmarkResult result;
+  result.batchSize = batchSize;
+  result.numServerThreads = benchmarkThreadCount;
+  result.numIterations = numIterations;
+  result.forcedMaskAllOnes = forceMaskAllOnes;
+  result.perServerIterationSeconds.assign(benchmarkThreadCount, {});
+  result.perServerMedianSeconds.assign(benchmarkThreadCount, 0.0);
+  result.perServerNNEvalsPerSec.assign(benchmarkThreadCount, 0.0);
+  result.combinedWallSeconds = 0.0;
+  result.combinedNNEvalsPerSec = 0.0;
+
+  exception_ptr firstError;
+  mutex errorMutex;
+  vector<thread> threads;
+  threads.reserve(benchmarkThreadCount);
+  for(int threadIdx = 0; threadIdx < benchmarkThreadCount; threadIdx++) {
+    threads.emplace_back([&,threadIdx]() {
+      ComputeHandle* handle = NULL;
+      try {
+        NNServerBuf serverBuf(*this,loadedModel);
+        handle = NeuralNet::createComputeHandle(
+          computeContext,
+          loadedModel,
+          logger,
+          batchSize,
+          requireExactNNLen,
+          inputsUseNHWC,
+          gpuIdxByServerThread[threadIdx],
+          threadIdx,
+          backendNumThreads
+        );
+
+        const int spatialFeatures = NNModelVersion::getNumSpatialFeatures(modelVersion);
+        const int globalFeatures = NNModelVersion::getNumGlobalFeatures(modelVersion);
+        const int spatialArea = nnXLen * nnYLen;
+        const int spatialElts = spatialFeatures * spatialArea;
+        vector<unique_ptr<NNResultBuf>> ownedRows;
+        vector<NNResultBuf*> rows;
+        ownedRows.reserve(batchSize);
+        rows.reserve(batchSize);
+        for(int row = 0; row < batchSize; row++) {
+          ownedRows.push_back(make_unique<NNResultBuf>());
+          NNResultBuf* buf = ownedRows.back().get();
+          buf->rowSpatial = new float[spatialElts];
+          buf->rowSpatialSize = spatialElts;
+          fill(buf->rowSpatial,buf->rowSpatial+spatialElts,0.0f);
+          // Channel zero is the on-board mask in all supported Gom input versions.
+          if(inputsUseNHWC) {
+            for(int pos = 0; pos < spatialArea; pos++)
+              buf->rowSpatial[pos * spatialFeatures] = 1.0f;
+          }
+          else {
+            fill(buf->rowSpatial,buf->rowSpatial+spatialArea,1.0f);
+          }
+          buf->rowGlobal = new float[globalFeatures];
+          buf->rowGlobalSize = globalFeatures;
+          fill(buf->rowGlobal,buf->rowGlobal+globalFeatures,0.0f);
+          buf->symmetry = 0;
+          rows.push_back(buf);
+        }
+
+        vector<double> iterationSeconds;
+        if(!NeuralNet::benchmarkOutput(
+             handle,
+             serverBuf.inputBuffers,
+             rows.data(),
+             batchSize,
+             numWarmups,
+             numIterations,
+             forceMaskAllOnes,
+             iterationSeconds
+           ))
+          throw StringError("Current backend does not support pure-device benchmarknn");
+        result.perServerIterationSeconds[threadIdx] = std::move(iterationSeconds);
+        NeuralNet::freeComputeHandle(handle);
+        handle = NULL;
+      }
+      catch(...) {
+        if(handle != NULL)
+          NeuralNet::freeComputeHandle(handle);
+        lock_guard<mutex> lock(errorMutex);
+        if(firstError == nullptr)
+          firstError = current_exception();
+      }
+    });
+  }
+
+  for(thread& benchmarkThread : threads)
+    benchmarkThread.join();
+  if(firstError != nullptr)
+    rethrow_exception(firstError);
+
+  for(int threadIdx = 0; threadIdx < benchmarkThreadCount; threadIdx++) {
+    vector<double>& times = result.perServerIterationSeconds[threadIdx];
+    if(times.size() != (size_t)numIterations)
+      throw StringError("benchmarknn: unexpected number of per-server timings");
+    vector<double> sorted = times;
+    sort(sorted.begin(),sorted.end());
+    const double median =
+      sorted.size() % 2 == 1
+      ? sorted[sorted.size()/2]
+      : 0.5 * (sorted[sorted.size()/2-1] + sorted[sorted.size()/2]);
+    result.perServerMedianSeconds[threadIdx] = median;
+    result.perServerNNEvalsPerSec[threadIdx] = batchSize / median;
+  }
+  // S1 only: sum the CUDA-event device intervals. Handle construction, host
+  // packing, H2D and warmup are therefore excluded from this reported span.
+  result.combinedWallSeconds = 0.0;
+  for(double seconds : result.perServerIterationSeconds[0])
+    result.combinedWallSeconds += seconds;
+  const double totalTimedRows =
+    (double)benchmarkThreadCount * batchSize * numIterations;
+  result.combinedNNEvalsPerSec = totalTimedRows / result.combinedWallSeconds;
+  return result;
 }
 
 void NNEvaluator::serve(
