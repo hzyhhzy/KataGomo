@@ -223,6 +223,7 @@ add_executable(katago
   neuralnet/desc.cpp
   neuralnet/architecturedesc.cpp
   neuralnet/cudaopregistry.cpp
+  neuralnet/cudabackend_transformer_winner.cpp
   neuralnet/onnxprotoreader.cpp
   ${NEURALNET_BACKEND_SOURCES}
   book/book.cpp

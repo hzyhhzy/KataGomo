@@ -196,6 +196,13 @@ static void encodeRMSNorm(CanonicalWriter& out, const TransformerRMSNormDesc& de
   out.u32(getFloatBits(desc.epsilon));
 }
 
+static ArchitectureOpDesc describeTransformerAttentionOpImpl(
+  const TransformerAttentionDesc& desc
+);
+static ArchitectureOpDesc describeTransformerFFNOpImpl(
+  const TransformerFFNDesc& desc
+);
+
 static void encodeAttention(
   CanonicalWriter& out,
   const TransformerAttentionDesc& desc,
@@ -231,6 +238,14 @@ static void encodeAttention(
     }
   }
 
+  appendOp(result,describeTransformerAttentionOpImpl(desc));
+}
+
+ArchitectureOpDesc describeTransformerAttentionOpImpl(const TransformerAttentionDesc& desc) {
+  requirePositive(desc.numHeads,"attention.numHeads");
+  requirePositive(desc.numKVHeads,"attention.numKVHeads");
+  requirePositive(desc.qHeadDim,"attention.qHeadDim");
+  requirePositive(desc.vHeadDim,"attention.vHeadDim");
   ArchitectureOpDesc op = emptyOp(ArchitectureOpKind::TransformerAttention);
   op.runtimeDependencies = OP_RUNTIME_BATCH | OP_RUNTIME_MASK |
     (desc.useRope ? OP_RUNTIME_SPATIAL_XY : OP_RUNTIME_SPATIAL_AREA);
@@ -240,13 +255,16 @@ static void encodeAttention(
     op.flags |= OP_FLAG_LEARNABLE_ROPE;
   op.inChannels = desc.preLN.numChannels;
   op.outChannels = desc.outProj.outChannels;
+  // Learned RoPE pair count changes the legal Q/K epilogue shape. It is a
+  // weight-free local dimension, so include it in the per-op capability key.
+  op.auxiliaryChannels = desc.useRope ? desc.ropeNumPairs : 0;
   op.numHeads = desc.numHeads;
   op.numKVHeads = desc.numKVHeads;
   op.qHeadDim = desc.qHeadDim;
   op.vHeadDim = desc.vHeadDim;
   op.semanticScalar0Bits = getFloatBits(desc.preLN.epsilon);
   op.semanticScalar1Bits = desc.useRope && !desc.learnableRope ? getFloatBits(desc.ropeTheta) : 0;
-  appendOp(result,op);
+  return op;
 }
 
 static void encodeFFN(
@@ -266,6 +284,12 @@ static void encodeFFN(
     encodeMatMul(out,desc.linearGate,result,false);
   encodeMatMul(out,desc.linear2,result,false);
 
+  appendOp(result,describeTransformerFFNOpImpl(desc));
+}
+
+ArchitectureOpDesc describeTransformerFFNOpImpl(const TransformerFFNDesc& desc) {
+  requirePositive(desc.numChannels,"ffn.numChannels");
+  requirePositive(desc.ffnChannels,"ffn.ffnChannels");
   ArchitectureOpDesc op = emptyOp(ArchitectureOpKind::TransformerFFN);
   // This describes the complete pre-norm FFN block, including its masked RMS
   // norm and residual. Finer-grained kernel recipes may still expose mask-free
@@ -277,7 +301,7 @@ static void encodeFFN(
   op.outChannels = desc.numChannels;
   op.auxiliaryChannels = desc.ffnChannels;
   op.semanticScalar0Bits = getFloatBits(desc.preLN.epsilon);
-  appendOp(result,op);
+  return op;
 }
 
 static void encodeBlockStack(
@@ -365,6 +389,14 @@ static uint8_t outerNormMask(const ModelDesc& model, bool useScale) {
 }
 
 }  // namespace
+
+ArchitectureOpDesc describeTransformerAttentionOp(const TransformerAttentionDesc& desc) {
+  return describeTransformerAttentionOpImpl(desc);
+}
+
+ArchitectureOpDesc describeTransformerFFNOp(const TransformerFFNDesc& desc) {
+  return describeTransformerFFNOpImpl(desc);
+}
 
 bool ArchitectureSignature::operator==(const ArchitectureSignature& other) const {
   return schemaVersion == other.schemaVersion && digest == other.digest;

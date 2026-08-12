@@ -8,6 +8,8 @@
 #include <vector>
 
 struct ModelDesc;
+struct TransformerAttentionDesc;
+struct TransformerFFNDesc;
 
 namespace NeuralNetArchitecture {
 
@@ -112,6 +114,13 @@ struct ArchitectureDesc {
 ArchitectureDesc buildArchitectureDesc(const ModelDesc& model);
 ArchitectureSignature getArchitectureSignature(const ModelDesc& model);
 ModelProvenance getModelProvenance(const ModelDesc& model);
+
+// Weight-free local operator descriptions. Besides keeping architecture
+// encoding and backend construction in lockstep, these helpers let a backend
+// attach a prepared tactic to one concrete block without consulting a global
+// model signature in the inference hot path.
+ArchitectureOpDesc describeTransformerAttentionOp(const TransformerAttentionDesc& desc);
+ArchitectureOpDesc describeTransformerFFNOp(const TransformerFFNDesc& desc);
 
 uint32_t getFloatBits(float value);
 

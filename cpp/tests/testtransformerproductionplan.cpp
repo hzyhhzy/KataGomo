@@ -216,8 +216,11 @@ struct FixtureTacticData {
 };
 
 static bool isWinnerRuntime(const CapabilityKey& key) {
-  return key.batchSize == 36 && key.spatialArea == 225 &&
-    key.boardX == 15 && key.boardY == 15 && key.maskMode == MaskMode::None &&
+  const bool boardShapeMatches =
+    key.kind != ArchitectureOpKind::TransformerAttention ||
+    (key.boardX == 15 && key.boardY == 15);
+  return key.batchSize == 36 && key.spatialArea == 225 && boardShapeMatches &&
+    key.maskMode == MaskMode::None &&
     key.inputType == NumericType::Float16 && key.outputType == NumericType::Float16 &&
     key.deviceComputeCapability == 120 && key.streamCount == 2 &&
     key.runtimeLibraryFingerprint == 0x13000D130101914ULL;
@@ -408,8 +411,8 @@ void Tests::runTransformerProductionPlanTests() {
   PlanSnapshot plan48 = preparePlan(architecture48,b36,registry);
   testAssert(architectureA.signature != architecture48.signature);
   testAssert(planA.fingerprint != plan48.fingerprint);
-  size_t attention24 = findRequest(planA,ArchitectureOpKind::TransformerAttention,256,256);
-  size_t attention48 = findRequest(plan48,ArchitectureOpKind::TransformerAttention,256,256);
+  size_t attention24 = findRequest(planA,ArchitectureOpKind::TransformerAttention,256,256,16);
+  size_t attention48 = findRequest(plan48,ArchitectureOpKind::TransformerAttention,256,256,16);
   size_t ffn24 = findRequest(planA,ArchitectureOpKind::TransformerFFN,256,256,768);
   size_t ffn48 = findRequest(plan48,ArchitectureOpKind::TransformerFFN,256,256,768);
   testAssert(planA.requests[attention24].key == plan48.requests[attention48].key);
@@ -445,7 +448,7 @@ void Tests::runTransformerProductionPlanTests() {
   ArchitectureDesc wideArchitecture = buildArchitectureDesc(wideModel);
   PlanSnapshot widePlan = preparePlan(wideArchitecture,b36,registry);
   size_t wideAttention = findRequest(
-    widePlan,ArchitectureOpKind::TransformerAttention,384,384
+    widePlan,ArchitectureOpKind::TransformerAttention,384,384,16
   );
   size_t wideFFN = findRequest(
     widePlan,ArchitectureOpKind::TransformerFFN,384,384,1024

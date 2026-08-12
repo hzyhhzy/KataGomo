@@ -1,0 +1,388 @@
+#include "../neuralnet/cudabackend_transformer_winner.h"
+
+#include <algorithm>
+#include <iterator>
+
+using namespace CudaOpRegistry;
+using namespace NeuralNetArchitecture;
+
+namespace CudaTransformerWinner {
+namespace {
+
+constexpr uint64_t ATTENTION_FAMILY = 0x4B41544154544E31ULL; // KATATTN1
+constexpr uint64_t FFN_FAMILY = 0x4B415446464E3031ULL;       // KATFFN01
+
+enum AttentionVariant : uint64_t {
+  ATTENTION_SQUARE_GENERIC = 1,
+  ATTENTION_SQUARE_LEARNED_ROPE = 2,
+  ATTENTION_SQUARE_MASK_SAFE = 3,
+  ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE = 4,
+  ATTENTION_C256_SM120 = 5,
+  ATTENTION_C256_DYNAMIC_SM120 = 6,
+  ATTENTION_C256_B36_FA4_SM120 = 7,
+};
+
+enum FfnVariant : uint64_t {
+  FFN_GENERIC = 1,
+  FFN_C256_F768_SM120 = 2,
+  FFN_C256_F768_DYNAMIC_SM120 = 3,
+};
+
+struct RegistrationContext {
+  DeviceCapability device;
+};
+
+bool isHalfNhwcNoMask(const CapabilityKey& key) {
+  return key.inputType == NumericType::Float16 &&
+    key.outputType == NumericType::Float16 &&
+    key.computeType == NumericType::Float32 &&
+    (key.layout == TensorLayout::NHWC || key.layout == TensorLayout::BSH) &&
+    key.maskMode == MaskMode::None && key.batchSize > 0 &&
+    key.spatialArea > 0;
+}
+
+bool isSm120(const OpRequest& request, const RegistrationContext& context) {
+  return request.key.deviceComputeCapability == 120 &&
+    context.device.computeCapability == 120 && context.device.warpSize == 32;
+}
+
+bool isSquareMha(const CapabilityKey& key) {
+  return key.inChannels > 0 && key.inChannels == key.outChannels &&
+    key.numHeads > 0 && key.numHeads == key.numKVHeads &&
+    key.qHeadDim > 0 && key.qHeadDim == key.vHeadDim &&
+    key.numHeads * key.qHeadDim == key.inChannels;
+}
+
+bool hasLearnedRope(const CapabilityKey& key) {
+  return (key.flags & OP_FLAG_USE_ROPE) != 0 &&
+    (key.flags & OP_FLAG_LEARNABLE_ROPE) != 0;
+}
+
+bool isC256Attention(const CapabilityKey& key) {
+  return isSquareMha(key) && key.inChannels == 256 && key.numHeads == 8 &&
+    key.numKVHeads == 8 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
+    key.auxiliaryChannels == 16 &&
+    hasLearnedRope(key);
+}
+
+bool isC256F768(const CapabilityKey& key) {
+  return key.kind == ArchitectureOpKind::TransformerFFN &&
+    key.inChannels == 256 && key.outChannels == 256 &&
+    key.auxiliaryChannels == 768 && (key.flags & OP_FLAG_USE_SWIGLU) != 0;
+}
+
+bool validatedDynamicRows(const CapabilityKey& key) {
+  const int64_t rows = (int64_t)key.batchSize * (int64_t)key.spatialArea;
+  constexpr int rowsMeasured[] = {7200,8100,9000,14400,28800};
+  if(rows <= 0 || rows > 0x7FFFFFFF)
+    return false;
+  return std::find(
+    std::begin(rowsMeasured),std::end(rowsMeasured),(int)rows
+  ) != std::end(rowsMeasured);
+}
+
+SupportClass matchAttentionSquare(const OpRequest& request, const void*) {
+  const CapabilityKey& key = request.key;
+  return key.kind == ArchitectureOpKind::TransformerAttention &&
+    isHalfNhwcNoMask(key) && isSquareMha(key) ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchAttentionSquareLearnedRope(const OpRequest& request, const void*) {
+  const CapabilityKey& key = request.key;
+  return key.kind == ArchitectureOpKind::TransformerAttention &&
+    isHalfNhwcNoMask(key) && isSquareMha(key) && hasLearnedRope(key) ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchAttentionSquareMaskSafe(const OpRequest& request, const void*) {
+  const CapabilityKey& key = request.key;
+  const bool fp16 = key.inputType == NumericType::Float16 &&
+    key.outputType == NumericType::Float16 && key.computeType == NumericType::Float32;
+  const bool layout = key.layout == TensorLayout::NHWC || key.layout == TensorLayout::BSH;
+  return key.kind == ArchitectureOpKind::TransformerAttention && fp16 && layout &&
+    key.maskMode == MaskMode::Dense && key.batchSize > 0 && key.spatialArea > 0 &&
+    isSquareMha(key) ? SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchAttentionSquareLearnedRopeMaskSafe(const OpRequest& request, const void* userData) {
+  return matchAttentionSquareMaskSafe(request,userData) != SupportClass::Unsupported &&
+    hasLearnedRope(request.key) ? SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchAttentionC256(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  return isHalfNhwcNoMask(request.key) && isC256Attention(request.key) &&
+    isSm120(request,context) ? SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchAttentionDynamic(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  return isHalfNhwcNoMask(request.key) && isC256Attention(request.key) &&
+    isSm120(request,context) && validatedDynamicRows(request.key) ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchAttentionExact(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  const CapabilityKey& key = request.key;
+  if(!isHalfNhwcNoMask(key) || !isC256Attention(key) || !isSm120(request,context) ||
+     context.device.sharedBytesPerBlockOptin < 101376 || key.batchSize != 36 ||
+     key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225)
+    return SupportClass::Unsupported;
+  // The exact measured winner used two independently owned streams. The same
+  // kernel remains a compatible local tactic with a different handle count,
+  // but does not claim the measured certification level.
+  return key.streamCount == 2 ? SupportClass::CertifiedFast : SupportClass::CompatibleOnly;
+}
+
+SupportClass matchFfnGeneric(const OpRequest& request, const void*) {
+  const CapabilityKey& key = request.key;
+  return key.kind == ArchitectureOpKind::TransformerFFN &&
+    isHalfNhwcNoMask(key) && key.inChannels > 0 &&
+    key.inChannels == key.outChannels && key.auxiliaryChannels > 0 &&
+    (key.flags & OP_FLAG_USE_SWIGLU) != 0 ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchFfnC256(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  return isHalfNhwcNoMask(request.key) && isC256F768(request.key) &&
+    isSm120(request,context) ? SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+SupportClass matchFfnDynamic(const OpRequest& request, const void* userData) {
+  const RegistrationContext& context = *(const RegistrationContext*)userData;
+  return isHalfNhwcNoMask(request.key) && isC256F768(request.key) &&
+    isSm120(request,context) && validatedDynamicRows(request.key) ?
+    SupportClass::CompatibleOnly : SupportClass::Unsupported;
+}
+
+bool prepareNoAllocation(const OpRequest&, PreparedOp& prepared, void*) {
+  prepared.workspaceAlignment = 0;
+  prepared.workspaceBytes = 0;
+  prepared.implementationCookie = 0;
+  return true;
+}
+
+void registerTactic(
+  Registry& registry,
+  uint64_t family,
+  uint64_t variant,
+  int32_t priority,
+  const char* recipe,
+  MatchTacticFn match,
+  RegistrationContext* context
+) {
+  TacticRegistration registration{};
+  registration.id = TacticId{family,variant};
+  registration.recipe = fingerprintRecipe(recipe);
+  registration.priority = priority;
+  registration.match = match;
+  registration.prepare = prepareNoAllocation;
+  registration.userData = context;
+  registry.registerTactic(registration);
+}
+
+AttentionRecipe attentionRecipe(const PreparedOp* operation) {
+  AttentionRecipe recipe;
+  if(operation == nullptr || operation->tactic.family != ATTENTION_FAMILY)
+    return recipe;
+  switch(operation->tactic.variant) {
+  case ATTENTION_C256_B36_FA4_SM120:
+    recipe.qkvRope = QkvRopeTactic::Sm120C256H8D32M128N128K32S3;
+    recipe.attention = AttentionTactic::Fa4Sm120B36S225Tm128Tn128S1Both16;
+    [[fallthrough]];
+  case ATTENTION_C256_DYNAMIC_SM120:
+    recipe.outProjection = ResidualTactic::Sm120M128N128K32S3Sw1;
+    [[fallthrough]];
+  case ATTENTION_C256_SM120:
+    recipe.rmsNorm = RmsNormTactic::Sm120C256Warp4Vec8;
+    [[fallthrough]];
+  case ATTENTION_SQUARE_LEARNED_ROPE:
+    recipe.rope = RopeTactic::LearnedHalf2;
+    [[fallthrough]];
+  case ATTENTION_SQUARE_GENERIC:
+    recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
+    if(recipe.outProjection == ResidualTactic::GenericAdd)
+      recipe.outProjection = ResidualTactic::CublasHgemmBetaOne;
+    break;
+  case ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE:
+    recipe.rope = RopeTactic::LearnedHalf2;
+    [[fallthrough]];
+  case ATTENTION_SQUARE_MASK_SAFE:
+    recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
+    break;
+  default:
+    break;
+  }
+  return recipe;
+}
+
+FfnRecipe ffnRecipe(const PreparedOp* operation) {
+  FfnRecipe recipe;
+  if(operation == nullptr || operation->tactic.family != FFN_FAMILY)
+    return recipe;
+  switch(operation->tactic.variant) {
+  case FFN_C256_F768_DYNAMIC_SM120:
+    recipe.dualFfn = DualFfnTactic::Sm120C256F768M128N64K32S3Sw4;
+    recipe.downProjection = ResidualTactic::Sm120M128N128K32S3Sw1;
+    [[fallthrough]];
+  case FFN_C256_F768_SM120:
+    recipe.rmsNorm = RmsNormTactic::Sm120C256Warp4Vec8;
+    [[fallthrough]];
+  case FFN_GENERIC:
+    if(recipe.downProjection == ResidualTactic::GenericAdd)
+      recipe.downProjection = ResidualTactic::CublasHgemmBetaOne;
+    break;
+  default:
+    break;
+  }
+  return recipe;
+}
+
+const PreparedRecord* findRecord(
+  const PreparedPlan& plan,
+  ArchitectureOpKind kind,
+  uint32_t topologyIndex
+) {
+  for(const PreparedRecord& record: plan.records) {
+    if(record.request.topologyIndex == topologyIndex && record.request.key.kind == kind)
+      return &record;
+  }
+  return nullptr;
+}
+
+const PreparedRecord* findRecord(
+  const PreparedPlan& plan,
+  ArchitectureOpKind kind,
+  const CapabilityKey& key
+) {
+  for(const PreparedRecord& record: plan.records) {
+    if(record.request.key.kind == kind && record.request.key == key)
+      return &record;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+bool AttentionRecipe::hasPreparedOptimization() const {
+  return planarQkv != PlanarQkvTactic::Disabled ||
+    rmsNorm != RmsNormTactic::GenericHalf || rope != RopeTactic::Generic ||
+    qkvRope != QkvRopeTactic::Disabled || attention != AttentionTactic::Generic ||
+    outProjection != ResidualTactic::GenericAdd;
+}
+
+bool FfnRecipe::hasPreparedOptimization() const {
+  return rmsNorm != RmsNormTactic::GenericHalf ||
+    dualFfn != DualFfnTactic::Disabled ||
+    downProjection != ResidualTactic::GenericAdd;
+}
+
+AttentionRecipe PreparedPlan::attentionFor(uint32_t topologyIndex) const {
+  const PreparedRecord* record = findRecord(
+    *this,ArchitectureOpKind::TransformerAttention,topologyIndex);
+  return attentionRecipe(record != nullptr && record->found ? &record->operation : nullptr);
+}
+
+FfnRecipe PreparedPlan::ffnFor(uint32_t topologyIndex) const {
+  const PreparedRecord* record = findRecord(
+    *this,ArchitectureOpKind::TransformerFFN,topologyIndex);
+  return ffnRecipe(record != nullptr && record->found ? &record->operation : nullptr);
+}
+
+AttentionRecipe PreparedPlan::attentionFor(const CapabilityKey& key) const {
+  const PreparedRecord* record = findRecord(
+    *this,ArchitectureOpKind::TransformerAttention,key);
+  return attentionRecipe(record != nullptr && record->found ? &record->operation : nullptr);
+}
+
+FfnRecipe PreparedPlan::ffnFor(const CapabilityKey& key) const {
+  const PreparedRecord* record = findRecord(
+    *this,ArchitectureOpKind::TransformerFFN,key);
+  return ffnRecipe(record != nullptr && record->found ? &record->operation : nullptr);
+}
+
+PreparedPlan preparePlan(
+  const ArchitectureDesc& architecture,
+  const RuntimeOpContext& runtime,
+  const DeviceCapability& device
+) {
+  RegistrationContext context{device};
+  Registry registry;
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_GENERIC,10,
+    "attention:v1;planar=cublas-hgemm-strided-square;rope=generic;out=cublas-beta1",
+    matchAttentionSquare,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_LEARNED_ROPE,11,
+    "attention:v1;planar=cublas-hgemm-strided-square;rope=learned-half2;out=cublas-beta1",
+    matchAttentionSquareLearnedRope,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_MASK_SAFE,10,
+    "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=generic;residual=generic-masked",
+    matchAttentionSquareMaskSafe,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE,11,
+    "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=learned-half2;residual=generic-masked",
+    matchAttentionSquareLearnedRopeMaskSafe,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_SM120,20,
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=learned-half2;out=cublas-beta1",
+    matchAttentionC256,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_DYNAMIC_SM120,30,
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=learned-half2;out=sm120-m128n128k32s3sw1",
+    matchAttentionDynamic,&context);
+  registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_B36_FA4_SM120,40,
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;qkv-rope=sm120-m128n128k32s3;fa4=b36-s225-tm128-tn128-s1-both16;out=sm120-m128n128k32s3sw1",
+    matchAttentionExact,&context);
+  registerTactic(registry,FFN_FAMILY,FFN_GENERIC,10,
+    "ffn:v1;rms=generic-half;down=cublas-beta1",matchFfnGeneric,&context);
+  registerTactic(registry,FFN_FAMILY,FFN_C256_F768_SM120,20,
+    "ffn:v1;rms=sm120-warp4vec8;down=cublas-beta1",matchFfnC256,&context);
+  registerTactic(registry,FFN_FAMILY,FFN_C256_F768_DYNAMIC_SM120,30,
+    "ffn:v1;rms=sm120-warp4vec8;dual=sm120-m128n64k32s3sw4;down=sm120-m128n128k32s3sw1",
+    matchFfnDynamic,&context);
+
+  PreparedPlan plan;
+  plan.architecture = architecture.signature;
+  plan.runtime = runtime;
+  const std::vector<OpRequest> requests = buildOpRequests(architecture,runtime);
+  plan.records.reserve(requests.size());
+  std::vector<PreparedOp> fingerprintOps;
+  fingerprintOps.reserve(requests.size());
+  for(const OpRequest& request: requests) {
+    const ResolveResult resolved = registry.resolveAtConstruction(request);
+    PreparedRecord record;
+    record.request = request;
+    record.found = resolved.found;
+    if(resolved.found)
+      record.operation = resolved.prepared;
+    plan.records.push_back(record);
+    fingerprintOps.push_back(record.operation);
+  }
+  plan.fingerprint = fingerprintPreparedPlan(requests,fingerprintOps);
+  return plan;
+}
+
+const char* tacticName(const TacticId& tactic) {
+  if(tactic.family == ATTENTION_FAMILY) {
+    switch(tactic.variant) {
+    case ATTENTION_SQUARE_GENERIC: return "attention-square-generic";
+    case ATTENTION_SQUARE_LEARNED_ROPE: return "attention-square-learned-rope";
+    case ATTENTION_SQUARE_MASK_SAFE: return "attention-square-mask-safe";
+    case ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE: return "attention-square-learned-rope-mask-safe";
+    case ATTENTION_C256_SM120: return "attention-c256-sm120";
+    case ATTENTION_C256_DYNAMIC_SM120: return "attention-c256-dynamic-sm120";
+    case ATTENTION_C256_B36_FA4_SM120: return "attention-c256-b36-fa4-sm120";
+    default: return "attention-unknown";
+    }
+  }
+  if(tactic.family == FFN_FAMILY) {
+    switch(tactic.variant) {
+    case FFN_GENERIC: return "ffn-generic";
+    case FFN_C256_F768_SM120: return "ffn-c256-f768-sm120";
+    case FFN_C256_F768_DYNAMIC_SM120: return "ffn-c256-f768-dynamic-sm120";
+    default: return "ffn-unknown";
+    }
+  }
+  return "unprepared";
+}
+
+}  // namespace CudaTransformerWinner

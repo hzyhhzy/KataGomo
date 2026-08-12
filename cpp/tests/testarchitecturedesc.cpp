@@ -382,7 +382,7 @@ void Tests::runArchitectureDescTests() {
   vector<OpRequest> oneRequest(1,ffnRequest);
   vector<PreparedOp> onePrepared(1,resolved.prepared);
   PlanFingerprint planA = fingerprintPreparedPlan(oneRequest,onePrepared);
-  testAssert(planA.toHex() == "e387db04e90dc2a8a27c918ddbeeaadf5e6537ec471a8b6567646d688b735560");
+  testAssert(planA.toHex() == "9c0902829abe4a309abdc77f10e89f5abbdf86832f3935b841cd9d473ad074db");
   onePrepared[0].implementationCookie = 999;
   PlanFingerprint planSame = fingerprintPreparedPlan(oneRequest,onePrepared);
   testAssert(planA == planSame);

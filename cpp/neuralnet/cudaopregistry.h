@@ -14,7 +14,10 @@ struct ModelDesc;
 
 namespace CudaOpRegistry {
 
-constexpr uint32_t CAPABILITY_KEY_SCHEMA_VERSION = 1;
+// v2 assigns TransformerAttention.auxiliaryChannels to the local RoPE pair
+// count. v1 left that field zero and therefore could not safely distinguish a
+// fused Q/K RoPE epilogue with a different learned-frequency geometry.
+constexpr uint32_t CAPABILITY_KEY_SCHEMA_VERSION = 2;
 constexpr uint32_t RECIPE_FINGERPRINT_SCHEMA_VERSION = 1;
 constexpr uint32_t PLAN_FINGERPRINT_SCHEMA_VERSION = 1;
 
