@@ -30,11 +30,11 @@ struct KatagoRenju15DualFfnSm120Descriptor {
   int ffnChannels;
 };
 
-// fixedTokenRows is M in the GEMM. It deliberately does not encode a board,
-// batch, model depth, or model weights.
+// configuredTokenRows is exact M for the legacy C256 tactic and maximum M for
+// the dynamic C384 tactic. It does not encode model depth or model weights.
 extern "C" void* katago_renju15_dual_ffn_sm120_create(
   int tactic,
-  int fixedTokenRows);
+  int configuredTokenRows);
 extern "C" void katago_renju15_dual_ffn_sm120_destroy(void* opaque);
 
 extern "C" const char* katago_renju15_dual_ffn_sm120_active_marker(
@@ -59,8 +59,8 @@ extern "C" bool katago_renju15_dual_ffn_sm120_supports(
   bool usingNhwc,
   bool exactNoMask);
 
-// The typed handle supports either A[M,256] x W[256,768] or
-// A[M,384] x W[384,1024], followed by
+// The typed handle supports either exact-M A[M,256] x W[256,768] or dynamic-M
+// A[M,384] x W[384,1024], where 0 < M <= the configured maximum, followed by
 // output = SiLU(A*linearWeights) * (A*gateWeights), all contiguous row-major
 // FP16. The handle is stream-local and must not be launched concurrently.
 extern "C" cudaError_t katago_renju15_dual_ffn_sm120_launch(
@@ -69,6 +69,7 @@ extern "C" cudaError_t katago_renju15_dual_ffn_sm120_launch(
   const half* linearWeights,
   const half* gateWeights,
   half* output,
+  int tokenRows,
   cudaStream_t stream);
 
 #endif

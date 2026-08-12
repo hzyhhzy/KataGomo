@@ -1589,15 +1589,18 @@ struct MatMulLayer {
          preparedKernel,matBatchSize,inChannels,outChannels,true,true)) {
       CUDA_ERR(name.c_str(),katago_renju15_residual_gemm_sm120_launch(
         preparedKernel,(const half*)inputBuf,(const half*)matBuf,
-        (half*)residualBuf,cudaHandles->stream));
+        (half*)residualBuf,matBatchSize,cudaHandles->stream));
       usedSpecialized = true;
       bool& logged = ffnDown ? cudaHandles->loggedFfnDown :
         cudaHandles->loggedOutProjection;
       if(!logged && cudaHandles->logger != NULL) {
         const char* marker = katago_renju15_residual_gemm_sm120_active_marker(
           preparedKernel);
+        const bool c384 = tactic == CudaTransformerWinner::ResidualTactic::
+          Sm120C384M128N128K32S3Sw1;
         cudaHandles->logger->write(
-          string("RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=") +
+          string(c384 ? "KATAGO_C384_SM120_RESIDUAL_GEMM_ACTIVE family=" :
+                        "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=") +
           (ffnDown ? "ffn-down" : "out-proj") + " marker=" +
           (marker == nullptr ? "missing" : marker));
         logged = true;
@@ -3241,13 +3244,16 @@ struct TransformerFFNBlock {
       CUDA_ERR(name.c_str(),katago_renju15_dual_ffn_sm120_launch(
         dualFfnKernel,(const half*)trunkScratchBuf,
         (const half*)linear1.matBuf,(const half*)linearGate->matBuf,
-        (half*)ffnBuf.buf,cudaHandles->stream));
+        (half*)ffnBuf.buf,matBatchSize,cudaHandles->stream));
       usedDualFfn = true;
       if(!cudaHandles->loggedDualFfn && cudaHandles->logger != NULL) {
         const char* marker = katago_renju15_dual_ffn_sm120_active_marker(
           dualFfnKernel);
+        const bool c384 = recipe.dualFfn == CudaTransformerWinner::
+          DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
         cudaHandles->logger->write(
-          string("RENJU15_SM120_DUAL_FFN_ACTIVE marker=") +
+          string(c384 ? "KATAGO_C384_SM120_DUAL_FFN_ACTIVE marker=" :
+                        "RENJU15_SM120_DUAL_FFN_ACTIVE marker=") +
           (marker == nullptr ? "missing" : marker));
         cudaHandles->loggedDualFfn = true;
       }

@@ -33,12 +33,12 @@ struct KatagoRenju15ResidualGemmDescriptor {
   int outputChannels;
 };
 
-// fixedTokenRows is GEMM M and is independent of board, batch, weights, and
-// model depth. The typed recipe owns performance qualification.
+// configuredTokenRows is exact GEMM M for legacy C256 families and maximum M
+// for dynamic C384 families. It is independent of weights and model depth.
 extern "C" void* katago_renju15_residual_gemm_sm120_create(
   int family,
   int tactic,
-  int fixedTokenRows);
+  int configuredTokenRows);
 extern "C" void katago_renju15_residual_gemm_sm120_destroy(void* opaque);
 extern "C" const char* katago_renju15_residual_gemm_sm120_active_marker(
   const void* opaque);
@@ -59,6 +59,7 @@ extern "C" cudaError_t katago_renju15_residual_gemm_sm120_launch(
   const half* input,
   const half* weights,
   half* residual,
+  int matBatchSize,
   cudaStream_t stream);
 
 #endif

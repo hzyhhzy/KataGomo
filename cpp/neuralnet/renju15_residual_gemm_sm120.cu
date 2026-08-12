@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <type_traits>
 
 namespace {
 
@@ -17,6 +18,19 @@ constexpr int C384OutputChannels = 384;
 constexpr int C384OutProjInputChannels = 384;
 constexpr int C384FfnDownInputChannels = 1024;
 constexpr int MaxTokenRows = 1 << 20;
+
+constexpr bool tokenRowsSupported(
+  bool dynamicTokens, int configuredTokens, int actualTokens) {
+  return configuredTokens > 0 && actualTokens > 0 &&
+    (dynamicTokens ? actualTokens <= configuredTokens :
+                     actualTokens == configuredTokens);
+}
+static_assert(tokenRowsSupported(true,8100,1),"dynamic M accepts one tail row");
+static_assert(tokenRowsSupported(true,8100,226),"dynamic M accepts non-board tail");
+static_assert(tokenRowsSupported(true,8100,8099),"dynamic M accepts max-minus-one");
+static_assert(!tokenRowsSupported(true,8100,8101),"dynamic M rejects above max");
+static_assert(tokenRowsSupported(false,8100,8100),"exact M remains exact");
+static_assert(!tokenRowsSupported(false,8100,8099),"exact M rejects partial rows");
 
 using Element = cutlass::half_t;
 using InstructionShape = cutlass::gemm::GemmShape<16,8,16>;
@@ -79,6 +93,7 @@ typename Gemm::Arguments makeArguments(
 
 struct StateBase {
   virtual ~StateBase() = default;
+  virtual cudaError_t preparationStatus(int, int, int) { return cudaSuccess; }
   virtual cudaError_t launch(
     const half* input,
     const half* weights,
@@ -130,12 +145,102 @@ struct State final : StateBase {
   }
 };
 
+// CUTLASS 3.x Gemm::update intentionally refreshes pointers and epilogue
+// arguments only; it does not refresh problem_size or grid_tiled_shape. Build
+// the trivially-copyable kernel Params on the stack for each actual M instead.
+// This has no heap allocation or lazy initialization and accepts tail row
+// counts that are not a multiple of the board area. The exact C256 state above
+// remains byte-for-logic unchanged.
+template<typename Gemm>
+struct DynamicState final : StateBase {
+  using Kernel = typename Gemm::GemmKernel;
+
+  DynamicState(): attributeStatus(cudaSuccess) {}
+
+  cudaError_t preparationStatus(
+    int inputChannels, int outputChannels, int maximumTokens) override {
+    static_assert(std::is_trivially_copyable<typename Kernel::Params>::value,
+      "dynamic GEMM launch passes kernel Params by value");
+    // This runs once per prepared handle in the handle's current CUDA device
+    // context. A process-global template static would miss later GPUs.
+    const int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
+    attributeStatus = sharedBytes < (48 << 10) ? cudaSuccess :
+      cudaFuncSetAttribute(
+        cutlass::Kernel<Kernel>,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        sharedBytes);
+    if(attributeStatus != cudaSuccess)
+      return attributeStatus;
+
+    // K/N and pointer-alignment qualification is invariant across actual M.
+    // Check both M boundaries at handle construction, never on the hot path.
+    const half* alignedInput = reinterpret_cast<const half*>(0x1000);
+    const half* alignedWeights = reinterpret_cast<const half*>(0x2000);
+    half* alignedResidual = reinterpret_cast<half*>(0x3000);
+    const int boundaryTokens[2] = {1,maximumTokens};
+    for(int tokens: boundaryTokens) {
+      typename Gemm::Arguments args = makeArguments<Gemm>(
+        alignedInput,alignedWeights,alignedResidual,
+        inputChannels,outputChannels,tokens);
+      if(Gemm::can_implement(args) != cutlass::Status::kSuccess) {
+        attributeStatus = cudaErrorInvalidValue;
+        break;
+      }
+    }
+    return attributeStatus;
+  }
+
+  cudaError_t launch(
+    const half* input,
+    const half* weights,
+    half* residual,
+    int inputChannels,
+    int outputChannels,
+    int tokens,
+    cudaStream_t stream) override {
+    if(attributeStatus != cudaSuccess)
+      return attributeStatus;
+    typename Gemm::Arguments args = makeArguments<Gemm>(
+      input, weights, residual, inputChannels, outputChannels, tokens);
+
+    using ThreadblockShape = typename Gemm::ThreadblockShape;
+    typename Gemm::ThreadblockSwizzle swizzle;
+    const cutlass::gemm::GemmCoord gridShape = swizzle.get_tiled_shape(
+      args.problem_size,
+      {ThreadblockShape::kM,ThreadblockShape::kN,ThreadblockShape::kK},
+      args.split_k_slices);
+    typename Kernel::Params params{
+      args.problem_size,
+      gridShape,
+      args.ref_A.non_const_ref(),
+      args.ref_B.non_const_ref(),
+      args.ref_C.non_const_ref(),
+      args.ref_D,
+      args.epilogue,
+      nullptr,
+      args.gather_A_indices,
+      args.gather_B_indices,
+      args.scatter_D_indices,
+    };
+    const dim3 grid = swizzle.get_grid_shape(gridShape);
+    const dim3 block(Kernel::kThreadCount,1,1);
+    const int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
+    cutlass::arch::synclog_setup();
+    cutlass::Kernel<Kernel><<<grid,block,sharedBytes,stream>>>(params);
+    return cudaPeekAtLastError();
+  }
+
+private:
+  cudaError_t attributeStatus;
+};
+
 struct Handle {
   int family;
   int tactic;
   int inputChannels;
   int outputChannels;
-  int fixedTokens;
+  int configuredTokens;
+  bool dynamicTokens;
   const KatagoRenju15ResidualGemmDescriptor* descriptor;
   std::unique_ptr<StateBase> state;
 };
@@ -151,8 +256,9 @@ const KatagoRenju15ResidualGemmDescriptor* descriptorForTactic(int tactic) {
 std::unique_ptr<StateBase> stateForTactic(int tactic) {
   switch(tactic) {
   case KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3:
-  case KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3:
     return std::unique_ptr<StateBase>(new State<Winner>());
+  case KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3:
+    return std::unique_ptr<StateBase>(new DynamicState<Winner>());
   default:
     return nullptr;
   }
@@ -193,13 +299,18 @@ int outputChannelsForFamily(int family) {
   return 0;
 }
 
+bool dynamicTokensForFamily(int family) {
+  return family == KATAGO_RENJU15_RESIDUAL_GEMM_C384_OUT_PROJ ||
+    family == KATAGO_RENJU15_RESIDUAL_GEMM_C384_FFN_DOWN;
+}
+
 } // namespace
 
 extern "C" void* katago_renju15_residual_gemm_sm120_create(
   int family,
   int tactic,
-  int fixedTokenRows) {
-  if(fixedTokenRows <= 0 || fixedTokenRows > MaxTokenRows ||
+  int configuredTokenRows) {
+  if(configuredTokenRows <= 0 || configuredTokenRows > MaxTokenRows ||
      !isSm120Compatible())
     return nullptr;
   const int inputChannels = inputChannelsForFamily(family);
@@ -209,10 +320,12 @@ extern "C" void* katago_renju15_residual_gemm_sm120_create(
      descriptor->outputChannels != outputChannels)
     return nullptr;
   std::unique_ptr<StateBase> state = stateForTactic(tactic);
-  if(state == nullptr)
+  if(state == nullptr || state->preparationStatus(
+       inputChannels,outputChannels,configuredTokenRows) != cudaSuccess)
     return nullptr;
   return new(std::nothrow) Handle{
-    family,tactic,inputChannels,outputChannels,fixedTokenRows,
+    family,tactic,inputChannels,outputChannels,configuredTokenRows,
+    dynamicTokensForFamily(family),
     descriptor,std::move(state)};
 }
 
@@ -234,7 +347,10 @@ extern "C" bool katago_renju15_residual_gemm_sm120_supports(
   bool usingFp16,
   bool exactNoMask) {
   const Handle* handle = static_cast<const Handle*>(opaque);
-  return handle != nullptr && matBatchSize == handle->fixedTokens &&
+  const bool rowsSupported = handle != nullptr &&
+    tokenRowsSupported(
+      handle->dynamicTokens,handle->configuredTokens,matBatchSize);
+  return rowsSupported &&
     inputChannels == handle->inputChannels &&
     outputChannels == handle->outputChannels && usingFp16 && exactNoMask;
 }
@@ -244,14 +360,19 @@ extern "C" cudaError_t katago_renju15_residual_gemm_sm120_launch(
   const half* input,
   const half* weights,
   half* residual,
+  int matBatchSize,
   cudaStream_t stream) {
   Handle* handle = static_cast<Handle*>(opaque);
+  const bool rowsSupported = handle != nullptr &&
+    tokenRowsSupported(
+      handle->dynamicTokens,handle->configuredTokens,matBatchSize);
   if(handle == nullptr || input == nullptr || weights == nullptr ||
-     residual == nullptr || !aligned16(input) || !aligned16(weights) ||
+     residual == nullptr || !rowsSupported ||
+     !aligned16(input) || !aligned16(weights) ||
      !aligned16(residual))
     return cudaErrorInvalidValue;
   return handle->state->launch(
     input, weights, residual, handle->inputChannels,
-    handle->outputChannels, handle->fixedTokens, stream);
+    handle->outputChannels, matBatchSize, stream);
 }
 
