@@ -73,6 +73,30 @@ bool int8ExperimentRuntimeEnabled() {
     "KATAGO_RENJU15_INT8_EXPERIMENT_ENABLE must be exactly 0 or 1");
 }
 
+struct CudaDeviceBufferDeleter {
+  void operator()(void* pointer) const noexcept {
+    if(pointer != nullptr)
+      (void)cudaFree(pointer);
+  }
+};
+
+struct Int8QkKernelDeleter {
+  void operator()(void* pointer) const noexcept {
+    katago_renju15_int8_qk_sm120_destroy(pointer);
+  }
+};
+
+struct Int8DualFfnKernelDeleter {
+  void operator()(void* pointer) const noexcept {
+    katago_renju15_int8_dual_ffn_sm120_destroy(pointer);
+  }
+};
+
+using UniqueCudaDeviceBuffer = std::unique_ptr<void,CudaDeviceBufferDeleter>;
+using UniqueInt8QkKernel = std::unique_ptr<void,Int8QkKernelDeleter>;
+using UniqueInt8DualFfnKernel =
+  std::unique_ptr<void,Int8DualFfnKernelDeleter>;
+
 void uploadPackedInt8(
   const string& name,
   const vector<int8_t>& packed,
@@ -428,8 +452,6 @@ struct CudaHandles {
   bool loggedInt8Qk;
   bool loggedInt8DualFfn;
   bool loggedInt8Experiment;
-  uint64_t int8HotPathHostAllocations;
-  uint64_t int8HotPathDeviceAllocations;
   bool loggedOutProjection;
   bool loggedFfnDown;
   bool loggedCublasResidual;
@@ -446,6 +468,9 @@ struct CudaHandles {
   int preparedInt8DualFfn;
   int activeInt8Qk;
   int activeInt8DualFfn;
+  // Construction-only rollback hooks. They are discarded after both handle
+  // validation and persistent scratch preparation have committed.
+  std::vector<std::function<void()>> int8PreparedCleanupRegistry;
 #endif
   int expectedWinnerRms;
   int expectedWinnerQkvRope;
@@ -483,8 +508,6 @@ struct CudaHandles {
       loggedInt8Qk(false),
       loggedInt8DualFfn(false),
       loggedInt8Experiment(false),
-      int8HotPathHostAllocations(0),
-      int8HotPathDeviceAllocations(0),
       loggedOutProjection(false),
       loggedFfnDown(false),
       loggedCublasResidual(false),
@@ -501,6 +524,7 @@ struct CudaHandles {
       preparedInt8DualFfn(0),
       activeInt8Qk(0),
       activeInt8DualFfn(0),
+      int8PreparedCleanupRegistry(),
 #endif
       expectedWinnerRms(0),
       expectedWinnerQkvRope(0),
@@ -623,18 +647,51 @@ struct CudaHandles {
     }
   }
 
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  void registerInt8PreparedCleanup(std::function<void()> cleanup) {
+    int8PreparedCleanupRegistry.push_back(std::move(cleanup));
+  }
+
+  void disableInt8Experiment(const string& reason) {
+    if(!int8ExperimentPlan)
+      return;
+    const int preparedQkBeforeCleanup = preparedInt8Qk;
+    const int preparedDualBeforeCleanup = preparedInt8DualFfn;
+    int8ExperimentPlan = false;
+    for(auto cleanup = int8PreparedCleanupRegistry.rbegin();
+        cleanup != int8PreparedCleanupRegistry.rend(); ++cleanup)
+      (*cleanup)();
+    int8PreparedCleanupRegistry.clear();
+    preparedInt8Qk = 0;
+    preparedInt8DualFfn = 0;
+    activeInt8Qk = 0;
+    activeInt8DualFfn = 0;
+    if(logger != NULL) {
+      logger->write(
+        "RENJU15_SM120_INT8_EXPERIMENT_UNAVAILABLE fallback=fp16 reason=" +
+        reason + " prepared_qk=" +
+        Global::intToString(preparedQkBeforeCleanup) + "/" +
+        Global::intToString(expectedInt8Qk) + " prepared_dual_ffn=" +
+        Global::intToString(preparedDualBeforeCleanup) + "/" +
+        Global::intToString(expectedInt8DualFfn));
+    }
+  }
+
+  void commitInt8PreparedResources() {
+    // Once persistent scratch also exists, model-owned RAII fields become the
+    // sole owners and no construction rollback callback may outlive a block.
+    int8PreparedCleanupRegistry.clear();
+  }
+#endif
+
   void validateWinnerPrepared() {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(int8ExperimentPlan &&
        (preparedInt8Qk != expectedInt8Qk ||
-        preparedInt8DualFfn != expectedInt8DualFfn)) {
+         preparedInt8DualFfn != expectedInt8DualFfn)) {
       // A preparation miss is known before inference enqueues any work. Fall
       // back coherently to the already-prepared FP16 plan for every block.
-      int8ExperimentPlan = false;
-      if(logger != NULL)
-        logger->write(
-          "RENJU15_SM120_INT8_EXPERIMENT_UNAVAILABLE fallback=fp16 "
-          "reason=incomplete-handle-preparation");
+      disableInt8Experiment("incomplete-handle-preparation");
     }
 #endif
     if(!exactWinnerPlan)
@@ -691,10 +748,7 @@ struct CudaHandles {
       logger->write(
         "RENJU15_SM120_INT8_EXPERIMENT_ACTIVE quant=clip4-pt "
         "qk_ops=24 dual_ffn_ops=24 upgate_matrices=48 down=fp16 board=15 "
-        "hot_host_allocations=" +
-        Global::uint64ToString(int8HotPathHostAllocations) +
-        " hot_device_allocations=" +
-        Global::uint64ToString(int8HotPathDeviceAllocations));
+        "int8_scratch=persistent-max-batch");
       loggedInt8Experiment = true;
     }
   }
@@ -853,6 +907,7 @@ struct ScratchBuffers {
   // these max-batch allocations without lifetime overlap or allocator lookup.
   void* int8NormBuf;
   void* int8QkTempBuf;
+  cudaError_t int8ScratchPrepareStatus;
 #endif
 
   ScratchBuffers() = delete;
@@ -863,8 +918,7 @@ struct ScratchBuffers {
     int maxBatchSize,
     int nnXLen,
     int nnYLen,
-    bool useFP16,
-    bool prepareInt8ExperimentScratch = false
+    bool useFP16
   )
     : batchXYFloatBytes((size_t)maxBatchSize * nnXLen * nnYLen * sizeof(float)),
       batchFloatBytes((size_t)maxBatchSize * sizeof(float)),
@@ -875,7 +929,8 @@ struct ScratchBuffers {
       oneBuf(nullptr)
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
       , int8NormBuf(nullptr),
-      int8QkTempBuf(nullptr)
+      int8QkTempBuf(nullptr),
+      int8ScratchPrepareStatus(cudaSuccess)
 #endif
   {
     std::function<void*(size_t)> allocateFunc = [](size_t size) {
@@ -888,19 +943,6 @@ struct ScratchBuffers {
     };
 
     try {
-#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-      // The experiment is restricted to C=256 and S=225; allocate once at
-      // ComputeHandle construction. No inference apply call performs cudaMalloc.
-      if(prepareInt8ExperimentScratch) {
-        const size_t maxTokenRows = (size_t)maxBatchSize * nnXLen * nnYLen;
-        CUDA_ERR("ScratchBuffers:int8Norm",cudaMalloc(
-          &int8NormBuf,maxTokenRows * 256));
-        CUDA_ERR("ScratchBuffers:int8QkTemp",cudaMalloc(
-          &int8QkTempBuf,maxTokenRows * 512 * sizeof(half)));
-      }
-#else
-      (void)prepareInt8ExperimentScratch;
-#endif
       allocator = new SimpleAllocator<void*>(allocateFunc, releaseFunc);
       CudaUtils::hostMallocZeroOneBufs(zeroBuf, oneBuf, useFP16);
     }
@@ -931,6 +973,41 @@ struct ScratchBuffers {
     free(zeroBuf);
     free(oneBuf);
   }
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  cudaError_t tryPrepareInt8ExperimentScratch(
+    int maxBatchSize,
+    int nnXLen,
+    int nnYLen
+  ) {
+    if(hasInt8ExperimentScratch())
+      return cudaSuccess;
+    int8ScratchPrepareStatus = cudaSuccess;
+    const size_t maxTokenRows = (size_t)maxBatchSize * nnXLen * nnYLen;
+    int8ScratchPrepareStatus = cudaMalloc(
+      &int8NormBuf,maxTokenRows * 256);
+    if(int8ScratchPrepareStatus == cudaSuccess) {
+      int8ScratchPrepareStatus = cudaMalloc(
+        &int8QkTempBuf,maxTokenRows * 512 * sizeof(half));
+    }
+    if(int8ScratchPrepareStatus != cudaSuccess) {
+      (void)cudaFree(int8QkTempBuf);
+      (void)cudaFree(int8NormBuf);
+      int8QkTempBuf = nullptr;
+      int8NormBuf = nullptr;
+      // This miss is consumed here rather than leaking into a later
+      // cudaPeekAtLastError on the coherent FP16 fallback path.
+      (void)cudaGetLastError();
+    }
+    return int8ScratchPrepareStatus;
+  }
+
+  bool hasInt8ExperimentScratch() const {
+    return int8NormBuf != nullptr && int8QkTempBuf != nullptr &&
+      int8ScratchPrepareStatus == cudaSuccess;
+  }
+
+#endif
 
   size_t getBufSizeXY(int channels) const {
     return channels * batchXYBytes;
@@ -2199,8 +2276,8 @@ struct TransformerAttentionBlock {
   std::unique_ptr<CudaQKVPlanar::Projection> qkvPlanarProjection;
   void* outProjectionKernel;
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-  void* int8QkWeightBuf;
-  void* int8QkKernel;
+  UniqueCudaDeviceBuffer int8QkWeightBuf;
+  UniqueInt8QkKernel int8QkKernel;
   mutable bool countedInt8Qk;
 #endif
   mutable bool countedWinnerQkvRope;
@@ -2216,6 +2293,26 @@ struct TransformerAttentionBlock {
   TransformerAttentionBlock() = delete;
   TransformerAttentionBlock(const TransformerAttentionBlock&) = delete;
   TransformerAttentionBlock& operator=(const TransformerAttentionBlock&) = delete;
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  void discardInt8Prepared() noexcept {
+    int8QkKernel.reset();
+    int8QkWeightBuf.reset();
+  }
+#endif
+
+  void destroyRawPreparedState() noexcept {
+#if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
+    katago_renju15_residual_gemm_sm120_destroy(outProjectionKernel);
+#endif
+    outProjectionKernel = nullptr;
+    if(ropeCosTable != NULL) (void)cudaFree(ropeCosTable);
+    if(ropeSinTable != NULL) (void)cudaFree(ropeSinTable);
+    if(ropeCosSinTable != NULL) (void)cudaFree(ropeCosSinTable);
+    ropeCosTable = NULL;
+    ropeSinTable = NULL;
+    ropeCosSinTable = NULL;
+  }
 
   TransformerAttentionBlock(
     CudaHandles* cudaHandles,
@@ -2304,15 +2401,11 @@ struct TransformerAttentionBlock {
       }
       }
       catch(...) {
-        if(ropeCosTable != NULL) cudaFree(ropeCosTable);
-        if(ropeSinTable != NULL) cudaFree(ropeSinTable);
-        if(ropeCosSinTable != NULL) cudaFree(ropeCosSinTable);
-        ropeCosTable = NULL;
-        ropeSinTable = NULL;
-        ropeCosSinTable = NULL;
+        destroyRawPreparedState();
         throw;
       }
     }
+    try {
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
     // Raw prepared state is created last so any throwing weight/table copy
     // above cannot bypass its destructor during partial construction.
@@ -2352,33 +2445,41 @@ struct TransformerAttentionBlock {
       desc->kProj.inChannels == 256 && desc->kProj.outChannels == 256;
     if(int8ShapeEligible) {
       float qkScale = 0.0f;
+      void* packedQkWeights = nullptr;
       preparePackedInt8Qk(
-        name + ":int8Qk",desc->qProj,desc->kProj,int8QkWeightBuf,qkScale);
-      int8QkKernel = katago_renju15_int8_qk_sm120_create(
+        name + ":int8Qk",desc->qProj,desc->kProj,packedQkWeights,qkScale);
+      int8QkWeightBuf.reset(packedQkWeights);
+      int8QkKernel.reset(katago_renju15_int8_qk_sm120_create(
         fixedBatchSize * nnXLen * nnYLen,
-        (const int8_t*)int8QkWeightBuf,qkScale);
+        (const int8_t*)int8QkWeightBuf.get(),qkScale));
       if(int8QkKernel == nullptr) {
-        cudaFree(int8QkWeightBuf);
-        int8QkWeightBuf = nullptr;
+        int8QkWeightBuf.reset();
       }
-      else
+      else {
+        cudaHandles->registerInt8PreparedCleanup(
+          [this]() { discardInt8Prepared(); });
         cudaHandles->preparedInt8Qk++;
+      }
     }
 #endif
+    }
+    catch(...) {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      discardInt8Prepared();
+      // Model construction is aborting, so earlier registered callbacks would
+      // otherwise outlive the already-destroyed BlockStack members.
+      cudaHandles->int8PreparedCleanupRegistry.clear();
+#endif
+      destroyRawPreparedState();
+      throw;
+    }
   }
 
   ~TransformerAttentionBlock() {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-    katago_renju15_int8_qk_sm120_destroy(int8QkKernel);
-    if(int8QkWeightBuf != nullptr)
-      cudaFree(int8QkWeightBuf);
+    discardInt8Prepared();
 #endif
-    #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
-    katago_renju15_residual_gemm_sm120_destroy(outProjectionKernel);
-    #endif
-    if(ropeCosTable != NULL) cudaFree(ropeCosTable);
-    if(ropeSinTable != NULL) cudaFree(ropeSinTable);
-    if(ropeCosSinTable != NULL) cudaFree(ropeCosSinTable);
+    destroyRawPreparedState();
   }
 
   size_t requiredWorkspaceBytes(
@@ -2418,7 +2519,7 @@ struct TransformerAttentionBlock {
       scratch->int8NormBuf != nullptr && scratch->int8QkTempBuf != nullptr &&
       qTotalDim == 256 && kTotalDim == 256 && vTotalDim == 256 &&
       katago_renju15_int8_qk_sm120_supports(
-        int8QkKernel,matBatchSize,inChannels,qTotalDim,kTotalDim,
+        int8QkKernel.get(),matBatchSize,inChannels,qTotalDim,kTotalDim,
         usingFP16,usingNHWC,maskBuf == nullptr);
     if(useInt8Qk) {
       preLN.applyFp16Int8(
@@ -2453,7 +2554,7 @@ struct TransformerAttentionBlock {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(useInt8Qk) {
       CUDA_ERR(name.c_str(),katago_renju15_int8_qk_sm120_launch(
-        int8QkKernel,matBatchSize,(const int8_t*)scratch->int8NormBuf,
+        int8QkKernel.get(),matBatchSize,(const int8_t*)scratch->int8NormBuf,
         (half*)scratch->int8QkTempBuf,cudaHandles->stream));
       CUDA_ERR(name.c_str(),katago_renju15_int8_qk_split_rope_sm120_launch(
         (const half*)scratch->int8QkTempBuf,(half*)qData,(half*)kData,
@@ -2720,9 +2821,9 @@ struct TransformerFFNBlock {
   void* dualFfnKernel;
   void* downProjectionKernel;
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-  void* int8UpWeightBuf;
-  void* int8GateWeightBuf;
-  void* int8DualFfnKernel;
+  UniqueCudaDeviceBuffer int8UpWeightBuf;
+  UniqueCudaDeviceBuffer int8GateWeightBuf;
+  UniqueInt8DualFfnKernel int8DualFfnKernel;
   mutable bool countedInt8DualFfn;
 #endif
   mutable bool countedWinnerDualFfn;
@@ -2731,6 +2832,25 @@ struct TransformerFFNBlock {
   TransformerFFNBlock() = delete;
   TransformerFFNBlock(const TransformerFFNBlock&) = delete;
   TransformerFFNBlock& operator=(const TransformerFFNBlock&) = delete;
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  void discardInt8Prepared() noexcept {
+    int8DualFfnKernel.reset();
+    int8GateWeightBuf.reset();
+    int8UpWeightBuf.reset();
+  }
+#endif
+
+  void destroyRawPreparedState() noexcept {
+#if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
+    katago_renju15_dual_ffn_sm120_destroy(dualFfnKernel);
+#endif
+    dualFfnKernel = nullptr;
+#if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
+    katago_renju15_residual_gemm_sm120_destroy(downProjectionKernel);
+#endif
+    downProjectionKernel = nullptr;
+  }
 
   TransformerFFNBlock(
     CudaHandles* cudaHandles,
@@ -2772,6 +2892,7 @@ struct TransformerFFNBlock {
     if(!useNHWC) {
       throw StringError("Transformer blocks with NCHW layout are not yet supported by the CUDA backend");
     }
+    try {
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
     if(recipe.dualFfn ==
        CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4) {
@@ -2821,51 +2942,50 @@ struct TransformerFFNBlock {
     if(int8ShapeEligible) {
       float upScale = 0.0f;
       float gateScale = 0.0f;
-      try {
-        preparePackedInt8Matrix(
-          name + ":int8Up",desc->linear1.weights,256,768,
-          int8UpWeightBuf,upScale);
-        preparePackedInt8Matrix(
-          name + ":int8Gate",desc->linearGate.weights,256,768,
-          int8GateWeightBuf,gateScale);
-      }
-      catch(...) {
-        if(int8UpWeightBuf != nullptr)
-          cudaFree(int8UpWeightBuf);
-        int8UpWeightBuf = nullptr;
-        throw;
-      }
-      int8DualFfnKernel = katago_renju15_int8_dual_ffn_sm120_create(
+      void* packedUpWeights = nullptr;
+      preparePackedInt8Matrix(
+        name + ":int8Up",desc->linear1.weights,256,768,
+        packedUpWeights,upScale);
+      int8UpWeightBuf.reset(packedUpWeights);
+      void* packedGateWeights = nullptr;
+      preparePackedInt8Matrix(
+        name + ":int8Gate",desc->linearGate.weights,256,768,
+        packedGateWeights,gateScale);
+      int8GateWeightBuf.reset(packedGateWeights);
+      int8DualFfnKernel.reset(katago_renju15_int8_dual_ffn_sm120_create(
         fixedBatchSize * nnXLen * nnYLen,
-        (const int8_t*)int8UpWeightBuf,(const int8_t*)int8GateWeightBuf,
-        upScale,gateScale);
+        (const int8_t*)int8UpWeightBuf.get(),
+        (const int8_t*)int8GateWeightBuf.get(),upScale,gateScale));
       if(int8DualFfnKernel == nullptr) {
-        cudaFree(int8UpWeightBuf);
-        cudaFree(int8GateWeightBuf);
-        int8UpWeightBuf = nullptr;
-        int8GateWeightBuf = nullptr;
+        int8GateWeightBuf.reset();
+        int8UpWeightBuf.reset();
       }
-      else
+      else {
+        cudaHandles->registerInt8PreparedCleanup(
+          [this]() { discardInt8Prepared(); });
         cudaHandles->preparedInt8DualFfn++;
+      }
     }
 #endif
+    }
+    catch(...) {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      discardInt8Prepared();
+      // Model construction is aborting, so earlier registered callbacks would
+      // otherwise outlive the already-destroyed BlockStack members.
+      cudaHandles->int8PreparedCleanupRegistry.clear();
+#endif
+      destroyRawPreparedState();
+      throw;
+    }
   }
 
   ~TransformerFFNBlock()
   {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-    katago_renju15_int8_dual_ffn_sm120_destroy(int8DualFfnKernel);
-    if(int8UpWeightBuf != nullptr)
-      cudaFree(int8UpWeightBuf);
-    if(int8GateWeightBuf != nullptr)
-      cudaFree(int8GateWeightBuf);
+    discardInt8Prepared();
 #endif
-#if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
-    katago_renju15_dual_ffn_sm120_destroy(dualFfnKernel);
-#endif
-#if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
-    katago_renju15_residual_gemm_sm120_destroy(downProjectionKernel);
-#endif
+    destroyRawPreparedState();
   }
 
   size_t requiredWorkspaceBytes(
@@ -2899,7 +3019,7 @@ struct TransformerFFNBlock {
     const bool useInt8DualFfn = cudaHandles->int8ExperimentPlan &&
       preLN.canApplyFp16Int8(maskBuf) && scratch->int8NormBuf != nullptr &&
       katago_renju15_int8_dual_ffn_sm120_supports(
-        int8DualFfnKernel,matBatchSize,numChannels,ffnChannels,
+        int8DualFfnKernel.get(),matBatchSize,numChannels,ffnChannels,
         usingFP16,usingNHWC,maskBuf == nullptr);
     if(useInt8DualFfn) {
       preLN.applyFp16Int8(
@@ -2923,7 +3043,8 @@ struct TransformerFFNBlock {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(useInt8DualFfn) {
       CUDA_ERR(name.c_str(),katago_renju15_int8_dual_ffn_sm120_launch(
-        int8DualFfnKernel,matBatchSize,(const int8_t*)scratch->int8NormBuf,
+        int8DualFfnKernel.get(),matBatchSize,
+        (const int8_t*)scratch->int8NormBuf,
         (half*)ffnBuf.buf,cudaHandles->stream));
       usedDualFfn = true;
       if(!cudaHandles->loggedInt8DualFfn && cudaHandles->logger != NULL) {
@@ -2981,7 +3102,9 @@ struct TransformerFFNBlock {
     // Step 4-5: down projection and residual epilogue.
     bool usedSpecializedResidual = false;
     const bool usedPreparedResidual = linear2.applyPreparedResidual(
-      cudaHandles,recipe.downProjection,downProjectionKernel,matBatchSize,
+      cudaHandles,recipe.downProjection,
+      downProjectionKernel,
+      matBatchSize,
       ffnBuf.buf,trunkBuf,maskBuf,true,usedSpecializedResidual);
     if(usedSpecializedResidual)
       cudaHandles->noteWinnerLaunch(
@@ -4218,13 +4341,33 @@ struct ComputeHandle {
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
     cudaHandles->validateWinnerPrepared();
-    scratch = std::make_unique<ScratchBuffers>(
-      maxBatchSize,nnXLen,nnYLen,useFP16
+    try {
+      scratch = std::make_unique<ScratchBuffers>(
+        maxBatchSize,nnXLen,nnYLen,useFP16);
+      // Baseline buffers have priority over optional INT8 scratch. This makes
+      // an INT8 memory miss recoverable even when its first allocation would
+      // otherwise starve a later FP16 buffer allocation.
+      buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
+    }
+    catch(...) {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-      ,cudaHandles->int8ExperimentPlan
+      cudaHandles->commitInt8PreparedResources();
 #endif
-    );
-    buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
+      throw;
+    }
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    if(cudaHandles->int8ExperimentPlan) {
+      const cudaError_t status = scratch->tryPrepareInt8ExperimentScratch(
+        maxBatchSize,nnXLen,nnYLen);
+      if(status != cudaSuccess) {
+        const char* errorName = cudaGetErrorName(status);
+        cudaHandles->disableInt8Experiment(
+          string("persistent-scratch-allocation-failed-") +
+          (errorName == nullptr ? "unknown" : errorName));
+      }
+    }
+    cudaHandles->commitInt8PreparedResources();
+#endif
 
     //Synchronize after creating buffers and copying all the weights, just in case
     CUDA_ERR("ComputeHandle", cudaStreamSynchronize(cudaHandles->stream));
