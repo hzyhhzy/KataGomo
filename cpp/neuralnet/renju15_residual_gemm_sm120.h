@@ -1,7 +1,8 @@
 #ifndef KATAGO_RENJU15_RESIDUAL_GEMM_SM120_H
 #define KATAGO_RENJU15_RESIDUAL_GEMM_SM120_H
 
-#include "cudaincludes.h"
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
 
 #include <cstddef>
 
@@ -58,4 +59,3 @@ extern "C" cudaError_t katago_renju15_residual_gemm_sm120_launch(
   cudaStream_t stream);
 
 #endif
-

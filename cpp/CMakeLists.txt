@@ -36,6 +36,10 @@ set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
 set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 29. Compiling with this will use more memory and slow down KataGo, even when playing on boards of size 19.")
 set(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA 1 CACHE BOOL
   "Enable the vendored cuDNN Frontend FP16 scaled-dot-product-attention path in the CUDA backend")
+set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0 CACHE BOOL
+  "Build selected SM120 transformer tactics when CUDA 13 and pinned CUTLASS are available")
+set(KATAGO_CUTLASS_ROOT "" CACHE PATH
+  "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -45,12 +49,106 @@ if(USE_BACKEND STREQUAL "CUDA")
 
   enable_language(CUDA)
 
-  set(CUDA_STANDARD 11)
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/cudabackend.cpp
+    neuralnet/cudabackend_qkv_planar.cpp
     neuralnet/cudautils.cpp
     neuralnet/cudahelpers.cu
   )
+
+  if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
+      message(STATUS
+        "SM120 transformer winner disabled: CUDA 13.0 or newer is required")
+      set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0)
+    endif()
+  endif()
+
+  if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
+    set(KATAGO_PINNED_CUTLASS_COMMIT
+      "dcf215af68a2d08d305076c152a06f201728cd53")
+    if(NOT EXISTS "${KATAGO_CUTLASS_ROOT}/include/cutlass/cutlass.h" OR
+       NOT EXISTS "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm/device/dual_gemm.h")
+      message(FATAL_ERROR
+        "KATAGO_CUTLASS_ROOT must point to CUTLASS ${KATAGO_PINNED_CUTLASS_COMMIT}")
+    endif()
+    find_package(Git REQUIRED)
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" -C "${KATAGO_CUTLASS_ROOT}" rev-parse HEAD
+      RESULT_VARIABLE KATAGO_CUTLASS_REVISION_RESULT
+      OUTPUT_VARIABLE KATAGO_CUTLASS_REVISION
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT KATAGO_CUTLASS_REVISION_RESULT EQUAL 0 OR
+       NOT KATAGO_CUTLASS_REVISION STREQUAL KATAGO_PINNED_CUTLASS_COMMIT)
+      message(FATAL_ERROR
+        "CUTLASS revision is '${KATAGO_CUTLASS_REVISION}', expected '${KATAGO_PINNED_CUTLASS_COMMIT}'")
+    endif()
+
+    set(KATAGO_RENJU15_FA4_B36_AOT_ROOT
+      "${CMAKE_CURRENT_SOURCE_DIR}/external/renju15-sm120-fa4")
+    set(KATAGO_RENJU15_FA4_B36_HEADER
+      "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}/renju15_fa4_b36_tn128.h")
+    set(KATAGO_RENJU15_FA4_B36_OBJECT
+      "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}/renju15_fa4_b36_tn128.o")
+    set(KATAGO_RENJU15_FA4_B36_METADATA
+      "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}/renju15_fa4_b36_tn128.json")
+    set(KATAGO_RENJU15_FA4_CUTE_RUNTIME
+      "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}/libcuda_dialect_runtime_static.a")
+    set(KATAGO_RENJU15_FA4_ARTIFACTS
+      "${KATAGO_RENJU15_FA4_B36_HEADER}"
+      "${KATAGO_RENJU15_FA4_B36_OBJECT}"
+      "${KATAGO_RENJU15_FA4_B36_METADATA}"
+      "${KATAGO_RENJU15_FA4_CUTE_RUNTIME}")
+    foreach(KATAGO_WINNER_ARTIFACT IN LISTS KATAGO_RENJU15_FA4_ARTIFACTS)
+      if(NOT EXISTS "${KATAGO_WINNER_ARTIFACT}")
+        message(FATAL_ERROR "Missing bundled SM120 winner artifact: ${KATAGO_WINNER_ARTIFACT}")
+      endif()
+    endforeach()
+    file(SHA256 "${KATAGO_RENJU15_FA4_B36_HEADER}" KATAGO_RENJU15_FA4_HEADER_SHA)
+    file(SHA256 "${KATAGO_RENJU15_FA4_B36_OBJECT}" KATAGO_RENJU15_FA4_OBJECT_SHA)
+    file(SHA256 "${KATAGO_RENJU15_FA4_B36_METADATA}" KATAGO_RENJU15_FA4_METADATA_SHA)
+    file(SHA256 "${KATAGO_RENJU15_FA4_CUTE_RUNTIME}" KATAGO_RENJU15_FA4_RUNTIME_SHA)
+    if(NOT KATAGO_RENJU15_FA4_HEADER_SHA STREQUAL
+         "48e8572e7dda80f7022085e0384830e88f3a4f58e6a79f25c40b0ff60167311d" OR
+       NOT KATAGO_RENJU15_FA4_OBJECT_SHA STREQUAL
+         "690fbd68a750e90ad4ea964ecb729258ccce8d5d81a8e996dc436435dcb62a9d" OR
+       NOT KATAGO_RENJU15_FA4_METADATA_SHA STREQUAL
+         "08c8b0121d15c75c47dcc6dde987eff4dba64840989a301091063c57e518e925" OR
+       NOT KATAGO_RENJU15_FA4_RUNTIME_SHA STREQUAL
+         "5ffeb7ae24bf02755a6ad751d196b2f1efd18a834b747972ffdd8bbc6550b899")
+      message(FATAL_ERROR
+        "Bundled SM120 FA4 artifacts failed the clean generation SHA256 contract")
+    endif()
+
+    # The ordinary backend stays a fat CUDA build. Only the source-specialized
+    # winner kernels form this SM120 object island.
+    add_library(katago_sm120_transformer_winner OBJECT
+      neuralnet/cudabackend_sm120_renju15_kernels.cu
+      neuralnet/renju15_dual_ffn_sm120.cu
+      neuralnet/renju15_residual_gemm_sm120.cu
+      neuralnet/renju15_qkv_rope_gemm_sm120.cu)
+    set_target_properties(katago_sm120_transformer_winner PROPERTIES
+      CUDA_ARCHITECTURES "120"
+      CUDA_STANDARD 17
+      CUDA_STANDARD_REQUIRED ON
+      POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(katago_sm120_transformer_winner PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>)
+    target_compile_definitions(katago_sm120_transformer_winner PRIVATE
+      KATAGO_ENABLE_RENJU15_RMS_SM120=1
+      KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120=1
+      KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
+      KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
+    target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
+      "${KATAGO_CUTLASS_ROOT}/include"
+      "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+    list(APPEND NEURALNET_BACKEND_SOURCES
+      neuralnet/renju15_fa4_sm120.cpp
+      $<TARGET_OBJECTS:katago_sm120_transformer_winner>)
+  endif()
 # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
   set(KATAGO_CUDA_ARCHITECTURES "" CACHE STRING "Override CUDA architectures (for example: 120 for RTX 5090)")
   if(NOT KATAGO_CUDA_ARCHITECTURES STREQUAL "")
@@ -310,6 +408,19 @@ if(USE_BACKEND STREQUAL "CUDA")
     endif()
   else()
     target_link_libraries(katago CUDA::cublas ${CUDNN_LIBRARY})
+  endif()
+  if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
+    target_compile_definitions(katago PRIVATE
+      KATAGO_ENABLE_RENJU15_RMS_SM120=1
+      KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120=1
+      KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
+      KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1
+      KATAGO_ENABLE_RENJU15_FA4_SM120=1)
+    target_include_directories(katago PRIVATE
+      "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}")
+    target_link_libraries(katago
+      "${KATAGO_RENJU15_FA4_B36_OBJECT}"
+      "${KATAGO_RENJU15_FA4_CUTE_RUNTIME}")
   endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)

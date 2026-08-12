@@ -1,0 +1,67 @@
+Metadata-Version: 2.4
+Name: flash-attn-4
+Version: 4.0.0b25
+Summary: Flash Attention CUTE (CUDA Template Engine) implementation
+Author: Tri Dao
+License: BSD 3-Clause License
+Project-URL: Homepage, https://github.com/Dao-AILab/flash-attention
+Project-URL: Repository, https://github.com/Dao-AILab/flash-attention
+Classifier: Development Status :: 3 - Alpha
+Classifier: License :: OSI Approved :: BSD License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: AUTHORS
+Requires-Dist: nvidia-cutlass-dsl==4.6.0.dev0
+Requires-Dist: torch
+Requires-Dist: einops
+Requires-Dist: typing_extensions
+Requires-Dist: apache-tvm-ffi<0.2,>=0.1.12
+Requires-Dist: torch-c-dlpack-ext
+Requires-Dist: quack-kernels>=0.5.3
+Provides-Extra: cu13
+Requires-Dist: nvidia-cutlass-dsl[cu13]==4.6.0.dev0; extra == "cu13"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-xdist; extra == "dev"
+Requires-Dist: ruff; extra == "dev"
+Dynamic: license-file
+
+# FlashAttention-4 (CuTeDSL)
+
+FlashAttention-4 is a CuTeDSL-based implementation of FlashAttention for Hopper and Blackwell GPUs.
+
+## Installation
+
+```sh
+pip install flash-attn-4
+```
+
+If you're on CUDA 13, install with the `cu13` extra for best performance:
+
+```sh
+pip install "flash-attn-4[cu13]"
+```
+
+## Usage
+
+```python
+from flash_attn.cute import flash_attn_func, flash_attn_varlen_func
+
+out = flash_attn_func(q, k, v, causal=True)
+```
+
+## Development
+
+```sh
+git clone https://github.com/Dao-AILab/flash-attention.git
+cd flash-attention
+pip install -e "flash_attn/cute[dev]"       # CUDA 12.x
+pip install -e "flash_attn/cute[dev,cu13]"  # CUDA 13.x (e.g. B200)
+pytest tests/cute/
+```
+

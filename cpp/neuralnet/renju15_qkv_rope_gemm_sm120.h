@@ -1,7 +1,8 @@
 #ifndef KATAGO_RENJU15_QKV_ROPE_GEMM_SM120_H
 #define KATAGO_RENJU15_QKV_ROPE_GEMM_SM120_H
 
-#include "cudaincludes.h"
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
 
 #include <cstddef>
 
@@ -73,4 +74,3 @@ extern "C" cudaError_t katago_renju15_qkv_rope_gemm_sm120_launch(
 );
 
 #endif
-

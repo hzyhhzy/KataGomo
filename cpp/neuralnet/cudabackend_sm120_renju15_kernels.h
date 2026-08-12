@@ -1,7 +1,8 @@
 #ifndef KATAGO_CUDA_BACKEND_SM120_RENJU15_KERNELS_H
 #define KATAGO_CUDA_BACKEND_SM120_RENJU15_KERNELS_H
 
-#include "cudaincludes.h"
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
 
 #include <cstddef>
 
@@ -31,4 +32,3 @@ cudaError_t launchRmsNorm256(
 } // namespace Renju15Sm120
 
 #endif
-
