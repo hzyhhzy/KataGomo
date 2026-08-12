@@ -685,6 +685,29 @@ struct CudaHandles {
     }
   }
 
+  void noteInt8PreparationFailure(const char* reason) noexcept {
+    // Preparation happens before inference can enqueue INT8 work. Consume a
+    // sticky allocation/copy error and roll back every already-prepared layer;
+    // the independently prepared FP16 model remains authoritative.
+    (void)cudaGetLastError();
+    try {
+      disableInt8Experiment(reason);
+    }
+    catch(...) {
+      // Logging/allocation must never turn optional INT8 preparation into a
+      // ComputeHandle construction failure.
+      int8ExperimentPlan = false;
+      for(auto cleanup = int8PreparedCleanupRegistry.rbegin();
+          cleanup != int8PreparedCleanupRegistry.rend(); ++cleanup)
+        (*cleanup)();
+      int8PreparedCleanupRegistry.clear();
+      preparedInt8Qk = 0;
+      preparedInt8DualFfn = 0;
+      activeInt8Qk = 0;
+      activeInt8DualFfn = 0;
+    }
+  }
+
   void commitInt8PreparedResources() {
     // Once persistent scratch also exists, model-owned RAII fields become the
     // sole owners and no construction rollback callback may outlive a block.
@@ -699,7 +722,7 @@ struct CudaHandles {
          preparedInt8DualFfn != expectedInt8DualFfn)) {
       // A preparation miss is known before inference enqueues any work. Fall
       // back coherently to the already-prepared FP16 plan for every block.
-      disableInt8Experiment("incomplete-handle-preparation");
+      noteInt8PreparationFailure("incomplete-handle-preparation");
     }
 #endif
     if(!exactWinnerPlan)
@@ -2452,21 +2475,24 @@ struct TransformerAttentionBlock {
       desc->qProj.inChannels == 256 && desc->qProj.outChannels == 256 &&
       desc->kProj.inChannels == 256 && desc->kProj.outChannels == 256;
     if(int8ShapeEligible) {
-      float qkScale = 0.0f;
-      void* packedQkWeights = nullptr;
-      preparePackedInt8Qk(
-        name + ":int8Qk",desc->qProj,desc->kProj,packedQkWeights,qkScale);
-      int8QkWeightBuf.reset(packedQkWeights);
-      int8QkKernel.reset(katago_renju15_int8_qk_sm120_create(
-        fixedBatchSize * nnXLen * nnYLen,
-        (const int8_t*)int8QkWeightBuf.get(),qkScale));
-      if(int8QkKernel == nullptr) {
-        int8QkWeightBuf.reset();
-      }
-      else {
+      try {
+        float qkScale = 0.0f;
+        void* packedQkWeights = nullptr;
+        preparePackedInt8Qk(
+          name + ":int8Qk",desc->qProj,desc->kProj,packedQkWeights,qkScale);
+        int8QkWeightBuf.reset(packedQkWeights);
+        int8QkKernel.reset(katago_renju15_int8_qk_sm120_create(
+          fixedBatchSize * nnXLen * nnYLen,
+          (const int8_t*)int8QkWeightBuf.get(),qkScale));
+        if(int8QkKernel == nullptr)
+          throw StringError(name + ": INT8 QK handle preparation failed");
         cudaHandles->registerInt8PreparedCleanup(
           [this]() { discardInt8Prepared(); });
         cudaHandles->preparedInt8Qk++;
+      }
+      catch(...) {
+        discardInt8Prepared();
+        cudaHandles->noteInt8PreparationFailure("qk-preparation-failed");
       }
     }
 #endif
@@ -2948,30 +2974,32 @@ struct TransformerFFNBlock {
       desc->linearGate.inChannels == 256 &&
       desc->linearGate.outChannels == 768;
     if(int8ShapeEligible) {
-      float upScale = 0.0f;
-      float gateScale = 0.0f;
-      void* packedUpWeights = nullptr;
-      preparePackedInt8Matrix(
-        name + ":int8Up",desc->linear1.weights,256,768,
-        packedUpWeights,upScale);
-      int8UpWeightBuf.reset(packedUpWeights);
-      void* packedGateWeights = nullptr;
-      preparePackedInt8Matrix(
-        name + ":int8Gate",desc->linearGate.weights,256,768,
-        packedGateWeights,gateScale);
-      int8GateWeightBuf.reset(packedGateWeights);
-      int8DualFfnKernel.reset(katago_renju15_int8_dual_ffn_sm120_create(
-        fixedBatchSize * nnXLen * nnYLen,
-        (const int8_t*)int8UpWeightBuf.get(),
-        (const int8_t*)int8GateWeightBuf.get(),upScale,gateScale));
-      if(int8DualFfnKernel == nullptr) {
-        int8GateWeightBuf.reset();
-        int8UpWeightBuf.reset();
-      }
-      else {
+      try {
+        float upScale = 0.0f;
+        float gateScale = 0.0f;
+        void* packedUpWeights = nullptr;
+        preparePackedInt8Matrix(
+          name + ":int8Up",desc->linear1.weights,256,768,
+          packedUpWeights,upScale);
+        int8UpWeightBuf.reset(packedUpWeights);
+        void* packedGateWeights = nullptr;
+        preparePackedInt8Matrix(
+          name + ":int8Gate",desc->linearGate.weights,256,768,
+          packedGateWeights,gateScale);
+        int8GateWeightBuf.reset(packedGateWeights);
+        int8DualFfnKernel.reset(katago_renju15_int8_dual_ffn_sm120_create(
+          fixedBatchSize * nnXLen * nnYLen,
+          (const int8_t*)int8UpWeightBuf.get(),
+          (const int8_t*)int8GateWeightBuf.get(),upScale,gateScale));
+        if(int8DualFfnKernel == nullptr)
+          throw StringError(name + ": INT8 dual-FFN handle preparation failed");
         cudaHandles->registerInt8PreparedCleanup(
           [this]() { discardInt8Prepared(); });
         cudaHandles->preparedInt8DualFfn++;
+      }
+      catch(...) {
+        discardInt8Prepared();
+        cudaHandles->noteInt8PreparationFailure("dual-ffn-preparation-failed");
       }
     }
 #endif
@@ -4349,29 +4377,37 @@ struct ComputeHandle {
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
     cudaHandles->validateWinnerPrepared();
-    try {
+    auto allocateBaseline = [&]() {
       scratch = std::make_unique<ScratchBuffers>(
         maxBatchSize,nnXLen,nnYLen,useFP16);
-      // Baseline buffers have priority over optional INT8 scratch. This makes
-      // an INT8 memory miss recoverable even when its first allocation would
-      // otherwise starve a later FP16 buffer allocation.
       buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
+    };
+    try {
+      allocateBaseline();
     }
     catch(...) {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-      cudaHandles->commitInt8PreparedResources();
+      if(cudaHandles->int8ExperimentPlan) {
+        // Optional packed weights may have consumed the margin required by
+        // the authoritative FP16 buffers. Destroy the partial baseline state,
+        // release all INT8 resources, clear a sticky CUDA allocation error,
+        // and retry the baseline exactly once.
+        buffers.reset();
+        scratch.reset();
+        cudaHandles->noteInt8PreparationFailure("baseline-allocation-retry");
+        allocateBaseline();
+      }
+      else
 #endif
-      throw;
+        throw;
     }
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(cudaHandles->int8ExperimentPlan) {
       const cudaError_t status = scratch->tryPrepareInt8ExperimentScratch(
         maxBatchSize,nnXLen,nnYLen);
       if(status != cudaSuccess) {
-        const char* errorName = cudaGetErrorName(status);
-        cudaHandles->disableInt8Experiment(
-          string("persistent-scratch-allocation-failed-") +
-          (errorName == nullptr ? "unknown" : errorName));
+        cudaHandles->noteInt8PreparationFailure(
+          "persistent-scratch-allocation-failed");
       }
     }
     cudaHandles->commitInt8PreparedResources();
