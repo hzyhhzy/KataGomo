@@ -331,6 +331,24 @@ struct CudaHandles {
   bool loggedFfnDown;
   bool loggedCublasResidual;
   bool loggedWinner;
+  std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
+  bool exactWinnerPlan;
+  int expectedWinnerRms;
+  int expectedWinnerQkvRope;
+  int expectedWinnerFa4;
+  int expectedWinnerDualFfn;
+  int expectedWinnerOutProjection;
+  int expectedWinnerFfnDown;
+  int preparedWinnerQkvRope;
+  int preparedWinnerDualFfn;
+  int preparedWinnerOutProjection;
+  int preparedWinnerFfnDown;
+  int activeWinnerRms;
+  int activeWinnerQkvRope;
+  int activeWinnerFa4;
+  int activeWinnerDualFfn;
+  int activeWinnerOutProjection;
+  int activeWinnerFfnDown;
   // Logger for this handle's server thread; may be NULL. Used to report cudnn SDPA falling back.
   Logger* logger;
 
@@ -352,6 +370,24 @@ struct CudaHandles {
       loggedFfnDown(false),
       loggedCublasResidual(false),
       loggedWinner(false),
+      loggedSdpaKeys(),
+      exactWinnerPlan(false),
+      expectedWinnerRms(0),
+      expectedWinnerQkvRope(0),
+      expectedWinnerFa4(0),
+      expectedWinnerDualFfn(0),
+      expectedWinnerOutProjection(0),
+      expectedWinnerFfnDown(0),
+      preparedWinnerQkvRope(0),
+      preparedWinnerDualFfn(0),
+      preparedWinnerOutProjection(0),
+      preparedWinnerFfnDown(0),
+      activeWinnerRms(0),
+      activeWinnerQkvRope(0),
+      activeWinnerFa4(0),
+      activeWinnerDualFfn(0),
+      activeWinnerOutProjection(0),
+      activeWinnerFfnDown(0),
       logger(NULL)
   {
     CUDA_ERR("CudaHandles",cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking));
@@ -384,23 +420,82 @@ struct CudaHandles {
       cudaStreamDestroy(stream);
   }
 
-  void maybeLogWinnerActive() {
-    if(loggedWinner || logger == NULL || transformerPlan == nullptr ||
-       !loggedRms || !loggedQkvRope || !loggedFa4 || !loggedDualFfn ||
-       !loggedOutProjection || !loggedFfnDown)
+  void configureWinnerExpectations() {
+    if(transformerPlan == nullptr)
       return;
-    bool exactCertified = false;
     for(const CudaTransformerWinner::PreparedRecord& record:
         transformerPlan->records) {
       if(record.found &&
          record.operation.support == CudaOpRegistry::SupportClass::CertifiedFast &&
+         record.request.key.kind ==
+           NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention &&
          transformerPlan->attentionFor(record.request.topologyIndex).attention ==
            CudaTransformerWinner::AttentionTactic::Fa4Sm120B36S225Tm128Tn128S1Both16) {
-        exactCertified = true;
+        exactWinnerPlan = true;
         break;
       }
     }
-    if(!exactCertified)
+    if(!exactWinnerPlan)
+      return;
+    for(const CudaTransformerWinner::PreparedRecord& record:
+        transformerPlan->records) {
+      if(record.request.key.kind ==
+         NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention) {
+        const CudaTransformerWinner::AttentionRecipe recipe =
+          transformerPlan->attentionFor(record.request.topologyIndex);
+        if(recipe.rmsNorm ==
+           CudaTransformerWinner::RmsNormTactic::Sm120C256Warp4Vec8)
+          expectedWinnerRms++;
+        if(recipe.qkvRope != CudaTransformerWinner::QkvRopeTactic::Disabled)
+          expectedWinnerQkvRope++;
+        if(recipe.attention != CudaTransformerWinner::AttentionTactic::Generic)
+          expectedWinnerFa4++;
+        if(recipe.outProjection ==
+           CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
+          expectedWinnerOutProjection++;
+      }
+      else if(record.request.key.kind ==
+              NeuralNetArchitecture::ArchitectureOpKind::TransformerFFN) {
+        const CudaTransformerWinner::FfnRecipe recipe =
+          transformerPlan->ffnFor(record.request.topologyIndex);
+        if(recipe.rmsNorm ==
+           CudaTransformerWinner::RmsNormTactic::Sm120C256Warp4Vec8)
+          expectedWinnerRms++;
+        if(recipe.dualFfn != CudaTransformerWinner::DualFfnTactic::Disabled)
+          expectedWinnerDualFfn++;
+        if(recipe.downProjection ==
+           CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
+          expectedWinnerFfnDown++;
+      }
+    }
+  }
+
+  void validateWinnerPrepared() const {
+    if(!exactWinnerPlan)
+      return;
+    if(preparedWinnerQkvRope != expectedWinnerQkvRope ||
+       preparedWinnerDualFfn != expectedWinnerDualFfn ||
+       preparedWinnerOutProjection != expectedWinnerOutProjection ||
+       preparedWinnerFfnDown != expectedWinnerFfnDown)
+      throw StringError("Certified CUDA transformer winner failed to prepare every block handle");
+  }
+
+  void noteWinnerLaunch(bool& blockCounted, int& activeCount) {
+    if(!exactWinnerPlan || blockCounted)
+      return;
+    blockCounted = true;
+    activeCount++;
+    maybeLogWinnerActive();
+  }
+
+  void maybeLogWinnerActive() {
+    if(loggedWinner || logger == NULL || transformerPlan == nullptr ||
+       !exactWinnerPlan || activeWinnerRms != expectedWinnerRms ||
+       activeWinnerQkvRope != expectedWinnerQkvRope ||
+       activeWinnerFa4 != expectedWinnerFa4 ||
+       activeWinnerDualFfn != expectedWinnerDualFfn ||
+       activeWinnerOutProjection != expectedWinnerOutProjection ||
+       activeWinnerFfnDown != expectedWinnerFfnDown)
       return;
     logger->write(
       "CUDA_TRANSFORMER_WINNER_ACTIVE qualification=certified-fast plan=" +
@@ -1058,8 +1153,10 @@ struct MatMulLayer {
     const void* inputBuf,
     void* residualBuf,
     const void* maskBuf,
-    bool ffnDown
+    bool ffnDown,
+    bool& usedSpecialized
   ) const {
+    usedSpecialized = false;
     if(!usingFP16 || maskBuf != nullptr || tactic ==
        CudaTransformerWinner::ResidualTactic::GenericAdd)
       return false;
@@ -1070,6 +1167,7 @@ struct MatMulLayer {
       CUDA_ERR(name.c_str(),katago_renju15_residual_gemm_sm120_launch(
         preparedKernel,(const half*)inputBuf,(const half*)matBuf,
         (half*)residualBuf,cudaHandles->stream));
+      usedSpecialized = true;
       bool& logged = ffnDown ? cudaHandles->loggedFfnDown :
         cudaHandles->loggedOutProjection;
       if(!logged && cudaHandles->logger != NULL) {
@@ -1080,7 +1178,6 @@ struct MatMulLayer {
           (ffnDown ? "ffn-down" : "out-proj") + " marker=" +
           (marker == nullptr ? "missing" : marker));
         logged = true;
-        cudaHandles->maybeLogWinnerActive();
       }
       return true;
     }
@@ -1593,6 +1690,7 @@ struct TransformerRMSNormLayer {
   const float epsilon;
   const bool usingFP16;
   const CudaTransformerWinner::RmsNormTactic tactic;
+  mutable bool countedWinnerRms;
   void* weightBuf;
   void* zeroBetaBuf;
 
@@ -1610,7 +1708,8 @@ struct TransformerRMSNormLayer {
     numChannels(desc->numChannels),
     epsilon(desc->epsilon),
     usingFP16(useFP16),
-    tactic(selectedTactic)
+    tactic(selectedTactic),
+    countedWinnerRms(false)
   {
     (void)cudaHandles;
     if((int)desc->weight.size() != numChannels)
@@ -1647,8 +1746,9 @@ struct TransformerRMSNormLayer {
         cudaHandles->logger->write(
           "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8");
         cudaHandles->loggedRms = true;
-        cudaHandles->maybeLogWinnerActive();
       }
+      cudaHandles->noteWinnerLaunch(
+        countedWinnerRms,cudaHandles->activeWinnerRms);
       return;
     }
 #endif
@@ -1814,6 +1914,9 @@ struct TransformerAttentionBlock {
   const CudaTransformerWinner::AttentionRecipe recipe;
   std::unique_ptr<CudaQKVPlanar::Projection> qkvPlanarProjection;
   void* outProjectionKernel;
+  mutable bool countedWinnerQkvRope;
+  mutable bool countedWinnerFa4;
+  mutable bool countedWinnerOutProjection;
 
   // Precomputed RoPE cos/sin tables on device
   void* ropeCosTable;
@@ -1855,6 +1958,9 @@ struct TransformerAttentionBlock {
     recipe(selectedRecipe),
     qkvPlanarProjection(),
     outProjectionKernel(nullptr),
+    countedWinnerQkvRope(false),
+    countedWinnerFa4(false),
+    countedWinnerOutProjection(false),
     ropeCosTable(NULL),
     ropeSinTable(NULL),
     ropeCosSinTable(NULL),
@@ -1924,6 +2030,22 @@ struct TransformerAttentionBlock {
         fixedBatchSize * nnXLen * nnYLen);
     }
 #endif
+    if(cudaHandles->exactWinnerPlan) {
+#if defined(KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120) && KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120
+      if(recipe.qkvRope != CudaTransformerWinner::QkvRopeTactic::Disabled) {
+        if(qkvPlanarProjection == nullptr ||
+           !qkvPlanarProjection->hasFusedQKVRoPEState())
+          throw StringError("Certified CUDA transformer QKV-RoPE handle preparation failed");
+        cudaHandles->preparedWinnerQkvRope++;
+      }
+#endif
+      if(recipe.outProjection ==
+         CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1) {
+        if(outProjectionKernel == nullptr)
+          throw StringError("Certified CUDA transformer out-projection handle preparation failed");
+        cudaHandles->preparedWinnerOutProjection++;
+      }
+    }
   }
 
   ~TransformerAttentionBlock() {
@@ -2005,8 +2127,9 @@ struct TransformerAttentionBlock {
           string("RENJU15_SM120_QKV_ROPE_ACTIVE marker=") +
           (marker == nullptr ? "missing" : marker));
         cudaHandles->loggedQkvRope = true;
-        cudaHandles->maybeLogWinnerActive();
       }
+      cudaHandles->noteWinnerLaunch(
+        countedWinnerQkvRope,cudaHandles->activeWinnerQkvRope);
     }
 #endif
     if(!usedFusedQkvRope) {
@@ -2098,8 +2221,9 @@ struct TransformerAttentionBlock {
             string("RENJU15_SM120_FA4_ACTIVE marker=") +
             (result.marker == nullptr ? "missing" : result.marker));
           cudaHandles->loggedFa4 = true;
-          cudaHandles->maybeLogWinnerActive();
         }
+        cudaHandles->noteWinnerLaunch(
+          countedWinnerFa4,cudaHandles->activeWinnerFa4);
       }
     }
 #endif
@@ -2147,6 +2271,18 @@ struct TransformerAttentionBlock {
         if(status.is_bad())
           throw StringError(string("cudnn SDPA execute failed: ") + status.get_message());
         usedSDPA = true;
+        if(cudaHandles->logger != NULL &&
+           cudaHandles->loggedSdpaKeys.insert(sdpaKey).second) {
+          cudaHandles->logger->write(
+            "CUDA_CUDNN_SDPA_ACTIVE marker=frontend-graph mask=" +
+            string(hasMask ? "dense" : "none") +
+            " B=" + Global::intToString(batchSize) +
+            " S=" + Global::intToString(seqLen) +
+            " Hq=" + Global::intToString(numHeads) +
+            " Hkv=" + Global::intToString(numKVHeads) +
+            " Dq=" + Global::intToString(qHeadDim) +
+            " Dv=" + Global::intToString(vHeadDim));
+        }
       }
     }
 #endif
@@ -2169,9 +2305,13 @@ struct TransformerAttentionBlock {
 
     // Step 5-6: output projection and residual epilogue. The prepared path
     // writes directly into trunkBuf with beta=1.
+    bool usedSpecializedResidual = false;
     const bool usedPreparedResidual = outProj.applyPreparedResidual(
       cudaHandles,recipe.outProjection,outProjectionKernel,matBatchSize,
-      attnOutBuf.buf,trunkBuf,maskBuf,false);
+      attnOutBuf.buf,trunkBuf,maskBuf,false,usedSpecializedResidual);
+    if(usedSpecializedResidual)
+      cudaHandles->noteWinnerLaunch(
+        countedWinnerOutProjection,cudaHandles->activeWinnerOutProjection);
     if(!usedPreparedResidual) {
       // attnOutBuf is [numHeads*vHeadDim, seqLen*batchSize] col-major.
       outProj.apply(cudaHandles, scratch, matBatchSize, attnOutBuf.buf,
@@ -2217,6 +2357,8 @@ struct TransformerFFNBlock {
   const CudaTransformerWinner::FfnRecipe recipe;
   void* dualFfnKernel;
   void* downProjectionKernel;
+  mutable bool countedWinnerDualFfn;
+  mutable bool countedWinnerFfnDown;
 
   TransformerFFNBlock() = delete;
   TransformerFFNBlock(const TransformerFFNBlock&) = delete;
@@ -2245,7 +2387,9 @@ struct TransformerFFNBlock {
     linear2(cudaHandles, &desc->linear2, useFP16),
     recipe(selectedRecipe),
     dualFfnKernel(nullptr),
-    downProjectionKernel(nullptr)
+    downProjectionKernel(nullptr),
+    countedWinnerDualFfn(false),
+    countedWinnerFfnDown(false)
   {
     if(!useSwiGLU) {
       throw StringError("Non-SwiGLU transformer FFN is not yet supported in CUDA backend");
@@ -2271,6 +2415,28 @@ struct TransformerFFNBlock {
         fixedBatchSize * nnXLen * nnYLen);
     }
 #endif
+    if(cudaHandles->exactWinnerPlan) {
+      const bool expectsDual =
+        recipe.dualFfn != CudaTransformerWinner::DualFfnTactic::Disabled;
+      const bool expectsDown = recipe.downProjection ==
+        CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1;
+      if((expectsDual && dualFfnKernel == nullptr) ||
+         (expectsDown && downProjectionKernel == nullptr)) {
+#if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
+        katago_renju15_dual_ffn_sm120_destroy(dualFfnKernel);
+        dualFfnKernel = nullptr;
+#endif
+#if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
+        katago_renju15_residual_gemm_sm120_destroy(downProjectionKernel);
+        downProjectionKernel = nullptr;
+#endif
+        throw StringError("Certified CUDA transformer FFN handle preparation failed");
+      }
+      if(expectsDual)
+        cudaHandles->preparedWinnerDualFfn++;
+      if(expectsDown)
+        cudaHandles->preparedWinnerFfnDown++;
+    }
   }
 
   ~TransformerFFNBlock()
@@ -2338,8 +2504,9 @@ struct TransformerFFNBlock {
           string("RENJU15_SM120_DUAL_FFN_ACTIVE marker=") +
           (marker == nullptr ? "missing" : marker));
         cudaHandles->loggedDualFfn = true;
-        cudaHandles->maybeLogWinnerActive();
       }
+      cudaHandles->noteWinnerLaunch(
+        countedWinnerDualFfn,cudaHandles->activeWinnerDualFfn);
     }
 #endif
     if(!usedDualFfn) {
@@ -2363,9 +2530,13 @@ struct TransformerFFNBlock {
 #endif
 
     // Step 4-5: down projection and residual epilogue.
+    bool usedSpecializedResidual = false;
     const bool usedPreparedResidual = linear2.applyPreparedResidual(
       cudaHandles,recipe.downProjection,downProjectionKernel,matBatchSize,
-      ffnBuf.buf,trunkBuf,maskBuf,true);
+      ffnBuf.buf,trunkBuf,maskBuf,true,usedSpecializedResidual);
+    if(usedSpecializedResidual)
+      cudaHandles->noteWinnerLaunch(
+        countedWinnerFfnDown,cudaHandles->activeWinnerFfnDown);
     if(!usedPreparedResidual) {
       linear2.apply(cudaHandles, scratch, matBatchSize, ffnBuf.buf,
                     trunkScratchBuf, workspaceBuf, workspaceBytes);
@@ -3583,11 +3754,13 @@ struct ComputeHandle {
       cudaHandles->transformerPlan =
         std::make_unique<CudaTransformerWinner::PreparedPlan>(
           CudaTransformerWinner::preparePlan(architecture,runtime,device));
+      cudaHandles->configureWinnerExpectations();
     }
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
+    cudaHandles->validateWinnerPrepared();
     scratch = std::make_unique<ScratchBuffers>(maxBatchSize, nnXLen, nnYLen, useFP16);
     buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
 

@@ -63,6 +63,7 @@ class Projection {
   ) const;
 
   const char* fusedQKVRoPEMarker() const;
+  bool hasFusedQKVRoPEState() const;
 #endif
 
  private:

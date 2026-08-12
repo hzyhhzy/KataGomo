@@ -125,6 +125,10 @@ cudaError_t Projection::applyFusedQKVRoPE(
 const char* Projection::fusedQKVRoPEMarker() const {
   return katago_renju15_qkv_rope_gemm_sm120_active_marker(qkvRopeGemmHandle);
 }
+
+bool Projection::hasFusedQKVRoPEState() const {
+  return qkvRopeGemmHandle != nullptr;
+}
 #endif
 
 }  // namespace CudaQKVPlanar
