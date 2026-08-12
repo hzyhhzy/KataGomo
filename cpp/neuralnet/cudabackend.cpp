@@ -30,6 +30,10 @@
 #if defined(KATAGO_ENABLE_RENJU15_RMS_SM120) && KATAGO_ENABLE_RENJU15_RMS_SM120
 #include "../neuralnet/cudabackend_sm120_renju15_kernels.h"
 #endif
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+#include "../neuralnet/renju15_int8_fused_sm120.h"
+#include "../neuralnet/renju15_int8_quantization.h"
+#endif
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/nninterface.h"
 #include "../neuralnet/nninputs.h"
@@ -41,9 +45,11 @@
 
 #include "../external/half-2.2.0/include/half.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <unordered_map>
 
@@ -52,6 +58,87 @@
 //------------------------
 
 using half_t = half_float::half;
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+namespace {
+
+void uploadPackedInt8(
+  const string& name,
+  const vector<int8_t>& packed,
+  void*& deviceBuffer
+) {
+  deviceBuffer = nullptr;
+  void* allocated = nullptr;
+  CUDA_ERR(name.c_str(),cudaMalloc(&allocated,packed.size()));
+  cudaError_t status = cudaMemcpy(
+    allocated,packed.data(),packed.size(),cudaMemcpyHostToDevice);
+  if(status != cudaSuccess) {
+    cudaFree(allocated);
+    CUDA_ERR(name.c_str(),status);
+  }
+  deviceBuffer = allocated;
+}
+
+void preparePackedInt8Matrix(
+  const string& name,
+  const vector<float>& weights,
+  int inputChannels,
+  int outputChannels,
+  void*& deviceBuffer,
+  float& scale
+) {
+  scale = Renju15Int8Quantization::perMatrixScale(weights);
+  const vector<int8_t> packed = Renju15Int8Quantization::quantizeAndPackMatrix(
+    weights,inputChannels,outputChannels,scale);
+  uploadPackedInt8(name,packed,deviceBuffer);
+}
+
+void preparePackedInt8Qk(
+  const string& name,
+  const MatMulLayerDesc& q,
+  const MatMulLayerDesc& k,
+  void*& deviceBuffer,
+  float& scale
+) {
+  if(q.weights.size() != (size_t)256 * 256 ||
+     k.weights.size() != (size_t)256 * 256)
+    throw StringError(name + ": INT8 QK weight count mismatch");
+  if(q.inChannels != 256 || k.inChannels != 256 ||
+     q.outChannels != 256 || k.outChannels != 256)
+    throw StringError(name + ": incompatible INT8 QK shape");
+  float maxAbs = 0.0f;
+  for(float value: q.weights) {
+    if(!std::isfinite(value))
+      throw StringError(name + ": Q matrix contains NaN or infinity");
+    maxAbs = std::max(maxAbs,std::fabs(value));
+  }
+  for(float value: k.weights) {
+    if(!std::isfinite(value))
+      throw StringError(name + ": K matrix contains NaN or infinity");
+    maxAbs = std::max(maxAbs,std::fabs(value));
+  }
+  scale = std::max(
+    maxAbs / 127.0f,std::numeric_limits<float>::min());
+  if(!(scale > 0.0f) || !std::isfinite(scale))
+    throw StringError(name + ": QK matrices produced an invalid scale");
+  Renju15Int8Quantization::validateContract();
+
+  vector<int8_t> packed((size_t)256 * 512);
+  for(int inner = 0; inner < 256; inner++) {
+    for(int channel = 0; channel < 256; channel++) {
+      packed[(size_t)channel * 256 + inner] =
+        Renju15Int8Quantization::quantizeWeight(
+        q.weights[(size_t)inner * 256 + channel],scale);
+      packed[(size_t)(256 + channel) * 256 + inner] =
+        Renju15Int8Quantization::quantizeWeight(
+        k.weights[(size_t)inner * 256 + channel],scale);
+    }
+  }
+  uploadPackedInt8(name,packed,deviceBuffer);
+}
+
+} // namespace
+#endif
 
 //Define this to print out some of the intermediate values of the neural net
 //#define DEBUG_INTERMEDIATE_VALUES
@@ -327,6 +414,9 @@ struct CudaHandles {
   bool loggedQkvRope;
   bool loggedFa4;
   bool loggedDualFfn;
+  bool loggedInt8Qk;
+  bool loggedInt8DualFfn;
+  bool loggedInt8Experiment;
   bool loggedOutProjection;
   bool loggedFfnDown;
   bool loggedCublasResidual;
@@ -335,6 +425,15 @@ struct CudaHandles {
   std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
 #endif
   bool exactWinnerPlan;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  bool int8ExperimentPlan;
+  int expectedInt8Qk;
+  int expectedInt8DualFfn;
+  int preparedInt8Qk;
+  int preparedInt8DualFfn;
+  int activeInt8Qk;
+  int activeInt8DualFfn;
+#endif
   int expectedWinnerRms;
   int expectedWinnerQkvRope;
   int expectedWinnerFa4;
@@ -368,6 +467,9 @@ struct CudaHandles {
       loggedQkvRope(false),
       loggedFa4(false),
       loggedDualFfn(false),
+      loggedInt8Qk(false),
+      loggedInt8DualFfn(false),
+      loggedInt8Experiment(false),
       loggedOutProjection(false),
       loggedFfnDown(false),
       loggedCublasResidual(false),
@@ -376,6 +478,15 @@ struct CudaHandles {
       loggedSdpaKeys(),
 #endif
       exactWinnerPlan(false),
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      int8ExperimentPlan(false),
+      expectedInt8Qk(0),
+      expectedInt8DualFfn(0),
+      preparedInt8Qk(0),
+      preparedInt8DualFfn(0),
+      activeInt8Qk(0),
+      activeInt8DualFfn(0),
+#endif
       expectedWinnerRms(0),
       expectedWinnerQkvRope(0),
       expectedWinnerFa4(0),
@@ -427,6 +538,45 @@ struct CudaHandles {
   void configureWinnerExpectations() {
     if(transformerPlan == nullptr)
       return;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    int candidateInt8Qk = 0;
+    int candidateInt8DualFfn = 0;
+    bool allInt8ShapesEligible =
+      transformerPlan->runtime.maskMode == CudaOpRegistry::MaskMode::None;
+    for(const CudaTransformerWinner::PreparedRecord& record:
+        transformerPlan->records) {
+      const auto& key = record.request.key;
+      if(key.kind ==
+         NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention) {
+        const bool eligible = key.boardX == 15 && key.boardY == 15 &&
+          key.spatialArea == 225 && key.inChannels == 256 &&
+          key.outChannels == 256 && key.numHeads == 8 &&
+          key.numKVHeads == 8 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
+          key.maskMode == CudaOpRegistry::MaskMode::None;
+        allInt8ShapesEligible = allInt8ShapesEligible && eligible;
+        if(eligible)
+          candidateInt8Qk++;
+      }
+      else if(key.kind ==
+              NeuralNetArchitecture::ArchitectureOpKind::TransformerFFN) {
+        const bool eligible = key.boardX == 15 && key.boardY == 15 &&
+          key.spatialArea == 225 && key.inChannels == 256 &&
+          key.outChannels == 256 && key.auxiliaryChannels == 768 &&
+          key.maskMode == CudaOpRegistry::MaskMode::None;
+        allInt8ShapesEligible = allInt8ShapesEligible && eligible;
+        if(eligible)
+          candidateInt8DualFfn++;
+      }
+    }
+    // This first experiment has only been accuracy-qualified for the current
+    // 24-attention/24-FFN model on a 15x15 board. Runtime batch remains dynamic.
+    int8ExperimentPlan = allInt8ShapesEligible && candidateInt8Qk == 24 &&
+      candidateInt8DualFfn == 24;
+    if(int8ExperimentPlan) {
+      expectedInt8Qk = candidateInt8Qk;
+      expectedInt8DualFfn = candidateInt8DualFfn;
+    }
+#endif
     for(const CudaTransformerWinner::PreparedRecord& record:
         transformerPlan->records) {
       if(record.found &&
@@ -474,7 +624,20 @@ struct CudaHandles {
     }
   }
 
-  void validateWinnerPrepared() const {
+  void validateWinnerPrepared() {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    if(int8ExperimentPlan &&
+       (preparedInt8Qk != expectedInt8Qk ||
+        preparedInt8DualFfn != expectedInt8DualFfn)) {
+      // A preparation miss is known before inference enqueues any work. Fall
+      // back coherently to the already-prepared FP16 plan for every block.
+      int8ExperimentPlan = false;
+      if(logger != NULL)
+        logger->write(
+          "RENJU15_SM120_INT8_EXPERIMENT_UNAVAILABLE fallback=fp16 "
+          "reason=incomplete-handle-preparation");
+    }
+#endif
     if(!exactWinnerPlan)
       return;
     if(preparedWinnerQkvRope != expectedWinnerQkvRope ||
@@ -493,6 +656,12 @@ struct CudaHandles {
   }
 
   void maybeLogWinnerActive() {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    // INT8 changes the arithmetic recipe, so it must never borrow the certified
+    // FP16 winner marker even when all unchanged downstream kernels are active.
+    if(int8ExperimentPlan)
+      return;
+#endif
     if(loggedWinner || logger == NULL || transformerPlan == nullptr ||
        !exactWinnerPlan || activeWinnerRms != expectedWinnerRms ||
        activeWinnerQkvRope != expectedWinnerQkvRope ||
@@ -507,6 +676,26 @@ struct CudaHandles {
       Global::intToString((int)transformerPlan->runtime.streamCount));
     loggedWinner = true;
   }
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  void noteInt8ExperimentLaunch(bool& blockCounted, bool qk) {
+    if(!int8ExperimentPlan || blockCounted)
+      return;
+    blockCounted = true;
+    if(qk)
+      activeInt8Qk++;
+    else
+      activeInt8DualFfn++;
+    if(!loggedInt8Experiment && logger != NULL &&
+       activeInt8Qk == expectedInt8Qk &&
+       activeInt8DualFfn == expectedInt8DualFfn) {
+      logger->write(
+        "RENJU15_SM120_INT8_EXPERIMENT_ACTIVE quant=clip4-pt "
+        "qk_ops=24 dual_ffn_ops=24 upgate_matrices=48 down=fp16 board=15");
+      loggedInt8Experiment = true;
+    }
+  }
+#endif
 
   static CudaHandles* cudaHandlesTesting() {
     const int gpuIdxForThisThread = 0;
@@ -1729,6 +1918,39 @@ struct TransformerRMSNormLayer {
     cudaFree(zeroBetaBuf);
   }
 
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  bool canApplyFp16Int8(const void* maskBuf) const {
+    return usingFP16 && numChannels == 256 && maskBuf == nullptr;
+  }
+
+  // The caller performs every capability check before invoking this method.
+  // Once selected, a launch error is fatal; inference never replays the block
+  // through FP16 after potentially enqueueing INT8 work.
+  void applyFp16Int8(
+    CudaHandles* cudaHandles,
+    int batchSize,
+    int xySize,
+    const void* inputBuf,
+    void* outputFp16,
+    void* outputInt8,
+    const void* maskBuf
+  ) const {
+    if(!canApplyFp16Int8(maskBuf))
+      throw StringError(name + ": incompatible experimental FP16+INT8 RMSNorm");
+    CUDA_ERR(name.c_str(),Renju15Sm120::launchRmsNorm256Fp16Int8(
+      (const half*)inputBuf,(half*)outputFp16,(int8_t*)outputInt8,
+      (const half*)weightBuf,batchSize * xySize,epsilon,
+      Renju15Sm120::RmsNorm256Tactic::Warp4Vec8,cudaHandles->stream));
+    if(!cudaHandles->loggedRms && cudaHandles->logger != NULL) {
+      cudaHandles->logger->write(
+        "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8-fp16-int8-clip4");
+      cudaHandles->loggedRms = true;
+    }
+    // This arithmetic recipe is tracked by the independent INT8 experiment
+    // counters; do not increment the certified FP16 RMS winner counter.
+  }
+#endif
+
   // Apply RMSNorm on NHWC data [N, XY, C], applying mask [N, XY] to zero padded positions.
   // Uses the RMSNormGammaBeta kernel with gamma=weight, beta=0, no activation.
   void apply(
@@ -1918,6 +2140,11 @@ struct TransformerAttentionBlock {
   const CudaTransformerWinner::AttentionRecipe recipe;
   std::unique_ptr<CudaQKVPlanar::Projection> qkvPlanarProjection;
   void* outProjectionKernel;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  void* int8QkWeightBuf;
+  void* int8QkKernel;
+  mutable bool countedInt8Qk;
+#endif
   mutable bool countedWinnerQkvRope;
   mutable bool countedWinnerFa4;
   mutable bool countedWinnerOutProjection;
@@ -1962,6 +2189,11 @@ struct TransformerAttentionBlock {
     recipe(selectedRecipe),
     qkvPlanarProjection(),
     outProjectionKernel(nullptr),
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    int8QkWeightBuf(nullptr),
+    int8QkKernel(nullptr),
+    countedInt8Qk(false),
+#endif
     countedWinnerQkvRope(false),
     countedWinnerFa4(false),
     countedWinnerOutProjection(false),
@@ -2050,9 +2282,39 @@ struct TransformerAttentionBlock {
         cudaHandles->preparedWinnerOutProjection++;
       }
     }
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    // Temporary experiment opt-in: derive deterministic PT INT8 bytes from
+    // the source FP32 weights. The production format will require explicit
+    // quantization metadata/capability instead of doing this implicitly.
+    const bool int8ShapeEligible = cudaHandles->int8ExperimentPlan &&
+      nnXLen == 15 && nnYLen == 15 && useFP16 && useNHWC && useRope &&
+      learnableRope && ropeCosSinTable != nullptr && numHeads == 8 &&
+      numKVHeads == 8 && qHeadDim == 32 && vHeadDim == 32 &&
+      desc->qProj.inChannels == 256 && desc->qProj.outChannels == 256 &&
+      desc->kProj.inChannels == 256 && desc->kProj.outChannels == 256;
+    if(int8ShapeEligible) {
+      float qkScale = 0.0f;
+      preparePackedInt8Qk(
+        name + ":int8Qk",desc->qProj,desc->kProj,int8QkWeightBuf,qkScale);
+      int8QkKernel = katago_renju15_int8_qk_sm120_create(
+        fixedBatchSize * nnXLen * nnYLen,
+        (const int8_t*)int8QkWeightBuf,qkScale);
+      if(int8QkKernel == nullptr) {
+        cudaFree(int8QkWeightBuf);
+        int8QkWeightBuf = nullptr;
+      }
+      else
+        cudaHandles->preparedInt8Qk++;
+    }
+#endif
   }
 
   ~TransformerAttentionBlock() {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    katago_renju15_int8_qk_sm120_destroy(int8QkKernel);
+    if(int8QkWeightBuf != nullptr)
+      cudaFree(int8QkWeightBuf);
+#endif
     #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
     katago_renju15_residual_gemm_sm120_destroy(outProjectionKernel);
     #endif
@@ -2090,9 +2352,30 @@ struct TransformerAttentionBlock {
     int kTotalDim = numKVHeads * qHeadDim;
     int vTotalDim = numKVHeads * vHeadDim;
     size_t bytesPerElt = usingFP16 ? sizeof(half) : sizeof(float);
+    int matBatchSize = batchSize * seqLen;
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    const bool useInt8Qk = cudaHandles->int8ExperimentPlan &&
+      preLN.canApplyFp16Int8(maskBuf) && ropeCosSinTable != nullptr &&
+      qTotalDim == 256 && kTotalDim == 256 && vTotalDim == 256 &&
+      katago_renju15_int8_qk_sm120_supports(
+        int8QkKernel,matBatchSize,inChannels,qTotalDim,kTotalDim,
+        usingFP16,usingNHWC,maskBuf == nullptr);
+    std::unique_ptr<SizedBuf<void*>> int8NormBuf;
+    if(useInt8Qk) {
+      int8NormBuf = std::make_unique<SizedBuf<void*>>(
+        scratch->allocator,(size_t)matBatchSize * inChannels);
+      preLN.applyFp16Int8(
+        cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
+        int8NormBuf->buf,maskBuf);
+    }
+    else
+#endif
+    {
+      preLN.apply(cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,maskBuf);
+    }
 
     // NHWC: trunk is [N, XY, C]. RMSNorm + mask zeroing.
-    preLN.apply(cudaHandles, batchSize, seqLen, trunkBuf, trunkScratchBuf, maskBuf);
 
 #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D("CUDA Attn RMSNorm out", trunkScratchBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);
@@ -2101,8 +2384,6 @@ struct TransformerAttentionBlock {
     // Step 2: Q/K/V projections
     // trunkScratchBuf is [N, XY, C] NHWC = [C, N*seqLen] column-major.
     // MatMulLayer expects input as [inChannels, batchSize], which matches.
-    int matBatchSize = batchSize * seqLen;
-
     const size_t qElements = (size_t)qTotalDim * matBatchSize;
     const size_t kElements = (size_t)kTotalDim * matBatchSize;
     const size_t vElements = (size_t)vTotalDim * matBatchSize;
@@ -2113,8 +2394,33 @@ struct TransformerAttentionBlock {
     void* vData = (char*)kData + kElements * bytesPerElt;
 
     bool usedFusedQkvRope = false;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    std::unique_ptr<SizedBuf<void*>> int8QkContiguousBuf;
+    if(useInt8Qk) {
+      int8QkContiguousBuf = std::make_unique<SizedBuf<void*>>(
+        scratch->allocator,(size_t)matBatchSize * (qTotalDim + kTotalDim) *
+          sizeof(half));
+      CUDA_ERR(name.c_str(),katago_renju15_int8_qk_sm120_launch(
+        int8QkKernel,matBatchSize,(const int8_t*)int8NormBuf->buf,
+        (half*)int8QkContiguousBuf->buf,cudaHandles->stream));
+      CUDA_ERR(name.c_str(),katago_renju15_int8_qk_split_rope_sm120_launch(
+        (const half*)int8QkContiguousBuf->buf,(half*)qData,(half*)kData,
+        (const half2*)ropeCosSinTable,batchSize,seqLen,cudaHandles->stream));
+      // V intentionally remains on the FP16 path for this accuracy contract.
+      vProj.apply(cudaHandles,scratch,matBatchSize,trunkScratchBuf,vData,
+                  workspaceBuf,workspaceBytes);
+      usedFusedQkvRope = true;
+      if(!cudaHandles->loggedInt8Qk && cudaHandles->logger != NULL) {
+        cudaHandles->logger->write(
+          string("RENJU15_SM120_INT8_QK_ACTIVE marker=") +
+          katago_renju15_int8_qk_sm120_marker());
+        cudaHandles->loggedInt8Qk = true;
+      }
+      cudaHandles->noteInt8ExperimentLaunch(countedInt8Qk,true);
+    }
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120) && KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120
-    if(qkvPlanarProjection != nullptr &&
+    if(!usedFusedQkvRope && qkvPlanarProjection != nullptr &&
        recipe.qkvRope ==
          CudaTransformerWinner::QkvRopeTactic::Sm120C256H8D32M128N128K32S3 &&
        qkvPlanarProjection->supportsFusedQKVRoPE(
@@ -2361,6 +2667,12 @@ struct TransformerFFNBlock {
   const CudaTransformerWinner::FfnRecipe recipe;
   void* dualFfnKernel;
   void* downProjectionKernel;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  void* int8UpWeightBuf;
+  void* int8GateWeightBuf;
+  void* int8DualFfnKernel;
+  mutable bool countedInt8DualFfn;
+#endif
   mutable bool countedWinnerDualFfn;
   mutable bool countedWinnerFfnDown;
 
@@ -2392,6 +2704,12 @@ struct TransformerFFNBlock {
     recipe(selectedRecipe),
     dualFfnKernel(nullptr),
     downProjectionKernel(nullptr),
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    int8UpWeightBuf(nullptr),
+    int8GateWeightBuf(nullptr),
+    int8DualFfnKernel(nullptr),
+    countedInt8DualFfn(false),
+#endif
     countedWinnerDualFfn(false),
     countedWinnerFfnDown(false)
   {
@@ -2441,10 +2759,55 @@ struct TransformerFFNBlock {
       if(expectsDown)
         cudaHandles->preparedWinnerFfnDown++;
     }
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    const bool int8ShapeEligible = cudaHandles->int8ExperimentPlan &&
+      nnXLen == 15 && nnYLen == 15 && useFP16 && useNHWC && useSwiGLU &&
+      numChannels == 256 && ffnChannels == 768 &&
+      desc->linear1.inChannels == 256 && desc->linear1.outChannels == 768 &&
+      desc->linearGate.inChannels == 256 &&
+      desc->linearGate.outChannels == 768;
+    if(int8ShapeEligible) {
+      float upScale = 0.0f;
+      float gateScale = 0.0f;
+      try {
+        preparePackedInt8Matrix(
+          name + ":int8Up",desc->linear1.weights,256,768,
+          int8UpWeightBuf,upScale);
+        preparePackedInt8Matrix(
+          name + ":int8Gate",desc->linearGate.weights,256,768,
+          int8GateWeightBuf,gateScale);
+      }
+      catch(...) {
+        if(int8UpWeightBuf != nullptr)
+          cudaFree(int8UpWeightBuf);
+        int8UpWeightBuf = nullptr;
+        throw;
+      }
+      int8DualFfnKernel = katago_renju15_int8_dual_ffn_sm120_create(
+        fixedBatchSize * nnXLen * nnYLen,
+        (const int8_t*)int8UpWeightBuf,(const int8_t*)int8GateWeightBuf,
+        upScale,gateScale);
+      if(int8DualFfnKernel == nullptr) {
+        cudaFree(int8UpWeightBuf);
+        cudaFree(int8GateWeightBuf);
+        int8UpWeightBuf = nullptr;
+        int8GateWeightBuf = nullptr;
+      }
+      else
+        cudaHandles->preparedInt8DualFfn++;
+    }
+#endif
   }
 
   ~TransformerFFNBlock()
   {
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    katago_renju15_int8_dual_ffn_sm120_destroy(int8DualFfnKernel);
+    if(int8UpWeightBuf != nullptr)
+      cudaFree(int8UpWeightBuf);
+    if(int8GateWeightBuf != nullptr)
+      cudaFree(int8GateWeightBuf);
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
     katago_renju15_dual_ffn_sm120_destroy(dualFfnKernel);
 #endif
@@ -2480,7 +2843,25 @@ struct TransformerFFNBlock {
     size_t bytesPerElt = usingFP16 ? sizeof(half) : sizeof(float);
 
     // Step 1: RMSNorm
-    preLN.apply(cudaHandles, batchSize, seqLen, trunkBuf, trunkScratchBuf, maskBuf);
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    const bool useInt8DualFfn = cudaHandles->int8ExperimentPlan &&
+      preLN.canApplyFp16Int8(maskBuf) &&
+      katago_renju15_int8_dual_ffn_sm120_supports(
+        int8DualFfnKernel,matBatchSize,numChannels,ffnChannels,
+        usingFP16,usingNHWC,maskBuf == nullptr);
+    std::unique_ptr<SizedBuf<void*>> int8NormBuf;
+    if(useInt8DualFfn) {
+      int8NormBuf = std::make_unique<SizedBuf<void*>>(
+        scratch->allocator,(size_t)matBatchSize * numChannels);
+      preLN.applyFp16Int8(
+        cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
+        int8NormBuf->buf,maskBuf);
+    }
+    else
+#endif
+    {
+      preLN.apply(cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,maskBuf);
+    }
 
 #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D("CUDA FFN RMSNorm out", trunkScratchBuf, batchSize, numChannels, seqLen, usingNHWC, usingFP16, maskBuf);
@@ -2490,8 +2871,23 @@ struct TransformerFFNBlock {
     // capability check falls back before any work is enqueued.
     SizedBuf<void*> ffnBuf(scratch->allocator, (size_t)ffnChannels * matBatchSize * bytesPerElt);
     bool usedDualFfn = false;
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    if(useInt8DualFfn) {
+      CUDA_ERR(name.c_str(),katago_renju15_int8_dual_ffn_sm120_launch(
+        int8DualFfnKernel,matBatchSize,(const int8_t*)int8NormBuf->buf,
+        (half*)ffnBuf.buf,cudaHandles->stream));
+      usedDualFfn = true;
+      if(!cudaHandles->loggedInt8DualFfn && cudaHandles->logger != NULL) {
+        cudaHandles->logger->write(
+          string("RENJU15_SM120_INT8_DUAL_FFN_ACTIVE marker=") +
+          katago_renju15_int8_dual_ffn_sm120_marker());
+        cudaHandles->loggedInt8DualFfn = true;
+      }
+      cudaHandles->noteInt8ExperimentLaunch(countedInt8DualFfn,false);
+    }
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
-    if(recipe.dualFfn ==
+    if(!usedDualFfn && recipe.dualFfn ==
          CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4 &&
        katago_renju15_dual_ffn_sm120_supports(
          dualFfnKernel,matBatchSize,numChannels,ffnChannels,

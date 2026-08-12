@@ -38,6 +38,8 @@ set(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA 1 CACHE BOOL
   "Enable the vendored cuDNN Frontend FP16 scaled-dot-product-attention path in the CUDA backend")
 set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0 CACHE BOOL
   "Build selected SM120 transformer tactics when CUDA 13 and pinned CUTLASS are available")
+set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT 0 CACHE BOOL
+  "Opt in to experimental clip4/per-matrix INT8 C256 QK and FFN tactics")
 set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 
@@ -64,6 +66,12 @@ if(USE_BACKEND STREQUAL "CUDA")
         "SM120 transformer winner disabled: CUDA 13.0 or newer is required")
       set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0)
     endif()
+  endif()
+
+  if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT AND
+     NOT KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
+    message(FATAL_ERROR
+      "KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT requires the SM120 transformer winner")
   endif()
 
   if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
@@ -124,11 +132,17 @@ if(USE_BACKEND STREQUAL "CUDA")
 
     # The ordinary backend stays a fat CUDA build. Only the source-specialized
     # winner kernels form this SM120 object island.
-    add_library(katago_sm120_transformer_winner OBJECT
+    set(KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
       neuralnet/cudabackend_sm120_renju15_kernels.cu
       neuralnet/renju15_dual_ffn_sm120.cu
       neuralnet/renju15_residual_gemm_sm120.cu
       neuralnet/renju15_qkv_rope_gemm_sm120.cu)
+    if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
+      list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
+        neuralnet/renju15_int8_fused_sm120.cu)
+    endif()
+    add_library(katago_sm120_transformer_winner OBJECT
+      ${KATAGO_SM120_TRANSFORMER_WINNER_SOURCES})
     set_target_properties(katago_sm120_transformer_winner PROPERTIES
       CUDA_ARCHITECTURES "120"
       CUDA_STANDARD 17
@@ -142,9 +156,27 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120=1
       KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
+    if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
+      target_compile_definitions(katago_sm120_transformer_winner PRIVATE
+        KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
+    endif()
     target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+    if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
+      add_executable(katago_renju15_int8_weight_gate EXCLUDE_FROM_ALL
+        neuralnet/renju15_int8_weight_gate.cpp)
+      add_executable(katago_renju15_int8_rms_gate EXCLUDE_FROM_ALL
+        neuralnet/renju15_int8_rms_gate.cu
+        neuralnet/cudabackend_sm120_renju15_kernels.cu)
+      set_target_properties(katago_renju15_int8_rms_gate PROPERTIES
+        CUDA_ARCHITECTURES "120"
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON)
+      target_compile_definitions(katago_renju15_int8_rms_gate PRIVATE
+        KATAGO_ENABLE_RENJU15_RMS_SM120=1
+        KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
+    endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
       neuralnet/renju15_fa4_sm120.cpp
       $<TARGET_OBJECTS:katago_sm120_transformer_winner>)
@@ -417,6 +449,10 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1
       KATAGO_ENABLE_RENJU15_FA4_SM120=1)
+    if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
+      target_compile_definitions(katago PRIVATE
+        KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
+    endif()
     target_include_directories(katago PRIVATE
       "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}")
     target_link_libraries(katago

@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 
 #include <cstddef>
+#include <cstdint>
 
 namespace Renju15Sm120 {
 
@@ -26,6 +27,24 @@ cudaError_t launchRmsNorm256(
   RmsNorm256Tactic tactic,
   cudaStream_t stream
 );
+
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+// Experimental quantized companion for the C=256 kernel above. The FP16
+// output remains bit-for-bit the same operation consumed by the V projection;
+// the second output is symmetric signed INT8 with zero point 0 and a fixed
+// clip of [-4,4] (scale 4/127). Quantization is applied after the FP16 rounding
+// so the two outputs have an explicit, reproducible relationship.
+cudaError_t launchRmsNorm256Fp16Int8(
+  const half* input,
+  half* outputFp16,
+  int8_t* outputInt8,
+  const half* gamma,
+  int totalRows,
+  float epsilon,
+  RmsNorm256Tactic tactic,
+  cudaStream_t stream
+);
+#endif
 
 #endif
 
