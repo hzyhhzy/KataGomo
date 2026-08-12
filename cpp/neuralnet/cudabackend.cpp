@@ -864,7 +864,13 @@ struct ScratchBuffers {
   ScratchBuffers(const ScratchBuffers&) = delete;
   ScratchBuffers& operator=(const ScratchBuffers&) = delete;
 
-  ScratchBuffers(int maxBatchSize, int nnXLen, int nnYLen, bool useFP16)
+  ScratchBuffers(
+    int maxBatchSize,
+    int nnXLen,
+    int nnYLen,
+    bool useFP16,
+    bool prepareInt8ExperimentScratch = false
+  )
     : batchXYFloatBytes((size_t)maxBatchSize * nnXLen * nnYLen * sizeof(float)),
       batchFloatBytes((size_t)maxBatchSize * sizeof(float)),
       batchXYBytes((size_t)maxBatchSize * nnXLen * nnYLen * (useFP16 ? sizeof(half_t) : sizeof(float))),
@@ -890,11 +896,15 @@ struct ScratchBuffers {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
       // The experiment is restricted to C=256 and S=225; allocate once at
       // ComputeHandle construction. No inference apply call performs cudaMalloc.
-      const size_t maxTokenRows = (size_t)maxBatchSize * nnXLen * nnYLen;
-      CUDA_ERR("ScratchBuffers:int8Norm",cudaMalloc(
-        &int8NormBuf,maxTokenRows * 256));
-      CUDA_ERR("ScratchBuffers:int8QkTemp",cudaMalloc(
-        &int8QkTempBuf,maxTokenRows * 512 * sizeof(half)));
+      if(prepareInt8ExperimentScratch) {
+        const size_t maxTokenRows = (size_t)maxBatchSize * nnXLen * nnYLen;
+        CUDA_ERR("ScratchBuffers:int8Norm",cudaMalloc(
+          &int8NormBuf,maxTokenRows * 256));
+        CUDA_ERR("ScratchBuffers:int8QkTemp",cudaMalloc(
+          &int8QkTempBuf,maxTokenRows * 512 * sizeof(half)));
+      }
+#else
+      (void)prepareInt8ExperimentScratch;
 #endif
       allocator = new SimpleAllocator<void*>(allocateFunc, releaseFunc);
       CudaUtils::hostMallocZeroOneBufs(zeroBuf, oneBuf, useFP16);
@@ -2410,6 +2420,7 @@ struct TransformerAttentionBlock {
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     const bool useInt8Qk = cudaHandles->int8ExperimentPlan &&
       preLN.canApplyFp16Int8(maskBuf) && ropeCosSinTable != nullptr &&
+      scratch->int8NormBuf != nullptr && scratch->int8QkTempBuf != nullptr &&
       qTotalDim == 256 && kTotalDim == 256 && vTotalDim == 256 &&
       katago_renju15_int8_qk_sm120_supports(
         int8QkKernel,matBatchSize,inChannels,qTotalDim,kTotalDim,
@@ -2891,7 +2902,7 @@ struct TransformerFFNBlock {
     // Step 1: RMSNorm
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     const bool useInt8DualFfn = cudaHandles->int8ExperimentPlan &&
-      preLN.canApplyFp16Int8(maskBuf) &&
+      preLN.canApplyFp16Int8(maskBuf) && scratch->int8NormBuf != nullptr &&
       katago_renju15_int8_dual_ffn_sm120_supports(
         int8DualFfnKernel,matBatchSize,numChannels,ffnChannels,
         usingFP16,usingNHWC,maskBuf == nullptr);
@@ -4212,7 +4223,12 @@ struct ComputeHandle {
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
     cudaHandles->validateWinnerPrepared();
-    scratch = std::make_unique<ScratchBuffers>(maxBatchSize, nnXLen, nnYLen, useFP16);
+    scratch = std::make_unique<ScratchBuffers>(
+      maxBatchSize,nnXLen,nnYLen,useFP16
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      ,cudaHandles->int8ExperimentPlan
+#endif
+    );
     buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
 
     //Synchronize after creating buffers and copying all the weights, just in case
