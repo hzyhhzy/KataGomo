@@ -462,6 +462,8 @@ struct CudaHandles {
   bool loggedC384DualFfnGateFallback;
   bool loggedC384OutProjectionGateFallback;
   bool loggedC384DownProjectionGateFallback;
+  bool loggedC384OutProjectionMeasuredGeneric;
+  bool loggedC384DownProjectionMeasuredGeneric;
   bool loggedWinner;
 #if KATAGO_CUDA_HAS_SDPA
   std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
@@ -524,6 +526,8 @@ struct CudaHandles {
       loggedC384DualFfnGateFallback(false),
       loggedC384OutProjectionGateFallback(false),
       loggedC384DownProjectionGateFallback(false),
+      loggedC384OutProjectionMeasuredGeneric(false),
+      loggedC384DownProjectionMeasuredGeneric(false),
       loggedWinner(false),
 #if KATAGO_CUDA_HAS_SDPA
       loggedSdpaKeys(),
@@ -919,6 +923,30 @@ struct CudaHandles {
       " sameGpuEvaluatorConcurrency=" +
         Global::intToString(sameGpuEvaluatorConcurrency()) +
       " fallback=generic-prepared policy=c384-measured-v1");
+    *logged = true;
+  }
+
+  void logC384MeasuredGenericOnce(
+    CudaTransformerWinner::C384RuntimePiece piece
+  ) {
+    bool* logged = nullptr;
+    switch(piece) {
+    case CudaTransformerWinner::C384RuntimePiece::OutProjection:
+      logged = &loggedC384OutProjectionMeasuredGeneric;
+      break;
+    case CudaTransformerWinner::C384RuntimePiece::DownProjection:
+      logged = &loggedC384DownProjectionMeasuredGeneric;
+      break;
+    default:
+      break;
+    }
+    if(logged == nullptr || *logged || logger == nullptr)
+      return;
+    const char* marker =
+      CudaTransformerWinner::c384MeasuredGenericActiveMarker(piece);
+    if(marker == nullptr)
+      return;
+    logger->write(marker);
     *logged = true;
   }
 
@@ -1661,7 +1689,7 @@ struct MatMulLayer {
       CudaTransformerWinner::C384RuntimePiece::DownProjection :
       CudaTransformerWinner::C384RuntimePiece::OutProjection;
     if(c384MeasuredGenericResidual)
-      cudaHandles->logC384RuntimeGateFallbackOnce(c384Piece,matBatchSize);
+      cudaHandles->logC384MeasuredGenericOnce(c384Piece);
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
     const bool c384 = tactic == CudaTransformerWinner::ResidualTactic::
       Sm120C384M128N128K32S3Sw1;

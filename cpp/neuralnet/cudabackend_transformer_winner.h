@@ -116,6 +116,10 @@ bool shouldUseC384RuntimePiece(
   const C384RuntimeGatePolicy& policy
 );
 
+// Exact once-per-handle telemetry for pieces whose measured production recipe
+// deliberately selects generic, rather than falling back at launch time.
+const char* c384MeasuredGenericActiveMarker(C384RuntimePiece piece);
+
 struct AttentionRecipe {
   PlanarQkvTactic planarQkv = PlanarQkvTactic::Disabled;
   RmsNormTactic rmsNorm = RmsNormTactic::GenericHalf;

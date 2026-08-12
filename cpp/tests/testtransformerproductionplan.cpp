@@ -648,6 +648,7 @@ static void assertC384ProductionRuntimeGatePolicy() {
   using CudaTransformerWinner::C384RuntimeBatchRange;
   using CudaTransformerWinner::C384RuntimeGatePolicy;
   using CudaTransformerWinner::C384RuntimePiece;
+  using CudaTransformerWinner::c384MeasuredGenericActiveMarker;
   using CudaTransformerWinner::fingerprintRecipeWithC384RuntimeGate;
   using CudaTransformerWinner::productionC384RuntimeGatePolicy;
   using CudaTransformerWinner::shouldUseC384RuntimePiece;
@@ -695,6 +696,14 @@ static void assertC384ProductionRuntimeGatePolicy() {
     testAssert(!shouldUseC384RuntimePiece(
       C384RuntimePiece::DownProjection,128*225,concurrency,policy));
   }
+  testAssert(string(c384MeasuredGenericActiveMarker(
+    C384RuntimePiece::OutProjection)) ==
+    "KATAGO_C384_MEASURED_GENERIC_ACTIVE piece=out-proj reason=residual-not-beneficial");
+  testAssert(string(c384MeasuredGenericActiveMarker(
+    C384RuntimePiece::DownProjection)) ==
+    "KATAGO_C384_MEASURED_GENERIC_ACTIVE piece=ffn-down reason=residual-not-beneficial");
+  testAssert(c384MeasuredGenericActiveMarker(C384RuntimePiece::RmsNorm) == nullptr);
+  testAssert(c384MeasuredGenericActiveMarker(C384RuntimePiece::DualFfn) == nullptr);
 
   // Nonintegral row counts and invalid topology always fail closed before a
   // specialized launch can enqueue work.

@@ -484,6 +484,17 @@ bool shouldUseC384RuntimePiece(
     actualBatch <= range.maxInclusive;
 }
 
+const char* c384MeasuredGenericActiveMarker(C384RuntimePiece piece) {
+  switch(piece) {
+  case C384RuntimePiece::OutProjection:
+    return "KATAGO_C384_MEASURED_GENERIC_ACTIVE piece=out-proj reason=residual-not-beneficial";
+  case C384RuntimePiece::DownProjection:
+    return "KATAGO_C384_MEASURED_GENERIC_ACTIVE piece=ffn-down reason=residual-not-beneficial";
+  default:
+    return nullptr;
+  }
+}
+
 AttentionRecipe PreparedPlan::attentionFor(uint32_t topologyIndex) const {
   const PreparedRecord* record = findRecord(
     *this,ArchitectureOpKind::TransformerAttention,topologyIndex);
