@@ -3722,6 +3722,14 @@ struct ComputeHandle {
       CUBLAS_ERR("ComputeHandle",cublasGetVersion(
         cudaHandles->cublas,&cublasVersion));
       const size_t cudnnVersion = cudnnGetVersion();
+      if(logger != NULL) {
+        logger->write(
+          "CUDA_TRANSFORMER_RUNTIME_ABI runtime=" + Global::intToString(cudaRuntimeVersion) +
+          " driver=" + Global::intToString(cudaDriverVersion) +
+          " cublas=" + Global::intToString(cublasVersion) +
+          " cudnn=" + Global::uint64ToString((uint64_t)cudnnVersion)
+        );
+      }
 
       CudaOpRegistry::RuntimeOpContext runtime{};
       runtime.batchSize = maxBatchSize;

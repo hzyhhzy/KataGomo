@@ -681,9 +681,10 @@ void Tests::runTransformerProductionPlanTests() {
   testAssert(productionG1S1.records[attention24].operation.support ==
     SupportClass::CertifiedFast);
 
-  // Exact FA4 certification is locked to the measured ABI tuple. A valid but
-  // different CUDA/cuDNN tuple retains local shape-compatible tactics without
-  // claiming the exact attention kernel.
+  // Runtime-library versions are diagnostic identity, not a tactic gate. If
+  // this binary loaded and the exact SM120/resource/shape predicates match,
+  // the same embedded kernel is selected across compatible driver/library
+  // maintenance versions.
   CudaTransformerWinner::DeviceCapability differentAbi = device;
   differentAbi.cudnnVersion = 91401;
   RuntimeOpContext differentAbiRuntime = b36;
@@ -696,10 +697,7 @@ void Tests::runTransformerProductionPlanTests() {
   const CudaTransformerWinner::AttentionRecipe differentAbiRecipe =
     productionDifferentAbi.attentionFor(
       architectureA.operators[attention24].topologyIndex);
-  testAssert(differentAbiRecipe.attention ==
-    CudaTransformerWinner::AttentionTactic::Generic);
-  testAssert(differentAbiRecipe.qkvRope ==
-    CudaTransformerWinner::QkvRopeTactic::Disabled);
+  assertExactAttentionRecipe(differentAbiRecipe);
 
   CudaTransformerWinner::DeviceCapability unknownAbi = device;
   unknownAbi.cudaRuntimeVersion = 0;
@@ -711,9 +709,8 @@ void Tests::runTransformerProductionPlanTests() {
   CudaTransformerWinner::PreparedPlan productionUnknownAbi =
     CudaTransformerWinner::preparePlan(
       architectureA,fakeFingerprintRuntime,unknownAbi);
-  testAssert(productionUnknownAbi.attentionFor(
-    architectureA.operators[attention24].topologyIndex).attention ==
-    CudaTransformerWinner::AttentionTactic::Generic);
+  assertExactAttentionRecipe(productionUnknownAbi.attentionFor(
+    architectureA.operators[attention24].topologyIndex));
 
   // G5: depth changes whole-model/whole-plan identity. All 48 repeated local
   // blocks still select the same recipes and exact local prepared operations.

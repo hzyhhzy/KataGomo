@@ -127,18 +127,14 @@ SupportClass matchAttentionDynamic(const OpRequest& request, const void* userDat
 SupportClass matchAttentionExact(const OpRequest& request, const void* userData) {
   const RegistrationContext& context = *(const RegistrationContext*)userData;
   const CapabilityKey& key = request.key;
-  const uint64_t expectedRuntimeFingerprint = makeRuntimeLibraryFingerprint(
-    context.device.cudaRuntimeVersion,context.device.cudaDriverVersion,
-    context.device.cublasVersion,context.device.cudnnVersion);
+  // Runtime-library versions remain part of the diagnostic plan fingerprint,
+  // but do not gate this embedded SM120 kernel. Successfully loading this
+  // CUDA binary and creating its CUDA/cuBLAS/cuDNN handles is the runtime ABI
+  // check; operator safety is determined by the exact hardware/resource/shape
+  // predicates below.
   if(!isHalfNhwcNoMask(key) || !isC256Attention(key) || !isSm120(request,context) ||
      context.device.sharedBytesPerBlockOptin < 101376 || key.batchSize != 36 ||
-     key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225 ||
-     expectedRuntimeFingerprint == 0 ||
-     key.runtimeLibraryFingerprint != expectedRuntimeFingerprint ||
-     context.device.cudaRuntimeVersion != 13000 ||
-     context.device.cudaDriverVersion != 13020 ||
-     context.device.cublasVersion != 130101 ||
-     context.device.cudnnVersion != 91400)
+     key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225)
     return SupportClass::Unsupported;
   // Stream count is evaluator topology, not an operator-kernel property. S1
   // replay and each leg of S2 execute this same certified recipe on one owned
