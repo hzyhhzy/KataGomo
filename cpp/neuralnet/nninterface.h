@@ -66,6 +66,7 @@ namespace NeuralNet {
     bool openCLReTunePerBoardSize,
     enabled_t useFP16Mode,
     enabled_t useNHWCMode,
+    bool useINT8,
     const LoadedModel* loadedModel
   );
   //A ComputeContext should NOT be freed until all ComputeHandles created using it have also been freed.

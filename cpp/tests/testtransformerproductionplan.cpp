@@ -7,11 +7,13 @@
 #include <vector>
 
 #include "../core/test.h"
+#include "../core/config_parser.h"
 #include "../neuralnet/activations.h"
 #include "../neuralnet/architecturedesc.h"
 #include "../neuralnet/cudabackend_transformer_winner.h"
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/desc.h"
+#include "../neuralnet/int8policy.h"
 
 using namespace std;
 using namespace NeuralNetArchitecture;
@@ -562,6 +564,56 @@ static void refreshProductionPlanFingerprint(
 }  // namespace
 
 void Tests::runTransformerProductionPlanTests() {
+  {
+    map<string,string> emptyValues;
+    ConfigParser emptyConfig(emptyValues);
+    testAssert(NeuralNet::loadCudaUseINT8(emptyConfig,"0"));
+
+    ConfigParser disabledConfig(map<string,string>{{"cudaUseINT8","false"}});
+    testAssert(!NeuralNet::loadCudaUseINT8(disabledConfig,"0"));
+
+    ConfigParser ignoredConfig(map<string,string>{{"cudaUseINT8","false"}});
+    NeuralNet::ignoreCudaUseINT8(ignoredConfig);
+    testAssert(ignoredConfig.unusedKeys().empty());
+
+    ConfigParser perModelConfig(map<string,string>{
+      {"cudaUseINT8","false"},
+      {"cudaUseINT8-0","true"},
+      {"cudaUseINT8-2","false"}
+    });
+    testAssert(NeuralNet::loadCudaUseINT8(perModelConfig,"0"));
+    testAssert(!NeuralNet::loadCudaUseINT8(perModelConfig,"1"));
+    testAssert(!NeuralNet::loadCudaUseINT8(perModelConfig,"2"));
+
+    bool rejectedBadConfig = false;
+    try {
+      ConfigParser invalidConfig(map<string,string>{{"cudaUseINT8","maybe"}});
+      (void)NeuralNet::loadCudaUseINT8(invalidConfig,"0");
+    }
+    catch(const StringError&) {
+      rejectedBadConfig = true;
+    }
+    testAssert(rejectedBadConfig);
+
+    const NeuralNet::CudaInt8Policy defaultPolicy =
+      NeuralNet::resolveCudaInt8Policy(true,nullptr);
+    testAssert(defaultPolicy.configEnabled);
+    testAssert(!defaultPolicy.environmentDisabled);
+    testAssert(defaultPolicy.enabled);
+    testAssert(NeuralNet::resolveCudaInt8Policy(true,"0").enabled);
+    testAssert(!NeuralNet::resolveCudaInt8Policy(true,"1").enabled);
+    testAssert(!NeuralNet::resolveCudaInt8Policy(false,nullptr).enabled);
+
+    bool rejectedBadEnvironment = false;
+    try {
+      (void)NeuralNet::resolveCudaInt8Policy(true,"true");
+    }
+    catch(const StringError&) {
+      rejectedBadEnvironment = true;
+    }
+    testAssert(rejectedBadEnvironment);
+  }
+
   FixtureTacticData generic{FixtureTacticKind::Generic,1};
   FixtureTacticData attentionWinner{FixtureTacticKind::Renju15AttentionB36S2,2};
   FixtureTacticData ffnWinner{FixtureTacticKind::Renju15FFNB36S2,3};

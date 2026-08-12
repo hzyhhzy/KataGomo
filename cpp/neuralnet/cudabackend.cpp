@@ -18,6 +18,7 @@
 #include "../neuralnet/cudabackend_qkv_planar.h"
 #include "../neuralnet/cudabackend_transformer_winner.h"
 #include "../neuralnet/cudaopregistry.h"
+#include "../neuralnet/int8policy.h"
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
 #include "../neuralnet/renju15_dual_ffn_sm120.h"
 #endif
@@ -62,16 +63,6 @@ using half_t = half_float::half;
 
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
 namespace {
-
-bool int8ExperimentRuntimeEnabled() {
-  const char* value = std::getenv("KATAGO_RENJU15_INT8_EXPERIMENT_ENABLE");
-  if(value == nullptr || string(value) == "0")
-    return false;
-  if(string(value) == "1")
-    return true;
-  throw StringError(
-    "KATAGO_RENJU15_INT8_EXPERIMENT_ENABLE must be exactly 0 or 1");
-}
 
 struct CudaDeviceBufferDeleter {
   void operator()(void* pointer) const noexcept {
@@ -574,11 +565,10 @@ struct CudaHandles {
       cudaStreamDestroy(stream);
   }
 
-  void configureWinnerExpectations() {
+  void configureWinnerExpectations(bool int8RuntimeEnabled) {
     if(transformerPlan == nullptr)
       return;
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-    const bool int8RuntimeEnabled = int8ExperimentRuntimeEnabled();
     if(logger != NULL)
       logger->write(
         string("RENJU15_SM120_INT8_EXPERIMENT_RUNTIME_GATE enabled=") +
@@ -607,6 +597,8 @@ struct CudaHandles {
       expectedInt8Qk = int8Eligibility.attentionCount;
       expectedInt8DualFfn = int8Eligibility.ffnCount;
     }
+#else
+    (void)int8RuntimeEnabled;
 #endif
     for(const CudaTransformerWinner::PreparedRecord& record:
         transformerPlan->records) {
@@ -4245,6 +4237,7 @@ struct ComputeContext {
   int nnYLen;
   enabled_t useFP16Mode;
   enabled_t useNHWCMode;
+  bool useINT8;
 };
 
 ComputeContext* NeuralNet::createComputeContext(
@@ -4257,20 +4250,39 @@ ComputeContext* NeuralNet::createComputeContext(
   bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
   enabled_t useNHWCMode,
+  bool useINT8,
   const LoadedModel* loadedModel
 ) {
   (void)gpuIdxs;
-  (void)logger;
   (void)openCLTunerFile;
   (void)homeDataDirOverride;
   (void)openCLReTunePerBoardSize;
   (void)loadedModel;
+
+  const CudaInt8Policy requestedInt8Policy = resolveCudaInt8Policy(
+    useINT8,std::getenv("KATAGO_DISABLE_INT8"));
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  const bool int8Compiled = true;
+#else
+  const bool int8Compiled = false;
+#endif
+  const bool allowINT8 = requestedInt8Policy.enabled && int8Compiled;
+  if(logger != NULL) {
+    logger->write(
+      string("CUDA_INT8_POLICY config=") +
+      (requestedInt8Policy.configEnabled ? "1" : "0") +
+      " env_disabled=" +
+      (requestedInt8Policy.environmentDisabled ? "1" : "0") +
+      " compiled=" + (int8Compiled ? "1" : "0") +
+      " allowed=" + (allowINT8 ? "1" : "0"));
+  }
 
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
   context->useFP16Mode = useFP16Mode;
   context->useNHWCMode = useNHWCMode;
+  context->useINT8 = allowINT8;
   return context;
 }
 
@@ -4370,7 +4382,7 @@ struct ComputeHandle {
       cudaHandles->transformerPlan =
         std::make_unique<CudaTransformerWinner::PreparedPlan>(
           CudaTransformerWinner::preparePlan(architecture,runtime,device));
-      cudaHandles->configureWinnerExpectations();
+      cudaHandles->configureWinnerExpectations(context->useINT8);
     }
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,

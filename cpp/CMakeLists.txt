@@ -38,8 +38,9 @@ set(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA 1 CACHE BOOL
   "Enable the vendored cuDNN Frontend FP16 scaled-dot-product-attention path in the CUDA backend")
 set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0 CACHE BOOL
   "Build selected SM120 transformer tactics when CUDA 13 and pinned CUTLASS are available")
-set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT 0 CACHE BOOL
-  "Opt in to experimental clip4/per-matrix INT8 C256 QK and FFN tactics")
+set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+  ${KATAGO_ENABLE_SM120_TRANSFORMER_WINNER} CACHE BOOL
+  "Build qualified clip4/per-matrix INT8 C256 QK and FFN tactics with the SM120 winner")
 set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 
@@ -65,6 +66,7 @@ if(USE_BACKEND STREQUAL "CUDA")
       message(STATUS
         "SM120 transformer winner disabled: CUDA 13.0 or newer is required")
       set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0)
+      set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT 0)
     endif()
   endif()
 
@@ -350,6 +352,7 @@ add_executable(katago
   neuralnet/nninputs.cpp
   neuralnet/modelversion.cpp
   neuralnet/nneval.cpp
+  neuralnet/int8policy.cpp
   neuralnet/desc.cpp
   neuralnet/architecturedesc.cpp
   neuralnet/cudaopregistry.cpp
