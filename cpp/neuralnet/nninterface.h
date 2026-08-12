@@ -8,6 +8,8 @@
 #include "../neuralnet/desc.h"
 #include "../neuralnet/nninputs.h"
 
+#include <functional>
+
 //Defined in nneval.h
 struct NNResultBuf;
 
@@ -134,7 +136,9 @@ namespace NeuralNet {
     int numWarmups,
     int numIterations,
     bool forceMaskAllOnes,
-    std::vector<double>& iterationSeconds
+    std::vector<double>& iterationSeconds,
+    const std::function<void()>& beforeTimedLoop,
+    const std::function<void()>& afterTimedLoop
   );
 
 

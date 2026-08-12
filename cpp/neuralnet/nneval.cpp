@@ -3,7 +3,10 @@
 #include "../game/gamelogic.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <exception>
+#include <functional>
 #include <mutex>
 #include <thread>
 
@@ -18,7 +21,9 @@ bool NeuralNet::benchmarkOutput(
   int numWarmups,
   int numIterations,
   bool forceMaskAllOnes,
-  vector<double>& iterationSeconds
+  vector<double>& iterationSeconds,
+  const function<void()>& beforeTimedLoop,
+  const function<void()>& afterTimedLoop
 ) {
   (void)computeHandle;
   (void)buffers;
@@ -27,6 +32,8 @@ bool NeuralNet::benchmarkOutput(
   (void)numWarmups;
   (void)numIterations;
   (void)forceMaskAllOnes;
+  (void)beforeTimedLoop;
+  (void)afterTimedLoop;
   iterationSeconds.clear();
   return false;
 }
@@ -54,7 +61,7 @@ NNResultBuf::~NNResultBuf() {
   if(rowSpatial != NULL)
     delete[] rowSpatial;
   if(rowGlobal != NULL)
-    delete[] rowGlobal;\
+    delete[] rowGlobal;
 }
 
 //-------------------------------------------------------------------------------------
@@ -432,6 +439,62 @@ void NNEvaluator::killServerThreads() {
   assert(numEvalsToAwaken == 0);
 }
 
+namespace {
+
+// One-shot abortable phase barrier for benchmark lanes. If one CUDA lane fails, abort wakes peers
+// that would otherwise remain blocked at a later warmup/start/end boundary.
+class BenchmarkPhaseBarrier {
+ public:
+  BenchmarkPhaseBarrier(int target, const function<void()>& onRelease)
+    : target(target), arrived(0), released(false), aborted(false), onRelease(onRelease) {
+    if(target <= 0)
+      throw StringError("benchmarknn: invalid barrier target");
+  }
+
+  void arriveAndWait() {
+    unique_lock<mutex> lock(mutex_);
+    if(aborted)
+      throw StringError("benchmarknn: peer benchmark lane failed");
+    arrived += 1;
+    if(arrived == target) {
+      try {
+        if(onRelease)
+          onRelease();
+      }
+      catch(...) {
+        aborted = true;
+        released = true;
+        condition.notify_all();
+        throw;
+      }
+      released = true;
+      condition.notify_all();
+      return;
+    }
+    condition.wait(lock,[&]() { return released; });
+    if(aborted)
+      throw StringError("benchmarknn: peer benchmark lane failed");
+  }
+
+  void abort() {
+    lock_guard<mutex> lock(mutex_);
+    aborted = true;
+    released = true;
+    condition.notify_all();
+  }
+
+ private:
+  const int target;
+  int arrived;
+  bool released;
+  bool aborted;
+  function<void()> onRelease;
+  mutex mutex_;
+  condition_variable condition;
+};
+
+}
+
 NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
   int numWarmups,
   int numIterations,
@@ -455,11 +518,6 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
   const int batchSize = maxNumRows;
   if(benchmarkThreadCount <= 0 || batchSize <= 0)
     throw StringError("benchmarknn: invalid server/batch topology");
-  if(benchmarkThreadCount != 1)
-    throw StringError(
-      "benchmarknn generic CUDA bring-up currently certifies exactly one NN server thread; "
-      "independent per-handle CUDA streams are required before multi-server results are valid"
-    );
 
   NNEvalBenchmarkResult result;
   result.batchSize = batchSize;
@@ -474,6 +532,18 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
 
   exception_ptr firstError;
   mutex errorMutex;
+  using BenchmarkClock = chrono::steady_clock;
+  BenchmarkClock::time_point combinedStart;
+  BenchmarkClock::time_point combinedEnd;
+  BenchmarkPhaseBarrier readyBarrier(benchmarkThreadCount,function<void()>());
+  BenchmarkPhaseBarrier timedStartBarrier(
+    benchmarkThreadCount,
+    [&]() { combinedStart = BenchmarkClock::now(); }
+  );
+  BenchmarkPhaseBarrier timedEndBarrier(
+    benchmarkThreadCount,
+    [&]() { combinedEnd = BenchmarkClock::now(); }
+  );
   vector<thread> threads;
   threads.reserve(benchmarkThreadCount);
   for(int threadIdx = 0; threadIdx < benchmarkThreadCount; threadIdx++) {
@@ -523,6 +593,9 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
         }
 
         vector<double> iterationSeconds;
+        // Make warmup itself use the natural configured lane topology. benchmarkOutput performs a
+        // second barrier after every lane has synchronized its warmup stream.
+        readyBarrier.arriveAndWait();
         if(!NeuralNet::benchmarkOutput(
              handle,
              serverBuf.inputBuffers,
@@ -531,7 +604,9 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
              numWarmups,
              numIterations,
              forceMaskAllOnes,
-             iterationSeconds
+             iterationSeconds,
+             [&]() { timedStartBarrier.arriveAndWait(); },
+             [&]() { timedEndBarrier.arriveAndWait(); }
            ))
           throw StringError("Current backend does not support pure-device benchmarknn");
         result.perServerIterationSeconds[threadIdx] = std::move(iterationSeconds);
@@ -539,6 +614,9 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
         handle = NULL;
       }
       catch(...) {
+        readyBarrier.abort();
+        timedStartBarrier.abort();
+        timedEndBarrier.abort();
         if(handle != NULL)
           NeuralNet::freeComputeHandle(handle);
         lock_guard<mutex> lock(errorMutex);
@@ -566,11 +644,13 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
     result.perServerMedianSeconds[threadIdx] = median;
     result.perServerNNEvalsPerSec[threadIdx] = batchSize / median;
   }
-  // S1 only: sum the CUDA-event device intervals. Handle construction, host
-  // packing, H2D and warmup are therefore excluded from this reported span.
-  result.combinedWallSeconds = 0.0;
-  for(double seconds : result.perServerIterationSeconds[0])
-    result.combinedWallSeconds += seconds;
+  // Aggregate throughput uses one common host wall span from simultaneous timed-loop release until
+  // the slowest stream completes. Per-lane CUDA events remain latency diagnostics and are never
+  // summed to manufacture an S2 throughput figure.
+  result.combinedWallSeconds =
+    chrono::duration<double>(combinedEnd - combinedStart).count();
+  if(!(result.combinedWallSeconds > 0.0))
+    throw StringError("benchmarknn: invalid aggregate timed wall interval");
   const double totalTimedRows =
     (double)benchmarkThreadCount * batchSize * numIterations;
   result.combinedNNEvalsPerSec = totalTimedRows / result.combinedWallSeconds;

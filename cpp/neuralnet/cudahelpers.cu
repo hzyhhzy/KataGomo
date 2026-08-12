@@ -98,21 +98,21 @@ void channelConcatKernel(
 }
 
 template <typename T>
-void customCudaChannelConcatTemplate(const T* inA, const T* inB, T* out, int chwA, int chwB, int n) {
+void customCudaChannelConcatTemplate(const T* inA, const T* inB, T* out, int chwA, int chwB, int n, cudaStream_t stream) {
   int blockSize = targetNumThreads;
   int numBlocksA = (chwA + blockSize-1) / blockSize;
   int numBlocksB = (chwB + blockSize-1) / blockSize;
   int numBlocks = numBlocksA + numBlocksB;
-  channelConcatKernel<<<numBlocks, blockSize>>>(inA,inB,out,chwA,chwB,numBlocksA,numBlocksB,n);
+  channelConcatKernel<<<numBlocks, blockSize,0,stream>>>(inA,inB,out,chwA,chwB,numBlocksA,numBlocksB,n);
 }
-template void customCudaChannelConcatTemplate<float>(const float* inA, const float* inB, float* out, int chwA, int chwB, int n);
-template void customCudaChannelConcatTemplate<half>(const half* inA, const half* inB, half* out, int chwA, int chwB, int n);
+template void customCudaChannelConcatTemplate<float>(const float* inA, const float* inB, float* out, int chwA, int chwB, int n, cudaStream_t stream);
+template void customCudaChannelConcatTemplate<half>(const half* inA, const half* inB, half* out, int chwA, int chwB, int n, cudaStream_t stream);
 
-void customCudaChannelConcat(const float* inA, const float* inB, float* out, int chwA, int chwB, int n) {
-  customCudaChannelConcatTemplate<float>(inA,inB,out,chwA,chwB,n);
+void customCudaChannelConcat(const float* inA, const float* inB, float* out, int chwA, int chwB, int n, cudaStream_t stream) {
+  customCudaChannelConcatTemplate<float>(inA,inB,out,chwA,chwB,n,stream);
 }
-void customCudaChannelConcat(const half* inA, const half* inB, half* out, int chwA, int chwB, int n) {
-  customCudaChannelConcatTemplate<half>(inA,inB,out,chwA,chwB,n);
+void customCudaChannelConcat(const half* inA, const half* inB, half* out, int chwA, int chwB, int n, cudaStream_t stream) {
+  customCudaChannelConcatTemplate<half>(inA,inB,out,chwA,chwB,n,stream);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -127,11 +127,11 @@ void extractChannel0KernelNHWC(const T *in, T* out, int nhwSize, int cSize)
   }
 }
 template <typename T>
-void customCudaChannel0ExtractNHWCTemplate(const T *in, T* out, int n, int hw, int c) {
+void customCudaChannel0ExtractNHWCTemplate(const T *in, T* out, int n, int hw, int c, cudaStream_t stream) {
   int nhw = n*hw;
   int blockSize = targetNumThreads;
   int numBlocks = (nhw+blockSize-1)/blockSize;
-  extractChannel0KernelNHWC<<<numBlocks,blockSize>>>(in,out,nhw,c);
+  extractChannel0KernelNHWC<<<numBlocks,blockSize,0,stream>>>(in,out,nhw,c);
 }
 
 template <typename T>
@@ -145,7 +145,7 @@ void extractChannel0KernelNCHW(const T *in, T* out, int nSize, int cSize, int hw
   }
 }
 template <typename T>
-void customCudaChannel0ExtractNCHWTemplate(const T *in, T* out, int nSize, int cSize, int hwSize) {
+void customCudaChannel0ExtractNCHWTemplate(const T *in, T* out, int nSize, int cSize, int hwSize, cudaStream_t stream) {
   int hwThreads;
   int hwBlocks;
   int nThreads;
@@ -157,20 +157,20 @@ void customCudaChannel0ExtractNCHWTemplate(const T *in, T* out, int nSize, int c
 
   dim3 grid(hwBlocks,nBlocks,1);
   dim3 threads(hwThreads,nThreads,1);
-  extractChannel0KernelNCHW<<<grid,threads>>>(in,out,nSize,cSize,hwSize);
+  extractChannel0KernelNCHW<<<grid,threads,0,stream>>>(in,out,nSize,cSize,hwSize);
 }
 
-void customCudaChannel0ExtractNCHW(const float* in, float* out, int n, int c, int hw) {
-  customCudaChannel0ExtractNCHWTemplate<float>(in,out,n,c,hw);
+void customCudaChannel0ExtractNCHW(const float* in, float* out, int n, int c, int hw, cudaStream_t stream) {
+  customCudaChannel0ExtractNCHWTemplate<float>(in,out,n,c,hw,stream);
 }
-void customCudaChannel0ExtractNCHW(const half* in, half* out, int n, int c, int hw) {
-  customCudaChannel0ExtractNCHWTemplate<half>(in,out,n,c,hw);
+void customCudaChannel0ExtractNCHW(const half* in, half* out, int n, int c, int hw, cudaStream_t stream) {
+  customCudaChannel0ExtractNCHWTemplate<half>(in,out,n,c,hw,stream);
 }
-void customCudaChannel0ExtractNHWC(const float* in, float* out, int n, int hw, int c) {
-  customCudaChannel0ExtractNHWCTemplate<float>(in,out,n,hw,c);
+void customCudaChannel0ExtractNHWC(const float* in, float* out, int n, int hw, int c, cudaStream_t stream) {
+  customCudaChannel0ExtractNHWCTemplate<float>(in,out,n,hw,c,stream);
 }
-void customCudaChannel0ExtractNHWC(const half* in, half* out, int n, int hw, int c) {
-  customCudaChannel0ExtractNHWCTemplate<half>(in,out,n,hw,c);
+void customCudaChannel0ExtractNHWC(const half* in, half* out, int n, int hw, int c, cudaStream_t stream) {
+  customCudaChannel0ExtractNHWCTemplate<half>(in,out,n,hw,c,stream);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -355,7 +355,7 @@ void gPoolChannelsNCHWMaskKernel(const float* in, float* out, int cSize, int xyS
   }
 }
 
-void customCudaPoolRowsSumNCHW(const float* in, float* out, int nSize, int cSize, int xySize, float scaleSum) {
+void customCudaPoolRowsSumNCHW(const float* in, float* out, int nSize, int cSize, int xySize, float scaleSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaPoolRowsSumNCHW: nSize too large");
   if(cSize > 65536)
@@ -375,9 +375,9 @@ void customCudaPoolRowsSumNCHW(const float* in, float* out, int nSize, int cSize
 
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
-  sumChannelsNCHWKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,scaleSum);
+  sumChannelsNCHWKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,cSize,xySize,scaleSum);
 }
-void customCudaValueHeadPoolNCHW(const float* in, float* out, int nSize, int cSize, int xySize, const float* maskSum) {
+void customCudaValueHeadPoolNCHW(const float* in, float* out, int nSize, int cSize, int xySize, const float* maskSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaValueHeadPoolNCHW: nSize too large");
   if(cSize > 65536)
@@ -397,9 +397,9 @@ void customCudaValueHeadPoolNCHW(const float* in, float* out, int nSize, int cSi
 
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
-  valueHeadPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize>>>(in,out,nSize,cSize,xySize,maskSum);
+  valueHeadPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,nSize,cSize,xySize,maskSum);
 }
-void customCudaPoolRowsGPoolNCHW(const float* in, float* out, int nSize, int cSize, int xySize, const float* mask, const float* maskSum) {
+void customCudaPoolRowsGPoolNCHW(const float* in, float* out, int nSize, int cSize, int xySize, const float* mask, const float* maskSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaPoolRowsGPoolNCHW: nSize too large");
   if(cSize > 65536)
@@ -424,9 +424,9 @@ void customCudaPoolRowsGPoolNCHW(const float* in, float* out, int nSize, int cSi
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
   if(mask != NULL)
-    gPoolChannelsNCHWMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNCHWMaskKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
+    gPoolChannelsNCHWKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -543,7 +543,7 @@ void gPoolChannelsNCHWHalfMaskKernel(const half* in, half* out, int cSize, int x
 #endif
 }
 
-void customCudaPoolRowsGPoolNCHW(const half* in, half* out, int nSize, int cSize, int xySize, const half* mask, const float* maskSum) {
+void customCudaPoolRowsGPoolNCHW(const half* in, half* out, int nSize, int cSize, int xySize, const half* mask, const float* maskSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaPoolRowsGPoolNCHW: nSize too large");
   if(cSize > 65536)
@@ -568,9 +568,9 @@ void customCudaPoolRowsGPoolNCHW(const half* in, half* out, int nSize, int cSize
   dim3 grid(1,cBlocks,nSize);
   dim3 threads(xyThreads,cThreads,1);
   if(mask != NULL)
-    gPoolChannelsNCHWHalfMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNCHWHalfMaskKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,cSize,xySize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNCHWHalfKernel<<<grid,threads,sharedMemSize>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
+    gPoolChannelsNCHWHalfKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,cSize,xySize,maskSum,sharedMemElts);
 }
 
 
@@ -755,7 +755,7 @@ void gPoolChannelsNHWCMaskKernel(const float* in, float* out, int xySize, int cS
 }
 
 
-void customCudaPoolRowsSumNHWC(const float* in, float* out, int nSize, int xySize, int cSize, float scaleSum) {
+void customCudaPoolRowsSumNHWC(const float* in, float* out, int nSize, int xySize, int cSize, float scaleSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaPoolRowsSumNHWC: nSize too large");
   if(cSize > 65536)
@@ -776,10 +776,10 @@ void customCudaPoolRowsSumNHWC(const float* in, float* out, int nSize, int xySiz
 
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
-  sumChannelsNHWCKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,scaleSum);
+  sumChannelsNHWCKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,xySize,cSize,scaleSum);
 }
 
-void customCudaValueHeadPoolNHWC(const float* in, float* out, int nSize, int xySize, int cSize, const float* maskSum) {
+void customCudaValueHeadPoolNHWC(const float* in, float* out, int nSize, int xySize, int cSize, const float* maskSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaValueHeadPoolNHWC: nSize too large");
   if(cSize > 65536)
@@ -800,10 +800,10 @@ void customCudaValueHeadPoolNHWC(const float* in, float* out, int nSize, int xyS
 
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
-  valueHeadPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize>>>(in,out,nSize,xySize,cSize,maskSum);
+  valueHeadPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,nSize,xySize,cSize,maskSum);
 }
 
-void customCudaPoolRowsGPoolNHWC(const float* in, float* out, int nSize, int xySize, int cSize, const float* mask, const float* maskSum) {
+void customCudaPoolRowsGPoolNHWC(const float* in, float* out, int nSize, int xySize, int cSize, const float* mask, const float* maskSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaPoolRowsGPoolNHWC: nSize too large");
   if(cSize > 65536)
@@ -829,9 +829,9 @@ void customCudaPoolRowsGPoolNHWC(const float* in, float* out, int nSize, int xyS
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
   if(mask != NULL)
-    gPoolChannelsNHWCMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNHWCMaskKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
+    gPoolChannelsNHWCKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -946,7 +946,7 @@ void gPoolChannelsNHWCHalfMaskKernel(const half* in, half* out, int xySize, int 
 #endif
 }
 
-void customCudaPoolRowsGPoolNHWC(const half* in, half* out, int nSize, int xySize, int cSize, const half* mask, const float* maskSum) {
+void customCudaPoolRowsGPoolNHWC(const half* in, half* out, int nSize, int xySize, int cSize, const half* mask, const float* maskSum, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaPoolRowsGPoolNHWC: nSize too large");
   if(cSize > 65536)
@@ -972,9 +972,9 @@ void customCudaPoolRowsGPoolNHWC(const half* in, half* out, int nSize, int xySiz
   dim3 grid(cBlocks,1,nSize);
   dim3 threads(cThreads,xyThreads,1);
   if(mask != NULL)
-    gPoolChannelsNHWCHalfMaskKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
+    gPoolChannelsNHWCHalfMaskKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,xySize,cSize,mask,maskSum,sharedMemElts);
   else
-    gPoolChannelsNHWCHalfKernel<<<grid,threads,sharedMemSize>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
+    gPoolChannelsNHWCHalfKernel<<<grid,threads,sharedMemSize,stream>>>(in,out,xySize,cSize,maskSum,sharedMemElts);
 }
 
 
@@ -997,15 +997,15 @@ void copyFromHalfKernel(const half *in, float* out, int n)
   }
 }
 
-void customCudaCopyToHalf(const float* in, half* out, int n) {
+void customCudaCopyToHalf(const float* in, half* out, int n, cudaStream_t stream) {
   int blockSize = targetNumThreads;
   int numBlocks = (n+blockSize-1)/blockSize;
-  copyToHalfKernel<<<numBlocks, blockSize>>>(in,out,n);
+  copyToHalfKernel<<<numBlocks, blockSize,0,stream>>>(in,out,n);
 }
-void customCudaCopyFromHalf(const half* in, float* out, int n) {
+void customCudaCopyFromHalf(const half* in, float* out, int n, cudaStream_t stream) {
   int blockSize = targetNumThreads;
   int numBlocks = (n+blockSize-1)/blockSize;
-  copyFromHalfKernel<<<numBlocks, blockSize>>>(in,out,n);
+  copyFromHalfKernel<<<numBlocks, blockSize,0,stream>>>(in,out,n);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1023,10 +1023,10 @@ void addTensorInplaceHalfKernel(half *buf, const half* biases, int nSize)
   //Do nothing, FP16 not supported
 #endif
 }
-void customCudaAddTensorInplace(half* buf, const half* biases, int nSize) {
+void customCudaAddTensorInplace(half* buf, const half* biases, int nSize, cudaStream_t stream) {
   int blockSize = targetNumThreads;
   int numBlocks = (nSize+blockSize-1)/blockSize;
-  addTensorInplaceHalfKernel<<<numBlocks, blockSize>>>(buf,biases,nSize);
+  addTensorInplaceHalfKernel<<<numBlocks, blockSize,0,stream>>>(buf,biases,nSize);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1135,7 +1135,7 @@ void addCBiasInplaceNCHalfKernelSilu(half *buf, const half* biases, int nSize, i
 #endif
 }
 
-void sharedAddCBiasInplaceNC(void* buf, const void* biases, int nSize, int cSize, bool isHalf, int activation) {
+void sharedAddCBiasInplaceNC(void* buf, const void* biases, int nSize, int cSize, bool isHalf, int activation, cudaStream_t stream) {
   int cThreads;
   int cBlocks;
   int nThreads;
@@ -1150,38 +1150,38 @@ void sharedAddCBiasInplaceNC(void* buf, const void* biases, int nSize, int cSize
 
   if(activation == ACTIVATION_IDENTITY) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernel<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernel<<<grid,threads,0,stream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernel<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernel<<<grid,threads,0,stream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_RELU) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelRelu<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelRelu<<<grid,threads,0,stream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelRelu<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelRelu<<<grid,threads,0,stream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_MISH) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelMish<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelMish<<<grid,threads,0,stream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelMish<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelMish<<<grid,threads,0,stream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else if(activation == ACTIVATION_SILU) {
     if(isHalf)
-      addCBiasInplaceNCHalfKernelSilu<<<grid,threads>>>((half*)buf,(const half*)biases,nSize,cSize);
+      addCBiasInplaceNCHalfKernelSilu<<<grid,threads,0,stream>>>((half*)buf,(const half*)biases,nSize,cSize);
     else
-      addCBiasInplaceNCKernelSilu<<<grid,threads>>>((float*)buf,(const float*)biases,nSize,cSize);
+      addCBiasInplaceNCKernelSilu<<<grid,threads,0,stream>>>((float*)buf,(const float*)biases,nSize,cSize);
   }
   else {
     throw std::runtime_error("customCudaAddCBiasInplaceNC: unsupported activation");
   }
 }
 
-void customCudaAddCBiasInplaceNC(float* buf, const float* biases, int nSize, int cSize, int activation) {
-  sharedAddCBiasInplaceNC(buf,biases,nSize,cSize,false,activation);
+void customCudaAddCBiasInplaceNC(float* buf, const float* biases, int nSize, int cSize, int activation, cudaStream_t stream) {
+  sharedAddCBiasInplaceNC(buf,biases,nSize,cSize,false,activation,stream);
 }
-void customCudaAddCBiasInplaceNC(half* buf, const half* biases, int nSize, int cSize, int activation) {
-  sharedAddCBiasInplaceNC(buf,biases,nSize,cSize,true,activation);
+void customCudaAddCBiasInplaceNC(half* buf, const half* biases, int nSize, int cSize, int activation, cudaStream_t stream) {
+  sharedAddCBiasInplaceNC(buf,biases,nSize,cSize,true,activation,stream);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1215,7 +1215,7 @@ void addNCBiasInplaceNCHWHalfKernel(half *buf, const half* biases, int cSize, in
 #endif
 }
 
-void sharedAddNCBiasInplaceNCHW(void *buf, const void* biases, int nSize, int cSize, int xySize, bool isHalf) {
+void sharedAddNCBiasInplaceNCHW(void *buf, const void* biases, int nSize, int cSize, int xySize, bool isHalf, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaAddNCBiasInplaceNCHW: nSize too large");
   if(cSize > 65536)
@@ -1231,16 +1231,16 @@ void sharedAddNCBiasInplaceNCHW(void *buf, const void* biases, int nSize, int cS
   dim3 grid(sBlocks,cBlocks,nSize);
   dim3 threads(sThreads,cThreads,1);
   if(isHalf)
-    addNCBiasInplaceNCHWHalfKernel<<<grid,threads>>>((half*)buf,(const half*)biases,cSize,sSize);
+    addNCBiasInplaceNCHWHalfKernel<<<grid,threads,0,stream>>>((half*)buf,(const half*)biases,cSize,sSize);
   else
-    addNCBiasInplaceNCHWKernel<<<grid,threads>>>((float*)buf,(const float*)biases,cSize,sSize);
+    addNCBiasInplaceNCHWKernel<<<grid,threads,0,stream>>>((float*)buf,(const float*)biases,cSize,sSize);
 }
 
-void customCudaAddNCBiasInplaceNCHW(float *buf, const float* biases, int nSize, int cSize, int xySize) {
-  sharedAddNCBiasInplaceNCHW(buf,biases,nSize,cSize,xySize,false);
+void customCudaAddNCBiasInplaceNCHW(float *buf, const float* biases, int nSize, int cSize, int xySize, cudaStream_t stream) {
+  sharedAddNCBiasInplaceNCHW(buf,biases,nSize,cSize,xySize,false,stream);
 }
-void customCudaAddNCBiasInplaceNCHW(half *buf, const half* biases, int nSize, int cSize, int xySize) {
-  sharedAddNCBiasInplaceNCHW(buf,biases,nSize,cSize,xySize,true);
+void customCudaAddNCBiasInplaceNCHW(half *buf, const half* biases, int nSize, int cSize, int xySize, cudaStream_t stream) {
+  sharedAddNCBiasInplaceNCHW(buf,biases,nSize,cSize,xySize,true,stream);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1274,7 +1274,7 @@ void addNCBiasInplaceNHWCHalfKernel(half *buf, const half* biases, int sSize, in
 #endif
 }
 
-void sharedAddNCBiasInplaceNHWC(void *buf, const void* biases, int nSize, int xySize, int cSize, bool isHalf) {
+void sharedAddNCBiasInplaceNHWC(void *buf, const void* biases, int nSize, int xySize, int cSize, bool isHalf, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaAddNCBiasInplaceNHWC: nSize too large");
   if(xySize > 65536)
@@ -1290,16 +1290,16 @@ void sharedAddNCBiasInplaceNHWC(void *buf, const void* biases, int nSize, int xy
   dim3 grid(cBlocks,sBlocks,nSize);
   dim3 threads(cThreads,sThreads,1);
   if(isHalf)
-    addNCBiasInplaceNHWCHalfKernel<<<grid,threads>>>((half*)buf,(const half*)biases,sSize,cSize);
+    addNCBiasInplaceNHWCHalfKernel<<<grid,threads,0,stream>>>((half*)buf,(const half*)biases,sSize,cSize);
   else
-    addNCBiasInplaceNHWCKernel<<<grid,threads>>>((float*)buf,(const float*)biases,sSize,cSize);
+    addNCBiasInplaceNHWCKernel<<<grid,threads,0,stream>>>((float*)buf,(const float*)biases,sSize,cSize);
 }
 
-void customCudaAddNCBiasInplaceNHWC(float *buf, const float* biases, int nSize, int xySize, int cSize) {
-  sharedAddNCBiasInplaceNHWC(buf,biases,nSize,xySize,cSize,false);
+void customCudaAddNCBiasInplaceNHWC(float *buf, const float* biases, int nSize, int xySize, int cSize, cudaStream_t stream) {
+  sharedAddNCBiasInplaceNHWC(buf,biases,nSize,xySize,cSize,false,stream);
 }
-void customCudaAddNCBiasInplaceNHWC(half *buf, const half* biases, int nSize, int xySize, int cSize) {
-  sharedAddNCBiasInplaceNHWC(buf,biases,nSize,xySize,cSize,true);
+void customCudaAddNCBiasInplaceNHWC(half *buf, const half* biases, int nSize, int xySize, int cSize, cudaStream_t stream) {
+  sharedAddNCBiasInplaceNHWC(buf,biases,nSize,xySize,cSize,true,stream);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -1521,7 +1521,7 @@ void applyCScaleBiasNCHWSiluMaskHalfKernel(const half *in, half* out, const half
 #endif
 }
 
-void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* scale, const void* biases, const void* mask, int nSize, int cSize, int xySize, bool isHalf, int activation) {
+void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* scale, const void* biases, const void* mask, int nSize, int cSize, int xySize, bool isHalf, int activation, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaApplyCScaleBiasNCHW: nSize too large");
   if(cSize > 65536)
@@ -1539,27 +1539,27 @@ void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* scale, con
   if(mask == NULL) {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNCHWHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNCHWReluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWReluHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWReluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWReluKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNCHWMishHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWMishHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWMishKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWMishKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNCHWSiluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
+        applyCScaleBiasNCHWSiluHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,cSize,sSize);
       else
-        applyCScaleBiasNCHWSiluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
+        applyCScaleBiasNCHWSiluKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,cSize,sSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNCHW: unsupported activation");
@@ -1568,27 +1568,27 @@ void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* scale, con
   else {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNCHWMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNCHWReluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWReluMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWReluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWReluMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNCHWMishMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMishMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWMishMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWMishMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNCHWSiluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
+        applyCScaleBiasNCHWSiluMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,cSize,sSize);
       else
-        applyCScaleBiasNCHWSiluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
+        applyCScaleBiasNCHWSiluMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,cSize,sSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNCHW: unsupported activation");
@@ -1596,11 +1596,11 @@ void sharedApplyCScaleBiasNCHW(const void* in, void* out, const void* scale, con
   }
 }
 
-void customCudaApplyCScaleBiasNCHW(const float* in, float* out, const float* scale, const float* biases, const float* mask, int nSize, int cSize, int xySize, int activation) {
-  sharedApplyCScaleBiasNCHW(in,out,scale,biases,mask,nSize,cSize,xySize,false,activation);
+void customCudaApplyCScaleBiasNCHW(const float* in, float* out, const float* scale, const float* biases, const float* mask, int nSize, int cSize, int xySize, int activation, cudaStream_t stream) {
+  sharedApplyCScaleBiasNCHW(in,out,scale,biases,mask,nSize,cSize,xySize,false,activation,stream);
 }
-void customCudaApplyCScaleBiasNCHW(const half* in, half* out, const half* scale, const half* biases, const half* mask, int nSize, int cSize, int xySize, int activation) {
-  sharedApplyCScaleBiasNCHW(in,out,scale,biases,mask,nSize,cSize,xySize,true,activation);
+void customCudaApplyCScaleBiasNCHW(const half* in, half* out, const half* scale, const half* biases, const half* mask, int nSize, int cSize, int xySize, int activation, cudaStream_t stream) {
+  sharedApplyCScaleBiasNCHW(in,out,scale,biases,mask,nSize,cSize,xySize,true,activation,stream);
 }
 
 
@@ -1823,7 +1823,7 @@ void applyCScaleBiasNHWCSiluMaskHalfKernel(const half* in, half* out, const half
 #endif
 }
 
-void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* scale, const void* biases, const void* mask, int nSize, int xySize, int cSize, bool isHalf, int activation) {
+void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* scale, const void* biases, const void* mask, int nSize, int xySize, int cSize, bool isHalf, int activation, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaApplyCScaleBiasNHWC: nSize too large");
   if(xySize > 65536)
@@ -1841,27 +1841,27 @@ void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* scale, con
   if(mask == NULL) {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNHWCHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNHWCReluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCReluHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCReluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCReluKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNHWCMishHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCMishHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCMishKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCMishKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNHWCSiluHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
+        applyCScaleBiasNHWCSiluHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,sSize,cSize);
       else
-        applyCScaleBiasNHWCSiluKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
+        applyCScaleBiasNHWCSiluKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,sSize,cSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNHWC: unsupported activation");
@@ -1870,27 +1870,27 @@ void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* scale, con
   else {
     if(activation == ACTIVATION_IDENTITY) {
       if(isHalf)
-        applyCScaleBiasNHWCMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_RELU) {
       if(isHalf)
-        applyCScaleBiasNHWCReluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCReluMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCReluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCReluMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_MISH) {
       if(isHalf)
-        applyCScaleBiasNHWCMishMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMishMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCMishMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCMishMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else if(activation == ACTIVATION_SILU) {
       if(isHalf)
-        applyCScaleBiasNHWCSiluMaskHalfKernel<<<grid,threads>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
+        applyCScaleBiasNHWCSiluMaskHalfKernel<<<grid,threads,0,stream>>>((const half*)in,(half*)out,(const half*)scale,(const half*)biases,(const half*)mask,sSize,cSize);
       else
-        applyCScaleBiasNHWCSiluMaskKernel<<<grid,threads>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
+        applyCScaleBiasNHWCSiluMaskKernel<<<grid,threads,0,stream>>>((const float*)in,(float*)out,(const float*)scale,(const float*)biases,(const float*)mask,sSize,cSize);
     }
     else {
       throw std::runtime_error("customCudaApplyCScaleBiasNHWC: unsupported activation");
@@ -1898,11 +1898,11 @@ void sharedApplyCScaleBiasNHWC(const void* in, void* out, const void* scale, con
   }
 }
 
-void customCudaApplyCScaleBiasNHWC(const float* in, float* out, const float* scale, const float* biases, const float* mask, int nSize, int xySize, int cSize, int activation) {
-  sharedApplyCScaleBiasNHWC(in,out,scale,biases,mask,nSize,xySize,cSize,false,activation);
+void customCudaApplyCScaleBiasNHWC(const float* in, float* out, const float* scale, const float* biases, const float* mask, int nSize, int xySize, int cSize, int activation, cudaStream_t stream) {
+  sharedApplyCScaleBiasNHWC(in,out,scale,biases,mask,nSize,xySize,cSize,false,activation,stream);
 }
-void customCudaApplyCScaleBiasNHWC(const half* in, half* out, const half* scale, const half* biases, const half* mask, int nSize, int xySize, int cSize, int activation) {
-  sharedApplyCScaleBiasNHWC(in,out,scale,biases,mask,nSize,xySize,cSize,true,activation);
+void customCudaApplyCScaleBiasNHWC(const half* in, half* out, const half* scale, const half* biases, const half* mask, int nSize, int xySize, int cSize, int activation, cudaStream_t stream) {
+  sharedApplyCScaleBiasNHWC(in,out,scale,biases,mask,nSize,xySize,cSize,true,activation,stream);
 }
 
 //==============================================================================================
@@ -2010,29 +2010,27 @@ void applyRoPEHalfKernel(
 // short-circuit.
 void customCudaApplyRoPE(
   float* buf, const float* cosTable, const float* sinTable,
-  int batchSize, int seqLen, int numBufHeads, int numKVHeads, int qHeadDim, int numPairs, bool learnableRope
+  int batchSize, int seqLen, int numBufHeads, int numKVHeads, int qHeadDim, int numPairs, bool learnableRope, cudaStream_t stream
 ) {
   int totalDim = numBufHeads * qHeadDim;
   int totalHP = numBufHeads * numPairs;
-  if(totalHP > 1024)
-    throw std::runtime_error("customCudaApplyRoPE: numBufHeads * numPairs exceeds CUDA block limit");
   int threads = ((totalHP + 31) / 32) * 32;  // round up to warp size
+  if(threads > 1024) threads = 1024;
   dim3 blocks(seqLen, batchSize, 1);
-  applyRoPEKernel<<<blocks, threads>>>(
+  applyRoPEKernel<<<blocks, threads,0,stream>>>(
     buf, cosTable, sinTable, batchSize, seqLen, numBufHeads, numKVHeads, qHeadDim, totalDim, numPairs, learnableRope ? 1 : 0
   );
 }
 void customCudaApplyRoPE(
   half* buf, const half* cosTable, const half* sinTable,
-  int batchSize, int seqLen, int numBufHeads, int numKVHeads, int qHeadDim, int numPairs, bool learnableRope
+  int batchSize, int seqLen, int numBufHeads, int numKVHeads, int qHeadDim, int numPairs, bool learnableRope, cudaStream_t stream
 ) {
   int totalDim = numBufHeads * qHeadDim;
   int totalHP = numBufHeads * numPairs;
-  if(totalHP > 1024)
-    throw std::runtime_error("customCudaApplyRoPE: numBufHeads * numPairs exceeds CUDA block limit");
   int threads = ((totalHP + 31) / 32) * 32;
+  if(threads > 1024) threads = 1024;
   dim3 blocks(seqLen, batchSize, 1);
-  applyRoPEHalfKernel<<<blocks, threads>>>(
+  applyRoPEHalfKernel<<<blocks, threads,0,stream>>>(
     buf, cosTable, sinTable, batchSize, seqLen, numBufHeads, numKVHeads, qHeadDim, totalDim, numPairs, learnableRope ? 1 : 0
   );
 }
@@ -2218,7 +2216,7 @@ void flashAttentionKernelHalf(
   do {                                                                          \
     int totalQPerBlock = (BQ) * (QPT);                                          \
     dim3 grid((seqLen + totalQPerBlock - 1) / totalQPerBlock, batchSize * numHeads); \
-    flashAttentionKernelFloat<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ)>>>( \
+    flashAttentionKernelFloat<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ), 0, stream>>>( \
       Q, K, V, mask, output, seqLen, numHeads, numKVHeads, scale);              \
   } while(0)
 
@@ -2226,13 +2224,13 @@ void flashAttentionKernelHalf(
   do {                                                                          \
     int totalQPerBlock = (BQ) * (QPT);                                          \
     dim3 grid((seqLen + totalQPerBlock - 1) / totalQPerBlock, batchSize * numHeads); \
-    flashAttentionKernelHalf<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ)>>>(  \
+    flashAttentionKernelHalf<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ), 0, stream>>>(  \
       Q, K, V, mask, output, seqLen, numHeads, numKVHeads, scale);              \
   } while(0)
 
 void customCudaFlashAttention(
   const float* Q, const float* K, const float* V, const float* mask, float* output,
-  int batchSize, int seqLen, int numHeads, int numKVHeads, int qHeadDim, int vHeadDim
+  int batchSize, int seqLen, int numHeads, int numKVHeads, int qHeadDim, int vHeadDim, cudaStream_t stream
 ) {
   if(batchSize * numHeads > 65536)
     throw std::runtime_error("customCudaFlashAttention: batchSize * numHeads too large");
@@ -2243,7 +2241,7 @@ void customCudaFlashAttention(
 }
 void customCudaFlashAttention(
   const half* Q, const half* K, const half* V, const half* mask, half* output,
-  int batchSize, int seqLen, int numHeads, int numKVHeads, int qHeadDim, int vHeadDim
+  int batchSize, int seqLen, int numHeads, int numKVHeads, int qHeadDim, int vHeadDim, cudaStream_t stream
 ) {
   if(batchSize * numHeads > 65536)
     throw std::runtime_error("customCudaFlashAttention: batchSize * numHeads too large");
@@ -2380,14 +2378,14 @@ void swiGLUHalfStrideKernel(const half* a, const half* b, half* out, int size)
 #endif
 }
 
-void customCudaSwiGLU(const float* a, const float* b, float* out, int size) {
+void customCudaSwiGLU(const float* a, const float* b, float* out, int size, cudaStream_t stream) {
   if(size <= 0)
     return;
   int threads = targetNumThreads;
   int blocks = (size + threads - 1) / threads;
-  swiGLUKernel<<<blocks, threads>>>(a, b, out, size);
+  swiGLUKernel<<<blocks, threads,0,stream>>>(a, b, out, size);
 }
-void customCudaSwiGLU(const half* a, const half* b, half* out, int size) {
+void customCudaSwiGLU(const half* a, const half* b, half* out, int size, cudaStream_t stream) {
   if(size <= 0)
     return;
   constexpr int ELTS_PER_THREAD = 4;  // half2 pairs per thread
@@ -2395,7 +2393,7 @@ void customCudaSwiGLU(const half* a, const half* b, half* out, int size) {
   int pairCount = size >> 1;
   int blocks = (pairCount + threads * ELTS_PER_THREAD - 1) / (threads * ELTS_PER_THREAD);
   if(blocks < 1) blocks = 1;  // ensure the odd-size tail still gets a block
-  swiGLUHalfStrideKernel<ELTS_PER_THREAD><<<blocks, threads>>>(a, b, out, size);
+  swiGLUHalfStrideKernel<ELTS_PER_THREAD><<<blocks, threads,0,stream>>>(a, b, out, size);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -2433,23 +2431,23 @@ void maskedResidualAddNCHWHalfKernel(half* trunk, const half* residual, const ha
 #endif
 }
 
-void customCudaMaskedResidualAddNCHW(float* trunk, const float* residual, const float* mask, int nSize, int cSize, int xySize) {
+void customCudaMaskedResidualAddNCHW(float* trunk, const float* residual, const float* mask, int nSize, int cSize, int xySize, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaMaskedResidualAddNCHW: nSize too large");
   int xyThreads, xyBlocks, cThreads, cBlocks;
   splitThreadsAcrossDim01(xySize, cSize, xyThreads, xyBlocks, cThreads, cBlocks);
   dim3 grid(xyBlocks, cBlocks, nSize);
   dim3 threads(xyThreads, cThreads, 1);
-  maskedResidualAddNCHWKernel<<<grid, threads>>>(trunk, residual, mask, cSize, xySize);
+  maskedResidualAddNCHWKernel<<<grid, threads,0,stream>>>(trunk, residual, mask, cSize, xySize);
 }
-void customCudaMaskedResidualAddNCHW(half* trunk, const half* residual, const half* mask, int nSize, int cSize, int xySize) {
+void customCudaMaskedResidualAddNCHW(half* trunk, const half* residual, const half* mask, int nSize, int cSize, int xySize, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaMaskedResidualAddNCHW: nSize too large");
   int xyThreads, xyBlocks, cThreads, cBlocks;
   splitThreadsAcrossDim01(xySize, cSize, xyThreads, xyBlocks, cThreads, cBlocks);
   dim3 grid(xyBlocks, cBlocks, nSize);
   dim3 threads(xyThreads, cThreads, 1);
-  maskedResidualAddNCHWHalfKernel<<<grid, threads>>>(trunk, residual, mask, cSize, xySize);
+  maskedResidualAddNCHWHalfKernel<<<grid, threads,0,stream>>>(trunk, residual, mask, cSize, xySize);
 }
 
 __global__
@@ -2482,23 +2480,23 @@ void maskedResidualAddNHWCHalfKernel(half* trunk, const half* residual, const ha
 #endif
 }
 
-void customCudaMaskedResidualAddNHWC(float* trunk, const float* residual, const float* mask, int nSize, int xySize, int cSize) {
+void customCudaMaskedResidualAddNHWC(float* trunk, const float* residual, const float* mask, int nSize, int xySize, int cSize, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaMaskedResidualAddNHWC: nSize too large");
   int cThreads, cBlocks, xyThreads, xyBlocks;
   splitThreadsAcrossDim01(cSize, xySize, cThreads, cBlocks, xyThreads, xyBlocks);
   dim3 grid(cBlocks, xyBlocks, nSize);
   dim3 threads(cThreads, xyThreads, 1);
-  maskedResidualAddNHWCKernel<<<grid, threads>>>(trunk, residual, mask, xySize, cSize);
+  maskedResidualAddNHWCKernel<<<grid, threads,0,stream>>>(trunk, residual, mask, xySize, cSize);
 }
-void customCudaMaskedResidualAddNHWC(half* trunk, const half* residual, const half* mask, int nSize, int xySize, int cSize) {
+void customCudaMaskedResidualAddNHWC(half* trunk, const half* residual, const half* mask, int nSize, int xySize, int cSize, cudaStream_t stream) {
   if(nSize > 65536)
     throw std::runtime_error("customCudaMaskedResidualAddNHWC: nSize too large");
   int cThreads, cBlocks, xyThreads, xyBlocks;
   splitThreadsAcrossDim01(cSize, xySize, cThreads, cBlocks, xyThreads, xyBlocks);
   dim3 grid(cBlocks, xyBlocks, nSize);
   dim3 threads(cThreads, xyThreads, 1);
-  maskedResidualAddNHWCHalfKernel<<<grid, threads>>>(trunk, residual, mask, xySize, cSize);
+  maskedResidualAddNHWCHalfKernel<<<grid, threads,0,stream>>>(trunk, residual, mask, xySize, cSize);
 }
 
 //--------------------------------------------------------------------------------------------------------------
@@ -2689,7 +2687,7 @@ void rmsNormGammaBetaNHWCHalfKernel(
 
 void customCudaRMSNormGammaBetaNHWC(
   const float* in, float* out, const float* gamma, const float* beta, const float* mask,
-  int nSize, int xySize, int cSize, float epsilon, int activation
+  int nSize, int xySize, int cSize, float epsilon, int activation, cudaStream_t stream
 ) {
   int totalPositions = nSize * xySize;
   if(totalPositions <= 0)
@@ -2697,12 +2695,12 @@ void customCudaRMSNormGammaBetaNHWC(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNHWCKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNHWCKernel<<<totalPositions, threads, sharedMem,stream>>>(
     in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
 }
 void customCudaRMSNormGammaBetaNHWC(
   const half* in, half* out, const half* gamma, const half* beta, const half* mask,
-  int nSize, int xySize, int cSize, float epsilon, int activation
+  int nSize, int xySize, int cSize, float epsilon, int activation, cudaStream_t stream
 ) {
   int totalPositions = nSize * xySize;
   if(totalPositions <= 0)
@@ -2716,17 +2714,17 @@ void customCudaRMSNormGammaBetaNHWC(
   if(cSize % 2 == 0) {
     int halfPairs = cSize / 2;
     if(halfPairs <= 512 && halfPairs % 32 == 0) {
-      rmsNormGammaBetaNHWCHalfVecKernel<1><<<totalPositions, halfPairs>>>(
+      rmsNormGammaBetaNHWCHalfVecKernel<1><<<totalPositions, halfPairs,0,stream>>>(
         in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
       return;
     }
     if(halfPairs % (2 * 32) == 0 && halfPairs / 2 <= 512) {
-      rmsNormGammaBetaNHWCHalfVecKernel<2><<<totalPositions, halfPairs / 2>>>(
+      rmsNormGammaBetaNHWCHalfVecKernel<2><<<totalPositions, halfPairs / 2,0,stream>>>(
         in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
       return;
     }
     if(halfPairs % (4 * 32) == 0 && halfPairs / 4 <= 512) {
-      rmsNormGammaBetaNHWCHalfVecKernel<4><<<totalPositions, halfPairs / 4>>>(
+      rmsNormGammaBetaNHWCHalfVecKernel<4><<<totalPositions, halfPairs / 4,0,stream>>>(
         in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
       return;
     }
@@ -2735,7 +2733,7 @@ void customCudaRMSNormGammaBetaNHWC(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNHWCHalfKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNHWCHalfKernel<<<totalPositions, threads, sharedMem,stream>>>(
     in, out, gamma, beta, mask, nSize, xySize, cSize, epsilon, activation);
 }
 
@@ -2823,7 +2821,7 @@ void rmsNormGammaBetaNCHWHalfKernel(
 
 void customCudaRMSNormGammaBetaNCHW(
   const float* in, float* out, const float* gamma, const float* beta, const float* mask,
-  int nSize, int cSize, int xySize, float epsilon, int activation
+  int nSize, int cSize, int xySize, float epsilon, int activation, cudaStream_t stream
 ) {
   int totalPositions = nSize * xySize;
   if(totalPositions <= 0)
@@ -2831,12 +2829,12 @@ void customCudaRMSNormGammaBetaNCHW(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNCHWKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNCHWKernel<<<totalPositions, threads, sharedMem,stream>>>(
     in, out, gamma, beta, mask, nSize, cSize, xySize, epsilon, activation);
 }
 void customCudaRMSNormGammaBetaNCHW(
   const half* in, half* out, const half* gamma, const half* beta, const half* mask,
-  int nSize, int cSize, int xySize, float epsilon, int activation
+  int nSize, int cSize, int xySize, float epsilon, int activation, cudaStream_t stream
 ) {
   int totalPositions = nSize * xySize;
   if(totalPositions <= 0)
@@ -2844,7 +2842,7 @@ void customCudaRMSNormGammaBetaNCHW(
   int threads = 1;
   while(threads < cSize && threads < targetNumThreads) threads *= 2;
   int sharedMem = threads * sizeof(float);
-  rmsNormGammaBetaNCHWHalfKernel<<<totalPositions, threads, sharedMem>>>(
+  rmsNormGammaBetaNCHWHalfKernel<<<totalPositions, threads, sharedMem,stream>>>(
     in, out, gamma, beta, mask, nSize, cSize, xySize, epsilon, activation);
 }
 
@@ -3133,7 +3131,7 @@ static int spatialRMSNormApplyBlocks(int totalElems, int threads) {
 
 void customCudaSpatialRMSNormNHWC(
   const float* in, float* out, const float* gamma, const float* beta, const float* mask, const float* maskSum,
-  int nSize, int xySize, int cSize, float epsilon, int activation, float* sumSqBuf
+  int nSize, int xySize, int cSize, float epsilon, int activation, float* sumSqBuf, cudaStream_t stream
 ) {
   if(nSize <= 0)
     return;
@@ -3146,20 +3144,20 @@ void customCudaSpatialRMSNormNHWC(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqKernel<true><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqKernel<true><<<grid1, threads1, sharedMem1,stream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1,0,stream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems / 2, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNHWCKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNHWCKernel<<<grid2, threads2,0,stream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
 void customCudaSpatialRMSNormNHWC(
   const half* in, half* out, const half* gamma, const half* beta, const half* mask, const float* maskSum,
-  int nSize, int xySize, int cSize, float epsilon, int activation, float* sumSqBuf
+  int nSize, int xySize, int cSize, float epsilon, int activation, float* sumSqBuf, cudaStream_t stream
 ) {
   if(nSize <= 0)
     return;
@@ -3172,21 +3170,21 @@ void customCudaSpatialRMSNormNHWC(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqHalfKernel<true><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqHalfKernel<true><<<grid1, threads1, sharedMem1,stream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1,0,stream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems / 2, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNHWCHalfKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNHWCHalfKernel<<<grid2, threads2,0,stream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
 
 void customCudaSpatialRMSNormNCHW(
   const float* in, float* out, const float* gamma, const float* beta, const float* mask, const float* maskSum,
-  int nSize, int cSize, int xySize, float epsilon, int activation, float* sumSqBuf
+  int nSize, int cSize, int xySize, float epsilon, int activation, float* sumSqBuf, cudaStream_t stream
 ) {
   if(nSize <= 0)
     return;
@@ -3199,20 +3197,20 @@ void customCudaSpatialRMSNormNCHW(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqKernel<false><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqKernel<false><<<grid1, threads1, sharedMem1,stream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1,0,stream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNCHWKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNCHWKernel<<<grid2, threads2,0,stream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
 void customCudaSpatialRMSNormNCHW(
   const half* in, half* out, const half* gamma, const half* beta, const half* mask, const float* maskSum,
-  int nSize, int cSize, int xySize, float epsilon, int activation, float* sumSqBuf
+  int nSize, int cSize, int xySize, float epsilon, int activation, float* sumSqBuf, cudaStream_t stream
 ) {
   if(nSize <= 0)
     return;
@@ -3225,14 +3223,14 @@ void customCudaSpatialRMSNormNCHW(
   int threads1 = targetNumThreads;
   int sharedMem1 = threads1 * sizeof(float);
   dim3 grid1(numBlocksPerBatch, nSize);
-  spatialRMSNormSumSqHalfKernel<false><<<grid1, threads1, sharedMem1>>>(
+  spatialRMSNormSumSqHalfKernel<false><<<grid1, threads1, sharedMem1,stream>>>(
     in, mask, sumSqBuf, totalElems, cSize, xySize, numBlocksPerBatch, partialStride);
 
-  spatialRMSNormReduceKernel<<<nSize, 1>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
+  spatialRMSNormReduceKernel<<<nSize, 1,0,stream>>>(sumSqBuf, sumSqBuf, numBlocksPerBatch, partialStride);
 
   int threads2 = targetNumThreads;
   int applyBlocks = spatialRMSNormApplyBlocks(totalElems, threads2);
   dim3 grid2(applyBlocks, nSize);
-  spatialRMSNormApplyNCHWHalfKernel<<<grid2, threads2>>>(
+  spatialRMSNormApplyNCHWHalfKernel<<<grid2, threads2,0,stream>>>(
     in, out, gamma, beta, mask, maskSum, sumSqBuf, totalElems, cSize, xySize, epsilon, activation, numBlocksPerBatch, partialStride);
 }
