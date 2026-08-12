@@ -9,6 +9,7 @@
 #include "../core/test.h"
 #include "../neuralnet/activations.h"
 #include "../neuralnet/architecturedesc.h"
+#include "../neuralnet/cudabackend_transformer_winner.h"
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/desc.h"
 
@@ -368,6 +369,173 @@ static const char* opKindName(ArchitectureOpKind kind) {
   return "Unknown";
 }
 
+static CudaTransformerWinner::DeviceCapability sm120Device() {
+  CudaTransformerWinner::DeviceCapability device{};
+  device.computeCapability = 120;
+  device.warpSize = 32;
+  device.sharedBytesPerBlockOptin = 101376;
+  return device;
+}
+
+static void assertPreparedOpIdentity(const PreparedOp& a, const PreparedOp& b) {
+  testAssert(a.tactic == b.tactic);
+  testAssert(a.recipe == b.recipe);
+  testAssert(a.support == b.support);
+  testAssert(a.workspaceAlignment == b.workspaceAlignment);
+  testAssert(a.workspaceBytes == b.workspaceBytes);
+  testAssert(a.implementationCookie == b.implementationCookie);
+}
+
+static void assertProductionPlanIdentity(
+  const CudaTransformerWinner::PreparedPlan& a,
+  const CudaTransformerWinner::PreparedPlan& b
+) {
+  testAssert(a.architecture == b.architecture);
+  testAssert(a.fingerprint == b.fingerprint);
+  testAssert(a.records.size() == b.records.size());
+  for(size_t i = 0; i < a.records.size(); i++) {
+    const CudaTransformerWinner::PreparedRecord& recordA = a.records[i];
+    const CudaTransformerWinner::PreparedRecord& recordB = b.records[i];
+    testAssert(recordA.request.key == recordB.request.key);
+    testAssert(recordA.request.architecture == recordB.request.architecture);
+    testAssert(recordA.request.topologyIndex == recordB.request.topologyIndex);
+    testAssert(recordA.found == recordB.found);
+    assertPreparedOpIdentity(recordA.operation,recordB.operation);
+  }
+}
+
+static void assertExactAttentionRecipe(
+  const CudaTransformerWinner::AttentionRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.qkvRope == QkvRopeTactic::Sm120C256H8D32M128N128K32S3);
+  testAssert(recipe.attention == AttentionTactic::Fa4Sm120B36S225Tm128Tn128S1Both16);
+  testAssert(recipe.outProjection == ResidualTactic::Sm120M128N128K32S3Sw1);
+}
+
+static void assertExactFfnRecipe(const CudaTransformerWinner::FfnRecipe& recipe) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
+  testAssert(recipe.dualFfn == DualFfnTactic::Sm120C256F768M128N64K32S3Sw4);
+  testAssert(recipe.downProjection == ResidualTactic::Sm120M128N128K32S3Sw1);
+}
+
+static void assertB32DynamicAttentionRecipe(
+  const CudaTransformerWinner::AttentionRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
+  testAssert(recipe.attention == AttentionTactic::Generic);
+  testAssert(recipe.outProjection == ResidualTactic::Sm120M128N128K32S3Sw1);
+}
+
+static void assertC256StaticAttentionRecipe(
+  const CudaTransformerWinner::AttentionRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
+  testAssert(recipe.attention == AttentionTactic::Generic);
+  testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
+}
+
+static void assertC256StaticFfnRecipe(const CudaTransformerWinner::FfnRecipe& recipe) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
+  testAssert(recipe.dualFfn == DualFfnTactic::Disabled);
+  testAssert(recipe.downProjection == ResidualTactic::CublasHgemmBetaOne);
+}
+
+static void assertMaskSafeAttentionRecipe(
+  const CudaTransformerWinner::AttentionRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
+  testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
+  testAssert(recipe.attention == AttentionTactic::Generic);
+  testAssert(recipe.outProjection == ResidualTactic::GenericAdd);
+}
+
+static void assertGenericFfnRecipe(const CudaTransformerWinner::FfnRecipe& recipe) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
+  testAssert(recipe.dualFfn == DualFfnTactic::Disabled);
+  testAssert(recipe.downProjection == ResidualTactic::CublasHgemmBetaOne);
+}
+
+static void assertDisabledFfnRecipe(const CudaTransformerWinner::FfnRecipe& recipe) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
+  testAssert(recipe.dualFfn == DualFfnTactic::Disabled);
+  testAssert(recipe.downProjection == ResidualTactic::GenericAdd);
+}
+
+static void assertWideAttentionRecipe(
+  const CudaTransformerWinner::AttentionRecipe& recipe
+) {
+  using namespace CudaTransformerWinner;
+  testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
+  testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
+  testAssert(recipe.attention == AttentionTactic::Generic);
+  testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
+}
+
+template<typename AttentionAssertion, typename FfnAssertion>
+static void assertAllTransformerRecipes(
+  const ArchitectureDesc& architecture,
+  const CudaTransformerWinner::PreparedPlan& plan,
+  int expectedLayers,
+  bool expectFfnFound,
+  AttentionAssertion assertAttention,
+  FfnAssertion assertFfn
+) {
+  testAssert(plan.architecture == architecture.signature);
+  testAssert(plan.records.size() == architecture.operators.size());
+  int attentionCount = 0;
+  int ffnCount = 0;
+  for(const ArchitectureOpDesc& op: architecture.operators) {
+    const CudaTransformerWinner::PreparedRecord& record = plan.records[op.topologyIndex];
+    testAssert(record.request.topologyIndex == op.topologyIndex);
+    testAssert(record.request.architecture == architecture.signature);
+    if(op.kind == ArchitectureOpKind::TransformerAttention) {
+      testAssert(record.found);
+      assertAttention(plan.attentionFor(op.topologyIndex));
+      attentionCount += 1;
+    }
+    else if(op.kind == ArchitectureOpKind::TransformerFFN) {
+      testAssert(record.found == expectFfnFound);
+      assertFfn(plan.ffnFor(op.topologyIndex));
+      ffnCount += 1;
+    }
+  }
+  testAssert(attentionCount == expectedLayers);
+  testAssert(ffnCount == expectedLayers);
+}
+
+static const CudaTransformerWinner::PreparedRecord& firstProductionRecord(
+  const CudaTransformerWinner::PreparedPlan& plan,
+  ArchitectureOpKind kind
+) {
+  for(const CudaTransformerWinner::PreparedRecord& record: plan.records) {
+    if(record.request.key.kind == kind)
+      return record;
+  }
+  testAssert(false);
+  return plan.records[0];
+}
+
 }  // namespace
 
 void Tests::runTransformerProductionPlanTests() {
@@ -444,7 +612,7 @@ void Tests::runTransformerProductionPlanTests() {
   // specialized transformer tactics must reject it, while independent head
   // operators such as value MatMul 64->3 and ownership Conv 96->1 retain their
   // exact capability key and compatible recipe.
-  ModelDesc wideModel = makeModel(24,384,1024,12,32,0.5f,"c384-h12-f1024");
+  ModelDesc wideModel = makeModel(32,384,1024,12,32,0.5f,"c384-h12-f1024");
   ArchitectureDesc wideArchitecture = buildArchitectureDesc(wideModel);
   PlanSnapshot widePlan = preparePlan(wideArchitecture,b36,registry);
   size_t wideAttention = findRequest(
@@ -463,6 +631,108 @@ void Tests::runTransformerProductionPlanTests() {
   testAssert(planA.requests[baseOwnership].key == widePlan.requests[wideOwnership].key);
   assertPreparedIdentity(planA.prepared[baseV3],widePlan.prepared[wideV3]);
   assertPreparedIdentity(planA.prepared[baseOwnership],widePlan.prepared[wideOwnership]);
+
+  // Exercise the real immutable production planner, not merely the registry
+  // fixture above. G1 requires the complete measured winner recipe on every
+  // one of the 24 attention and 24 FFN blocks.
+  const CudaTransformerWinner::DeviceCapability device = sm120Device();
+  CudaTransformerWinner::PreparedPlan productionG1A =
+    CudaTransformerWinner::preparePlan(architectureA,b36,device);
+  CudaTransformerWinner::PreparedPlan productionG1B =
+    CudaTransformerWinner::preparePlan(architectureB,b36,device);
+  assertAllTransformerRecipes(
+    architectureA,productionG1A,24,true,assertExactAttentionRecipe,assertExactFfnRecipe
+  );
+  for(const CudaTransformerWinner::PreparedRecord& record: productionG1A.records) {
+    if(record.request.key.kind == ArchitectureOpKind::TransformerAttention) {
+      testAssert(record.operation.support == SupportClass::CertifiedFast);
+      testAssert(string(CudaTransformerWinner::tacticName(record.operation.tactic)) ==
+        "attention-c256-b36-fa4-sm120");
+    }
+    else if(record.request.key.kind == ArchitectureOpKind::TransformerFFN) {
+      testAssert(record.found);
+      testAssert(record.operation.support == SupportClass::CompatibleOnly);
+      testAssert(string(CudaTransformerWinner::tacticName(record.operation.tactic)) ==
+        "ffn-c256-f768-dynamic-sm120");
+    }
+    else
+      testAssert(!record.found);
+  }
+
+  // Artifact name, file SHA, export-config SHA, and all tensor values differ;
+  // architecture, each local key/recipe/tactic, and the whole plan do not.
+  assertProductionPlanIdentity(productionG1A,productionG1B);
+
+  // G5: depth changes whole-model/whole-plan identity. All 48 repeated local
+  // blocks still select the same recipes and exact local prepared operations.
+  CudaTransformerWinner::PreparedPlan productionG5 =
+    CudaTransformerWinner::preparePlan(architecture48,b36,device);
+  assertAllTransformerRecipes(
+    architecture48,productionG5,48,true,assertExactAttentionRecipe,assertExactFfnRecipe
+  );
+  testAssert(productionG1A.architecture != productionG5.architecture);
+  testAssert(productionG1A.fingerprint != productionG5.fingerprint);
+  const CudaTransformerWinner::PreparedRecord& g1Attention = firstProductionRecord(
+    productionG1A,ArchitectureOpKind::TransformerAttention
+  );
+  const CudaTransformerWinner::PreparedRecord& g5Attention = firstProductionRecord(
+    productionG5,ArchitectureOpKind::TransformerAttention
+  );
+  const CudaTransformerWinner::PreparedRecord& g1Ffn = firstProductionRecord(
+    productionG1A,ArchitectureOpKind::TransformerFFN
+  );
+  const CudaTransformerWinner::PreparedRecord& g5Ffn = firstProductionRecord(
+    productionG5,ArchitectureOpKind::TransformerFFN
+  );
+  testAssert(g1Attention.request.key == g5Attention.request.key);
+  testAssert(g1Ffn.request.key == g5Ffn.request.key);
+  assertPreparedOpIdentity(g1Attention.operation,g5Attention.operation);
+  assertPreparedOpIdentity(g1Ffn.operation,g5Ffn.operation);
+
+  // G2: S361 invalidates only fixed/dynamic-M kernels. The C256 RMS, planar
+  // QKV, learned half2 RoPE, and cuBLAS beta-one residual pieces remain active.
+  CudaTransformerWinner::PreparedPlan productionG2 =
+    CudaTransformerWinner::preparePlan(architectureA,board19,device);
+  assertAllTransformerRecipes(
+    architectureA,productionG2,24,true,
+    assertC256StaticAttentionRecipe,assertC256StaticFfnRecipe
+  );
+
+  // G3: a dense mask retains only mask-safe planar QKV and learned-half2 RoPE.
+  // The no-mask RMS/FA/fused-QKV/beta-one/dual/down tactics all fail closed.
+  CudaTransformerWinner::PreparedPlan productionG3 =
+    CudaTransformerWinner::preparePlan(architectureA,masked,device);
+  assertAllTransformerRecipes(
+    architectureA,productionG3,24,false,
+    assertMaskSafeAttentionRecipe,assertDisabledFfnRecipe
+  );
+
+  // G4: B32*225 is a validated dynamic-M row count. It reuses C256 RMS,
+  // learned RoPE, both residual s3 kernels, and dual FFN, but not B36-only FA4
+  // or the B36-only fused QKV+RoPE recipe.
+  CudaTransformerWinner::PreparedPlan productionG4 =
+    CudaTransformerWinner::preparePlan(architectureA,b32,device);
+  assertAllTransformerRecipes(
+    architectureA,productionG4,24,true,
+    assertB32DynamicAttentionRecipe,assertExactFfnRecipe
+  );
+
+  // G6: C384/H12/D32/F1024 stays on the generic-safe production path while
+  // retaining geometry-general planar QKV, learned half2 RoPE, and beta-one
+  // residual GEMMs. No C256/H8/F768-only component may leak into this plan.
+  CudaTransformerWinner::PreparedPlan productionG6 =
+    CudaTransformerWinner::preparePlan(wideArchitecture,b36,device);
+  assertAllTransformerRecipes(
+    wideArchitecture,productionG6,32,true,assertWideAttentionRecipe,assertGenericFfnRecipe
+  );
+
+  cout << "Production PreparedPlan fingerprints:" << endl;
+  cout << "  G1=" << productionG1A.fingerprint.toHex() << endl;
+  cout << "  G2-S361=" << productionG2.fingerprint.toHex() << endl;
+  cout << "  G3-dense-mask=" << productionG3.fingerprint.toHex() << endl;
+  cout << "  G4-B32=" << productionG4.fingerprint.toHex() << endl;
+  cout << "  G5-48-layers=" << productionG5.fingerprint.toHex() << endl;
+  cout << "  G6-C384-H12-F1024=" << productionG6.fingerprint.toHex() << endl;
 
   map<ArchitectureOpKind,int> reusableByKind;
   map<ArchitectureOpKind,int> changedByKind;

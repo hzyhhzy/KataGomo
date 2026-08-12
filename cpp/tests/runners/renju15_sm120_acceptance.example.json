@@ -1,0 +1,185 @@
+{
+  "variables": {
+    "root": "/root/autodl-tmp/renju15_cuda_opt",
+    "productionTree": "{root}/src/KataGo_production_integration_20260812",
+    "productionBinary": "{productionTree}/build-production/katago",
+    "experimentalTree": "{root}/src/KataGo_batch_outer_qkv_rope_epi_20260812",
+    "experimentalBinary": "{experimentalTree}/build-batch-outer-qkv-rope-epi-clean/katago",
+    "referenceReplayBinary": "{root}/src/KataGo_accuracy_generic_20260812/build-accuracy-generic/katago",
+    "model": "{root}/artifacts/native_model/b24c256h8tflrs-renju15-swa.bin.gz",
+    "corpus": "{root}/results/accuracy_20260812/renju15_val_full_8192_seed20260812.r15c",
+    "compareScript": "{root}/results/accuracy_20260812/compare_r15_outputs.py",
+    "resultDir": "{root}/results/production_acceptance_20260812",
+    "referenceOutput": "{resultDir}/fp32_generic_b36.r15o",
+    "candidateOutput": "{resultDir}/fp16_production_b36.r15o",
+    "accuracyReport": "{resultDir}/fp16_production_b36_vs_fp32.json"
+  },
+  "artifacts": [
+    {
+      "name": "production-binary",
+      "path": "{productionBinary}",
+      "sha256": "REPLACE_WITH_FINAL_PRODUCTION_BINARY_SHA256"
+    },
+    {
+      "name": "experimental-winner-binary",
+      "path": "{experimentalBinary}",
+      "sha256": "e8839e40b0acd5ff8d0f3377c72d6833ffc8d655fe8105687e5f5e64d0cf34c5"
+    },
+    {
+      "name": "fp32-reference-binary",
+      "path": "{referenceReplayBinary}",
+      "sha256": "REPLACE_FROM_ACCURACY_SHA256SUMS"
+    },
+    {
+      "name": "native-model",
+      "path": "{model}",
+      "sha256": "05eb84edbdbfea52ceac3200464d6ec0c94d79cff9050b8d4a428435db7f7d15"
+    },
+    {
+      "name": "identity-corpus",
+      "path": "{corpus}",
+      "sha256": "52924d318cf917b936ba5fab34b7616d2c5e2809bfdb9b806135fdfbcdb96bf7"
+    }
+  ],
+  "commands": {
+    "contract": {
+      "argv": ["{productionBinary}", "testtransformerproductionplan"],
+      "cwd": "{productionTree}",
+      "requiredMarkers": ["Transformer production-plan CPU contract tests passed"]
+    },
+    "referenceReplay": {
+      "argv": [
+        "{referenceReplayBinary}", "replaynn15",
+        "-model", "{model}",
+        "-config", "{root}/src/KataGo_accuracy_generic_20260812/scripts/selfplay.cfg",
+        "-corpus", "{corpus}",
+        "-output", "{referenceOutput}",
+        "-batch-size", "36",
+        "-override-config", "nnMaxBatchSize=36,numNNServerThreadsPerModel=1,gpuToUseThread0=0,requireMaxBoardSize=true,useFP16=false,useNHWC=true,nnRandomize=false"
+      ],
+      "cwd": "{root}/src/KataGo_accuracy_generic_20260812",
+      "requiredMarkers": ["exact physical batch 36"]
+    },
+    "candidateReplay": {
+      "argv": [
+        "{productionBinary}", "replaynn15",
+        "-model", "{model}",
+        "-config", "{productionTree}/scripts/selfplay.cfg",
+        "-corpus", "{corpus}",
+        "-output", "{candidateOutput}",
+        "-batch-size", "36",
+        "-override-config", "nnMaxBatchSize=36,numNNServerThreadsPerModel=1,gpuToUseThread0=0,requireMaxBoardSize=true,useFP16=true,useNHWC=true,nnRandomize=false"
+      ],
+      "cwd": "{productionTree}",
+      "requiredMarkers": [
+        "exact physical batch 36",
+        "CUDA_TRANSFORMER_WINNER_ACTIVE qualification=certified-fast plan=",
+        "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8",
+        "KATAGO_QKV_PLANAR_ACTIVE marker=cublas-hgemm-strided-batched",
+        "RENJU15_SM120_QKV_ROPE_ACTIVE marker=qkv-rope-m128-n128-k32-s3-sw1",
+        "RENJU15_SM120_FA4_ACTIVE marker=tm128-tn128-s1-both16-b36-s225-h8-d32",
+        "RENJU15_SM120_DUAL_FFN_ACTIVE marker=dual-ffn-c256-f768-m128-n64-k32-s3-sw4",
+        "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=out-proj marker=m128-n128-k32-s3-sw1",
+        "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=ffn-down marker=m128-n128-k32-s3-sw1"
+      ],
+      "forbiddenMarkers": ["fallback", "B1 fallback"]
+    },
+    "compareAccuracy": {
+      "argv": [
+        "/root/miniconda3/bin/python", "{compareScript}",
+        "--corpus", "{corpus}",
+        "--reference", "{referenceOutput}",
+        "--candidate", "{candidateOutput}",
+        "--output", "{accuracyReport}",
+        "--expected-batch", "36"
+      ],
+      "cwd": "{root}"
+    },
+    "productionBenchmark": {
+      "argv": [
+        "{productionBinary}", "benchmarknn",
+        "-model", "{model}",
+        "-config", "{productionTree}/scripts/selfplay.cfg",
+        "-boardsize", "15", "-batch-size", "36",
+        "-warmup", "30", "-iterations", "150",
+        "-override-config", "nnMaxBatchSize=36,numNNServerThreadsPerModel=2,gpuToUseThread0=0,gpuToUseThread1=0,requireMaxBoardSize=true,useFP16=true,useNHWC=true,nnRandomize=false",
+        "-json"
+      ],
+      "cwd": "{productionTree}",
+      "parseJson": true,
+      "requiredMarkers": [
+        {"text": "CUDA_TRANSFORMER_WINNER_ACTIVE qualification=certified-fast plan=", "minCount": 2},
+        {"text": "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8", "minCount": 2},
+        {"text": "KATAGO_QKV_PLANAR_ACTIVE marker=cublas-hgemm-strided-batched", "minCount": 2},
+        {"text": "RENJU15_SM120_QKV_ROPE_ACTIVE marker=qkv-rope-m128-n128-k32-s3-sw1", "minCount": 2},
+        {"text": "RENJU15_SM120_FA4_ACTIVE marker=tm128-tn128-s1-both16-b36-s225-h8-d32", "minCount": 2},
+        {"text": "RENJU15_SM120_DUAL_FFN_ACTIVE marker=dual-ffn-c256-f768-m128-n64-k32-s3-sw4", "minCount": 2},
+        {"text": "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=out-proj marker=m128-n128-k32-s3-sw1", "minCount": 2},
+        {"text": "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=ffn-down marker=m128-n128-k32-s3-sw1", "minCount": 2}
+      ],
+      "forbiddenMarkers": ["fallback", "B1 fallback"]
+    },
+    "experimentalBenchmark": {
+      "argv": [
+        "{experimentalBinary}", "benchmarknn",
+        "-model", "{model}",
+        "-config", "{experimentalTree}/scripts/selfplay.cfg",
+        "-boardsize", "15", "-batch-size", "36",
+        "-warmup", "30", "-iterations", "150",
+        "-override-config", "nnMaxBatchSize=36,numNNServerThreadsPerModel=2,gpuToUseThread0=0,gpuToUseThread1=0,requireMaxBoardSize=true,useFP16=true,useNHWC=true,nnRandomize=false",
+        "-json"
+      ],
+      "cwd": "{experimentalTree}",
+      "parseJson": true,
+      "env": {
+        "KATAGO_EXPERIMENTAL_QKV_PLANAR_A": "1",
+        "KATAGO_RENJU15_SM120_ENABLE": "1",
+        "KATAGO_RENJU15_SM120_BATCH": "36",
+        "KATAGO_RENJU15_SM120_ROPE": "precomputed-half2",
+        "KATAGO_RENJU15_SM120_RMS": "warp4-vec8",
+        "KATAGO_RENJU15_SM120_RESIDUAL_BETA1": "1",
+        "KATAGO_RENJU15_SM120_DUAL_FFN": "m128-n64-k32-s3-sw4",
+        "KATAGO_RENJU15_SM120_FA4": "tn128",
+        "KATAGO_RENJU15_SM120_OUTPROJ_GEMM": "m128-n128-k32-s3",
+        "KATAGO_RENJU15_SM120_FFNDOWN_GEMM": "m128-n128-k32-s3",
+        "KATAGO_RENJU15_SM120_QKV_ROPE_GEMM": "m128-n128-k32-s3",
+        "KATAGO_RENJU15_SM120_CUDART_VERSION": "13000",
+        "KATAGO_RENJU15_SM120_DRIVER_VERSION": "13020",
+        "KATAGO_RENJU15_SM120_CUBLAS_VERSION": "130101",
+        "KATAGO_RENJU15_SM120_CUDNN_VERSION": "91400"
+      },
+      "requiredMarkers": [
+        {"text": "RENJU15_SM120_EXACT_GATE_ACTIVE", "minCount": 2},
+        {"text": "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8", "minCount": 2},
+        {"text": "RENJU15_SM120_FA4_ACTIVE marker=tm128-tn128-s1-both16-s225-h8-d32-b36", "minCount": 2},
+        {"text": "RENJU15_SM120_QKV_ROPE_GEMM_ACTIVE marker=qkv-rope-m128-n128-k32-s3-sw1", "minCount": 2},
+        {"text": "RENJU15_SM120_DUAL_FFN_ACTIVE marker=dual-ffn-c256-f768-m128-n64-k32-s3-sw4-exp-b36", "minCount": 2},
+        {"text": "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=out-proj marker=m128-n128-k32-s3-sw1", "minCount": 2},
+        {"text": "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=ffn-down marker=m128-n128-k32-s3-sw1", "minCount": 2}
+      ],
+      "forbiddenMarkers": ["fallback", "RENJU15_SM120_REJECT"]
+    }
+  },
+  "accuracyGates": [
+    {"path": "numRows", "equals": 8192},
+    {"path": "candidateMeta.batch", "equals": 36},
+    {"path": "candidateMeta.usingFP16", "equals": true},
+    {"path": "referenceMeta.usingFP16", "equals": false},
+    {"path": "loss.delta.p0lossRelative", "absMax": 0.01},
+    {"path": "loss.delta.vlossRelative", "absMax": 0.01},
+    {"path": "policyProbability.maxAbs", "max": 0.01},
+    {"path": "policyProbability.top1Agreement", "min": 0.99},
+    {"path": "valueProbability.maxAbs", "max": 0.01},
+    {"path": "valueProbability.top1Agreement", "min": 0.99}
+  ],
+  "perf": {
+    "sequence": ["production", "experimental", "experimental", "production"],
+    "rounds": 2,
+    "minProductionOverExperimental": 0.99,
+    "benchmarkGates": [
+      {"path": "batchSize", "equals": 36},
+      {"path": "numServerThreads", "equals": 2},
+      {"path": "forceMaskAllOnes", "equals": false}
+    ]
+  }
+}
