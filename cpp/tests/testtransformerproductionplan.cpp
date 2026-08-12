@@ -1082,7 +1082,7 @@ void Tests::runTransformerProductionPlanTests() {
     wideArchitecture,productionG6,32,true,
     assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
   );
-  for(int batch: {16,32,36,64,128}) {
+  for(int batch: {1,8,16,24,32,36,64,128}) {
     const RuntimeOpContext bucket = runtimeContext(batch,15,15,MaskMode::None);
     const CudaTransformerWinner::PreparedPlan bucketPlan =
       CudaTransformerWinner::preparePlan(wideArchitecture,bucket,device);
@@ -1100,14 +1100,14 @@ void Tests::runTransformerProductionPlanTests() {
       "ffn-c384-f1024-dynamic-sm120");
   }
 
-  // An unqualified batch or changed board falls back only the C384 local
+  // A batch above the staged dynamic range or changed board falls back only the C384 local
   // specialization. The already-safe generic planar/RoPE/beta-one path
   // remains available, and C256 exact planning above is unchanged.
-  const RuntimeOpContext b24 = runtimeContext(24,15,15,MaskMode::None);
-  const CudaTransformerWinner::PreparedPlan productionG6B24 =
-    CudaTransformerWinner::preparePlan(wideArchitecture,b24,device);
+  const RuntimeOpContext b129 = runtimeContext(129,15,15,MaskMode::None);
+  const CudaTransformerWinner::PreparedPlan productionG6B129 =
+    CudaTransformerWinner::preparePlan(wideArchitecture,b129,device);
   assertAllTransformerRecipes(
-    wideArchitecture,productionG6B24,32,true,
+    wideArchitecture,productionG6B129,32,true,
     assertWideAttentionRecipe,assertGenericFfnRecipe
   );
   const CudaTransformerWinner::PreparedPlan productionG6Board19 =
@@ -1124,7 +1124,7 @@ void Tests::runTransformerProductionPlanTests() {
   cout << "  G4-B32=" << productionG4.fingerprint.toHex() << endl;
   cout << "  G5-48-layers=" << productionG5.fingerprint.toHex() << endl;
   cout << "  G6-C384-H12-F1024=" << productionG6.fingerprint.toHex() << endl;
-  cout << "  G6-C384-B24-local-fallback=" << productionG6B24.fingerprint.toHex() << endl;
+  cout << "  G6-C384-B129-local-fallback=" << productionG6B129.fingerprint.toHex() << endl;
 
   map<ArchitectureOpKind,int> reusableByKind;
   map<ArchitectureOpKind,int> changedByKind;

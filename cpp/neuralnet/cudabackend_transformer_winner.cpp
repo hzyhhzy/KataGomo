@@ -99,12 +99,15 @@ bool validatedDynamicRows(const CapabilityKey& key) {
 }
 
 bool validatedC384Runtime(const CapabilityKey& key) {
-  constexpr int batches[] = {16,32,36,64,128};
+  const int64_t rows = (int64_t)key.batchSize * (int64_t)key.spatialArea;
   if(key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225)
     return false;
-  return std::find(
-    std::begin(batches),std::end(batches),key.batchSize
-  ) != std::end(batches);
+  // All staged C384 kernels accept dynamic M and retain a construction-time
+  // handle for the requested maximum batch. Keep a conservative production
+  // range while representative batches are measured; never enumerate only
+  // the sampled points as if they were the implementation contract.
+  return key.batchSize >= 1 && key.batchSize <= 128 &&
+    rows > 0 && rows <= (1 << 20);
 }
 
 SupportClass matchAttentionSquare(const OpRequest& request, const void*) {
@@ -538,7 +541,7 @@ PreparedPlan preparePlan(
     "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;qkv-rope=sm120-m128n128k32s3;fa4=b36-s225-tm128-tn128-s1-both16;out=sm120-m128n128k32s3sw1",
     matchAttentionExact,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C384_DYNAMIC_SM120,35,
-    "attention:v1;c384-h12-d32;batch-buckets=16,32,36,64,128;s225;planar=cublas-hgemm-strided-square;rms=sm120-warp4vec4x3;rope=learned-half2;out=sm120-c384-m128n128k32s3sw1",
+    "attention:v1;c384-h12-d32;dynamic-M=B*225;B=1..128;s225;planar=cublas-hgemm-strided-square;rms=sm120-warp4vec4x3;rope=learned-half2;out=sm120-c384-m128n128k32s3sw1",
     matchAttentionC384Dynamic,&context);
   registerTactic(registry,FFN_FAMILY,FFN_GENERIC,10,
     "ffn:v1;rms=generic-half;down=cublas-beta1",matchFfnGeneric,&context);
@@ -548,7 +551,7 @@ PreparedPlan preparePlan(
     "ffn:v1;rms=sm120-warp4vec8;dual=sm120-m128n64k32s3sw4;down=sm120-m128n128k32s3sw1",
     matchFfnDynamic,&context);
   registerTactic(registry,FFN_FAMILY,FFN_C384_F1024_DYNAMIC_SM120,35,
-    "ffn:v1;c384-f1024;batch-buckets=16,32,36,64,128;s225;rms=sm120-warp4vec4x3;dual=sm120-c384-f1024-m128n64k32s3sw4;down=sm120-c384-m128n128k32s3sw1",
+    "ffn:v1;c384-f1024;dynamic-M=B*225;B=1..128;s225;rms=sm120-warp4vec4x3;dual=sm120-c384-f1024-m128n64k32s3sw4;down=sm120-c384-m128n128k32s3sw1",
     matchFfnC384Dynamic,&context);
 
   PreparedPlan plan;

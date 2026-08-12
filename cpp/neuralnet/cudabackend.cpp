@@ -2223,8 +2223,6 @@ struct TransformerRMSNormLayer {
           "KATAGO_C384_SM120_RMS_ACTIVE marker=warp4-vec4x3");
         cudaHandles->loggedRms = true;
       }
-      cudaHandles->noteWinnerLaunch(
-        countedWinnerRms,cudaHandles->activeWinnerRms);
       return;
     }
 #endif
@@ -2908,7 +2906,8 @@ struct TransformerAttentionBlock {
     const bool usedPreparedResidual = outProj.applyPreparedResidual(
       cudaHandles,recipe.outProjection,outProjectionKernel,matBatchSize,
       attnOutBuf.buf,trunkBuf,maskBuf,false,usedSpecializedResidual);
-    if(usedSpecializedResidual)
+    if(usedSpecializedResidual && recipe.outProjection ==
+         CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
       cudaHandles->noteWinnerLaunch(
         countedWinnerOutProjection,cudaHandles->activeWinnerOutProjection);
     if(!usedPreparedResidual) {
@@ -3252,8 +3251,10 @@ struct TransformerFFNBlock {
           (marker == nullptr ? "missing" : marker));
         cudaHandles->loggedDualFfn = true;
       }
-      cudaHandles->noteWinnerLaunch(
-        countedWinnerDualFfn,cudaHandles->activeWinnerDualFfn);
+      if(recipe.dualFfn ==
+           CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4)
+        cudaHandles->noteWinnerLaunch(
+          countedWinnerDualFfn,cudaHandles->activeWinnerDualFfn);
     }
 #endif
     if(!usedDualFfn) {
@@ -3283,7 +3284,8 @@ struct TransformerFFNBlock {
       downProjectionKernel,
       matBatchSize,
       ffnBuf.buf,trunkBuf,maskBuf,true,usedSpecializedResidual);
-    if(usedSpecializedResidual)
+    if(usedSpecializedResidual && recipe.downProjection ==
+         CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
       cudaHandles->noteWinnerLaunch(
         countedWinnerFfnDown,cudaHandles->activeWinnerFfnDown);
     if(!usedPreparedResidual) {
