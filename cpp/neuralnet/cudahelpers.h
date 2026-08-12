@@ -65,6 +65,15 @@ void customCudaApplyRoPE(
   half* buf, const half* cosTable, const half* sinTable,
   int batchSize, int seqLen, int numBufHeads, int numKVHeads, int qHeadDim, int numPairs, bool learnableRope, cudaStream_t stream);
 
+// Apply learned RoPE to planar Q and K together. cosSin is sequence-major
+// [seqLen,numKVHeads*numPairs] half2(cos,sin), prepared once per block. This
+// is shape-generic; the launch returns false without enqueue when its runtime
+// dimensions exceed one CUDA block's pair count.
+bool customCudaApplyLearnedQKRoPEHalf2(
+  half* q, half* k, const half2* cosSin,
+  int batchSize, int seqLen, int numQHeads, int numKVHeads,
+  int qHeadDim, int numPairs, cudaStream_t stream);
+
 //Convert a [batchSize, seqLen] mask (0/1) into a fully-materialized additive attention bias of shape
 //[batchSize, seqLen, seqLen] suitable for cuDNN SDPA's [B, 1, S, S] bias input:
 //  bias[b, q, k] = (mask[b, k] != 0 ? 0 : -3e4).

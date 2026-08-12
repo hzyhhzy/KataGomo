@@ -323,6 +323,7 @@ struct CudaHandles {
   std::unique_ptr<CudaTransformerWinner::PreparedPlan> transformerPlan;
   bool loggedRms;
   bool loggedPlanarQkv;
+  bool loggedLearnedRope;
   bool loggedQkvRope;
   bool loggedFa4;
   bool loggedDualFfn;
@@ -343,6 +344,7 @@ struct CudaHandles {
       transformerPlan(nullptr),
       loggedRms(false),
       loggedPlanarQkv(false),
+      loggedLearnedRope(false),
       loggedQkvRope(false),
       loggedFa4(false),
       loggedDualFfn(false),
@@ -1885,14 +1887,13 @@ struct TransformerAttentionBlock {
       CudaUtils::mallocAndCopyToDevice(name + ":ropeCos", cosTableData.data(), (int)cosTableData.size(), ropeCosTable, useFP16);
       CudaUtils::mallocAndCopyToDevice(name + ":ropeSin", sinTableData.data(), (int)sinTableData.size(), ropeSinTable, useFP16);
       if(recipe.rope == CudaTransformerWinner::RopeTactic::LearnedHalf2 &&
-         recipe.qkvRope != CudaTransformerWinner::QkvRopeTactic::Disabled &&
          useFP16 && learnableRope) {
-        const int totalHP = numHeads * ropeNumPairs;
-        vector<float> cosSinTableData((size_t)seqLen * totalHP * 2);
+        const int totalKVPairs = numKVHeads * ropeNumPairs;
+        vector<float> cosSinTableData((size_t)seqLen * totalKVPairs * 2);
         for(int xy = 0; xy < seqLen; xy++) {
-          for(int hp = 0; hp < totalHP; hp++) {
+          for(int hp = 0; hp < totalKVPairs; hp++) {
             const size_t source = (size_t)hp * seqLen + xy;
-            const size_t destination = ((size_t)xy * totalHP + hp) * 2;
+            const size_t destination = ((size_t)xy * totalKVPairs + hp) * 2;
             cosSinTableData[destination] = cosTableData[source];
             cosSinTableData[destination + 1] = sinTableData[source];
           }
@@ -2038,13 +2039,28 @@ struct TransformerAttentionBlock {
     // Step 3: Apply RoPE to Q and K
     // Q is [qTotalDim, seqLen*batchSize] column-major = [batchSize*seqLen, qTotalDim] row-major
     if(useRope && !usedFusedQkvRope) {
-      if(!usingFP16) {
+      bool usedLearnedHalf2 = false;
+      if(usingFP16 && learnableRope &&
+         recipe.rope == CudaTransformerWinner::RopeTactic::LearnedHalf2 &&
+         ropeCosSinTable != nullptr) {
+        usedLearnedHalf2 = customCudaApplyLearnedQKRoPEHalf2(
+          (half*)qData,(half*)kData,(const half2*)ropeCosSinTable,
+          batchSize,seqLen,numHeads,numKVHeads,qHeadDim,ropeNumPairs,
+          cudaHandles->stream);
+        if(usedLearnedHalf2 && !cudaHandles->loggedLearnedRope &&
+           cudaHandles->logger != NULL) {
+          cudaHandles->logger->write(
+            "KATAGO_LEARNED_ROPE_HALF2_ACTIVE marker=qk-fused-precomputed");
+          cudaHandles->loggedLearnedRope = true;
+        }
+      }
+      if(!usedLearnedHalf2 && !usingFP16) {
         customCudaApplyRoPE((float*)qData, (const float*)ropeCosTable, (const float*)ropeSinTable,
           batchSize, seqLen, numHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope,cudaHandles->stream);
         customCudaApplyRoPE((float*)kData, (const float*)ropeCosTable, (const float*)ropeSinTable,
           batchSize, seqLen, numKVHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope,cudaHandles->stream);
       }
-      else {
+      else if(!usedLearnedHalf2) {
         customCudaApplyRoPE((half*)qData, (const half*)ropeCosTable, (const half*)ropeSinTable,
           batchSize, seqLen, numHeads, numKVHeads, qHeadDim, ropeNumPairs, learnableRope,cudaHandles->stream);
         customCudaApplyRoPE((half*)kData, (const half*)ropeCosTable, (const half*)ropeSinTable,

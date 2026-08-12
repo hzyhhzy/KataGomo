@@ -211,6 +211,7 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
     recipe.rmsNorm = RmsNormTactic::Sm120C256Warp4Vec8;
     [[fallthrough]];
   case ATTENTION_SQUARE_LEARNED_ROPE:
+    recipe.rope = RopeTactic::LearnedHalf2;
     [[fallthrough]];
   case ATTENTION_SQUARE_GENERIC:
     recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
@@ -218,6 +219,7 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
       recipe.outProjection = ResidualTactic::CublasHgemmBetaOne;
     break;
   case ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE:
+    recipe.rope = RopeTactic::LearnedHalf2;
     [[fallthrough]];
   case ATTENTION_SQUARE_MASK_SAFE:
     recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
@@ -349,19 +351,19 @@ PreparedPlan preparePlan(
     "attention:v1;planar=cublas-hgemm-strided-square;rope=generic;out=cublas-beta1",
     matchAttentionSquare,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_LEARNED_ROPE,11,
-    "attention:v1;planar=cublas-hgemm-strided-square;rope=generic;out=cublas-beta1",
+    "attention:v1;planar=cublas-hgemm-strided-square;rope=learned-half2;out=cublas-beta1",
     matchAttentionSquareLearnedRope,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_MASK_SAFE,10,
     "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=generic;residual=generic-masked",
     matchAttentionSquareMaskSafe,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE,11,
-    "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=generic;residual=generic-masked",
+    "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=learned-half2;residual=generic-masked",
     matchAttentionSquareLearnedRopeMaskSafe,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_SM120,20,
-    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=generic;out=cublas-beta1",
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=learned-half2;out=cublas-beta1",
     matchAttentionC256,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_DYNAMIC_SM120,30,
-    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=generic;out=sm120-m128n128k32s3sw1",
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=learned-half2;out=sm120-m128n128k32s3sw1",
     matchAttentionDynamic,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_B36_FA4_SM120,40,
     "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;qkv-rope=sm120-m128n128k32s3;fa4=b36-s225-tm128-tn128-s1-both16;out=sm120-m128n128k32s3sw1",

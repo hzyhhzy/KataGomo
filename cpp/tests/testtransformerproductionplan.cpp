@@ -436,7 +436,7 @@ static void assertB32DynamicAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
-  testAssert(recipe.rope == RopeTactic::Generic);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::Sm120M128N128K32S3Sw1);
@@ -448,7 +448,7 @@ static void assertC256StaticAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
-  testAssert(recipe.rope == RopeTactic::Generic);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
@@ -467,7 +467,7 @@ static void assertMaskSafeAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
-  testAssert(recipe.rope == RopeTactic::Generic);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::GenericAdd);
@@ -493,7 +493,7 @@ static void assertWideAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
-  testAssert(recipe.rope == RopeTactic::Generic);
+  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);

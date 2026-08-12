@@ -2035,6 +2035,67 @@ void customCudaApplyRoPE(
   );
 }
 
+__global__
+void applyLearnedQKRoPEHalf2Kernel(
+  half* q, half* k, const half2* cosSin,
+  int batchSize, int seqLen, int numQHeads, int numKVHeads,
+  int qHeadDim, int numPairs
+) {
+#ifdef CUDA_SUPPORTS_FP16
+  const int xy = blockIdx.x;
+  const int n = blockIdx.y;
+  const int hp = threadIdx.x;
+  const int qPairs = numQHeads * numPairs;
+  const int kvPairs = numKVHeads * numPairs;
+  if(xy >= seqLen || n >= batchSize || hp >= qPairs)
+    return;
+
+  const int qHead = hp / numPairs;
+  const int pair = hp - qHead * numPairs;
+  const int kvHead = qHead * numKVHeads / numQHeads;
+  const float2 cs = __half22float2(
+    cosSin[(size_t)xy * kvPairs + kvHead * numPairs + pair]);
+  const size_t row = (size_t)n * seqLen + xy;
+  const int qTotalDim = numQHeads * qHeadDim;
+  const size_t qOffset = row * qTotalDim + qHead * qHeadDim + 2 * pair;
+  const float2 qv = __half22float2(*reinterpret_cast<half2*>(q + qOffset));
+  *reinterpret_cast<half2*>(q + qOffset) = __floats2half2_rn(
+    qv.x * cs.x - qv.y * cs.y,
+    qv.x * cs.y + qv.y * cs.x);
+
+  if(hp < kvPairs) {
+    const int kHead = hp / numPairs;
+    const int kPair = hp - kHead * numPairs;
+    const float2 kcs = __half22float2(
+      cosSin[(size_t)xy * kvPairs + hp]);
+    const int kTotalDim = numKVHeads * qHeadDim;
+    const size_t kOffset = row * kTotalDim + kHead * qHeadDim + 2 * kPair;
+    const float2 kv = __half22float2(*reinterpret_cast<half2*>(k + kOffset));
+    *reinterpret_cast<half2*>(k + kOffset) = __floats2half2_rn(
+      kv.x * kcs.x - kv.y * kcs.y,
+      kv.x * kcs.y + kv.y * kcs.x);
+  }
+#endif
+}
+
+bool customCudaApplyLearnedQKRoPEHalf2(
+  half* q, half* k, const half2* cosSin,
+  int batchSize, int seqLen, int numQHeads, int numKVHeads,
+  int qHeadDim, int numPairs, cudaStream_t stream
+) {
+  const int qPairs = numQHeads * numPairs;
+  if(q == nullptr || k == nullptr || cosSin == nullptr || batchSize <= 0 ||
+     seqLen <= 0 || numQHeads <= 0 || numKVHeads <= 0 ||
+     numQHeads % numKVHeads != 0 || qHeadDim <= 0 || numPairs <= 0 ||
+     numPairs * 2 > qHeadDim || qPairs <= 0 || qPairs > 1024)
+    return false;
+  dim3 blocks(seqLen,batchSize,1);
+  const int threads = ((qPairs + 31) / 32) * 32;
+  applyLearnedQKRoPEHalf2Kernel<<<blocks,threads,0,stream>>>(
+    q,k,cosSin,batchSize,seqLen,numQHeads,numKVHeads,qHeadDim,numPairs);
+  return true;
+}
+
 //--------------------------------------------------------------------------------------------------------------
 // FlashAttention-style scaled dot product attention with online softmax (tiled).
 // Grid: (numQGroups, batchSize * numHeads), block: BLOCK_Q threads.
