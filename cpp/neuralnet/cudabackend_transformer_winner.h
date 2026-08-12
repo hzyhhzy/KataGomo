@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace CudaTransformerWinner {
@@ -63,9 +64,9 @@ enum class ResidualTactic : uint32_t {
 };
 
 // Per-launch C384 dispatch is deliberately separate from construction-time
-// recipe selection. All specialized and generic resources remain prepared;
-// this pure policy chooses only which already-prepared path to enqueue for the
-// actual row count seen by a launch. A zero range disables that path.
+// recipe selection. Eligible pieces prepare their specialized state and keep
+// a generic path; pieces with a zero range may select generic directly and
+// avoid unused state. This pure policy decides by the actual launch row count.
 enum class C384RuntimePiece : uint32_t {
   RmsNorm = 0,
   DualFfn = 1,
@@ -95,6 +96,18 @@ struct C384RuntimeGatePolicy {
   C384RuntimePiecePolicy outProjection;
   C384RuntimePiecePolicy downProjection;
 };
+
+// Evidence-locked production policy for C384/H12/D32/F1024 on 15x15 SM120.
+// The returned object is immutable and process-lifetime stable.
+const C384RuntimeGatePolicy& productionC384RuntimeGatePolicy();
+
+// Hash a stable tactic encoding together with every numeric gate field in a
+// fixed little-endian order. This prevents a plan fingerprint from claiming a
+// stale runtime policy when only a threshold or disabled range changed.
+CudaOpRegistry::RecipeFingerprint fingerprintRecipeWithC384RuntimeGate(
+  const std::string& stableTacticEncoding,
+  const C384RuntimeGatePolicy& policy
+);
 
 bool shouldUseC384RuntimePiece(
   C384RuntimePiece piece,

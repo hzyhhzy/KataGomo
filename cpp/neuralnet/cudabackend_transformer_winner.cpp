@@ -13,6 +13,9 @@ namespace {
 constexpr uint64_t ATTENTION_FAMILY = 0x4B41544154544E31ULL; // KATATTN1
 constexpr uint64_t FFN_FAMILY = 0x4B415446464E3031ULL;       // KATFFN01
 constexpr uint32_t RMS_EPSILON_1E6_BITS = 0x358637BDu;
+constexpr uint32_t C384_ROWS_PER_BATCH = 225;
+constexpr uint32_t C384_MAX_TOKEN_ROWS = 1u << 20;
+constexpr uint32_t C384_MAX_BATCH = C384_MAX_TOKEN_ROWS / C384_ROWS_PER_BATCH;
 
 enum AttentionVariant : uint64_t {
   ATTENTION_SQUARE_GENERIC = 1,
@@ -100,14 +103,13 @@ bool validatedDynamicRows(const CapabilityKey& key) {
 
 bool validatedC384Rows(const CapabilityKey& key) {
   const int64_t rows = (int64_t)key.batchSize * (int64_t)key.spatialArea;
-  if(key.spatialArea != 225)
+  if(key.spatialArea != (int)C384_ROWS_PER_BATCH)
     return false;
   // All staged C384 kernels accept dynamic M and retain a construction-time
-  // handle for the requested maximum batch. Keep a conservative production
-  // range while representative batches are measured; never enumerate only
-  // the sampled points as if they were the implementation contract.
-  return key.batchSize >= 1 && key.batchSize <= 128 &&
-    rows > 0 && rows <= (1 << 20);
+  // handle for the requested maximum batch. The implementation limit is a
+  // token-row resource bound, not the largest sampled benchmark batch.
+  return key.batchSize >= 1 && rows > 0 &&
+    rows <= (int64_t)C384_MAX_TOKEN_ROWS;
 }
 
 bool validatedC384AttentionRuntime(const CapabilityKey& key) {
@@ -231,18 +233,31 @@ void registerTactic(
   uint64_t family,
   uint64_t variant,
   int32_t priority,
-  const char* recipe,
+  const RecipeFingerprint& recipe,
   MatchTacticFn match,
   RegistrationContext* context
 ) {
   TacticRegistration registration{};
   registration.id = TacticId{family,variant};
-  registration.recipe = fingerprintRecipe(recipe);
+  registration.recipe = recipe;
   registration.priority = priority;
   registration.match = match;
   registration.prepare = prepareNoAllocation;
   registration.userData = context;
   registry.registerTactic(registration);
+}
+
+void registerTactic(
+  Registry& registry,
+  uint64_t family,
+  uint64_t variant,
+  int32_t priority,
+  const char* recipe,
+  MatchTacticFn match,
+  RegistrationContext* context
+) {
+  registerTactic(
+    registry,family,variant,priority,fingerprintRecipe(recipe),match,context);
 }
 
 AttentionRecipe attentionRecipe(const PreparedOp* operation) {
@@ -252,7 +267,7 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
   switch(operation->tactic.variant) {
   case ATTENTION_C384_DYNAMIC_SM120:
     recipe.rmsNorm = RmsNormTactic::Sm120C384Warp4Vec4x3;
-    recipe.outProjection = ResidualTactic::Sm120C384M128N128K32S3Sw1;
+    recipe.outProjection = ResidualTactic::CublasHgemmBetaOne;
     recipe.rope = RopeTactic::LearnedHalf2;
     recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
     break;
@@ -295,7 +310,7 @@ FfnRecipe ffnRecipe(const PreparedOp* operation) {
   case FFN_C384_F1024_DYNAMIC_SM120:
     recipe.rmsNorm = RmsNormTactic::Sm120C384Warp4Vec4x3;
     recipe.dualFfn = DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
-    recipe.downProjection = ResidualTactic::Sm120C384M128N128K32S3Sw1;
+    recipe.downProjection = ResidualTactic::CublasHgemmBetaOne;
     break;
   case FFN_C256_F768_DYNAMIC_SM120:
     recipe.dualFfn = DualFfnTactic::Sm120C256F768M128N64K32S3Sw4;
@@ -376,6 +391,59 @@ uint64_t makeRuntimeLibraryFingerprint(
     }
   }
   return hash == 0 ? 1 : hash;
+}
+
+const C384RuntimeGatePolicy& productionC384RuntimeGatePolicy() {
+  // Balanced measurements through B128 select dual FFN for every valid actual
+  // batch, and its dynamic-M handle remains structurally valid up to the
+  // configured maximum (bounded by C384_MAX_TOKEN_ROWS). RMS is positive from
+  // B2 upward. B1 also measured positive in a single evaluator, but evaluator-
+  // local lane counts cannot see other evaluator instances sharing the GPU;
+  // B1 therefore uses dual-only for every topology. Standalone out/down
+  // residual tactics never cleared the required +2% margin, so their ranges
+  // remain disabled and cuBLAS beta=1 is used.
+  static const C384RuntimeGatePolicy policy = []() {
+    C384RuntimeGatePolicy value;
+    value.rowsPerBatch = C384_ROWS_PER_BATCH;
+    value.rmsNorm.conservative = C384RuntimeBatchRange{2,C384_MAX_BATCH};
+    value.rmsNorm.exactlyTwoSameGpuLanes = C384RuntimeBatchRange{2,C384_MAX_BATCH};
+    value.dualFfn.conservative = C384RuntimeBatchRange{1,C384_MAX_BATCH};
+    value.dualFfn.exactlyTwoSameGpuLanes = C384RuntimeBatchRange{1,C384_MAX_BATCH};
+    return value;
+  }();
+  return policy;
+}
+
+RecipeFingerprint fingerprintRecipeWithC384RuntimeGate(
+  const std::string& stableTacticEncoding,
+  const C384RuntimeGatePolicy& policy
+) {
+  std::vector<uint8_t> bytes;
+  const char domain[] = "katago-c384-runtime-gate-recipe";
+  bytes.insert(bytes.end(),domain,domain + sizeof(domain) - 1);
+  const auto appendU32 = [&](uint32_t value) {
+    for(int byte = 0; byte < 4; byte++)
+      bytes.push_back((uint8_t)((value >> (byte * 8)) & 0xFFu));
+  };
+  const auto appendRange = [&](const C384RuntimeBatchRange& range) {
+    appendU32(range.minInclusive);
+    appendU32(range.maxInclusive);
+  };
+  const auto appendPiece = [&](const C384RuntimePiecePolicy& piece) {
+    appendRange(piece.conservative);
+    appendRange(piece.exactlyTwoSameGpuLanes);
+  };
+
+  appendU32(1);  // Canonical C384 gate encoding schema.
+  appendU32((uint32_t)stableTacticEncoding.size());
+  bytes.insert(
+    bytes.end(),stableTacticEncoding.begin(),stableTacticEncoding.end());
+  appendU32(policy.rowsPerBatch);
+  appendPiece(policy.rmsNorm);
+  appendPiece(policy.dualFfn);
+  appendPiece(policy.outProjection);
+  appendPiece(policy.downProjection);
+  return fingerprintRecipe(bytes.data(),bytes.size());
 }
 
 bool shouldUseC384RuntimePiece(
@@ -592,7 +660,9 @@ PreparedPlan preparePlan(
     "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;qkv-rope=sm120-m128n128k32s3;fa4=b36-s225-tm128-tn128-s1-both16;out=sm120-m128n128k32s3sw1",
     matchAttentionExact,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C384_DYNAMIC_SM120,35,
-    "attention:v1;c384-h12-d32;dynamic-M=B*225;B=1..128;s225;planar=cublas-hgemm-strided-square;rms=sm120-warp4vec4x3;rope=learned-half2;out=sm120-c384-m128n128k32s3sw1",
+    fingerprintRecipeWithC384RuntimeGate(
+      "attention:v3;c384-h12-d32;dynamic-M=B*225;max-M=1048576;s225;planar=cublas-hgemm-strided-square;rms=sm120-warp4vec4x3;rope=learned-half2;out=cublas-beta1",
+      productionC384RuntimeGatePolicy()),
     matchAttentionC384Dynamic,&context);
   registerTactic(registry,FFN_FAMILY,FFN_GENERIC,10,
     "ffn:v1;rms=generic-half;down=cublas-beta1",matchFfnGeneric,&context);
@@ -602,7 +672,9 @@ PreparedPlan preparePlan(
     "ffn:v1;rms=sm120-warp4vec8;dual=sm120-m128n64k32s3sw4;down=sm120-m128n128k32s3sw1",
     matchFfnDynamic,&context);
   registerTactic(registry,FFN_FAMILY,FFN_C384_F1024_DYNAMIC_SM120,35,
-    "ffn:v1;c384-f1024;dynamic-M=B*225;B=1..128;s225;rms=sm120-warp4vec4x3;dual=sm120-c384-f1024-m128n64k32s3sw4;down=sm120-c384-m128n128k32s3sw1",
+    fingerprintRecipeWithC384RuntimeGate(
+      "ffn:v3;c384-f1024;dynamic-M=B*225;max-M=1048576;s225;rms=sm120-warp4vec4x3;dual=sm120-c384-f1024-m128n64k32s3sw4;down=cublas-beta1",
+      productionC384RuntimeGatePolicy()),
     matchFfnC384Dynamic,&context);
 
   PreparedPlan plan;

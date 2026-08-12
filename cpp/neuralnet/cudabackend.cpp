@@ -458,6 +458,10 @@ struct CudaHandles {
   bool loggedOutProjection;
   bool loggedFfnDown;
   bool loggedCublasResidual;
+  bool loggedC384RmsGateFallback;
+  bool loggedC384DualFfnGateFallback;
+  bool loggedC384OutProjectionGateFallback;
+  bool loggedC384DownProjectionGateFallback;
   bool loggedWinner;
 #if KATAGO_CUDA_HAS_SDPA
   std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
@@ -516,6 +520,10 @@ struct CudaHandles {
       loggedOutProjection(false),
       loggedFfnDown(false),
       loggedCublasResidual(false),
+      loggedC384RmsGateFallback(false),
+      loggedC384DualFfnGateFallback(false),
+      loggedC384OutProjectionGateFallback(false),
+      loggedC384DownProjectionGateFallback(false),
       loggedWinner(false),
 #if KATAGO_CUDA_HAS_SDPA
       loggedSdpaKeys(),
@@ -845,6 +853,74 @@ struct CudaHandles {
     }
   }
 #endif
+
+  int sameGpuEvaluatorConcurrency() const {
+    return transformerPlan == nullptr ? 1 :
+      std::max(1,(int)transformerPlan->runtime.streamCount);
+  }
+
+  bool shouldUseC384RuntimePiece(
+    CudaTransformerWinner::C384RuntimePiece piece,
+    int actualRows
+  ) const {
+    if(transformerPlan == nullptr)
+      return false;
+    const CudaTransformerWinner::C384RuntimeGatePolicy& policy =
+      CudaTransformerWinner::productionC384RuntimeGatePolicy();
+    const int64_t configuredMaxRows =
+      (int64_t)transformerPlan->runtime.batchSize * (int64_t)policy.rowsPerBatch;
+    // Every specialized handle was prepared for runtime.batchSize. The
+    // evaluator should never exceed that maximum, but enforce it here for RMS
+    // too (the dual handle repeats the same bound in supports()).
+    if(actualRows <= 0 || configuredMaxRows <= 0 ||
+       (int64_t)actualRows > configuredMaxRows)
+      return false;
+    return CudaTransformerWinner::shouldUseC384RuntimePiece(
+      piece,actualRows,sameGpuEvaluatorConcurrency(),
+      policy);
+  }
+
+  void logC384RuntimeGateFallbackOnce(
+    CudaTransformerWinner::C384RuntimePiece piece,
+    int actualRows
+  ) {
+    bool* logged = nullptr;
+    const char* pieceName = "unknown";
+    switch(piece) {
+    case CudaTransformerWinner::C384RuntimePiece::RmsNorm:
+      logged = &loggedC384RmsGateFallback;
+      pieceName = "rms-norm";
+      break;
+    case CudaTransformerWinner::C384RuntimePiece::DualFfn:
+      logged = &loggedC384DualFfnGateFallback;
+      pieceName = "dual-ffn";
+      break;
+    case CudaTransformerWinner::C384RuntimePiece::OutProjection:
+      logged = &loggedC384OutProjectionGateFallback;
+      pieceName = "out-proj";
+      break;
+    case CudaTransformerWinner::C384RuntimePiece::DownProjection:
+      logged = &loggedC384DownProjectionGateFallback;
+      pieceName = "ffn-down";
+      break;
+    }
+    if(logged == nullptr || *logged || logger == nullptr)
+      return;
+
+    const CudaTransformerWinner::C384RuntimeGatePolicy& policy =
+      CudaTransformerWinner::productionC384RuntimeGatePolicy();
+    const bool integralBatch = actualRows > 0 && policy.rowsPerBatch > 0 &&
+      (uint32_t)actualRows % policy.rowsPerBatch == 0;
+    logger->write(
+      string("KATAGO_C384_RUNTIME_GATE_FALLBACK piece=") + pieceName +
+      " actualRows=" + Global::intToString(actualRows) +
+      " actualBatch=" + (integralBatch ?
+        Global::intToString(actualRows / (int)policy.rowsPerBatch) : "tail") +
+      " sameGpuEvaluatorConcurrency=" +
+        Global::intToString(sameGpuEvaluatorConcurrency()) +
+      " fallback=generic-prepared policy=c384-measured-v1");
+    *logged = true;
+  }
 
   static CudaHandles* cudaHandlesTesting() {
     const int gpuIdxForThisThread = 0;
@@ -1573,6 +1649,7 @@ struct MatMulLayer {
     const void* inputBuf,
     void* residualBuf,
     const void* maskBuf,
+    bool c384MeasuredGenericResidual,
     bool ffnDown,
     bool& usedSpecialized
   ) const {
@@ -1580,11 +1657,22 @@ struct MatMulLayer {
     if(!usingFP16 || maskBuf != nullptr || tactic ==
        CudaTransformerWinner::ResidualTactic::GenericAdd)
       return false;
+    const CudaTransformerWinner::C384RuntimePiece c384Piece = ffnDown ?
+      CudaTransformerWinner::C384RuntimePiece::DownProjection :
+      CudaTransformerWinner::C384RuntimePiece::OutProjection;
+    if(c384MeasuredGenericResidual)
+      cudaHandles->logC384RuntimeGateFallbackOnce(c384Piece,matBatchSize);
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
+    const bool c384 = tactic == CudaTransformerWinner::ResidualTactic::
+      Sm120C384M128N128K32S3Sw1;
     const bool specializedSm120 =
       tactic == CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1 ||
-      tactic == CudaTransformerWinner::ResidualTactic::Sm120C384M128N128K32S3Sw1;
-    if(specializedSm120 &&
+      c384;
+    const bool c384RuntimeAllowed = !c384 ||
+      cudaHandles->shouldUseC384RuntimePiece(c384Piece,matBatchSize);
+    if(c384 && !c384RuntimeAllowed)
+      cudaHandles->logC384RuntimeGateFallbackOnce(c384Piece,matBatchSize);
+    if(specializedSm120 && c384RuntimeAllowed &&
        katago_renju15_residual_gemm_sm120_supports(
          preparedKernel,matBatchSize,inChannels,outChannels,true,true)) {
       CUDA_ERR(name.c_str(),katago_renju15_residual_gemm_sm120_launch(
@@ -1596,8 +1684,6 @@ struct MatMulLayer {
       if(!logged && cudaHandles->logger != NULL) {
         const char* marker = katago_renju15_residual_gemm_sm120_active_marker(
           preparedKernel);
-        const bool c384 = tactic == CudaTransformerWinner::ResidualTactic::
-          Sm120C384M128N128K32S3Sw1;
         cudaHandles->logger->write(
           string(c384 ? "KATAGO_C384_SM120_RESIDUAL_GEMM_ACTIVE family=" :
                         "RENJU15_SM120_RESIDUAL_GEMM_ACTIVE family=") +
@@ -2215,11 +2301,17 @@ struct TransformerRMSNormLayer {
         countedWinnerRms,cudaHandles->activeWinnerRms);
       return;
     }
-    if(tactic == CudaTransformerWinner::RmsNormTactic::Sm120C384Warp4Vec4x3 &&
-       usingFP16 && numChannels == 384 && maskBuf == nullptr) {
+    const bool c384RmsEligible =
+      tactic == CudaTransformerWinner::RmsNormTactic::Sm120C384Warp4Vec4x3 &&
+      usingFP16 && numChannels == 384 && maskBuf == nullptr;
+    const int actualRows = batchSize * xySize;
+    const bool c384RmsAllowed = c384RmsEligible &&
+      cudaHandles->shouldUseC384RuntimePiece(
+        CudaTransformerWinner::C384RuntimePiece::RmsNorm,actualRows);
+    if(c384RmsAllowed) {
       CUDA_ERR(name.c_str(),Renju15Sm120::launchRmsNorm384(
         (const half*)inputBuf,(half*)outputBuf,(const half*)weightBuf,
-        batchSize * xySize,epsilon,Renju15Sm120::RmsNorm384Tactic::Warp4Vec4x3,
+        actualRows,epsilon,Renju15Sm120::RmsNorm384Tactic::Warp4Vec4x3,
         cudaHandles->stream));
       if(!cudaHandles->loggedRms && cudaHandles->logger != NULL) {
         cudaHandles->logger->write(
@@ -2228,6 +2320,9 @@ struct TransformerRMSNormLayer {
       }
       return;
     }
+    if(c384RmsEligible)
+      cudaHandles->logC384RuntimeGateFallbackOnce(
+        CudaTransformerWinner::C384RuntimePiece::RmsNorm,actualRows);
 #endif
     // RMSNormGammaBetaNHWC with gamma=weight, beta=zero, mask, identity activation.
     if(!usingFP16) {
@@ -2906,9 +3001,14 @@ struct TransformerAttentionBlock {
     // Step 5-6: output projection and residual epilogue. The prepared path
     // writes directly into trunkBuf with beta=1.
     bool usedSpecializedResidual = false;
+    const bool c384MeasuredGenericResidual =
+      recipe.rmsNorm == CudaTransformerWinner::RmsNormTactic::Sm120C384Warp4Vec4x3 &&
+      recipe.outProjection ==
+        CudaTransformerWinner::ResidualTactic::CublasHgemmBetaOne;
     const bool usedPreparedResidual = outProj.applyPreparedResidual(
       cudaHandles,recipe.outProjection,outProjectionKernel,matBatchSize,
-      attnOutBuf.buf,trunkBuf,maskBuf,false,usedSpecializedResidual);
+      attnOutBuf.buf,trunkBuf,maskBuf,c384MeasuredGenericResidual,
+      false,usedSpecializedResidual);
     if(usedSpecializedResidual && recipe.outProjection ==
          CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
       cudaHandles->noteWinnerLaunch(
@@ -3237,7 +3337,15 @@ struct TransformerFFNBlock {
         CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4 ||
       recipe.dualFfn ==
         CudaTransformerWinner::DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
-    if(!usedDualFfn && specializedDualFfn &&
+    const bool c384DualFfn = recipe.dualFfn == CudaTransformerWinner::
+      DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
+    const bool c384DualFfnRuntimeAllowed = !c384DualFfn ||
+      cudaHandles->shouldUseC384RuntimePiece(
+        CudaTransformerWinner::C384RuntimePiece::DualFfn,matBatchSize);
+    if(c384DualFfn && !c384DualFfnRuntimeAllowed)
+      cudaHandles->logC384RuntimeGateFallbackOnce(
+        CudaTransformerWinner::C384RuntimePiece::DualFfn,matBatchSize);
+    if(!usedDualFfn && specializedDualFfn && c384DualFfnRuntimeAllowed &&
        katago_renju15_dual_ffn_sm120_supports(
          dualFfnKernel,matBatchSize,numChannels,ffnChannels,
          usingFP16,usingNHWC,maskBuf == nullptr)) {
@@ -3249,11 +3357,9 @@ struct TransformerFFNBlock {
       if(!cudaHandles->loggedDualFfn && cudaHandles->logger != NULL) {
         const char* marker = katago_renju15_dual_ffn_sm120_active_marker(
           dualFfnKernel);
-        const bool c384 = recipe.dualFfn == CudaTransformerWinner::
-          DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
         cudaHandles->logger->write(
-          string(c384 ? "KATAGO_C384_SM120_DUAL_FFN_ACTIVE marker=" :
-                        "RENJU15_SM120_DUAL_FFN_ACTIVE marker=") +
+          string(c384DualFfn ? "KATAGO_C384_SM120_DUAL_FFN_ACTIVE marker=" :
+                              "RENJU15_SM120_DUAL_FFN_ACTIVE marker=") +
           (marker == nullptr ? "missing" : marker));
         cudaHandles->loggedDualFfn = true;
       }
@@ -3285,11 +3391,15 @@ struct TransformerFFNBlock {
 
     // Step 4-5: down projection and residual epilogue.
     bool usedSpecializedResidual = false;
+    const bool c384MeasuredGenericResidual =
+      recipe.dualFfn == CudaTransformerWinner::DualFfnTactic::
+        Sm120C384F1024M128N64K32S3Sw4 &&
+      recipe.downProjection ==
+        CudaTransformerWinner::ResidualTactic::CublasHgemmBetaOne;
     const bool usedPreparedResidual = linear2.applyPreparedResidual(
-      cudaHandles,recipe.downProjection,
-      downProjectionKernel,
-      matBatchSize,
-      ffnBuf.buf,trunkBuf,maskBuf,true,usedSpecializedResidual);
+      cudaHandles,recipe.downProjection,downProjectionKernel,matBatchSize,
+      ffnBuf.buf,trunkBuf,maskBuf,c384MeasuredGenericResidual,
+      true,usedSpecializedResidual);
     if(usedSpecializedResidual && recipe.downProjection ==
          CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
       cudaHandles->noteWinnerLaunch(

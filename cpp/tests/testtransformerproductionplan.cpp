@@ -512,7 +512,7 @@ static void assertC384DynamicAttentionRecipe(
   testAssert(recipe.rope == RopeTactic::LearnedHalf2);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
-  testAssert(recipe.outProjection == ResidualTactic::Sm120C384M128N128K32S3Sw1);
+  testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
 }
 
 static void assertC384DynamicFfnRecipe(
@@ -521,7 +521,7 @@ static void assertC384DynamicFfnRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C384Warp4Vec4x3);
   testAssert(recipe.dualFfn == DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4);
-  testAssert(recipe.downProjection == ResidualTactic::Sm120C384M128N128K32S3Sw1);
+  testAssert(recipe.downProjection == ResidualTactic::CublasHgemmBetaOne);
 }
 
 template<typename AttentionAssertion, typename FfnAssertion>
@@ -644,6 +644,81 @@ static void assertC384RuntimeGateContract() {
   testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::OutProjection,16*225,4,policy));
 }
 
+static void assertC384ProductionRuntimeGatePolicy() {
+  using CudaTransformerWinner::C384RuntimeBatchRange;
+  using CudaTransformerWinner::C384RuntimeGatePolicy;
+  using CudaTransformerWinner::C384RuntimePiece;
+  using CudaTransformerWinner::fingerprintRecipeWithC384RuntimeGate;
+  using CudaTransformerWinner::productionC384RuntimeGatePolicy;
+  using CudaTransformerWinner::shouldUseC384RuntimePiece;
+
+  const C384RuntimeGatePolicy& policy = productionC384RuntimeGatePolicy();
+  testAssert(policy.rowsPerBatch == 225);
+
+  // The dual FFN kernel is selected for every valid actual batch, independent
+  // of the handle's configured maximum and of measured evaluator topology.
+  for(int concurrency: {1,2,3,4}) {
+    testAssert(shouldUseC384RuntimePiece(
+      C384RuntimePiece::DualFfn,225,concurrency,policy));
+    testAssert(shouldUseC384RuntimePiece(
+      C384RuntimePiece::DualFfn,128*225,concurrency,policy));
+    testAssert(shouldUseC384RuntimePiece(
+      C384RuntimePiece::DualFfn,129*225,concurrency,policy));
+    testAssert(shouldUseC384RuntimePiece(
+      C384RuntimePiece::DualFfn,4660*225,concurrency,policy));
+    testAssert(!shouldUseC384RuntimePiece(
+      C384RuntimePiece::DualFfn,4661*225,concurrency,policy));
+  }
+
+  // Evaluator-local lane counts cannot see a second evaluator sharing this
+  // GPU. B1 therefore always uses the topology-safe dual-only policy; RMS is
+  // selected from actual B2 upward for every lane topology.
+  for(int concurrency: {1,2,3,4}) {
+    testAssert(!shouldUseC384RuntimePiece(
+      C384RuntimePiece::RmsNorm,225,concurrency,policy));
+    testAssert(shouldUseC384RuntimePiece(
+      C384RuntimePiece::RmsNorm,2*225,concurrency,policy));
+    testAssert(shouldUseC384RuntimePiece(
+      C384RuntimePiece::RmsNorm,128*225,concurrency,policy));
+  }
+
+  // Residual CUTLASS tactics did not clear the evidence margin, so both pieces
+  // deterministically use the generic beta-one path without preparing an
+  // unused specialized handle.
+  for(int concurrency: {1,2,3}) {
+    testAssert(!shouldUseC384RuntimePiece(
+      C384RuntimePiece::OutProjection,225,concurrency,policy));
+    testAssert(!shouldUseC384RuntimePiece(
+      C384RuntimePiece::OutProjection,128*225,concurrency,policy));
+    testAssert(!shouldUseC384RuntimePiece(
+      C384RuntimePiece::DownProjection,225,concurrency,policy));
+    testAssert(!shouldUseC384RuntimePiece(
+      C384RuntimePiece::DownProjection,128*225,concurrency,policy));
+  }
+
+  // Nonintegral row counts and invalid topology always fail closed before a
+  // specialized launch can enqueue work.
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,226,1,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,224,2,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,225,0,policy));
+
+  // Numeric gate fields, including a disabled range, are canonical recipe
+  // identity rather than an informal version label in a tactic string.
+  const RecipeFingerprint canonical =
+    fingerprintRecipeWithC384RuntimeGate("c384-test-tactic",policy);
+  const RecipeFingerprint canonicalCopy =
+    fingerprintRecipeWithC384RuntimeGate("c384-test-tactic",policy);
+  testAssert(canonical == canonicalCopy);
+  C384RuntimeGatePolicy changed = policy;
+  changed.rmsNorm.conservative.minInclusive += 1;
+  testAssert(canonical !=
+    fingerprintRecipeWithC384RuntimeGate("c384-test-tactic",changed));
+  changed = policy;
+  changed.outProjection.conservative = C384RuntimeBatchRange{1,1};
+  testAssert(canonical !=
+    fingerprintRecipeWithC384RuntimeGate("c384-test-tactic",changed));
+}
+
 }  // namespace
 
 void Tests::runTransformerProductionPlanTests() {
@@ -698,6 +773,7 @@ void Tests::runTransformerProductionPlanTests() {
   }
 
   assertC384RuntimeGateContract();
+  assertC384ProductionRuntimeGatePolicy();
   FixtureTacticData generic{FixtureTacticKind::Generic,1};
   FixtureTacticData attentionWinner{FixtureTacticKind::Renju15AttentionB36S2,2};
   FixtureTacticData ffnWinner{FixtureTacticKind::Renju15FFNB36S2,3};
@@ -1141,8 +1217,9 @@ void Tests::runTransformerProductionPlanTests() {
   // The real b36c384/H12/D32/F1024 target (b36 means 36 transformer layers,
   // not batch size) selects a dynamic-M partial specialization for every
   // representative runtime batch. Attention retains geometry-general planar
-  // QKV, learned half2 RoPE, and cuDNN SDPA, while C384 RMS, out/down residual
-  // GEMMs, and C384/F1024 dual FFN are specialized.
+  // QKV, learned half2 RoPE, and cuDNN SDPA. C384 RMS and C384/F1024 dual FFN
+  // are launch-gated specializations; out/down directly select cuBLAS beta-one
+  // and do not prepare never-launched specialized handles.
   CudaTransformerWinner::PreparedPlan productionWide36 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b36,device);
   testAssert(!CudaTransformerWinner::evaluateInt8ExperimentEligibility(
@@ -1151,7 +1228,7 @@ void Tests::runTransformerProductionPlanTests() {
     wideArchitecture,productionWide36,36,true,
     assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
   );
-  for(int batch: {1,8,16,24,32,36,64,128}) {
+  for(int batch: {1,8,16,24,32,36,64,128,129,256,512,4660}) {
     const RuntimeOpContext bucket = runtimeContext(batch,15,15,MaskMode::None);
     const CudaTransformerWinner::PreparedPlan bucketPlan =
       CudaTransformerWinner::preparePlan(wideArchitecture,bucket,device);
@@ -1216,14 +1293,23 @@ void Tests::runTransformerProductionPlanTests() {
   assertPreparedOpIdentity(wide32Ffn.operation,wide36Ffn.operation);
   assertPreparedOpIdentity(wide36Ffn.operation,wide48Ffn.operation);
 
-  // A batch above the staged dynamic range or changed board falls back only the C384 local
-  // specialization. The already-safe generic planar/RoPE/beta-one path
-  // remains available, and C256 exact planning above is unchanged.
+  // B129 is beyond the largest measured batch but remains a structurally valid
+  // dynamic-M request, so it must reuse the same C384 local tactics. Only the
+  // technical 2^20-row implementation bound or a changed board falls back;
+  // the safe generic planar/RoPE/beta-one path remains available, and C256
+  // exact planning above is unchanged.
   const RuntimeOpContext b129 = runtimeContext(129,15,15,MaskMode::None);
   const CudaTransformerWinner::PreparedPlan productionWideB129 =
     CudaTransformerWinner::preparePlan(wideArchitecture,b129,device);
   assertAllTransformerRecipes(
     wideArchitecture,productionWideB129,36,true,
+    assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+  const RuntimeOpContext bOverC384Max = runtimeContext(4661,15,15,MaskMode::None);
+  const CudaTransformerWinner::PreparedPlan productionWideOverC384Max =
+    CudaTransformerWinner::preparePlan(wideArchitecture,bOverC384Max,device);
+  assertAllTransformerRecipes(
+    wideArchitecture,productionWideOverC384Max,36,true,
     assertWideAttentionRecipe,assertGenericFfnRecipe
   );
   const CudaTransformerWinner::PreparedPlan productionWideBoard19 =
@@ -1240,7 +1326,9 @@ void Tests::runTransformerProductionPlanTests() {
   cout << "  G4-B32=" << productionG4.fingerprint.toHex() << endl;
   cout << "  G5-48-layers=" << productionG5.fingerprint.toHex() << endl;
   cout << "  target-36L-C384-H12-F1024=" << productionWide36.fingerprint.toHex() << endl;
-  cout << "  target-C384-B129-local-fallback=" << productionWideB129.fingerprint.toHex() << endl;
+  cout << "  target-C384-B129-dynamic-reuse=" << productionWideB129.fingerprint.toHex() << endl;
+  cout << "  target-C384-over-max-rows-fallback=" <<
+    productionWideOverC384Max.fingerprint.toHex() << endl;
 
   map<ArchitectureOpKind,int> reusableByKind;
   map<ArchitectureOpKind,int> changedByKind;
