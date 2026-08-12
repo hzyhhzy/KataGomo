@@ -47,6 +47,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -61,6 +62,16 @@ using half_t = half_float::half;
 
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
 namespace {
+
+bool int8ExperimentRuntimeEnabled() {
+  const char* value = std::getenv("KATAGO_RENJU15_INT8_EXPERIMENT_ENABLE");
+  if(value == nullptr || string(value) == "0")
+    return false;
+  if(string(value) == "1")
+    return true;
+  throw StringError(
+    "KATAGO_RENJU15_INT8_EXPERIMENT_ENABLE must be exactly 0 or 1");
+}
 
 void uploadPackedInt8(
   const string& name,
@@ -543,6 +554,11 @@ struct CudaHandles {
     if(transformerPlan == nullptr)
       return;
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+    const bool int8RuntimeEnabled = int8ExperimentRuntimeEnabled();
+    if(logger != NULL)
+      logger->write(
+        string("RENJU15_SM120_INT8_EXPERIMENT_RUNTIME_GATE enabled=") +
+        (int8RuntimeEnabled ? "1" : "0"));
     int candidateInt8Qk = 0;
     int candidateInt8DualFfn = 0;
     bool allInt8ShapesEligible =
@@ -574,8 +590,8 @@ struct CudaHandles {
     }
     // This first experiment has only been accuracy-qualified for the current
     // 24-attention/24-FFN model on a 15x15 board. Runtime batch remains dynamic.
-    int8ExperimentPlan = allInt8ShapesEligible && candidateInt8Qk == 24 &&
-      candidateInt8DualFfn == 24;
+    int8ExperimentPlan = int8RuntimeEnabled && allInt8ShapesEligible &&
+      candidateInt8Qk == 24 && candidateInt8DualFfn == 24;
     if(int8ExperimentPlan) {
       expectedInt8Qk = candidateInt8Qk;
       expectedInt8DualFfn = candidateInt8DualFfn;
