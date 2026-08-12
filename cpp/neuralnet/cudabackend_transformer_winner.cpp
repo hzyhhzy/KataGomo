@@ -378,6 +378,44 @@ uint64_t makeRuntimeLibraryFingerprint(
   return hash == 0 ? 1 : hash;
 }
 
+bool shouldUseC384RuntimePiece(
+  C384RuntimePiece piece,
+  int actualRows,
+  int sameGpuEvaluatorConcurrency,
+  const C384RuntimeGatePolicy& policy
+) {
+  if(actualRows <= 0 || sameGpuEvaluatorConcurrency <= 0 ||
+     policy.rowsPerBatch == 0 ||
+     (uint32_t)actualRows % policy.rowsPerBatch != 0)
+    return false;
+
+  const C384RuntimePiecePolicy* piecePolicy = nullptr;
+  switch(piece) {
+  case C384RuntimePiece::RmsNorm:
+    piecePolicy = &policy.rmsNorm;
+    break;
+  case C384RuntimePiece::DualFfn:
+    piecePolicy = &policy.dualFfn;
+    break;
+  case C384RuntimePiece::OutProjection:
+    piecePolicy = &policy.outProjection;
+    break;
+  case C384RuntimePiece::DownProjection:
+    piecePolicy = &policy.downProjection;
+    break;
+  default:
+    return false;
+  }
+
+  const C384RuntimeBatchRange& range = sameGpuEvaluatorConcurrency == 2 ?
+    piecePolicy->exactlyTwoSameGpuLanes : piecePolicy->conservative;
+  if(range.minInclusive == 0 || range.maxInclusive < range.minInclusive)
+    return false;
+  const uint32_t actualBatch = (uint32_t)actualRows / policy.rowsPerBatch;
+  return actualBatch >= range.minInclusive &&
+    actualBatch <= range.maxInclusive;
+}
+
 AttentionRecipe PreparedPlan::attentionFor(uint32_t topologyIndex) const {
   const PreparedRecord* record = findRecord(
     *this,ArchitectureOpKind::TransformerAttention,topologyIndex);

@@ -62,6 +62,47 @@ enum class ResidualTactic : uint32_t {
   Sm120C384M128N128K32S3Sw1 = 3,
 };
 
+// Per-launch C384 dispatch is deliberately separate from construction-time
+// recipe selection. All specialized and generic resources remain prepared;
+// this pure policy chooses only which already-prepared path to enqueue for the
+// actual row count seen by a launch. A zero range disables that path.
+enum class C384RuntimePiece : uint32_t {
+  RmsNorm = 0,
+  DualFfn = 1,
+  OutProjection = 2,
+  DownProjection = 3,
+};
+
+struct C384RuntimeBatchRange {
+  uint32_t minInclusive = 0;
+  uint32_t maxInclusive = 0;
+};
+
+struct C384RuntimePiecePolicy {
+  // Used for one evaluator lane and conservatively for unmeasured topologies
+  // such as three or more same-GPU lanes.
+  C384RuntimeBatchRange conservative;
+  // Used only when exactly two evaluator lanes share this physical GPU.
+  C384RuntimeBatchRange exactlyTwoSameGpuLanes;
+};
+
+struct C384RuntimeGatePolicy {
+  // The measured geometry used to turn actualRows into actual batch. Zero
+  // disables the entire policy. Nonintegral batches fail closed to generic.
+  uint32_t rowsPerBatch = 0;
+  C384RuntimePiecePolicy rmsNorm;
+  C384RuntimePiecePolicy dualFfn;
+  C384RuntimePiecePolicy outProjection;
+  C384RuntimePiecePolicy downProjection;
+};
+
+bool shouldUseC384RuntimePiece(
+  C384RuntimePiece piece,
+  int actualRows,
+  int sameGpuEvaluatorConcurrency,
+  const C384RuntimeGatePolicy& policy
+);
+
 struct AttentionRecipe {
   PlanarQkvTactic planarQkv = PlanarQkvTactic::Disabled;
   RmsNormTactic rmsNorm = RmsNormTactic::GenericHalf;

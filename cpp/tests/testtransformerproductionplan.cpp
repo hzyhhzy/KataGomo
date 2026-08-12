@@ -582,6 +582,68 @@ static void refreshProductionPlanFingerprint(
   plan.fingerprint = fingerprintPreparedPlan(requests,prepared);
 }
 
+static CudaTransformerWinner::C384RuntimePiecePolicy c384TestPiecePolicy(
+  uint32_t conservativeMin,
+  uint32_t conservativeMax,
+  uint32_t twoLaneMin,
+  uint32_t twoLaneMax
+) {
+  CudaTransformerWinner::C384RuntimePiecePolicy policy;
+  policy.conservative.minInclusive = conservativeMin;
+  policy.conservative.maxInclusive = conservativeMax;
+  policy.exactlyTwoSameGpuLanes.minInclusive = twoLaneMin;
+  policy.exactlyTwoSameGpuLanes.maxInclusive = twoLaneMax;
+  return policy;
+}
+
+static void assertC384RuntimeGateContract() {
+  using CudaTransformerWinner::C384RuntimeGatePolicy;
+  using CudaTransformerWinner::C384RuntimePiece;
+  using CudaTransformerWinner::shouldUseC384RuntimePiece;
+
+  C384RuntimeGatePolicy disabled;
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,225,1,disabled));
+
+  // These values are deliberately synthetic CPU-test boundaries, not tuned
+  // production thresholds. Final values are supplied only after balanced GPU
+  // measurements. The contract under test is actual-row and same-GPU-lane
+  // dispatch, independent of the handle's configured maximum batch.
+  C384RuntimeGatePolicy policy;
+  policy.rowsPerBatch = 225;
+  policy.rmsNorm = c384TestPiecePolicy(4,64,2,128);
+  policy.dualFfn = c384TestPiecePolicy(1,128,1,128);
+  policy.outProjection = c384TestPiecePolicy(16,64,12,64);
+  policy.downProjection = c384TestPiecePolicy(24,64,16,64);
+
+  // Invalid/tail row counts fail closed before any launch is enqueued.
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,0,1,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,-225,1,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,226,1,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,225,0,policy));
+
+  // Single-lane boundaries use only actualRows / 225.
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,3*225,1,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,4*225,1,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,64*225,1,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,65*225,1,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::DualFfn,225,1,policy));
+
+  // Exactly two same-GPU lanes use independently measured boundaries.
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,225,2,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,2*225,2,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::OutProjection,11*225,2,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::OutProjection,12*225,2,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::DownProjection,15*225,2,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::DownProjection,16*225,2,policy));
+
+  // Three or more lanes are unmeasured and therefore reuse the conservative
+  // range rather than accidentally inheriting the two-lane result.
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,3*225,3,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::RmsNorm,4*225,3,policy));
+  testAssert(!shouldUseC384RuntimePiece(C384RuntimePiece::OutProjection,15*225,4,policy));
+  testAssert(shouldUseC384RuntimePiece(C384RuntimePiece::OutProjection,16*225,4,policy));
+}
+
 }  // namespace
 
 void Tests::runTransformerProductionPlanTests() {
@@ -635,6 +697,7 @@ void Tests::runTransformerProductionPlanTests() {
     testAssert(rejectedBadEnvironment);
   }
 
+  assertC384RuntimeGateContract();
   FixtureTacticData generic{FixtureTacticKind::Generic,1};
   FixtureTacticData attentionWinner{FixtureTacticKind::Renju15AttentionB36S2,2};
   FixtureTacticData ffnWinner{FixtureTacticKind::Renju15FFNB36S2,3};
