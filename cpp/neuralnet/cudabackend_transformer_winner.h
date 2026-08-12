@@ -16,6 +16,11 @@ struct DeviceCapability {
   uint32_t computeCapability = 0;
   uint32_t warpSize = 0;
   std::size_t sharedBytesPerBlockOptin = 0;
+  int cudaRuntimeVersion = 0;
+  int cudaDriverVersion = 0;
+  int cublasVersion = 0;
+  std::size_t cudnnVersion = 0;
+  bool specializedSm120KernelsAvailable = false;
 };
 
 enum class PlanarQkvTactic : uint32_t {
@@ -93,6 +98,17 @@ struct PreparedPlan {
   AttentionRecipe attentionFor(const CudaOpRegistry::CapabilityKey& key) const;
   FfnRecipe ffnFor(const CudaOpRegistry::CapabilityKey& key) const;
 };
+
+// Stable construction-time ABI identity. Zero means that at least one
+// required runtime version was unavailable. Exact certification separately
+// locks every measured version; this hash prevents a caller from substituting
+// an arbitrary nonzero value for that measured tuple.
+uint64_t makeRuntimeLibraryFingerprint(
+  int cudaRuntimeVersion,
+  int cudaDriverVersion,
+  int cublasVersion,
+  std::size_t cudnnVersion
+);
 
 PreparedPlan preparePlan(
   const NeuralNetArchitecture::ArchitectureDesc& architecture,

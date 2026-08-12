@@ -556,7 +556,7 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
           loadedModel,
           logger,
           batchSize,
-          requireExactNNLen,
+          requireExactNNLen && !forceMaskAllOnes,
           inputsUseNHWC,
           gpuIdxByServerThread[threadIdx],
           threadIdx,

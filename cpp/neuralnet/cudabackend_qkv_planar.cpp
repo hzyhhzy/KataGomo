@@ -107,7 +107,7 @@ bool Projection::supportsFusedQKVRoPE(
     katago_renju15_qkv_rope_gemm_sm120_supports(
       qkvRopeGemmHandle,batchSize,seqLen,inputChannels,projectionChannels,
       numHeads,numKVHeads,headDim,ropePairs,usingFP16,usingNHWC,
-      exactNoMask,precomputedHalf2);
+      exactNoMask,exactNoMask,precomputedHalf2);
 }
 
 cudaError_t Projection::applyFusedQKVRoPE(

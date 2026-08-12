@@ -201,7 +201,8 @@ static RuntimeOpContext runtimeContext(int batch, int boardX, int boardY, MaskMo
   context.layout = TensorLayout::BSH;
   context.deviceComputeCapability = 120;
   context.streamCount = 2;
-  context.runtimeLibraryFingerprint = 0x13000D130101914ULL;
+  context.runtimeLibraryFingerprint = CudaTransformerWinner::makeRuntimeLibraryFingerprint(
+    13000,13020,130101,91400);
   return context;
 }
 
@@ -224,7 +225,8 @@ static bool isWinnerRuntime(const CapabilityKey& key) {
     key.maskMode == MaskMode::None &&
     key.inputType == NumericType::Float16 && key.outputType == NumericType::Float16 &&
     key.deviceComputeCapability == 120 && key.streamCount == 2 &&
-    key.runtimeLibraryFingerprint == 0x13000D130101914ULL;
+    key.runtimeLibraryFingerprint == CudaTransformerWinner::makeRuntimeLibraryFingerprint(
+      13000,13020,130101,91400);
 }
 
 static SupportClass matchFixtureTactic(const OpRequest& request, const void* userData) {
@@ -374,6 +376,11 @@ static CudaTransformerWinner::DeviceCapability sm120Device() {
   device.computeCapability = 120;
   device.warpSize = 32;
   device.sharedBytesPerBlockOptin = 101376;
+  device.cudaRuntimeVersion = 13000;
+  device.cudaDriverVersion = 13020;
+  device.cublasVersion = 130101;
+  device.cudnnVersion = 91400;
+  device.specializedSm120KernelsAvailable = true;
   return device;
 }
 
@@ -429,7 +436,7 @@ static void assertB32DynamicAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
-  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.rope == RopeTactic::Generic);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::Sm120M128N128K32S3Sw1);
@@ -441,7 +448,7 @@ static void assertC256StaticAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::Sm120C256Warp4Vec8);
-  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.rope == RopeTactic::Generic);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
@@ -460,7 +467,7 @@ static void assertMaskSafeAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
-  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.rope == RopeTactic::Generic);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::GenericAdd);
@@ -486,7 +493,7 @@ static void assertWideAttentionRecipe(
   using namespace CudaTransformerWinner;
   testAssert(recipe.planarQkv == PlanarQkvTactic::CublasHgemmStridedBatchedSquare);
   testAssert(recipe.rmsNorm == RmsNormTactic::GenericHalf);
-  testAssert(recipe.rope == RopeTactic::LearnedHalf2);
+  testAssert(recipe.rope == RopeTactic::Generic);
   testAssert(recipe.qkvRope == QkvRopeTactic::Disabled);
   testAssert(recipe.attention == AttentionTactic::Generic);
   testAssert(recipe.outProjection == ResidualTactic::CublasHgemmBetaOne);
@@ -662,6 +669,51 @@ void Tests::runTransformerProductionPlanTests() {
   // Artifact name, file SHA, export-config SHA, and all tensor values differ;
   // architecture, each local key/recipe/tactic, and the whole plan do not.
   assertProductionPlanIdentity(productionG1A,productionG1B);
+
+  // The operator recipe is independently certified on each owned handle;
+  // evaluator S1 versus S2 is an outer throughput topology, not a kernel ABI.
+  RuntimeOpContext b36S1 = b36;
+  b36S1.streamCount = 1;
+  CudaTransformerWinner::PreparedPlan productionG1S1 =
+    CudaTransformerWinner::preparePlan(architectureA,b36S1,device);
+  assertExactAttentionRecipe(productionG1S1.attentionFor(
+    architectureA.operators[attention24].topologyIndex));
+  testAssert(productionG1S1.records[attention24].operation.support ==
+    SupportClass::CertifiedFast);
+
+  // Exact FA4 certification is locked to the measured ABI tuple. A valid but
+  // different CUDA/cuDNN tuple retains local shape-compatible tactics without
+  // claiming the exact attention kernel.
+  CudaTransformerWinner::DeviceCapability differentAbi = device;
+  differentAbi.cudnnVersion = 91401;
+  RuntimeOpContext differentAbiRuntime = b36;
+  differentAbiRuntime.runtimeLibraryFingerprint =
+    CudaTransformerWinner::makeRuntimeLibraryFingerprint(
+      13000,13020,130101,91401);
+  CudaTransformerWinner::PreparedPlan productionDifferentAbi =
+    CudaTransformerWinner::preparePlan(
+      architectureA,differentAbiRuntime,differentAbi);
+  const CudaTransformerWinner::AttentionRecipe differentAbiRecipe =
+    productionDifferentAbi.attentionFor(
+      architectureA.operators[attention24].topologyIndex);
+  testAssert(differentAbiRecipe.attention ==
+    CudaTransformerWinner::AttentionTactic::Generic);
+  testAssert(differentAbiRecipe.qkvRope ==
+    CudaTransformerWinner::QkvRopeTactic::Disabled);
+
+  CudaTransformerWinner::DeviceCapability unknownAbi = device;
+  unknownAbi.cudaRuntimeVersion = 0;
+  unknownAbi.cudaDriverVersion = 0;
+  unknownAbi.cublasVersion = 0;
+  unknownAbi.cudnnVersion = 0;
+  RuntimeOpContext fakeFingerprintRuntime = b36;
+  fakeFingerprintRuntime.runtimeLibraryFingerprint = 1;
+  CudaTransformerWinner::PreparedPlan productionUnknownAbi =
+    CudaTransformerWinner::preparePlan(
+      architectureA,fakeFingerprintRuntime,unknownAbi);
+  testAssert(productionUnknownAbi.attentionFor(
+    architectureA.operators[attention24].topologyIndex).attention ==
+    CudaTransformerWinner::AttentionTactic::Generic);
 
   // G5: depth changes whole-model/whole-plan identity. All 48 repeated local
   // blocks still select the same recipes and exact local prepared operations.

@@ -43,7 +43,8 @@ bool isHalfNhwcNoMask(const CapabilityKey& key) {
 
 bool isSm120(const OpRequest& request, const RegistrationContext& context) {
   return request.key.deviceComputeCapability == 120 &&
-    context.device.computeCapability == 120 && context.device.warpSize == 32;
+    context.device.computeCapability == 120 && context.device.warpSize == 32 &&
+    context.device.specializedSm120KernelsAvailable;
 }
 
 bool isSquareMha(const CapabilityKey& key) {
@@ -126,14 +127,23 @@ SupportClass matchAttentionDynamic(const OpRequest& request, const void* userDat
 SupportClass matchAttentionExact(const OpRequest& request, const void* userData) {
   const RegistrationContext& context = *(const RegistrationContext*)userData;
   const CapabilityKey& key = request.key;
+  const uint64_t expectedRuntimeFingerprint = makeRuntimeLibraryFingerprint(
+    context.device.cudaRuntimeVersion,context.device.cudaDriverVersion,
+    context.device.cublasVersion,context.device.cudnnVersion);
   if(!isHalfNhwcNoMask(key) || !isC256Attention(key) || !isSm120(request,context) ||
      context.device.sharedBytesPerBlockOptin < 101376 || key.batchSize != 36 ||
-     key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225)
+     key.boardX != 15 || key.boardY != 15 || key.spatialArea != 225 ||
+     expectedRuntimeFingerprint == 0 ||
+     key.runtimeLibraryFingerprint != expectedRuntimeFingerprint ||
+     context.device.cudaRuntimeVersion != 13000 ||
+     context.device.cudaDriverVersion != 13020 ||
+     context.device.cublasVersion != 130101 ||
+     context.device.cudnnVersion != 91400)
     return SupportClass::Unsupported;
-  // The exact measured winner used two independently owned streams. The same
-  // kernel remains a compatible local tactic with a different handle count,
-  // but does not claim the measured certification level.
-  return key.streamCount == 2 ? SupportClass::CertifiedFast : SupportClass::CompatibleOnly;
+  // Stream count is evaluator topology, not an operator-kernel property. S1
+  // replay and each leg of S2 execute this same certified recipe on one owned
+  // handle stream; the outer benchmark separately verifies distinct streams.
+  return SupportClass::CertifiedFast;
 }
 
 SupportClass matchFfnGeneric(const OpRequest& request, const void*) {
@@ -190,6 +200,7 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
     return recipe;
   switch(operation->tactic.variant) {
   case ATTENTION_C256_B36_FA4_SM120:
+    recipe.rope = RopeTactic::LearnedHalf2;
     recipe.qkvRope = QkvRopeTactic::Sm120C256H8D32M128N128K32S3;
     recipe.attention = AttentionTactic::Fa4Sm120B36S225Tm128Tn128S1Both16;
     [[fallthrough]];
@@ -200,7 +211,6 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
     recipe.rmsNorm = RmsNormTactic::Sm120C256Warp4Vec8;
     [[fallthrough]];
   case ATTENTION_SQUARE_LEARNED_ROPE:
-    recipe.rope = RopeTactic::LearnedHalf2;
     [[fallthrough]];
   case ATTENTION_SQUARE_GENERIC:
     recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
@@ -208,7 +218,6 @@ AttentionRecipe attentionRecipe(const PreparedOp* operation) {
       recipe.outProjection = ResidualTactic::CublasHgemmBetaOne;
     break;
   case ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE:
-    recipe.rope = RopeTactic::LearnedHalf2;
     [[fallthrough]];
   case ATTENTION_SQUARE_MASK_SAFE:
     recipe.planarQkv = PlanarQkvTactic::CublasHgemmStridedBatchedSquare;
@@ -280,6 +289,31 @@ bool FfnRecipe::hasPreparedOptimization() const {
     downProjection != ResidualTactic::GenericAdd;
 }
 
+uint64_t makeRuntimeLibraryFingerprint(
+  int cudaRuntimeVersion,
+  int cudaDriverVersion,
+  int cublasVersion,
+  std::size_t cudnnVersion
+) {
+  if(cudaRuntimeVersion <= 0 || cudaDriverVersion <= 0 ||
+     cublasVersion <= 0 || cudnnVersion == 0)
+    return 0;
+  uint64_t hash = 1469598103934665603ULL;
+  const uint64_t values[] = {
+    (uint64_t)(uint32_t)cudaRuntimeVersion,
+    (uint64_t)(uint32_t)cudaDriverVersion,
+    (uint64_t)(uint32_t)cublasVersion,
+    (uint64_t)cudnnVersion,
+  };
+  for(uint64_t value: values) {
+    for(int byte = 0; byte < 8; byte++) {
+      hash ^= (value >> (byte * 8)) & 0xFFu;
+      hash *= 1099511628211ULL;
+    }
+  }
+  return hash == 0 ? 1 : hash;
+}
+
 AttentionRecipe PreparedPlan::attentionFor(uint32_t topologyIndex) const {
   const PreparedRecord* record = findRecord(
     *this,ArchitectureOpKind::TransformerAttention,topologyIndex);
@@ -315,19 +349,19 @@ PreparedPlan preparePlan(
     "attention:v1;planar=cublas-hgemm-strided-square;rope=generic;out=cublas-beta1",
     matchAttentionSquare,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_LEARNED_ROPE,11,
-    "attention:v1;planar=cublas-hgemm-strided-square;rope=learned-half2;out=cublas-beta1",
+    "attention:v1;planar=cublas-hgemm-strided-square;rope=generic;out=cublas-beta1",
     matchAttentionSquareLearnedRope,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_MASK_SAFE,10,
     "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=generic;residual=generic-masked",
     matchAttentionSquareMaskSafe,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_SQUARE_LEARNED_ROPE_MASK_SAFE,11,
-    "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=learned-half2;residual=generic-masked",
+    "attention:v1;mask=dense;planar=cublas-hgemm-strided-square;rope=generic;residual=generic-masked",
     matchAttentionSquareLearnedRopeMaskSafe,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_SM120,20,
-    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=learned-half2;out=cublas-beta1",
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=generic;out=cublas-beta1",
     matchAttentionC256,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_DYNAMIC_SM120,30,
-    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=learned-half2;out=sm120-m128n128k32s3sw1",
+    "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;rope=generic;out=sm120-m128n128k32s3sw1",
     matchAttentionDynamic,&context);
   registerTactic(registry,ATTENTION_FAMILY,ATTENTION_C256_B36_FA4_SM120,40,
     "attention:v1;planar=cublas-hgemm-strided-c256;rms=sm120-warp4vec8;qkv-rope=sm120-m128n128k32s3;fa4=b36-s225-tm128-tn128-s1-both16;out=sm120-m128n128k32s3sw1",

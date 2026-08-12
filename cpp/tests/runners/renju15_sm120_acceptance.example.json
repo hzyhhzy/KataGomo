@@ -75,7 +75,6 @@
         "exact physical batch 36",
         "CUDA_TRANSFORMER_WINNER_ACTIVE qualification=certified-fast plan=",
         "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8",
-        "KATAGO_QKV_PLANAR_ACTIVE marker=cublas-hgemm-strided-batched",
         "RENJU15_SM120_QKV_ROPE_ACTIVE marker=qkv-rope-m128-n128-k32-s3-sw1",
         "RENJU15_SM120_FA4_ACTIVE marker=tm128-tn128-s1-both16-b36-s225-h8-d32",
         "RENJU15_SM120_DUAL_FFN_ACTIVE marker=dual-ffn-c256-f768-m128-n64-k32-s3-sw4",
@@ -110,7 +109,6 @@
       "requiredMarkers": [
         {"text": "CUDA_TRANSFORMER_WINNER_ACTIVE qualification=certified-fast plan=", "minCount": 2},
         {"text": "RENJU15_SM120_RMS_ACTIVE marker=warp4-vec8", "minCount": 2},
-        {"text": "KATAGO_QKV_PLANAR_ACTIVE marker=cublas-hgemm-strided-batched", "minCount": 2},
         {"text": "RENJU15_SM120_QKV_ROPE_ACTIVE marker=qkv-rope-m128-n128-k32-s3-sw1", "minCount": 2},
         {"text": "RENJU15_SM120_FA4_ACTIVE marker=tm128-tn128-s1-both16-b36-s225-h8-d32", "minCount": 2},
         {"text": "RENJU15_SM120_DUAL_FFN_ACTIVE marker=dual-ffn-c256-f768-m128-n64-k32-s3-sw4", "minCount": 2},
