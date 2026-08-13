@@ -84,6 +84,29 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
         self.assertIn("c384ExactAttentionBlockCount", transaction)
         self.assertIn("c384ExactFfnBlockCount", transaction)
 
+    def test_clip7_dual_semantics_do_not_reuse_unclipped_c256_kernel(self) -> None:
+        source = CUDA_BACKEND.read_text(encoding="utf-8")
+        ffn = source.split("struct TransformerFFNBlock", 1)[1]
+        ffn = ffn.split("//------------------------------------------------------------------------------", 1)[0]
+        constructor = ffn.split("TransformerFFNBlock(", 1)[1]
+        constructor = constructor.split("void apply(", 1)[0]
+        self.assertIn("c256DualSemanticSupported", constructor)
+        self.assertIn("c384DualSemanticSupported", constructor)
+        c256_create = constructor.split(
+            "Sm120C256F768M128N64K32S3Sw4", 1,
+        )[1].split("dualFfnKernel =", 1)[0]
+        self.assertIn("swigluClip == 0.0f", c256_create)
+
+        apply = ffn.split("void apply(", 1)[1]
+        apply = apply.split("// Step 4-5", 1)[0]
+        self.assertIn("specializedDualFfnSemanticSupported", apply)
+        self.assertIn("!c384DualFfn && swigluClip == 0.0f", apply)
+        self.assertNotIn(
+            "!usedDualFfn && specializedDualFfn && c384DualFfnRuntimeAllowed &&\n"
+            "       (swigluClip == 0.0f || swigluClip == 7.0f)",
+            apply,
+        )
+
     def test_specialized_layout_keeps_generated_include_compatibility(self) -> None:
         forwards = {
             "c384_exact_fixed_aot_kernels.h":

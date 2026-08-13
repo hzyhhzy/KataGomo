@@ -3819,7 +3819,8 @@ struct TransformerFFNBlock {
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
     if(recipe.dualFfn ==
-       CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4) {
+         CudaTransformerWinner::DualFfnTactic::Sm120C256F768M128N64K32S3Sw4 &&
+       swigluClip == 0.0f) {
       dualFfnKernel = katago_renju15_dual_ffn_sm120_create(
         KATAGO_RENJU15_DUAL_FFN_M128_N64_K32_S3_SW4,
         fixedBatchSize * nnXLen * nnYLen);
@@ -3860,8 +3861,16 @@ struct TransformerFFNBlock {
     }
 #endif
     if(cudaHandles->exactWinnerPlan) {
-      const bool expectsDual =
-        recipe.dualFfn != CudaTransformerWinner::DualFfnTactic::Disabled;
+      const bool c256DualSemanticSupported =
+        recipe.dualFfn == CudaTransformerWinner::DualFfnTactic::
+          Sm120C256F768M128N64K32S3Sw4 &&
+        swigluClip == 0.0f;
+      const bool c384DualSemanticSupported =
+        recipe.dualFfn == CudaTransformerWinner::DualFfnTactic::
+          Sm120C384F1024M128N64K32S3Sw4 &&
+        (swigluClip == 0.0f || swigluClip == 7.0f);
+      const bool expectsDual = c256DualSemanticSupported ||
+        c384DualSemanticSupported;
       const bool expectsDown = recipe.downProjection ==
         CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1;
       if((expectsDual && dualFfnKernel == nullptr) ||
@@ -4085,14 +4094,17 @@ struct TransformerFFNBlock {
         CudaTransformerWinner::DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
     const bool c384DualFfn = recipe.dualFfn == CudaTransformerWinner::
       DualFfnTactic::Sm120C384F1024M128N64K32S3Sw4;
+    const bool specializedDualFfnSemanticSupported =
+      (c384DualFfn && (swigluClip == 0.0f || swigluClip == 7.0f)) ||
+      (!c384DualFfn && swigluClip == 0.0f);
     const bool c384DualFfnRuntimeAllowed = !c384DualFfn ||
       cudaHandles->shouldUseC384RuntimePiece(
         CudaTransformerWinner::C384RuntimePiece::DualFfn,matBatchSize);
     if(c384DualFfn && !c384DualFfnRuntimeAllowed)
       cudaHandles->logC384RuntimeGateFallbackOnce(
         CudaTransformerWinner::C384RuntimePiece::DualFfn,matBatchSize);
-    if(!usedDualFfn && specializedDualFfn && c384DualFfnRuntimeAllowed &&
-       (swigluClip == 0.0f || swigluClip == 7.0f) &&
+    if(!usedDualFfn && specializedDualFfn &&
+       specializedDualFfnSemanticSupported && c384DualFfnRuntimeAllowed &&
        katago_renju15_dual_ffn_sm120_supports(
          dualFfnKernel,matBatchSize,numChannels,ffnChannels,
          usingFP16,usingNHWC,maskBuf == nullptr)) {
