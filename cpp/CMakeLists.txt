@@ -38,9 +38,20 @@ set(KATAGO_ENABLE_CUDNN_FRONTEND_SDPA 1 CACHE BOOL
   "Enable the vendored cuDNN Frontend FP16 scaled-dot-product-attention path in the CUDA backend")
 set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0 CACHE BOOL
   "Build selected SM120 transformer tactics when CUDA 13 and pinned CUTLASS are available")
+set(KATAGO_ENABLE_C384_EXACT_FIXED_AOT 1 CACHE BOOL
+  "Expose the C384 exact FP16/QKN/FA4 transaction in SM120 CUDA builds")
 set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   0 CACHE BOOL
   "Build qualified clip4/per-matrix INT8 C256 QK and FFN tactics with the SM120 winner")
+set(KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  0 CACHE BOOL
+  "Build the default-off C384 v105 INT8 engine experiment, microbenchmark, and contracts")
+set(KATAGO_C384_INT8_PROJECTION_TACTIC 3 CACHE STRING
+  "C384 INT8 projection tactic (1..3); remote component winner is P3")
+set(KATAGO_C384_INT8_DUAL_TACTIC 2 CACHE STRING
+  "C384 INT8 dual-FFN tactic (1..3); remote component winner is D2")
+set(KATAGO_C384_INT8_DOWN_TACTIC 3 CACHE STRING
+  "C384 INT8 down tactic (1..3); remote component winner is W3")
 set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 set(KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST "" CACHE FILEPATH
@@ -89,6 +100,7 @@ if(USE_BACKEND STREQUAL "CUDA")
         "SM120 transformer winner disabled: CUDA 13.0 or newer is required")
       set(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER 0)
       set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT 0)
+      set(KATAGO_ENABLE_C384_INT8_EXPERIMENT 0)
     endif()
   endif()
 
@@ -114,6 +126,24 @@ if(USE_BACKEND STREQUAL "CUDA")
     message(FATAL_ERROR
       "KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT requires the SM120 transformer winner")
   endif()
+  if(KATAGO_ENABLE_C384_INT8_EXPERIMENT AND
+     NOT KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
+    message(FATAL_ERROR
+      "KATAGO_ENABLE_C384_INT8_EXPERIMENT requires the SM120 transformer winner")
+  endif()
+  if(KATAGO_ENABLE_C384_INT8_EXPERIMENT AND
+     NOT KATAGO_ENABLE_C384_EXACT_FIXED_AOT)
+    message(FATAL_ERROR
+      "KATAGO_ENABLE_C384_INT8_EXPERIMENT requires KATAGO_ENABLE_C384_EXACT_FIXED_AOT=ON for QKN/RoPE and packed FA4 dependencies")
+  endif()
+  foreach(KATAGO_C384_INT8_TACTIC IN ITEMS
+      "${KATAGO_C384_INT8_PROJECTION_TACTIC}"
+      "${KATAGO_C384_INT8_DUAL_TACTIC}"
+      "${KATAGO_C384_INT8_DOWN_TACTIC}")
+    if(NOT KATAGO_C384_INT8_TACTIC MATCHES "^[123]$")
+      message(FATAL_ERROR "C384 INT8 tactics must be one of 1, 2, or 3")
+    endif()
+  endforeach()
 
   if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
     set(KATAGO_PINNED_CUTLASS_COMMIT
@@ -512,6 +542,10 @@ if(USE_BACKEND STREQUAL "CUDA")
       list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
         neuralnet/cuda_specialized/sm120/c256/experimental_int8/fused.cu)
     endif()
+    if(KATAGO_ENABLE_C384_INT8_EXPERIMENT)
+      list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
+        neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.cu)
+    endif()
     add_library(katago_sm120_transformer_winner OBJECT
       ${KATAGO_SM120_TRANSFORMER_WINNER_SOURCES})
     set_target_properties(katago_sm120_transformer_winner PROPERTIES
@@ -531,6 +565,14 @@ if(USE_BACKEND STREQUAL "CUDA")
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       target_compile_definitions(katago_sm120_transformer_winner PRIVATE
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
+    endif()
+    if(KATAGO_ENABLE_C384_INT8_EXPERIMENT)
+      target_compile_definitions(katago_sm120_transformer_winner PRIVATE
+        KATAGO_ENABLE_C384_INT8_EXPERIMENT=1)
+      if(MSVC)
+        target_compile_options(katago_sm120_transformer_winner PRIVATE
+          $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+      endif()
     endif()
     target_include_directories(katago_sm120_transformer_winner PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -565,6 +607,39 @@ if(USE_BACKEND STREQUAL "CUDA")
       target_compile_definitions(katago_renju15_int8_rms_gate PRIVATE
         KATAGO_ENABLE_RENJU15_RMS_SM120=1
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
+    endif()
+    if(KATAGO_ENABLE_C384_INT8_EXPERIMENT)
+      add_executable(katago_c384_int8_microbench EXCLUDE_FROM_ALL
+        tests/c384_int8_microbench.cu
+        neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.cu)
+      set_target_properties(katago_c384_int8_microbench PROPERTIES
+        CUDA_ARCHITECTURES "120"
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON)
+      target_compile_options(katago_c384_int8_microbench PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>)
+      if(MSVC)
+        set_property(TARGET katago_c384_int8_microbench PROPERTY
+          MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        target_compile_options(katago_c384_int8_microbench PRIVATE
+          $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+      endif()
+      target_compile_definitions(katago_c384_int8_microbench PRIVATE
+        KATAGO_ENABLE_C384_INT8_EXPERIMENT=1)
+      target_include_directories(katago_c384_int8_microbench PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+      target_include_directories(katago_c384_int8_microbench SYSTEM PRIVATE
+        "${KATAGO_CUTLASS_ROOT}/include"
+        "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+
+      add_executable(katago_c384_int8_cpu_contract EXCLUDE_FROM_ALL
+        tests/c384_int8_cpu_contract.cpp)
+      target_compile_definitions(katago_c384_int8_cpu_contract PRIVATE
+        KATAGO_ENABLE_C384_INT8_EXPERIMENT=1)
+      target_include_directories(katago_c384_int8_cpu_contract PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
     endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
       neuralnet/cuda_specialized/sm120/c256/fixed_batch/fa4.cpp
@@ -900,13 +975,23 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1
       KATAGO_ENABLE_RENJU15_FA4_SM120=1
-      KATAGO_ENABLE_C384_EXACT_FIXED_AOT=1
       "KATAGO_C384_EXACT_QKV_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID}\""
       "KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}\""
       "KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_FFN_DOWN_TACTIC_ID}\"")
+    if(KATAGO_ENABLE_C384_EXACT_FIXED_AOT)
+      target_compile_definitions(katago PRIVATE
+        KATAGO_ENABLE_C384_EXACT_FIXED_AOT=1)
+    endif()
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       target_compile_definitions(katago PRIVATE
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
+    endif()
+    if(KATAGO_ENABLE_C384_INT8_EXPERIMENT)
+      target_compile_definitions(katago PRIVATE
+        KATAGO_ENABLE_C384_INT8_EXPERIMENT=1
+        KATAGO_C384_INT8_PROJECTION_TACTIC=${KATAGO_C384_INT8_PROJECTION_TACTIC}
+        KATAGO_C384_INT8_DUAL_TACTIC=${KATAGO_C384_INT8_DUAL_TACTIC}
+        KATAGO_C384_INT8_DOWN_TACTIC=${KATAGO_C384_INT8_DOWN_TACTIC})
     endif()
     target_include_directories(katago PRIVATE
       "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}")

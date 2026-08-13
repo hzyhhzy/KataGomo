@@ -17,12 +17,29 @@
 #include "../neuralnet/architecturedesc.h"
 #include "../neuralnet/cudabackend_qkv_planar.h"
 #include "../neuralnet/cudabackend_transformer_winner.h"
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+#include "../neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/experimental_int8/policy.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/experimental_int8/weights.h"
+#endif
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
 #include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/kernels.h"
 #include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/weights.h"
 #include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.h"
 #include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4.h"
 #include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/qknorm_rope.h"
+#endif
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+#ifndef KATAGO_C384_INT8_PROJECTION_TACTIC
+#define KATAGO_C384_INT8_PROJECTION_TACTIC 3
+#endif
+#ifndef KATAGO_C384_INT8_DUAL_TACTIC
+#define KATAGO_C384_INT8_DUAL_TACTIC 2
+#endif
+#ifndef KATAGO_C384_INT8_DOWN_TACTIC
+#define KATAGO_C384_INT8_DOWN_TACTIC 3
+#endif
 #endif
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/int8policy.h"
@@ -110,6 +127,73 @@ void uploadExactFp16Weights(
   UniqueExactCudaDeviceBuffer pending(rawDevice);
   CUDA_ERR(name.c_str(),cudaMemcpy(
     pending.get(),packedHalf.data(),bytes,cudaMemcpyHostToDevice));
+  destination = std::move(pending);
+}
+
+} // namespace
+#endif
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+namespace {
+
+struct C384Int8DeviceBufferDeleter {
+  void operator()(void* pointer) const noexcept {
+    if(pointer != nullptr)
+      (void)cudaFree(pointer);
+  }
+};
+struct C384Int8ProjectionDeleter {
+  void operator()(void* pointer) const noexcept {
+    C384Int8Experiment::destroyProjection(pointer);
+  }
+};
+struct C384Int8DualDeleter {
+  void operator()(void* pointer) const noexcept {
+    C384Int8Experiment::destroyDualFfn(pointer);
+  }
+};
+struct C384Int8DownDeleter {
+  void operator()(void* pointer) const noexcept {
+    C384Int8Experiment::destroyDown(pointer);
+  }
+};
+
+using UniqueC384Int8DeviceBuffer =
+  std::unique_ptr<void,C384Int8DeviceBufferDeleter>;
+using UniqueC384Int8Projection =
+  std::unique_ptr<void,C384Int8ProjectionDeleter>;
+using UniqueC384Int8Dual = std::unique_ptr<void,C384Int8DualDeleter>;
+using UniqueC384Int8Down = std::unique_ptr<void,C384Int8DownDeleter>;
+
+void uploadC384Int8Weights(
+  const string& name,
+  const vector<int8_t>& packed,
+  UniqueC384Int8DeviceBuffer& destination
+) {
+  if(packed.empty())
+    throw StringError(name + ": empty C384 INT8 weights");
+  void* raw = nullptr;
+  CUDA_ERR(name.c_str(),cudaMalloc(&raw,packed.size()));
+  UniqueC384Int8DeviceBuffer pending(raw);
+  CUDA_ERR(name.c_str(),cudaMemcpy(
+    pending.get(),packed.data(),packed.size(),cudaMemcpyHostToDevice));
+  destination = std::move(pending);
+}
+
+void uploadC384Fp16Table(
+  const string& name,
+  const vector<float>& values,
+  UniqueC384Int8DeviceBuffer& destination
+) {
+  vector<half_t> halfValues(values.size());
+  for(size_t i = 0; i < values.size(); i++)
+    halfValues[i] = half_float::half_cast<half_t>(values[i]);
+  void* raw = nullptr;
+  CUDA_ERR(name.c_str(),cudaMalloc(&raw,halfValues.size() * sizeof(half_t)));
+  UniqueC384Int8DeviceBuffer pending(raw);
+  CUDA_ERR(name.c_str(),cudaMemcpy(
+    pending.get(),halfValues.data(),halfValues.size() * sizeof(half_t),
+    cudaMemcpyHostToDevice));
   destination = std::move(pending);
 }
 
@@ -543,6 +627,25 @@ struct CudaHandles {
   bool loggedC384ExactFfnDown;
   bool loggedC384ExactTransactionActive;
 #endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  C384Int8Experiment::EngineMode c384Int8Mode;
+  bool c384Int8CandidateEligible;
+  bool c384Int8TransactionEnabled;
+  int expectedC384Int8Attention;
+  int expectedC384Int8Ffn;
+  int expectedC384Int8Down;
+  int preparedC384Int8Attention;
+  int preparedC384Int8Ffn;
+  int preparedC384Int8Down;
+  int activeC384Int8Attention;
+  int activeC384Int8Ffn;
+  int activeC384Int8Down;
+  bool loggedC384Int8Attention;
+  bool loggedC384Int8Ffn;
+  bool loggedC384Int8Down;
+  bool loggedC384Int8TransactionActive;
+  std::vector<std::function<void()>> c384Int8PreparedCleanupRegistry;
+#endif
 #if KATAGO_CUDA_HAS_SDPA
   std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
 #endif
@@ -628,6 +731,25 @@ struct CudaHandles {
       loggedC384ExactDualFfn(false),
       loggedC384ExactFfnDown(false),
       loggedC384ExactTransactionActive(false),
+#endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      c384Int8Mode(C384Int8Experiment::EngineMode::Off),
+      c384Int8CandidateEligible(false),
+      c384Int8TransactionEnabled(false),
+      expectedC384Int8Attention(0),
+      expectedC384Int8Ffn(0),
+      expectedC384Int8Down(0),
+      preparedC384Int8Attention(0),
+      preparedC384Int8Ffn(0),
+      preparedC384Int8Down(0),
+      activeC384Int8Attention(0),
+      activeC384Int8Ffn(0),
+      activeC384Int8Down(0),
+      loggedC384Int8Attention(false),
+      loggedC384Int8Ffn(false),
+      loggedC384Int8Down(false),
+      loggedC384Int8TransactionActive(false),
+      c384Int8PreparedCleanupRegistry(),
 #endif
 #if KATAGO_CUDA_HAS_SDPA
       loggedSdpaKeys(),
@@ -1007,6 +1129,11 @@ struct CudaHandles {
       loggedC384ExactTransactionActive = true;
     }
   }
+#endif
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT && \
+    defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
+#include "../neuralnet/cuda_specialized/sm120/c384/experimental_int8/engine_state.inc"
 #endif
 
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
@@ -1405,6 +1532,11 @@ struct ScratchBuffers {
   // Not scratch, but convenient to have here
   void* zeroBuf;
   void* oneBuf;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  void* c384Int8NormBuf;
+  void* c384Int8ProductBuf;
+  cudaError_t c384Int8ScratchPrepareStatus;
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   // One persistent pair per ComputeHandle/owned stream. Transformer blocks are
   // sequential on that stream, so all layers and all actual batch sizes reuse
@@ -1431,6 +1563,11 @@ struct ScratchBuffers {
       allocator(nullptr),
       zeroBuf(nullptr),
       oneBuf(nullptr)
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      , c384Int8NormBuf(nullptr),
+      c384Int8ProductBuf(nullptr),
+      c384Int8ScratchPrepareStatus(cudaSuccess)
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
       , int8NormBuf(nullptr),
       int8QkTempBuf(nullptr),
@@ -1459,6 +1596,12 @@ struct ScratchBuffers {
       int8QkTempBuf = nullptr;
       int8NormBuf = nullptr;
 #endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      cudaFree(c384Int8ProductBuf);
+      cudaFree(c384Int8NormBuf);
+      c384Int8ProductBuf = nullptr;
+      c384Int8NormBuf = nullptr;
+#endif
       if(zeroBuf != nullptr)
         free(zeroBuf);
       if(oneBuf != nullptr)
@@ -1469,6 +1612,10 @@ struct ScratchBuffers {
     }
   }
   ~ScratchBuffers() {
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    cudaFree(c384Int8ProductBuf);
+    cudaFree(c384Int8NormBuf);
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     cudaFree(int8QkTempBuf);
     cudaFree(int8NormBuf);
@@ -1511,6 +1658,44 @@ struct ScratchBuffers {
       int8ScratchPrepareStatus == cudaSuccess;
   }
 
+#endif
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  cudaError_t tryPrepareC384Int8Scratch(
+    int maxBatchSize,
+    int nnXLen,
+    int nnYLen,
+    C384Int8Experiment::EngineMode mode
+  ) {
+    const bool aggressive =
+      mode == C384Int8Experiment::EngineMode::Aggressive;
+    if(c384Int8NormBuf != nullptr &&
+       (!aggressive || c384Int8ProductBuf != nullptr))
+      return cudaSuccess;
+    c384Int8ScratchPrepareStatus = cudaSuccess;
+    const size_t rows =
+      (size_t)maxBatchSize * (size_t)nnXLen * (size_t)nnYLen;
+    c384Int8ScratchPrepareStatus =
+      cudaMalloc(&c384Int8NormBuf,rows * C384Int8Experiment::kChannels);
+    if(c384Int8ScratchPrepareStatus == cudaSuccess && aggressive)
+      c384Int8ScratchPrepareStatus = cudaMalloc(
+        &c384Int8ProductBuf,rows * C384Int8Experiment::kFfnChannels);
+    if(c384Int8ScratchPrepareStatus != cudaSuccess) {
+      (void)cudaFree(c384Int8ProductBuf);
+      (void)cudaFree(c384Int8NormBuf);
+      c384Int8ProductBuf = nullptr;
+      c384Int8NormBuf = nullptr;
+      (void)cudaGetLastError();
+    }
+    return c384Int8ScratchPrepareStatus;
+  }
+
+  bool hasC384Int8Scratch(C384Int8Experiment::EngineMode mode) const {
+    return c384Int8NormBuf != nullptr &&
+      (mode != C384Int8Experiment::EngineMode::Aggressive ||
+       c384Int8ProductBuf != nullptr) &&
+      c384Int8ScratchPrepareStatus == cudaSuccess;
+  }
 #endif
 
   size_t getBufSizeXY(int channels) const {
@@ -2621,6 +2806,30 @@ struct TransformerRMSNormLayer {
   }
 #endif
 
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  bool canApplyC384Fp16Int8(const void* maskBuf) const {
+    return usingFP16 && numChannels == C384Int8Experiment::kChannels &&
+      maskBuf == nullptr;
+  }
+
+  void applyC384Fp16Int8(
+    CudaHandles* cudaHandles,
+    int batchSize,
+    int xySize,
+    const void* inputBuf,
+    void* outputFp16,
+    void* outputInt8,
+    const void* maskBuf
+  ) const {
+    if(!canApplyC384Fp16Int8(maskBuf))
+      throw StringError(name + ": incompatible C384 FP16+INT8 RMSNorm");
+    CUDA_ERR(name.c_str(),C384Int8Experiment::launchRmsNormFp16Int8(
+      (const half*)inputBuf,(half*)outputFp16,(int8_t*)outputInt8,
+      (const half*)weightBuf,batchSize * xySize,epsilon,
+      cudaHandles->stream));
+  }
+#endif
+
   // Apply RMSNorm on NHWC data [N, XY, C], applying mask [N, XY] to zero padded positions.
   // Uses the RMSNormGammaBeta kernel with gamma=weight, beta=0, no activation.
   void apply(
@@ -2844,10 +3053,26 @@ struct TransformerAttentionBlock {
   UniqueExactCudaDeviceBuffer c384ExactIdentityRopeTable;
   mutable bool countedC384ExactQkvFa4;
 #endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  UniqueC384Int8DeviceBuffer c384Int8ProjectionWeights;
+  UniqueC384Int8DeviceBuffer c384Int8RopeTable;
+  UniqueC384Int8Projection c384Int8Projection;
+  C384H12Fa4Sm120::PreparedProof c384Int8Fa4Proof;
+  mutable bool countedC384Int8Attention;
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   UniqueCudaDeviceBuffer int8QkWeightBuf;
   UniqueInt8QkKernel int8QkKernel;
   mutable bool countedInt8Qk;
+#endif
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  void discardC384Int8Prepared() noexcept {
+    c384Int8Projection.reset();
+    c384Int8ProjectionWeights.reset();
+    c384Int8RopeTable.reset();
+    c384Int8Fa4Proof = C384H12Fa4Sm120::PreparedProof{};
+  }
 #endif
   mutable bool countedWinnerQkvRope;
   mutable bool countedWinnerFa4;
@@ -2936,6 +3161,13 @@ struct TransformerAttentionBlock {
     c384ExactRopeTable(nullptr),
     c384ExactIdentityRopeTable(nullptr),
     countedC384ExactQkvFa4(false),
+#endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    c384Int8ProjectionWeights(nullptr),
+    c384Int8RopeTable(nullptr),
+    c384Int8Projection(nullptr),
+    c384Int8Fa4Proof(),
+    countedC384Int8Attention(false),
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     int8QkWeightBuf(nullptr),
@@ -3107,6 +3339,67 @@ struct TransformerAttentionBlock {
       }
     }
 #endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(cudaHandles->c384Int8CandidateEligible) {
+      try {
+        C384H12Fa4Sm120::PreparedProof fa4Proof;
+        const cudaError_t proofStatus =
+          C384H12Fa4Sm120::prepareProofForExactBatch(
+            fixedBatchSize,cudaHandles->c384ExactDeviceOrdinal,
+            C384H12Fa4Sm120::InputLayout::PackedTokenQkv,fa4Proof);
+        if(proofStatus != cudaSuccess)
+          throw StringError(name + ": C384 INT8 packed FA4 proof unavailable");
+        const C384Int8Experiment::PackedWeights packed =
+          C384Int8Experiment::packProjection(
+            desc->qProj.weights,desc->kProj.weights,desc->vProj.weights,
+            cudaHandles->c384Int8Mode);
+        UniqueC384Int8DeviceBuffer weights;
+        uploadC384Int8Weights(name + ":c384Int8Projection",packed.values,weights);
+        vector<float> cosTable;
+        vector<float> sinTable;
+        desc->computeRopeCosSin(
+          nnXLen,nnYLen,nnXLen * nnYLen,cosTable,sinTable);
+        vector<float> cosSin(
+          (size_t)(nnXLen * nnYLen) *
+          C384ExactFixedAot::kRopePairsTotal * 2);
+        for(int xy = 0; xy < nnXLen * nnYLen; xy++) {
+          for(int hp = 0; hp < C384ExactFixedAot::kRopePairsTotal; hp++) {
+            const size_t src = (size_t)hp * (nnXLen * nnYLen) + xy;
+            const size_t dst =
+              ((size_t)xy * C384ExactFixedAot::kRopePairsTotal + hp) * 2;
+            cosSin[dst] = cosTable[src];
+            cosSin[dst + 1] = sinTable[src];
+          }
+        }
+        UniqueC384Int8DeviceBuffer ropeTable;
+        uploadC384Fp16Table(name + ":c384Int8Rope",cosSin,ropeTable);
+        C384Int8Experiment::ProjectionConfig config;
+        config.mode = cudaHandles->c384Int8ProjectionMode();
+        config.tactic = static_cast<C384Int8Experiment::ProjectionTactic>(
+          KATAGO_C384_INT8_PROJECTION_TACTIC);
+        config.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
+        config.packedWeights = (const int8_t*)weights.get();
+        config.weightScale = packed.scale;
+        UniqueC384Int8Projection projection(
+          C384Int8Experiment::createProjection(config));
+        if(projection == nullptr)
+          throw StringError(name + ": C384 INT8 projection preparation failed");
+        c384Int8ProjectionWeights = std::move(weights);
+        c384Int8RopeTable = std::move(ropeTable);
+        c384Int8Projection = std::move(projection);
+        c384Int8Fa4Proof = fa4Proof;
+        cudaHandles->preparedC384Int8Attention++;
+        cudaHandles->registerC384Int8PreparedCleanup(
+          [this]() { discardC384Int8Prepared(); });
+      }
+      catch(...) {
+        (void)cudaGetLastError();
+        discardC384Int8Prepared();
+        cudaHandles->disableC384Int8Experiment(
+          name + ":attention-preparation-failed");
+      }
+    }
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
     // Raw prepared state is created last so any throwing weight/table copy
     // above cannot bypass its destructor during partial construction.
@@ -3185,6 +3478,10 @@ struct TransformerAttentionBlock {
 #endif
     }
     catch(...) {
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      discardC384Int8Prepared();
+      cudaHandles->c384Int8PreparedCleanupRegistry.clear();
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
       discardInt8Prepared();
       // Model construction is aborting, so earlier registered callbacks would
@@ -3197,6 +3494,9 @@ struct TransformerAttentionBlock {
   }
 
   ~TransformerAttentionBlock() {
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    discardC384Int8Prepared();
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     discardInt8Prepared();
 #endif
@@ -3243,6 +3543,31 @@ struct TransformerAttentionBlock {
       katago_renju15_int8_qk_sm120_supports(
         int8QkKernel.get(),matBatchSize,inChannels,qTotalDim,kTotalDim,
         usingFP16,usingNHWC,maskBuf == nullptr);
+#endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    const bool useC384Int8Attention =
+      cudaHandles->c384Int8TransactionEnabled &&
+      batchSize == C384Int8Experiment::kBatch &&
+      matBatchSize == C384Int8Experiment::kTokenRows && maskBuf == nullptr &&
+      preLN.canApplyC384Fp16Int8(maskBuf) &&
+      scratch->hasC384Int8Scratch(cudaHandles->c384Int8Mode) &&
+      c384Int8Projection != nullptr && c384Int8RopeTable != nullptr &&
+      qNorm != nullptr && kNorm != nullptr &&
+      C384Int8Experiment::projectionSupports(
+        c384Int8Projection.get(),cudaHandles->c384Int8ProjectionMode(),
+        matBatchSize,inChannels,C384Int8Experiment::kQkvChannels);
+    if(cudaHandles->c384Int8TransactionEnabled &&
+       batchSize == C384Int8Experiment::kBatch && maskBuf == nullptr &&
+       !useC384Int8Attention)
+      throw StringError(name + ": committed C384 INT8 attention contract miss");
+    if(useC384Int8Attention) {
+      preLN.applyC384Fp16Int8(
+        cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
+        scratch->c384Int8NormBuf,maskBuf);
+    }
+    else
+#endif
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(useInt8Qk) {
       preLN.applyFp16Int8(
         cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
@@ -3274,8 +3599,62 @@ struct TransformerAttentionBlock {
 
     bool usedFusedQkvRope = false;
     bool usedC384ExactPackedQkv = false;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    bool usedC384Int8PackedQkv = false;
+    if(useC384Int8Attention) {
+      qData = qkvBuf.buf;
+      kData = (char*)qkvBuf.buf + C384Int8Experiment::kChannels * bytesPerElt;
+      vData = (char*)qkvBuf.buf +
+        2 * C384Int8Experiment::kChannels * bytesPerElt;
+      CUDA_ERR(name.c_str(),C384Int8Experiment::launchProjection(
+        c384Int8Projection.get(),matBatchSize,
+        (const int8_t*)scratch->c384Int8NormBuf,(half*)qkvBuf.buf,
+        C384Int8Experiment::kQkvChannels,cudaHandles->stream));
+      if(cudaHandles->c384Int8Mode ==
+           C384Int8Experiment::EngineMode::Conservative) {
+        // Write V directly into the third 384-wide slice of every packed
+        // token. MatMulLayer::apply fixes ldc=384 and would corrupt Q/K from
+        // row two onward, so this bridge must explicitly use ldc=1152.
+        CUBLAS_ERR(name.c_str(),cublasHgemm(
+          cudaHandles->cublas,CUBLAS_OP_N,CUBLAS_OP_N,
+          C384Int8Experiment::kChannels,matBatchSize,
+          C384Int8Experiment::kChannels,(const half*)scratch->oneBuf,
+          (const half*)vProj.matBuf,C384Int8Experiment::kChannels,
+          (const half*)trunkScratchBuf,C384Int8Experiment::kChannels,
+          (const half*)scratch->zeroBuf,(half*)vData,
+          C384Int8Experiment::kQkvChannels));
+      }
+      C384QKNormRopeSm120::LaunchParams params;
+      params.abiVersion = C384QKNormRopeSm120::kAbiVersion;
+      params.batch = batchSize;
+      params.sequence = seqLen;
+      params.heads = numHeads;
+      params.kvHeads = numKVHeads;
+      params.headDim = qHeadDim;
+      params.tokenRows = matBatchSize;
+      params.deviceOrdinal = cudaHandles->c384ExactDeviceOrdinal;
+      params.computeCapability = static_cast<uint32_t>(
+        cudaHandles->majorComputeCapability * 10 +
+        cudaHandles->minorComputeCapability);
+      params.usingFp16 = usingFP16;
+      params.usingNhwc = usingNHWC;
+      params.learnedRope = learnableRope;
+      params.qkNorm = true;
+      params.inputSemantic =
+        C384QKNormRopeSm120::InputSemantic::RawPackedQkv;
+      params.qEpsilon = qNorm->epsilon;
+      params.kEpsilon = kNorm->epsilon;
+      CUDA_ERR(name.c_str(),C384QKNormRopeSm120::launchInPlace(
+        params,(half*)qkvBuf.buf,(const half*)qNorm->weightBuf,
+        (const half*)kNorm->weightBuf,(const half2*)c384Int8RopeTable.get(),
+        cudaHandles->stream));
+      usedFusedQkvRope = true;
+      usedC384Int8PackedQkv = true;
+    }
+#endif
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     const bool c384ExactPackedEligible =
+      !usedFusedQkvRope &&
       cudaHandles->c384ExactTransactionEnabled &&
       c384ExactSelection.qkvRope != nullptr &&
       c384ExactSelection.qkvRope->key.runtimeRopeTableDriven &&
@@ -3468,12 +3847,21 @@ struct TransformerAttentionBlock {
 
     bool usedSDPA = false;
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
-    if(usedC384ExactPackedQkv) {
+    if(usedC384ExactPackedQkv
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+       || usedC384Int8PackedQkv
+#endif
+    ) {
+      const C384H12Fa4Sm120::PreparedProof* fa4Proof =
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+        usedC384Int8PackedQkv ? &c384Int8Fa4Proof :
+#endif
+        &c384ExactFa4Proof;
       const C384H12Fa4Sm120::LaunchResult result = C384H12Fa4Sm120::launch(
         (half*)qData,(half*)kData,(half*)vData,(half*)attnOutBuf.buf,
         batchSize,seqLen,numHeads,numKVHeads,qHeadDim,vHeadDim,
         usingFP16,usingNHWC,C384H12Fa4Sm120::InputLayout::PackedTokenQkv,
-        maskBuf,true,&c384ExactFa4Proof,cudaHandles->c384ExactDeviceOrdinal,
+        maskBuf,true,fa4Proof,cudaHandles->c384ExactDeviceOrdinal,
         cudaHandles->majorComputeCapability,cudaHandles->minorComputeCapability,
         cudaHandles->stream);
       // QKV has already enqueued. A consumer miss is therefore a contract
@@ -3482,6 +3870,26 @@ struct TransformerAttentionBlock {
         CUDA_ERR(name.c_str(),cudaErrorInvalidValue);
       CUDA_ERR(name.c_str(),result.status);
       usedSDPA = true;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      if(usedC384Int8PackedQkv) {
+        cudaHandles->noteC384Int8Launch(
+          countedC384Int8Attention,cudaHandles->activeC384Int8Attention);
+        if(!cudaHandles->loggedC384Int8Attention &&
+           cudaHandles->logger != NULL) {
+          cudaHandles->logger->write(
+            string("KATAGO_C384_SM120_INT8_ATTENTION_ACTIVE mode=") +
+            C384Int8Experiment::engineModeName(cudaHandles->c384Int8Mode) +
+            " projection=" + C384Int8Experiment::projectionTacticName(
+              static_cast<C384Int8Experiment::ProjectionTactic>(
+                KATAGO_C384_INT8_PROJECTION_TACTIC)) + " qknorm_rope=" +
+            C384QKNormRopeSm120::marker() + " fa4=" +
+            (result.marker == nullptr ? "missing" : result.marker));
+          cudaHandles->loggedC384Int8Attention = true;
+        }
+      }
+      else
+#endif
+      {
       cudaHandles->noteC384ExactLaunch(
         countedC384ExactQkvFa4,cudaHandles->activeC384ExactQkvFa4);
       if(!cudaHandles->loggedC384ExactQkvFa4 && cudaHandles->logger != NULL) {
@@ -3491,6 +3899,7 @@ struct TransformerAttentionBlock {
           c384ExactSelection.qkvRope->key.id + " fa4=" +
           (result.marker == nullptr ? "missing" : result.marker));
         cudaHandles->loggedC384ExactQkvFa4 = true;
+      }
       }
     }
 #endif
@@ -3665,11 +4074,30 @@ struct TransformerFFNBlock {
   mutable bool countedC384ExactDualFfn;
   mutable bool countedC384ExactFfnDown;
 #endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  UniqueC384Int8DeviceBuffer c384Int8UpWeights;
+  UniqueC384Int8DeviceBuffer c384Int8GateWeights;
+  UniqueC384Int8DeviceBuffer c384Int8DownWeights;
+  UniqueC384Int8Dual c384Int8Dual;
+  UniqueC384Int8Down c384Int8Down;
+  mutable bool countedC384Int8Ffn;
+  mutable bool countedC384Int8Down;
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   UniqueCudaDeviceBuffer int8UpWeightBuf;
   UniqueCudaDeviceBuffer int8GateWeightBuf;
   UniqueInt8DualFfnKernel int8DualFfnKernel;
   mutable bool countedInt8DualFfn;
+#endif
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+  void discardC384Int8Prepared() noexcept {
+    c384Int8Down.reset();
+    c384Int8Dual.reset();
+    c384Int8DownWeights.reset();
+    c384Int8GateWeights.reset();
+    c384Int8UpWeights.reset();
+  }
 #endif
   mutable bool countedWinnerDualFfn;
   mutable bool countedWinnerFfnDown;
@@ -3740,6 +4168,15 @@ struct TransformerFFNBlock {
     c384SharedClipDualCountsAsExact(false),
     countedC384ExactDualFfn(false),
     countedC384ExactFfnDown(false),
+#endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    c384Int8UpWeights(nullptr),
+    c384Int8GateWeights(nullptr),
+    c384Int8DownWeights(nullptr),
+    c384Int8Dual(nullptr),
+    c384Int8Down(nullptr),
+    countedC384Int8Ffn(false),
+    countedC384Int8Down(false),
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     int8UpWeightBuf(nullptr),
@@ -3892,6 +4329,71 @@ struct TransformerFFNBlock {
       if(expectsDown)
         cudaHandles->preparedWinnerFfnDown++;
     }
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(cudaHandles->c384Int8CandidateEligible) {
+      try {
+        const C384Int8Experiment::PackedWeights up =
+          C384Int8Experiment::packMatrix(
+            desc->linear1.weights,numChannels,ffnChannels);
+        const C384Int8Experiment::PackedWeights gate =
+          C384Int8Experiment::packMatrix(
+            desc->linearGate.weights,numChannels,ffnChannels);
+        UniqueC384Int8DeviceBuffer upWeights;
+        UniqueC384Int8DeviceBuffer gateWeights;
+        uploadC384Int8Weights(name + ":c384Int8Up",up.values,upWeights);
+        uploadC384Int8Weights(
+          name + ":c384Int8Gate",gate.values,gateWeights);
+        C384Int8Experiment::DualFfnConfig dualConfig;
+        dualConfig.tactic = static_cast<C384Int8Experiment::DualFfnTactic>(
+          KATAGO_C384_INT8_DUAL_TACTIC);
+        dualConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
+        dualConfig.packedUpWeights = (const int8_t*)upWeights.get();
+        dualConfig.packedGateWeights = (const int8_t*)gateWeights.get();
+        dualConfig.upWeightScale = up.scale;
+        dualConfig.gateWeightScale = gate.scale;
+        UniqueC384Int8Dual dual(
+          C384Int8Experiment::createDualFfn(dualConfig));
+        if(dual == nullptr)
+          throw StringError(name + ": C384 INT8 dual preparation failed");
+        UniqueC384Int8DeviceBuffer downWeights;
+        UniqueC384Int8Down down;
+        if(cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive) {
+          const C384Int8Experiment::PackedWeights packedDown =
+            C384Int8Experiment::packMatrix(
+              desc->linear2.weights,ffnChannels,numChannels);
+          uploadC384Int8Weights(
+            name + ":c384Int8Down",packedDown.values,downWeights);
+          C384Int8Experiment::DownConfig downConfig;
+          downConfig.tactic = static_cast<C384Int8Experiment::DownTactic>(
+            KATAGO_C384_INT8_DOWN_TACTIC);
+          downConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
+          downConfig.packedWeights = (const int8_t*)downWeights.get();
+          downConfig.weightScale = packedDown.scale;
+          down.reset(C384Int8Experiment::createDown(downConfig));
+          if(down == nullptr)
+            throw StringError(name + ": C384 INT8 down preparation failed");
+        }
+        c384Int8UpWeights = std::move(upWeights);
+        c384Int8GateWeights = std::move(gateWeights);
+        c384Int8DownWeights = std::move(downWeights);
+        c384Int8Dual = std::move(dual);
+        c384Int8Down = std::move(down);
+        cudaHandles->preparedC384Int8Ffn++;
+        if(cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive)
+          cudaHandles->preparedC384Int8Down++;
+        cudaHandles->registerC384Int8PreparedCleanup(
+          [this]() { discardC384Int8Prepared(); });
+      }
+      catch(...) {
+        (void)cudaGetLastError();
+        discardC384Int8Prepared();
+        cudaHandles->disableC384Int8Experiment(
+          name + ":ffn-preparation-failed");
+      }
+    }
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     const bool int8ShapeEligible = cudaHandles->int8ExperimentPlan &&
       swigluClip == 0.0f &&
@@ -3953,6 +4455,10 @@ struct TransformerFFNBlock {
 #endif
     }
     catch(...) {
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      discardC384Int8Prepared();
+      cudaHandles->c384Int8PreparedCleanupRegistry.clear();
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
       discardInt8Prepared();
       // Model construction is aborting, so earlier registered callbacks would
@@ -3966,6 +4472,9 @@ struct TransformerFFNBlock {
 
   ~TransformerFFNBlock()
   {
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    discardC384Int8Prepared();
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     discardInt8Prepared();
 #endif
@@ -3998,6 +4507,23 @@ struct TransformerFFNBlock {
     int matBatchSize = batchSize * seqLen;
     size_t bytesPerElt = usingFP16 ? sizeof(half) : sizeof(float);
 
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    const bool useC384Int8Ffn =
+      cudaHandles->c384Int8TransactionEnabled &&
+      batchSize == C384Int8Experiment::kBatch &&
+      matBatchSize == C384Int8Experiment::kTokenRows && maskBuf == nullptr &&
+      preLN.canApplyC384Fp16Int8(maskBuf) &&
+      scratch->hasC384Int8Scratch(cudaHandles->c384Int8Mode) &&
+      C384Int8Experiment::dualFfnSupports(
+        c384Int8Dual.get(),matBatchSize) &&
+      (cudaHandles->c384Int8Mode !=
+         C384Int8Experiment::EngineMode::Aggressive ||
+       C384Int8Experiment::downSupports(c384Int8Down.get(),matBatchSize));
+    if(cudaHandles->c384Int8TransactionEnabled &&
+       batchSize == C384Int8Experiment::kBatch && maskBuf == nullptr &&
+       !useC384Int8Ffn)
+      throw StringError(name + ": committed C384 INT8 FFN contract miss");
+#endif
     // Step 1: RMSNorm
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     const bool useInt8DualFfn = cudaHandles->int8ExperimentPlan &&
@@ -4005,6 +4531,16 @@ struct TransformerFFNBlock {
       katago_renju15_int8_dual_ffn_sm120_supports(
         int8DualFfnKernel.get(),matBatchSize,numChannels,ffnChannels,
         usingFP16,usingNHWC,maskBuf == nullptr);
+#endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(useC384Int8Ffn) {
+      preLN.applyC384Fp16Int8(
+        cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
+        scratch->c384Int8NormBuf,maskBuf);
+    }
+    else
+#endif
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(useInt8DualFfn) {
       preLN.applyFp16Int8(
         cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
@@ -4053,8 +4589,19 @@ struct TransformerFFNBlock {
         c384ExactFfnDownSelection,actualDownShape,ffnBuf.buf,
         linear2.matBuf,trunkBuf);
 #endif
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    bool usedC384Int8Dual = false;
+    if(useC384Int8Ffn) {
+      CUDA_ERR(name.c_str(),C384Int8Experiment::launchDualFfnHalf(
+        c384Int8Dual.get(),matBatchSize,
+        (const int8_t*)scratch->c384Int8NormBuf,(half*)ffnBuf.buf,
+        cudaHandles->stream));
+      usedDualFfn = true;
+      usedC384Int8Dual = true;
+    }
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-    if(useInt8DualFfn) {
+    if(!usedDualFfn && useInt8DualFfn) {
       CUDA_ERR(name.c_str(),katago_renju15_int8_dual_ffn_sm120_launch(
         int8DualFfnKernel.get(),matBatchSize,
         (const int8_t*)scratch->int8NormBuf,
@@ -4185,6 +4732,22 @@ struct TransformerFFNBlock {
       recipe.downProjection ==
         CudaTransformerWinner::ResidualTactic::CublasHgemmBetaOne;
     bool usedPreparedResidual = false;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(usedC384Int8Dual && cudaHandles->c384Int8Mode ==
+         C384Int8Experiment::EngineMode::Aggressive) {
+      CUDA_ERR(name.c_str(),C384Int8Experiment::launchQuantizeClip7Product(
+        (const half*)ffnBuf.buf,(int8_t*)scratch->c384Int8ProductBuf,
+        matBatchSize,cudaHandles->stream));
+      CUDA_ERR(name.c_str(),C384Int8Experiment::launchDownResidual(
+        c384Int8Down.get(),matBatchSize,
+        (const int8_t*)scratch->c384Int8ProductBuf,(const half*)trunkBuf,
+        (half*)trunkBuf,cudaHandles->stream));
+      usedPreparedResidual = true;
+      usedSpecializedResidual = true;
+      cudaHandles->noteC384Int8Launch(
+        countedC384Int8Down,cudaHandles->activeC384Int8Down);
+    }
+#endif
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     if(usedC384ExactDualFfn) {
       // The shared preflight above ran before dual FFN enqueued. Once dual has
@@ -4241,6 +4804,31 @@ struct TransformerFFNBlock {
       }
       CUDA_ERR(name.c_str(), cudaPeekAtLastError());
     }
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(usedC384Int8Dual) {
+      cudaHandles->noteC384Int8Launch(
+        countedC384Int8Ffn,cudaHandles->activeC384Int8Ffn);
+      if(!cudaHandles->loggedC384Int8Ffn && cudaHandles->logger != NULL) {
+        cudaHandles->logger->write(
+          string("KATAGO_C384_SM120_INT8_FFN_ACTIVE mode=") +
+          C384Int8Experiment::engineModeName(cudaHandles->c384Int8Mode) +
+          " dual=" + C384Int8Experiment::dualFfnTacticName(
+            static_cast<C384Int8Experiment::DualFfnTactic>(
+              KATAGO_C384_INT8_DUAL_TACTIC)) + " down=" +
+          (cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive ?
+             C384Int8Experiment::downTacticName(
+               static_cast<C384Int8Experiment::DownTactic>(
+                 KATAGO_C384_INT8_DOWN_TACTIC)) : "fp16") +
+          " product_quant=" +
+          (cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive ?
+             "separate-v1" : "none"));
+        cudaHandles->loggedC384Int8Ffn = true;
+      }
+    }
+#endif
 
 #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D("CUDA FFN residual", trunkBuf, batchSize, numChannels, seqLen, usingNHWC, usingFP16, maskBuf);
@@ -5397,7 +5985,8 @@ ComputeContext* NeuralNet::createComputeContext(
 
   const CudaInt8Policy requestedInt8Policy = resolveCudaInt8Policy(
     useINT8,std::getenv("KATAGO_DISABLE_INT8"));
-#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+#if (defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) || \
+    (defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT)
   const bool int8Compiled = true;
 #else
   const bool int8Compiled = false;
@@ -5410,6 +5999,18 @@ ComputeContext* NeuralNet::createComputeContext(
       " env_disabled=" +
       (requestedInt8Policy.environmentDisabled ? "1" : "0") +
       " compiled=" + (int8Compiled ? "1" : "0") +
+      " c256_compiled=" +
+#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
+      string("1") +
+#else
+      string("0") +
+#endif
+      " c384_compiled=" +
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      string("1") +
+#else
+      string("0") +
+#endif
       " allowed=" + (allowINT8 ? "1" : "0"));
   }
 
@@ -5525,6 +6126,10 @@ struct ComputeHandle {
           CudaTransformerWinner::preparePlan(architecture,runtime,device));
       cudaHandles->configureWinnerExpectations(
         context->useINT8,loadedModel->modelDesc);
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      cudaHandles->configureC384Int8Experiment(
+        context->useINT8,loadedModel->modelDesc);
+#endif
     }
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
@@ -5555,6 +6160,15 @@ struct ComputeHandle {
     }
     catch(...) {
       bool releasedOptional = false;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+      if(cudaHandles->c384Int8CandidateEligible ||
+         cudaHandles->c384Int8TransactionEnabled) {
+        buffers.reset();
+        scratch.reset();
+        cudaHandles->disableC384Int8Experiment("baseline-allocation-retry");
+        releasedOptional = true;
+      }
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
       if(cudaHandles->int8ExperimentPlan) {
         // Optional packed weights may have consumed the margin required by
@@ -5594,6 +6208,18 @@ struct ComputeHandle {
       (void)cudaGetLastError();
       allocateBaseline();
     }
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(cudaHandles->c384Int8CandidateEligible) {
+      const cudaError_t status = scratch->tryPrepareC384Int8Scratch(
+        maxBatchSize,nnXLen,nnYLen,cudaHandles->c384Int8Mode);
+      if(status != cudaSuccess)
+        cudaHandles->disableC384Int8Experiment(
+          "persistent-scratch-allocation-failed");
+    }
+    cudaHandles->commitC384Int8Experiment(
+      cudaHandles->c384ExactModelEligible,
+      scratch->hasC384Int8Scratch(cudaHandles->c384Int8Mode));
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(cudaHandles->int8ExperimentPlan) {
       const cudaError_t status = scratch->tryPrepareInt8ExperimentScratch(
