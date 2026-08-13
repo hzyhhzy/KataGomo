@@ -5,13 +5,12 @@ host, or GPU was modified while preparing this document.
 
 Base source: `07d9dbb07e77a8cc8c29cd7583eea91fe6bba21a`.
 
-The production default is **B24**. B28 may replace it only after the strict
-formal comparison in
-`C384_SM120_B24_B28_PRODUCTION_BATCH_POLICY.md` proves a throughput ratio
-strictly greater than 1.005 with the required confidence and stability. A
-ratio at or below 1.005, an unstable result, or incomplete/non-equivalent
-evidence keeps B24. Neither batch may be chosen from an isolated-kernel mean,
-a projected N/s value, or a comparison across unrelated binaries.
+The user has fixed the production batch to **B28**. The selection reason is
+`user-directed-fixed-batch`, not a benchmark promotion rule. Exact AOT is
+enabled only for B28/M6300; B24 and every other batch use the generic CUDA
+fallback selected before enqueue. B24 remains diagnostic/compatibility
+evidence and does not block B28 integration, as specified by
+`C384_SM120_B24_B28_PRODUCTION_BATCH_POLICY.md`.
 
 ## 1. Scope and fixed decisions
 
@@ -26,8 +25,8 @@ for the exact Linux x86-64, SM120, FP16/NHWC, no-mask shape:
 | channels | 384 |
 | attention | H12, KVH12, QD32, VD32, learned RoPE |
 | FFN | SwiGLU, F1024 |
-| physical batch | B24 by default; B28 only after the formal `> 1.005` promotion gate |
-| token rows | `selected_batch * 225` exactly |
+| physical batch | B28 fixed production route; all other batches generic CUDA |
+| token rows | 6300 exactly for AOT (`28 * 225`) |
 | device | compute capability 12.0 exactly |
 
 The four promoted AOT families are:
@@ -46,19 +45,20 @@ INT8, RMSNorm experiments, QKNorm, clip7, TensorRT, NVRTC cleanup, and Windows
 artifact generation are outside this patch. They must not be mixed into the
 first production integration or its performance attribution.
 
-## 2. Candidate inputs before final batch selection
+## 2. Production input and diagnostic provenance
 
-The following are inputs to the combined sequence, not final engine choices.
-The combined gate may retain an incumbent or reject an entire batch.
+The table preserves optimization provenance. Only the B28 row is a production
+AOT input. B24 remains diagnostic evidence and a generic-CUDA compatibility
+case; its result does not block or change the fixed production choice.
 
 | Batch | QKV/RoPE | packed FA4 | dual FFN | FFN-down | out projection |
 | --- | --- | --- | --- | --- | --- | --- |
 | B24 | `...g340-b24-abi1` | `tm128-tn64-s2-w4-both16-packed-token-b24-s225-h12-d32` | `...ab2e3-g340-b24-abi1` | `...m128n128k32s3-natural-b24-abi1` | cuBLAS beta-one |
 | B28 | incumbent `...g170-b28-abi1` | incumbent `tm128-tn64-s1-w4-both16-packed-token-b28-s225-h12-d32` | `...ab2e3-g340-b28-abi1` | `...m128n128k32s3-natural-b28-abi1` | cuBLAS beta-one |
 
-The exact full IDs are already bound by the formal Stage2 and residual
-reports. The production materializer must read the winning combined report
-and copy them; it must not infer IDs from the abbreviated table above.
+The exact B28 full IDs are already bound by the formal Stage2 and residual
+reports. The production materializer must read and copy the B28 IDs; it must
+not infer IDs from the abbreviated table or include a B24 AOT payload.
 
 Relevant immutable evidence at plan time:
 
@@ -73,17 +73,16 @@ Relevant immutable evidence at plan time:
 - CuTe CUDA-dialect static runtime SHA256
   `5ffeb7ae24bf02755a6ad751d196b2f1efd18a834b747972ffdd8bbc6550b899`.
 
-Do not make a production package until the combined/full-engine report is
-archived and has passed correctness, absolute stability, pairwise stability,
-telemetry, and the batch-policy evidence gate. The early same-setting screen
-(`B28=6105.38 N/s`, `B24=6086.55 N/s`, about `+0.31%`) therefore leaves B24
-as the current default. The standalone best B28 full-engine result
-(`6957.434661 N/s`) has no same-version final B24 arm and cannot overturn that
-decision.
+Do not make a final production package until B28 passes correctness,
+stability, telemetry, 36/36 activation and integrated full-engine acceptance.
+B24 is exercised as a generic fallback compatibility case but is non-blocking.
+The existing B28 full-engine result (`6957.434661 N/s`) remains performance
+evidence; the selection itself comes from the user's fixed-batch directive.
 
 ## 3. Repository package and exact vendor inventory
 
-After the combined result selects one batch, create exactly one directory:
+After B28 passes its integration gates, create exactly one production
+directory containing only the B28 exact-AOT closure:
 
 ```text
 cpp/external/renju15-sm120-c384/
@@ -139,23 +138,23 @@ CMake driver embeds the expected manifest hash and the same payload hash list;
 the source commit protects the driver itself without creating a cyclic hash
 dependency. The manifest also records:
 
-- selected batch and token rows;
-- the immutable batch policy (default B24, challenger B28, exclusive 1.005
-  ratio threshold), comparison kind, ABBA/BAAB schedule, raw-arm throughput,
-  paired ratio, confidence interval, stability metrics, and all comparison
-  provenance hashes;
+- fixed production batch 28, token rows 6300, and selection reason
+  `user-directed-fixed-batch`;
+- explicit `aot_batches=[28]`, B24 diagnostic/generic-fallback-only status,
+  B28 correctness/stability/activation evidence and full provenance hashes;
 - the four full candidate IDs and exported prepare/query/launch symbols;
 - source commit, generator commits/hashes, CUDA/nvcc/ptxas identity, CuTe DSL
   package provenance, SM120 target and Linux x86-64 object format;
-- combined-selection evidence and all engine promotion evidence hashes;
+- the user-directed fixed-batch decision record and all B28 engine acceptance
+  evidence hashes;
 - explicit decisions `out_projection=cublas-beta1` and `int8=false`;
 - registry ABI versions and the static runtime SHA.
 
 Do not vendor the 40-object search package, the 14-object Stage2 expansion,
 rejected candidates, Python/CuTe environments, build directories, absolute
 server paths, or raw timing scratch files. Full raw evidence stays under the
-reproducibility archive; only the minimal promotion documents needed to audit
-the checked-in choice belong in the normal source package.
+reproducibility archive; only the minimal acceptance documents needed to audit
+the checked-in B28 choice belong in the normal source package.
 
 Licences for NVIDIA CUTLASS DSL and every generator-derived component must be
 preserved. The existing B36 package licence set is a useful checklist, but the
@@ -277,7 +276,8 @@ target boundary. The generated final file must use only paths relative to
 - inconsistent IDs, token rows, symbol names, ABI versions, or evidence;
 - CUDA older than 13;
 - a non-CUDA backend or disabled SM120 winner;
-- a package that contains B24 and B28 together.
+- a final immutable `PRODUCTION` package containing any non-B28 AOT payload;
+  B24 remains outside the payload as diagnostic/archive evidence only.
 
 Generated ELF objects attached as `EXTERNAL_OBJECT` to an object library do
 not automatically flow through `$<TARGET_OBJECTS:...>`. Link all four `.o`
@@ -295,8 +295,8 @@ audited CUDA/cuDNN/NVRTC loader closure and the host NVIDIA driver.
 Preparation and execution are separate claims. Require both markers:
 
 ```text
-KATAGO_C384_EXACT_FIXED_PREPARED batch=<B> qkv_fa4=36/36 dual_ffn=36/36 ffn_down=36/36 out_proj=cublas-beta1
-KATAGO_C384_EXACT_FIXED_ACTIVE batch=<B> qkv_fa4=36/36 dual_ffn=36/36 ffn_down=36/36 out_proj=cublas-beta1
+KATAGO_C384_EXACT_FIXED_PREPARED batch=28 qkv_fa4=36/36 dual_ffn=36/36 ffn_down=36/36 out_proj=cublas-beta1
+KATAGO_C384_EXACT_FIXED_ACTIVE batch=28 qkv_fa4=36/36 dual_ffn=36/36 ffn_down=36/36 out_proj=cublas-beta1
 ```
 
 Each block owns a once-only counted flag for its exact family. The ACTIVE
@@ -309,7 +309,7 @@ Fallback runs must never print the ACTIVE marker. Their PREPARED marker must
 state the observed count and `fallback`. The marker contains the four full
 candidate IDs elsewhere in adjacent, once-only per-family diagnostics.
 
-## 8. Test and promotion checklist
+## 8. Test and fixed-B28 acceptance checklist
 
 ### CPU-only / configure-time
 
@@ -321,9 +321,9 @@ candidate IDs elsewhere in adjacent, once-only per-family diagnostics.
 - test that down accepts exactly K1024/N384/M=B*225 and cannot be selected for
   out projection K384/N384;
 - test 36/36 commit/discard and ACTIVE count behavior;
-- test production package schema, relative paths, exact file-set coverage,
-  SHA tampering, extra files, wrong runtime archive, B24+B28 rejection and
-  server-absolute-path rejection;
+- test package schema, relative paths, exact file-set coverage, SHA tampering,
+  extra files, wrong runtime archive, any non-B28 AOT payload rejection, fixed
+  selection reason, and server-absolute-path rejection;
 - build with no package and prove the stub/generic path still links;
 - build non-CUDA backends and prove the package is neither parsed nor linked;
 - inspect the final link command: four AOT objects precede the single static
@@ -369,40 +369,39 @@ reinterpretation, no partial exact family, and no exact ACTIVE marker.
 
 ### Performance
 
-- real full-engine S2 ABBA against the same fresh generic/native baseline;
-- select B28 only by
-  `C384_SM120_B24_B28_PRODUCTION_BATCH_POLICY.md`; specifically, a microbench,
-  the old 36x3 QKV/FA4/dual upper-bound projection, a fastest single leg, or
-  an old-B24/new-B28 cross-binary comparison is ineligible;
-- fixed production batch only, equal warmup and iteration counts, GPU
+- run B28 in the final integrated full-engine S2 configuration and report its
+  real N/s, latency, stability, telemetry and binary/configuration hashes;
+- treat B24 measurements as optional diagnostics only, never a B28 promotion
+  gate or blocker;
+- do not introduce a benchmark-based batch selector;
+- use equal warmup and iteration counts, GPU
   exclusivity/telemetry, raw child logs, binary SHA and configuration SHA;
 - report per-server median, batch wall time, N/s, CV, endpoint drift and paired
   ratios;
 - retain Nsight Systems kernel attribution for QKV, FA4, dual, down, out,
   RMSNorm and other residual time;
-- do not promote a projection or external hotpath N/s as full-engine N/s.
+- do not present a projection or external hotpath N/s as full-engine N/s.
 
 ## 9. Production materialization order
 
-1. Validate and archive a qualified full-engine or proven-equivalent complete
-   combined comparison.
-2. Apply the batch policy: keep B24 unless every B28 promotion predicate is
-   true. Choose exactly one batch from that result; fill no other source
-   manually.
-3. Copy the four selected artifact closures and one runtime archive to a fresh
-   integration-candidate staging directory; re-hash every source and
-   destination. This staging package is not yet allowed to claim production
-   promotion.
-4. Emit one exact registry, one FA4 registry, one down registry, a relative
-   CMake package and a complete production manifest.
-5. Run all CPU negative fixtures against the staged package.
-6. Commit the candidate package and minimal engine patch on an integration
-   branch.
-7. Fresh-build on the benchmark host with no external AOT paths.
-8. Pass activation, fallback, correctness, long-gate and S2 ABBA tests.
-9. Materialize a new immutable `PRODUCTION` package revision containing the
-   engine evidence hashes; never relabel the earlier candidate manifest or
-   edit a signed manifest in place.
+1. Validate and archive the complete external B28 sequence.
+2. Copy the four B28 artifact closures and shared runtime into a fresh staging
+   directory; re-hash every source and destination.
+3. Emit one B28 exact registry, one B28 FA4 registry, one B28 down registry, a
+   relative CMake package and manifest with `production_batch=28` and
+   `selection_reason=user-directed-fixed-batch`.
+4. Run all CPU negative fixtures, including rejection of any B24 AOT payload
+   and generic pre-enqueue fallback for B24/all non-B28 batches.
+5. Commit the B28 route and minimal engine patch on an integration branch.
+6. Fresh-build the final B28 route on the benchmark host with no external AOT
+   paths.
+7. Pass activation, fallback, correctness, stability and 36/36 gates for B28;
+   verify B24 through generic CUDA without an exact ACTIVE marker.
+8. Run the integrated full-engine S2 acceptance and archive raw logs, hashes,
+   telemetry, real throughput and operational metrics.
+9. Materialize one new immutable `PRODUCTION` package revision containing the
+   B28 engine evidence. Never change the fixed batch without a new explicit
+   user policy and manifest revision.
 10. Repeat the fresh build and final binary audit from that immutable commit.
 
 ## 10. Reusing the method for another model size
@@ -420,9 +419,9 @@ candidate ID:
 5. keep producer/consumer dependencies together, especially packed QKV/FA4;
 6. freeze only stable winners, then run the true layer-count ordered sequence
    with cross-layer state dependency;
-7. default to the smaller fixed batch and promote a larger batch only through
-   a predeclared full-engine/proven-equivalent paired threshold; never use
-   isolated kernel throughput or projected N/s;
+7. bind the production batch to an explicit policy/configuration decision and
+   keep all other batches on a coherent generic fallback; never infer a batch
+   choice from isolated kernel throughput or projected N/s;
 8. vendor one selected artifact per family with typed ABI, complete hashes,
    construction-time preparation and pre-enqueue fallback;
 9. require full block-count PREPARED and ACTIVE markers;

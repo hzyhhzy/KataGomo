@@ -1,52 +1,22 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "katago-c384-sm120-production-package",
   "mode": "PRODUCTION",
   "selection": {
-    "batch": "@SELECTED_BATCH@",
-    "token_rows": "@SELECTED_TOKEN_ROWS@",
-    "qkv_rope": "@FULL_QKV_ID@",
-    "fa4": "@FULL_FA4_ID@",
-    "dual_ffn": "@FULL_DUAL_ID@",
-    "ffn_down": "@FULL_DOWN_ID@",
-    "out_projection": "cublas-beta1"
+    "production_batch": 28,
+    "token_rows": 6300,
+    "selection_reason": "user-directed-fixed-batch",
+    "dynamic_batch_selection": false,
+    "aot_batches": [28],
+    "non_b28_policy": "pre-enqueue-generic-cuda-fallback",
+    "b24_status": "diagnostic-and-generic-fallback-only"
   },
-  "batch_selection": {
-    "policy_version": 1,
-    "default_batch": 24,
-    "challenger_batch": 28,
-    "selected_batch": "@SELECTED_BATCH@",
-    "decision": "@DEFAULT_B24_OR_PROMOTED_B28@",
-    "comparison_kind": "@FULL_ENGINE_OR_ENGINE_EXTERNAL_COMPLETE_EQUIVALENT@",
-    "schedule": "ABBA_BAAB",
-    "superrounds": "@INTEGER_AT_LEAST_3@",
-    "promotion_ratio_exclusive": 1.005,
-    "paired_geomean_ratio": "@UNROUNDED_RATIO@",
-    "gain_percent_unrounded": "@UNROUNDED_PERCENT@",
-    "confidence_kind": "one-sided-student-t-on-superround-log-ratios",
-    "confidence_level": 0.95,
-    "confidence_lcb_ratio": "@UNROUNDED_RATIO@",
-    "max_log_ratio_cv_allowed": 0.005,
-    "observed_log_ratio_cv": "@UNROUNDED_RATIO@",
-    "max_abs_endpoint_drift_allowed": 0.005,
-    "observed_b24_endpoint_drift": "@UNROUNDED_RATIO@",
-    "observed_b28_endpoint_drift": "@UNROUNDED_RATIO@",
-    "b24_nps": "@UNROUNDED_NPS@",
-    "b28_nps": "@UNROUNDED_NPS@",
-    "correctness_status": "passed",
-    "telemetry_status": "passed",
-    "stability_status": "passed",
-    "equivalence_status": "@NOT_REQUIRED_OR_PASSED@",
-    "source_commit": "@GIT_SHA1@",
-    "executable_b24_sha256": "@SHA256@",
-    "executable_b28_sha256": "@SHA256@",
-    "binary_pair_diff_audit_sha256": "@SAME_BINARY_OR_SHA256@",
-    "model_sha256": "@SHA256@",
-    "benchmark_config_sha256": "@SHA256@",
-    "runtime_environment_sha256": "@SHA256@",
-    "raw_report_sha256": "@SHA256@",
-    "raw_logs_archive_sha256": "@SHA256@",
-    "equivalence_manifest_sha256": "@NOT_REQUIRED_OR_SHA256@"
+  "artifacts": {
+    "qkv_rope": "@FULL_B28_QKV_ID@",
+    "fa4": "@FULL_B28_FA4_ID@",
+    "dual_ffn": "@FULL_B28_DUAL_ID@",
+    "ffn_down": "@FULL_B28_DOWN_ID@",
+    "out_projection": "cublas-beta1"
   },
   "target": {
     "platform": "linux-x86_64",
@@ -74,20 +44,37 @@
     "int8": false,
     "out_projection_aot": false,
     "fixed_batch_only": true,
-    "tail_policy": "pre-enqueue-generic-fallback"
+    "tail_policy": "pre-enqueue-generic-fallback",
+    "b24_aot_payload": false,
+    "b24_blocks_production": false
+  },
+  "gates": {
+    "b28_correctness": "passed",
+    "b28_stability": "passed",
+    "b28_telemetry": "passed",
+    "b28_prepared": "36/36",
+    "b28_active": "36/36"
+  },
+  "provenance": {
+    "source_commit": "@GIT_SHA1@",
+    "executable_sha256": "@SHA256@",
+    "model_sha256": "@SHA256@",
+    "benchmark_config_sha256": "@SHA256@",
+    "runtime_environment_sha256": "@SHA256@"
   },
   "evidence": {
-    "batch_selection_report_sha256": "@SHA256@",
-    "combined_36_report_sha256": "@SHA256@",
-    "full_engine_activation_sha256": "@SHA256@",
-    "full_engine_correctness_sha256": "@SHA256@",
-    "full_engine_long_gate_sha256": "@SHA256@",
-    "full_engine_s2_abba_sha256": "@SHA256@"
+    "b28_combined_36_report_sha256": "@SHA256@",
+    "b28_full_engine_activation_sha256": "@SHA256@",
+    "b28_full_engine_correctness_sha256": "@SHA256@",
+    "b28_full_engine_stability_sha256": "@SHA256@",
+    "b28_full_engine_performance_sha256": "@SHA256@",
+    "fixed_batch_decision_record_sha256": "@SHA256@",
+    "b24_diagnostic_archive_sha256": "@OPTIONAL_SHA256_OR_NULL@"
   },
   "files": [
     {
-      "path": "@REPOSITORY_RELATIVE_PATH@",
-      "role": "@ROLE@",
+      "path": "@REPOSITORY_RELATIVE_B28_PATH@",
+      "role": "@B28_ROLE@",
       "sha256": "@SHA256@"
     }
   ]
