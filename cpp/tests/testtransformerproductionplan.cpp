@@ -195,6 +195,34 @@ static ModelDesc makeModel(
   return model;
 }
 
+static void enableQkNormAndSwiGluClip(ModelDesc& model, float clip) {
+  model.version = 105;
+  model.trunk.version = 105;
+  model.policyHead.version = 105;
+  model.valueHead.version = 105;
+  for(size_t i = 0; i < model.trunk.blocks.size(); i++) {
+    const int kind = model.trunk.blocks[i].first;
+    if(kind == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+      TransformerAttentionDesc* attention =
+        (TransformerAttentionDesc*)model.trunk.blocks[i].second.get();
+      attention->useQKNorm = true;
+      attention->qNorm.name = attention->name + ":qnorm";
+      attention->qNorm.numChannels = attention->qHeadDim;
+      attention->qNorm.epsilon = 1.0e-6f;
+      attention->qNorm.weight.assign((size_t)attention->qHeadDim,1.0f);
+      attention->kNorm.name = attention->name + ":knorm";
+      attention->kNorm.numChannels = attention->qHeadDim;
+      attention->kNorm.epsilon = 1.0e-6f;
+      attention->kNorm.weight.assign((size_t)attention->qHeadDim,1.0f);
+    }
+    else if(kind == TRANSFORMER_FFN_BLOCK_KIND) {
+      TransformerFFNDesc* ffn =
+        (TransformerFFNDesc*)model.trunk.blocks[i].second.get();
+      ffn->swigluClip = clip;
+    }
+  }
+}
+
 static RuntimeOpContext runtimeContext(int batch, int boardX, int boardY, MaskMode mask) {
   RuntimeOpContext context{};
   context.batchSize = batch;
@@ -1286,6 +1314,18 @@ void Tests::runTransformerProductionPlanTests() {
   // fixture above. G1 requires the complete measured winner recipe on every
   // one of the 24 attention and 24 FFN blocks.
   const CudaTransformerWinner::DeviceCapability device = sm120Device();
+  ModelDesc c256QknClipModel =
+    makeModel(24,256,768,8,32,0.6f,"c256-qkn-clip7-generic-fallback");
+  enableQkNormAndSwiGluClip(c256QknClipModel,7.0f);
+  const ArchitectureDesc c256QknClipArchitecture =
+    buildArchitectureDesc(c256QknClipModel);
+  const CudaTransformerWinner::PreparedPlan c256QknClipPlan =
+    CudaTransformerWinner::preparePlan(c256QknClipArchitecture,b36,device);
+  assertAllTransformerRecipes(
+    c256QknClipArchitecture,c256QknClipPlan,24,true,
+    assertWideAttentionRecipe,assertGenericFfnRecipe
+  );
+
   CudaTransformerWinner::PreparedPlan productionG1A =
     CudaTransformerWinner::preparePlan(architectureA,b36,device);
   CudaTransformerWinner::PreparedPlan productionG1B =
@@ -1634,6 +1674,31 @@ void Tests::runTransformerProductionPlanTests() {
   assertAllTransformerRecipes(
     wideArchitecture,productionWide36,36,true,
     assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+
+  ModelDesc wideQknClipModel =
+    makeModel(36,384,1024,12,32,0.5f,"b36c384-qkn-clip7");
+  enableQkNormAndSwiGluClip(wideQknClipModel,7.0f);
+  const ArchitectureDesc wideQknClipArchitecture =
+    buildArchitectureDesc(wideQknClipModel);
+  const CudaTransformerWinner::PreparedPlan wideQknClipPlan =
+    CudaTransformerWinner::preparePlan(wideQknClipArchitecture,b36,device);
+  assertAllTransformerRecipes(
+    wideQknClipArchitecture,wideQknClipPlan,36,true,
+    assertC384DynamicAttentionRecipe,assertC384DynamicFfnRecipe
+  );
+
+  ModelDesc wideUnsupportedClipModel =
+    makeModel(36,384,1024,12,32,0.5f,"b36c384-qkn-clip6");
+  enableQkNormAndSwiGluClip(wideUnsupportedClipModel,6.0f);
+  const ArchitectureDesc wideUnsupportedClipArchitecture =
+    buildArchitectureDesc(wideUnsupportedClipModel);
+  const CudaTransformerWinner::PreparedPlan wideUnsupportedClipPlan =
+    CudaTransformerWinner::preparePlan(
+      wideUnsupportedClipArchitecture,b36,device);
+  assertAllTransformerRecipes(
+    wideUnsupportedClipArchitecture,wideUnsupportedClipPlan,36,true,
+    assertC384DynamicAttentionRecipe,assertGenericFfnRecipe
   );
 
   // A v104 wire version does not make a structurally different C384 model

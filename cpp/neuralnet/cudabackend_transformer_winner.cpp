@@ -70,13 +70,14 @@ bool isC256Attention(const CapabilityKey& key) {
   return isSquareMha(key) && key.inChannels == 256 && key.numHeads == 8 &&
     key.numKVHeads == 8 && key.qHeadDim == 32 && key.vHeadDim == 32 &&
     key.auxiliaryChannels == 16 &&
-    hasLearnedRope(key);
+    hasLearnedRope(key) && (key.flags & OP_FLAG_USE_QK_NORM) == 0;
 }
 
 bool isC256F768(const CapabilityKey& key) {
   return key.kind == ArchitectureOpKind::TransformerFFN &&
     key.inChannels == 256 && key.outChannels == 256 &&
-    key.auxiliaryChannels == 768 && (key.flags & OP_FLAG_USE_SWIGLU) != 0;
+    key.auxiliaryChannels == 768 && (key.flags & OP_FLAG_USE_SWIGLU) != 0 &&
+    (key.flags & OP_FLAG_USE_SWIGLU_CLIP) == 0;
 }
 
 bool isC384Attention(const CapabilityKey& key) {
@@ -86,9 +87,16 @@ bool isC384Attention(const CapabilityKey& key) {
 }
 
 bool isC384F1024(const CapabilityKey& key) {
+  constexpr uint32_t clip7Bits = 0x40E00000u;
+  const bool clipSemanticSupported =
+    ((key.flags & OP_FLAG_USE_SWIGLU_CLIP) == 0 &&
+     key.semanticScalar1Bits == 0) ||
+    ((key.flags & OP_FLAG_USE_SWIGLU_CLIP) != 0 &&
+     key.semanticScalar1Bits == clip7Bits);
   return key.kind == ArchitectureOpKind::TransformerFFN &&
     key.inChannels == 384 && key.outChannels == 384 &&
-    key.auxiliaryChannels == 1024 && (key.flags & OP_FLAG_USE_SWIGLU) != 0;
+    key.auxiliaryChannels == 1024 && (key.flags & OP_FLAG_USE_SWIGLU) != 0 &&
+    clipSemanticSupported;
 }
 
 bool validatedDynamicRows(const CapabilityKey& key) {
