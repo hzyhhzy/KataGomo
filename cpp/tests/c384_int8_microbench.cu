@@ -299,6 +299,10 @@ struct Lane {
     std::size_t(kTokenRows) * kChannels * sizeof(half)};
   ProjectionHandle projection{nullptr};
   DualHandle dual{nullptr};
+  // Legacy half-output handle is retained only to time the superseded
+  // half-product -> standalone-quant control. It is never used by the
+  // aggressive connected subpath.
+  DualHandle legacyHalfDual{nullptr};
   DownHandle down{nullptr};
 
   Lane() { checkCuda(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking),
@@ -307,6 +311,7 @@ struct Lane {
   Lane& operator=(const Lane&) = delete;
   ~Lane() {
     down.reset();
+    legacyHalfDual.reset();
     dual.reset();
     projection.reset();
     if(stream != nullptr)
@@ -338,6 +343,8 @@ void prepareLane(
 
   DualFfnConfig dualConfig;
   dualConfig.tactic = options.dual;
+  dualConfig.outputMode = options.mode == ProjectionMode::AggressiveQkv ?
+    DualFfnOutputMode::Int8Product : DualFfnOutputMode::Fp16Product;
   dualConfig.maxTokenRows = kTokenRows;
   dualConfig.packedUpWeights = weights.up.data<int8_t>();
   dualConfig.packedGateWeights = weights.gate.data<int8_t>();
@@ -348,6 +355,11 @@ void prepareLane(
     throw std::runtime_error("dual-FFN handle preparation failed");
 
   if(options.mode == ProjectionMode::AggressiveQkv) {
+    DualFfnConfig legacyConfig = dualConfig;
+    legacyConfig.outputMode = DualFfnOutputMode::Fp16Product;
+    lane.legacyHalfDual.reset(createDualFfn(legacyConfig));
+    if(lane.legacyHalfDual == nullptr)
+      throw std::runtime_error("legacy half-dual control preparation failed");
     DownConfig downConfig;
     downConfig.tactic = options.down;
     downConfig.maxTokenRows = kTokenRows;
@@ -374,17 +386,20 @@ void enqueuePrototypeSubpath(
     lane.projection.get(),kTokenRows,lane.normInt8.data<int8_t>(),
     lane.rawPackedQkv.data<half>(),kQkvChannels,lane.stream),
     "launch INT8 packed projection");
-  checkCuda(launchDualFfnHalf(
-    lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
-    lane.productHalf.data<half>(),lane.stream),"launch INT8 dual FFN");
   if(options.mode == ProjectionMode::AggressiveQkv) {
-    checkCuda(launchQuantizeClip7Product(
-      lane.productHalf.data<half>(),lane.productInt8.data<int8_t>(),
-      kTokenRows,lane.stream),"launch product quantization");
+    checkCuda(launchDualFfnInt8(
+      lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
+      lane.productInt8.data<int8_t>(),lane.stream),
+      "launch fused-output INT8 dual FFN");
     checkCuda(launchDownResidual(
       lane.down.get(),kTokenRows,lane.productInt8.data<int8_t>(),
       weights.residual.data<half>(),lane.downOutput.data<half>(),lane.stream),
       "launch INT8 down residual");
+  }
+  else {
+    checkCuda(launchDualFfnHalf(
+      lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
+      lane.productHalf.data<half>(),lane.stream),"launch INT8 dual FFN");
   }
 }
 
@@ -401,8 +416,8 @@ const char* timingFamilyName(TimingFamily family) {
   switch(family) {
   case TimingFamily::Rms: return "rms_fp16_int8";
   case TimingFamily::Projection: return "packed_projection";
-  case TimingFamily::DualFfn: return "dual_clip7_half";
-  case TimingFamily::ProductQuantization: return "product_quantization";
+  case TimingFamily::DualFfn: return "dual_clip7_mode_output";
+  case TimingFamily::ProductQuantization: return "legacy_product_quantization";
   case TimingFamily::DownResidual: return "down_beta1_residual";
   case TimingFamily::PrototypeSubpath: return "prototype_subpath";
   }
@@ -438,9 +453,15 @@ void enqueueFamily(
       "launch INT8 packed projection");
     return;
   case TimingFamily::DualFfn:
-    checkCuda(launchDualFfnHalf(
-      lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
-      lane.productHalf.data<half>(),lane.stream),"launch INT8 dual FFN");
+    if(options.mode == ProjectionMode::AggressiveQkv)
+      checkCuda(launchDualFfnInt8(
+        lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
+        lane.productInt8.data<int8_t>(),lane.stream),
+        "launch fused-output INT8 dual FFN");
+    else
+      checkCuda(launchDualFfnHalf(
+        lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
+        lane.productHalf.data<half>(),lane.stream),"launch INT8 dual FFN");
     return;
   case TimingFamily::ProductQuantization:
     if(options.mode != ProjectionMode::AggressiveQkv)
@@ -469,6 +490,15 @@ int quantize(float value, float clip) {
   long result = std::lrint(value * (127.0f / clip));
   result = std::max(-127L,std::min(127L,result));
   return int(result);
+}
+
+int fusedClip7ProductOracle(float up, float gate) {
+  const float silu = up / (1.0f + std::exp(-up));
+  const int upFactor = quantize(silu,7.0f);
+  const int gateFactor = quantize(gate,7.0f);
+  long product = std::lrint(float(upFactor * gateFactor) / 127.0f);
+  product = std::max(-127L,std::min(127L,product));
+  return int(product);
 }
 
 void requireFinite(const std::vector<half>& values, const char* name) {
@@ -517,6 +547,7 @@ void checkClip7SaturationContract(
 ) {
   constexpr int positiveChannel = 0;
   constexpr int negativeChannel = 1;
+  constexpr int clampWitnessChannel = 2;
   constexpr float saturationWeightScale = 1.0f / 8.0f;
   std::vector<int8_t> upWeights(std::size_t(kFfnChannels) * kChannels,0);
   std::vector<int8_t> gateWeights(std::size_t(kFfnChannels) * kChannels,0);
@@ -527,9 +558,22 @@ void checkClip7SaturationContract(
     const int8_t alignedSign = value < 0 ? int8_t(-1) : int8_t(1);
     upWeights[std::size_t(positiveChannel) * kChannels + k] = alignedSign;
     upWeights[std::size_t(negativeChannel) * kChannels + k] = alignedSign;
+    upWeights[std::size_t(clampWitnessChannel) * kChannels + k] = alignedSign;
     gateWeights[std::size_t(positiveChannel) * kChannels + k] = alignedSign;
     gateWeights[std::size_t(negativeChannel) * kChannels + k] =
       int8_t(-alignedSign);
+  }
+  // Channel 2 deliberately pairs a saturated up factor with a sub-clip gate.
+  // Its fused result differs from a missing-up-clamp implementation even
+  // though both endpoint channels still saturate to +/-49.
+  const float alpha = kNormActivationScale * saturationWeightScale;
+  const int32_t gateTarget = int32_t(std::lrint(3.0f / alpha));
+  int32_t gateMagnitude = 0;
+  for(int k = 0; k < kChannels && gateMagnitude < gateTarget; k++) {
+    const int value = int(normInt8[k]);
+    gateWeights[std::size_t(clampWitnessChannel) * kChannels + k] =
+      value < 0 ? int8_t(-1) : int8_t(1);
+    gateMagnitude += std::abs(value);
   }
   GuardedBuffer upDevice(upWeights.size());
   GuardedBuffer gateDevice(gateWeights.size());
@@ -537,6 +581,8 @@ void checkClip7SaturationContract(
   gateDevice.upload(gateWeights);
   DualFfnConfig config;
   config.tactic = options.dual;
+  config.outputMode = options.mode == ProjectionMode::AggressiveQkv ?
+    DualFfnOutputMode::Int8Product : DualFfnOutputMode::Fp16Product;
   config.maxTokenRows = 1;
   config.packedUpWeights = upDevice.data<int8_t>();
   config.packedGateWeights = gateDevice.data<int8_t>();
@@ -545,29 +591,53 @@ void checkClip7SaturationContract(
   DualHandle saturatedDual{createDualFfn(config)};
   if(saturatedDual == nullptr)
     throw std::runtime_error("clip7 saturation fixture handle preparation failed");
-  checkCuda(launchDualFfnHalf(
-    saturatedDual.get(),1,lane.normInt8.data<int8_t>(),
-    lane.productHalf.data<half>(),lane.stream),
-    "launch clip7 saturation fixture");
+  if(options.mode == ProjectionMode::AggressiveQkv)
+    checkCuda(launchDualFfnInt8(
+      saturatedDual.get(),1,lane.normInt8.data<int8_t>(),
+      lane.productInt8.data<int8_t>(),lane.stream),
+      "launch fused clip7 saturation fixture");
+  else
+    checkCuda(launchDualFfnHalf(
+      saturatedDual.get(),1,lane.normInt8.data<int8_t>(),
+      lane.productHalf.data<half>(),lane.stream),
+      "launch clip7 saturation fixture");
   checkCuda(cudaStreamSynchronize(lane.stream),
     "clip7 saturation fixture sync");
-  std::array<half,2> actual{};
-  checkCuda(cudaMemcpy(actual.data(),lane.productHalf.data<half>(),
-    sizeof(actual),cudaMemcpyDeviceToHost),"copy clip7 saturation fixture");
-
-  const float alpha = kNormActivationScale * saturationWeightScale;
-  const float up = toFloat(toHalf(float(magnitude) * alpha));
-  const float positiveGate = toFloat(toHalf(float(magnitude) * alpha));
-  const float negativeGate = toFloat(toHalf(-float(magnitude) * alpha));
+  const float up = float(magnitude) * alpha;
+  const float positiveGate = float(magnitude) * alpha;
+  const float negativeGate = -float(magnitude) * alpha;
+  const float witnessGate = float(gateMagnitude) * alpha;
   const float silu = up / (1.0f + std::exp(-up));
   if(!(silu > 7.0f && positiveGate > 7.0f && negativeGate < -7.0f))
     throw std::runtime_error("clip7 saturation fixture did not cross all reachable boundaries");
   const float expectedPositive = 49.0f;
   const float expectedNegative = -49.0f;
-  requireNear(toFloat(actual[positiveChannel]),expectedPositive,0.05f,
-    "clip7 positive saturation oracle");
-  requireNear(toFloat(actual[negativeChannel]),expectedNegative,0.05f,
-    "clip7 negative-gate saturation oracle");
+  if(options.mode == ProjectionMode::AggressiveQkv) {
+    std::array<int8_t,3> actual{};
+    checkCuda(cudaMemcpy(actual.data(),lane.productInt8.data<int8_t>(),
+      sizeof(actual),cudaMemcpyDeviceToHost),
+      "copy fused clip7 saturation fixture");
+    if(int(actual[positiveChannel]) != 127 ||
+       int(actual[negativeChannel]) != -127)
+      throw std::runtime_error("fused clip7 endpoints did not emit +/-127");
+    const int expectedWitness = fusedClip7ProductOracle(up,witnessGate);
+    const int missingClampWitness = quantize(silu * witnessGate,49.0f);
+    if(expectedWitness == missingClampWitness)
+      throw std::runtime_error("fused clip7 witness cannot detect missing clamp");
+    if(int(actual[clampWitnessChannel]) != expectedWitness)
+      throw std::runtime_error("fused clip7 clamp-witness oracle mismatch");
+    lane.productInt8.requireCanary("fused clip7 fixture product");
+  }
+  else {
+    std::array<half,3> actual{};
+    checkCuda(cudaMemcpy(actual.data(),lane.productHalf.data<half>(),
+      sizeof(actual),cudaMemcpyDeviceToHost),"copy clip7 saturation fixture");
+    requireNear(toFloat(actual[positiveChannel]),expectedPositive,0.05f,
+      "clip7 positive saturation oracle");
+    requireNear(toFloat(actual[negativeChannel]),expectedNegative,0.05f,
+      "clip7 negative-gate saturation oracle");
+    lane.productHalf.requireCanary("clip7 fixture product");
+  }
   if(std::fabs(silu * 7.0f - expectedPositive) < 1.0f ||
      std::fabs(7.0f * positiveGate - expectedPositive) < 1.0f ||
      std::fabs(silu * -7.0f - expectedNegative) < 1.0f ||
@@ -575,7 +645,6 @@ void checkClip7SaturationContract(
     throw std::runtime_error("clip7 fixture cannot distinguish a missing clamp");
   upDevice.requireCanary("clip7 fixture up weights");
   gateDevice.requireCanary("clip7 fixture gate weights");
-  lane.productHalf.requireCanary("clip7 fixture product");
 }
 
 void checkContracts(
@@ -590,10 +659,16 @@ void checkContracts(
   const std::vector<half> normHalf = lane.normHalf.download<half>();
   const std::vector<int8_t> normInt8 = lane.normInt8.download<int8_t>();
   const std::vector<half> qkv = lane.rawPackedQkv.download<half>();
-  const std::vector<half> productHalf = lane.productHalf.download<half>();
+  const std::vector<half> productHalf =
+    options.mode == ProjectionMode::ConservativeQk ?
+      lane.productHalf.download<half>() : std::vector<half>();
+  const std::vector<int8_t> productInt8 =
+    options.mode == ProjectionMode::AggressiveQkv ?
+      lane.productInt8.download<int8_t>() : std::vector<int8_t>();
   requireFinite(normHalf,"RMS FP16");
   requireFinite(qkv,"packed QKV");
-  requireFinite(productHalf,"clip7 dual product");
+  if(options.mode == ProjectionMode::ConservativeQk)
+    requireFinite(productHalf,"clip7 dual product");
 
   for(std::size_t i = 0; i < normHalf.size(); i++) {
     const int expected = quantize(toFloat(normHalf[i]),kNormActivationClip);
@@ -639,29 +714,33 @@ void checkContracts(
     for(int channel: ffnColumns) {
       const int32_t upAccum = dot(normInt8,row,kChannels,host.upWeights,channel);
       const int32_t gateAccum = dot(normInt8,row,kChannels,host.gateWeights,channel);
-      const float up = toFloat(toHalf(float(upAccum) * kNormActivationScale *
-        host.upWeightScale));
-      const float gate = toFloat(toHalf(float(gateAccum) * kNormActivationScale *
-        host.gateWeightScale));
+      const float up = float(upAccum) * kNormActivationScale *
+        host.upWeightScale;
+      const float gate = float(gateAccum) * kNormActivationScale *
+        host.gateWeightScale;
       const float silu = up / (1.0f + std::exp(-up));
       const float expected = std::max(-7.0f,std::min(7.0f,silu)) *
         std::max(-7.0f,std::min(7.0f,gate));
-      const float actual = toFloat(
-        productHalf[std::size_t(row) * kFfnChannels + channel]);
-      requireNear(actual,expected,0.08f,"dual clip7 oracle");
+      const std::size_t index = std::size_t(row) * kFfnChannels + channel;
+      if(options.mode == ProjectionMode::AggressiveQkv) {
+        const int expectedInt8 = fusedClip7ProductOracle(up,gate);
+        if(int(productInt8[index]) != expectedInt8 ||
+           productInt8[index] == int8_t(-128))
+          throw std::runtime_error("fused dual INT8 oracle mismatch");
+      }
+      else {
+        const float actual = toFloat(productHalf[index]);
+        requireNear(actual,expected,0.08f,"dual clip7 oracle");
+      }
     }
   }
 
   if(options.mode == ProjectionMode::AggressiveQkv) {
-    const std::vector<int8_t> productInt8 = lane.productInt8.download<int8_t>();
     const std::vector<half> downOutput = lane.downOutput.download<half>();
     requireFinite(downOutput,"INT8 down residual");
-    for(std::size_t i = 0; i < productHalf.size(); i++) {
-      const int expected = quantize(toFloat(productHalf[i]),kClip7ProductClip);
-      if(int(productInt8[i]) != expected || productInt8[i] == int8_t(-128))
-        throw std::runtime_error("product INT8 relation mismatch at " +
-          std::to_string(i));
-    }
+    if(std::find(productInt8.begin(),productInt8.end(),int8_t(-128)) !=
+       productInt8.end())
+      throw std::runtime_error("fused product emitted forbidden -128");
     for(int row: sampleRows) {
       for(int channel: std::array<int,5>{{0,1,127,255,383}}) {
         const int32_t accum = dot(
@@ -699,6 +778,18 @@ float benchmarkFamily(
   const Options& options,
   const DeviceWeights& weights
 ) {
+  if(family == TimingFamily::ProductQuantization) {
+    // Seed the legacy FP16 product outside timing. This family measures only
+    // the removed standalone conversion and is not part of the connected path.
+    for(auto& lane: lanes) {
+      checkCuda(launchDualFfnHalf(
+        lane->legacyHalfDual.get(),kTokenRows,lane->normInt8.data<int8_t>(),
+        lane->productHalf.data<half>(),lane->stream),
+        "seed legacy product-quant control");
+      checkCuda(cudaStreamSynchronize(lane->stream),
+        "seed legacy product-quant control sync");
+    }
+  }
   for(int warmup = 0; warmup < options.warmup; warmup++)
     for(auto& lane: lanes)
       enqueueFamily(*lane,family,options,weights);
@@ -791,7 +882,9 @@ int main(int argc, char** argv) {
         downTacticName(options.down) : "none")
       << " finite=1 canary=1 int32_dequant=1"
       << " clip7_silu_positive=1 clip7_gate_positive=1"
-      << " clip7_gate_negative=1 clip7_silu_negative_unreachable=1\n";
+      << " clip7_gate_negative=1 clip7_silu_negative_unreachable=1"
+      << " product_endpoints_plus49_minus49=1 missing_clamp_witness=1"
+      << " product_rne_saturate_no_neg128=1\n";
     if(options.contractsOnly)
       return 0;
 
@@ -848,7 +941,10 @@ int main(int argc, char** argv) {
         downTacticName(options.down) : "none") << "\""
       << ",\"product_quantization\":\""
       << (options.mode == ProjectionMode::AggressiveQkv ?
-        "separate-kernel" : "none") << "\""
+        "fused-dual-epilogue-v2" : "none") << "\""
+      << ",\"legacy_product_quantization_control\":\""
+      << (options.mode == ProjectionMode::AggressiveQkv ?
+        "timed-separately-not-connected" : "none") << "\""
       << ",\"scope\":\"component_and_prototype_subpath_latency_only\""
       << ",\"whole_network_throughput_claim\":false"
       << ",\"omitted_fp16_and_attention\":\""

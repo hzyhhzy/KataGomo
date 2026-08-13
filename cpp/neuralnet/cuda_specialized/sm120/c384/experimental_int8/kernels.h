@@ -38,6 +38,15 @@ enum class DualFfnTactic : uint32_t {
   M128N64K64S4Sw1 = 3,
 };
 
+// The conservative engine keeps the existing FP16 down-projection ABI. The
+// aggressive engine instead asks the dual GEMM epilogue to quantize its final
+// clip7 product directly to signed INT8. Keeping this choice on the prepared
+// handle makes an accidental half/INT8 pointer mismatch fail closed.
+enum class DualFfnOutputMode : uint32_t {
+  Fp16Product = 1,
+  Int8Product = 2,
+};
+
 enum class DownTactic : uint32_t {
   M128N128K64S2Sw1 = 1,
   M128N128K64S3Sw1 = 2,
@@ -102,6 +111,7 @@ cudaError_t launchPackPlanarV(
 
 struct DualFfnConfig {
   DualFfnTactic tactic = DualFfnTactic::M128N64K64S3Sw4;
+  DualFfnOutputMode outputMode = DualFfnOutputMode::Fp16Product;
   int maxTokenRows = 0;
   const int8_t* packedUpWeights = nullptr;
   const int8_t* packedGateWeights = nullptr;
@@ -111,7 +121,11 @@ struct DualFfnConfig {
 
 void* createDualFfn(const DualFfnConfig& config);
 void destroyDualFfn(void* opaque) noexcept;
-bool dualFfnSupports(const void* opaque, int tokenRows) noexcept;
+bool dualFfnSupports(
+  const void* opaque,
+  DualFfnOutputMode outputMode,
+  int tokenRows
+) noexcept;
 
 // Shared-A INT8 up/gate GEMM. Each projection dequantizes to FP16 before the
 // final FP32 clip7 epilogue computes clamp(SiLU(up),+-7)*clamp(gate,+-7).
@@ -123,10 +137,22 @@ cudaError_t launchDualFfnHalf(
   cudaStream_t stream
 );
 
-// First prototype conversion for the aggressive down path. It is deliberately
-// a separate callable boundary so timing can expose its cost. The production
-// follow-up may replace this call with an INT8-emitting dual epilogue without
-// changing the down-GEMM ABI.
+// Aggressive shared-A dual epilogue. Up and gate are dequantized in FP32,
+// transformed as clamp(SiLU(up),+-7) and clamp(gate,+-7), quantized in
+// registers to symmetric signed INT8 factors, multiplied, then written
+// directly as the final product tensor. Product scale is exactly 49/127,
+// zero point is 0, conversion is round-to-nearest-even, and saturation is
+// [-127,127] (never -128). No FP16 product tensor is materialized.
+cudaError_t launchDualFfnInt8(
+  void* opaque,
+  int tokenRows,
+  const int8_t* activation,
+  int8_t* productInt8,
+  cudaStream_t stream
+);
+
+// Legacy component-control conversion retained only for microbench comparison.
+// The aggressive engine path must use launchDualFfnInt8 and never call this.
 cudaError_t launchQuantizeClip7Product(
   const half* productFp16,
   int8_t* productInt8,

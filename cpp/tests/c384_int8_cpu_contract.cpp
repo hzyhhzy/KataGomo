@@ -22,6 +22,12 @@ int8_t quantizeNoNeg128(float value, float clip, float scale) {
   return static_cast<int8_t>(saturated);
 }
 
+int8_t fusedFactorProduct(int lhs, int rhs) {
+  long rounded = std::lrint(float(lhs * rhs) / 127.0f);
+  rounded = std::max(-127L,std::min(127L,rounded));
+  return static_cast<int8_t>(rounded);
+}
+
 void require(bool condition, const char* message) {
   if(!condition)
     throw std::runtime_error(message);
@@ -40,6 +46,10 @@ int main() {
     static_assert(kFfnChannels == 1024,"prototype FFN contract changed");
     static_assert(int(ProjectionMode::ConservativeQk) == 1,"mode ABI changed");
     static_assert(int(ProjectionMode::AggressiveQkv) == 2,"mode ABI changed");
+    static_assert(int(DualFfnOutputMode::Fp16Product) == 1,
+      "dual FP16 output ABI changed");
+    static_assert(int(DualFfnOutputMode::Int8Product) == 2,
+      "dual INT8 output ABI changed");
 
     require(std::fesetround(FE_TONEAREST) == 0,"cannot select round-to-nearest-even");
     const std::array<float,13> normValues = {
@@ -72,6 +82,19 @@ int main() {
             "negative product endpoint changed");
     require(int(quantizeNoNeg128(49.0f,kClip7ProductClip,kClip7ProductScale)) == 127,
             "positive product endpoint changed");
+    require(int(fusedFactorProduct(127,127)) == 127,
+            "fused +49 endpoint changed");
+    require(int(fusedFactorProduct(127,-127)) == -127,
+            "fused -49 endpoint changed");
+    require(int(fusedFactorProduct(1,63)) == 0 &&
+            int(fusedFactorProduct(1,64)) == 1,
+            "fused product RNE boundary changed");
+    const int clippedWitness = int(fusedFactorProduct(127,54));
+    const int missingClampWitness = int(quantizeNoNeg128(
+      10.0f * (54.0f * 7.0f / 127.0f),
+      kClip7ProductClip,kClip7ProductScale));
+    require(clippedWitness != missingClampWitness,
+            "fused contract cannot detect a missing clip7 clamp");
 
     require(parseEngineMode(nullptr) == EngineMode::Off,
             "unset C384 INT8 mode must default off");
@@ -143,6 +166,8 @@ int main() {
               << " F=" << kFfnChannels
               << " norm_scale=" << kNormActivationScale
               << " product_scale=" << kClip7ProductScale
+              << " fused_product_quant=fused-dual-epilogue-v2"
+              << " endpoints_plus49_minus49=1 rne=1 no_neg128=1"
               << " engine_default=off"
               << '\n';
     return 0;

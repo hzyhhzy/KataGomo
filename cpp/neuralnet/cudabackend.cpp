@@ -1534,7 +1534,6 @@ struct ScratchBuffers {
   void* oneBuf;
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
   void* c384Int8NormBuf;
-  void* c384Int8ProductBuf;
   cudaError_t c384Int8ScratchPrepareStatus;
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
@@ -1565,7 +1564,6 @@ struct ScratchBuffers {
       oneBuf(nullptr)
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
       , c384Int8NormBuf(nullptr),
-      c384Int8ProductBuf(nullptr),
       c384Int8ScratchPrepareStatus(cudaSuccess)
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
@@ -1597,9 +1595,7 @@ struct ScratchBuffers {
       int8NormBuf = nullptr;
 #endif
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
-      cudaFree(c384Int8ProductBuf);
       cudaFree(c384Int8NormBuf);
-      c384Int8ProductBuf = nullptr;
       c384Int8NormBuf = nullptr;
 #endif
       if(zeroBuf != nullptr)
@@ -1613,7 +1609,6 @@ struct ScratchBuffers {
   }
   ~ScratchBuffers() {
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
-    cudaFree(c384Int8ProductBuf);
     cudaFree(c384Int8NormBuf);
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
@@ -1667,23 +1662,16 @@ struct ScratchBuffers {
     int nnYLen,
     C384Int8Experiment::EngineMode mode
   ) {
-    const bool aggressive =
-      mode == C384Int8Experiment::EngineMode::Aggressive;
-    if(c384Int8NormBuf != nullptr &&
-       (!aggressive || c384Int8ProductBuf != nullptr))
+    (void)mode;
+    if(c384Int8NormBuf != nullptr)
       return cudaSuccess;
     c384Int8ScratchPrepareStatus = cudaSuccess;
     const size_t rows =
       (size_t)maxBatchSize * (size_t)nnXLen * (size_t)nnYLen;
     c384Int8ScratchPrepareStatus =
       cudaMalloc(&c384Int8NormBuf,rows * C384Int8Experiment::kChannels);
-    if(c384Int8ScratchPrepareStatus == cudaSuccess && aggressive)
-      c384Int8ScratchPrepareStatus = cudaMalloc(
-        &c384Int8ProductBuf,rows * C384Int8Experiment::kFfnChannels);
     if(c384Int8ScratchPrepareStatus != cudaSuccess) {
-      (void)cudaFree(c384Int8ProductBuf);
       (void)cudaFree(c384Int8NormBuf);
-      c384Int8ProductBuf = nullptr;
       c384Int8NormBuf = nullptr;
       (void)cudaGetLastError();
     }
@@ -1691,9 +1679,8 @@ struct ScratchBuffers {
   }
 
   bool hasC384Int8Scratch(C384Int8Experiment::EngineMode mode) const {
+    (void)mode;
     return c384Int8NormBuf != nullptr &&
-      (mode != C384Int8Experiment::EngineMode::Aggressive ||
-       c384Int8ProductBuf != nullptr) &&
       c384Int8ScratchPrepareStatus == cudaSuccess;
   }
 #endif
@@ -4346,6 +4333,10 @@ struct TransformerFFNBlock {
         C384Int8Experiment::DualFfnConfig dualConfig;
         dualConfig.tactic = static_cast<C384Int8Experiment::DualFfnTactic>(
           KATAGO_C384_INT8_DUAL_TACTIC);
+        dualConfig.outputMode = cudaHandles->c384Int8Mode ==
+            C384Int8Experiment::EngineMode::Aggressive ?
+          C384Int8Experiment::DualFfnOutputMode::Int8Product :
+          C384Int8Experiment::DualFfnOutputMode::Fp16Product;
         dualConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
         dualConfig.packedUpWeights = (const int8_t*)upWeights.get();
         dualConfig.packedGateWeights = (const int8_t*)gateWeights.get();
@@ -4515,7 +4506,12 @@ struct TransformerFFNBlock {
       preLN.canApplyC384Fp16Int8(maskBuf) &&
       scratch->hasC384Int8Scratch(cudaHandles->c384Int8Mode) &&
       C384Int8Experiment::dualFfnSupports(
-        c384Int8Dual.get(),matBatchSize) &&
+        c384Int8Dual.get(),
+        cudaHandles->c384Int8Mode ==
+            C384Int8Experiment::EngineMode::Aggressive ?
+          C384Int8Experiment::DualFfnOutputMode::Int8Product :
+          C384Int8Experiment::DualFfnOutputMode::Fp16Product,
+        matBatchSize) &&
       (cudaHandles->c384Int8Mode !=
          C384Int8Experiment::EngineMode::Aggressive ||
        C384Int8Experiment::downSupports(c384Int8Down.get(),matBatchSize));
@@ -4592,10 +4588,19 @@ struct TransformerFFNBlock {
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
     bool usedC384Int8Dual = false;
     if(useC384Int8Ffn) {
-      CUDA_ERR(name.c_str(),C384Int8Experiment::launchDualFfnHalf(
-        c384Int8Dual.get(),matBatchSize,
-        (const int8_t*)scratch->c384Int8NormBuf,(half*)ffnBuf.buf,
-        cudaHandles->stream));
+      if(cudaHandles->c384Int8Mode ==
+           C384Int8Experiment::EngineMode::Aggressive) {
+        CUDA_ERR(name.c_str(),C384Int8Experiment::launchDualFfnInt8(
+          c384Int8Dual.get(),matBatchSize,
+          (const int8_t*)scratch->c384Int8NormBuf,(int8_t*)ffnBuf.buf,
+          cudaHandles->stream));
+      }
+      else {
+        CUDA_ERR(name.c_str(),C384Int8Experiment::launchDualFfnHalf(
+          c384Int8Dual.get(),matBatchSize,
+          (const int8_t*)scratch->c384Int8NormBuf,(half*)ffnBuf.buf,
+          cudaHandles->stream));
+      }
       usedDualFfn = true;
       usedC384Int8Dual = true;
     }
@@ -4735,12 +4740,9 @@ struct TransformerFFNBlock {
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
     if(usedC384Int8Dual && cudaHandles->c384Int8Mode ==
          C384Int8Experiment::EngineMode::Aggressive) {
-      CUDA_ERR(name.c_str(),C384Int8Experiment::launchQuantizeClip7Product(
-        (const half*)ffnBuf.buf,(int8_t*)scratch->c384Int8ProductBuf,
-        matBatchSize,cudaHandles->stream));
       CUDA_ERR(name.c_str(),C384Int8Experiment::launchDownResidual(
         c384Int8Down.get(),matBatchSize,
-        (const int8_t*)scratch->c384Int8ProductBuf,(const half*)trunkBuf,
+        (const int8_t*)ffnBuf.buf,(const half*)trunkBuf,
         (half*)trunkBuf,cudaHandles->stream));
       usedPreparedResidual = true;
       usedSpecializedResidual = true;
@@ -4824,7 +4826,7 @@ struct TransformerFFNBlock {
           " product_quant=" +
           (cudaHandles->c384Int8Mode ==
              C384Int8Experiment::EngineMode::Aggressive ?
-             "separate-v1" : "none"));
+             "fused-dual-epilogue-v2" : "none"));
         cudaHandles->loggedC384Int8Ffn = true;
       }
     }

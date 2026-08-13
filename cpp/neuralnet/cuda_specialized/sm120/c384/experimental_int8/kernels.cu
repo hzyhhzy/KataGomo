@@ -105,6 +105,142 @@ public:
 
 using Clip7SwiGLU = LeftClip7SiLUAndMul<Output,8,Output,float>;
 
+// The CUTLASS dual-GEMM example uses one element type for its two internal
+// epilogue fragments and final D2 fragment. For the direct INT8 form, keep all
+// three fragments INT8: epilogue 0/1 dequantize their INT32 accumulators in
+// FP32, apply the clip7 factor transforms, and quantize those factors in
+// registers. D0/D1 are never stored. The final functor multiplies the two
+// register factors and emits the scale-49/127 product directly to global INT8.
+template<bool ApplySiLU, int Count>
+class Clip7FactorToInt8 {
+public:
+  using ElementOutput = Int8;
+  using ElementSource = Int8;
+  using ElementAccumulator = Accum;
+  using ElementCompute = float;
+  static int const kCount = Count;
+  using FragmentOutput = cutlass::Array<ElementOutput,kCount>;
+  using FragmentSource = cutlass::Array<ElementSource,kCount>;
+  using FragmentAccumulator = cutlass::Array<ElementAccumulator,kCount>;
+  using FragmentCompute = cutlass::Array<ElementCompute,kCount>;
+
+  struct Params {
+    float alpha;
+    CUTLASS_HOST_DEVICE explicit Params(float value = 1.0f) : alpha(value) {}
+  };
+
+private:
+  float alpha_;
+
+public:
+  CUTLASS_HOST_DEVICE explicit Clip7FactorToInt8(Params const& params) :
+    alpha_(params.alpha) {}
+
+  CUTLASS_HOST_DEVICE bool is_source_needed() const { return false; }
+  CUTLASS_HOST_DEVICE void set_k_partition(int, int) { assert(false); }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(
+    FragmentAccumulator const& accumulator,
+    FragmentSource const&
+  ) const {
+    cutlass::NumericArrayConverter<
+      ElementCompute,ElementAccumulator,kCount,
+      cutlass::FloatRoundStyle::round_to_nearest> toCompute;
+    cutlass::NumericArrayConverter<
+      ElementOutput,ElementCompute,kCount,
+      cutlass::FloatRoundStyle::round_to_nearest> toOutput;
+    FragmentCompute values = toCompute(accumulator);
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++)
+      values[i] *= alpha_;
+    if(ApplySiLU) {
+      cutlass::epilogue::thread::SiLu<FragmentCompute> silu;
+      values = silu(values);
+    }
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++) {
+      const float clipped = values[i] < -7.0f ? -7.0f :
+        (values[i] > 7.0f ? 7.0f : values[i]);
+      // The explicit clamp before the CUTLASS RNE converter excludes -128.
+      values[i] = clipped * (127.0f / 7.0f);
+    }
+    return toOutput(values);
+  }
+
+  CUTLASS_HOST_DEVICE
+  ElementOutput operator()(
+    ElementAccumulator const& accumulator,
+    ElementSource const&
+  ) const {
+    float value = float(accumulator) * alpha_;
+    if(ApplySiLU) {
+      cutlass::epilogue::thread::SiLu<float> silu;
+      value = silu(value);
+    }
+    value = value < -7.0f ? -7.0f : (value > 7.0f ? 7.0f : value);
+    cutlass::NumericConverter<
+      ElementOutput,float,cutlass::FloatRoundStyle::round_to_nearest> convert;
+    return convert(value * (127.0f / 7.0f));
+  }
+};
+
+template<int Count>
+class QuantizedClip7FactorMul {
+public:
+  using ElementOutput = Int8;
+  using ElementAccumulator = Int8;
+  using ElementCompute = int;
+  static int const kCount = Count;
+  using FragmentOutput = cutlass::Array<ElementOutput,kCount>;
+  using FragmentAccumulator = cutlass::Array<ElementAccumulator,kCount>;
+  struct Params {};
+
+  CUTLASS_HOST_DEVICE explicit QuantizedClip7FactorMul(Params const&) {}
+  CUTLASS_HOST_DEVICE bool is_source_needed() const { return true; }
+  CUTLASS_HOST_DEVICE void set_k_partition(int, int) { assert(false); }
+
+  CUTLASS_HOST_DEVICE
+  static int divide127Rne(int numerator) {
+    const bool negative = numerator < 0;
+    const int magnitude = negative ? -numerator : numerator;
+    int quotient = magnitude / 127;
+    const int remainder = magnitude - quotient * 127;
+    const int twiceRemainder = 2 * remainder;
+    if(twiceRemainder > 127 ||
+       (twiceRemainder == 127 && (quotient & 1) != 0))
+      quotient++;
+    int rounded = negative ? -quotient : quotient;
+    rounded = rounded < -127 ? -127 : (rounded > 127 ? 127 : rounded);
+    return rounded;
+  }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(
+    FragmentAccumulator const& lhs,
+    FragmentAccumulator const& rhs
+  ) const {
+    FragmentOutput output;
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++)
+      output[i] = static_cast<Int8>(
+        divide127Rne(int(lhs[i]) * int(rhs[i])));
+    return output;
+  }
+
+  CUTLASS_HOST_DEVICE
+  ElementOutput operator()(
+    ElementAccumulator const& lhs,
+    ElementAccumulator const& rhs
+  ) const {
+    return static_cast<Int8>(divide127Rne(int(lhs) * int(rhs)));
+  }
+};
+
+using Clip7UpFactorToInt8 = Clip7FactorToInt8<true,8>;
+using Clip7GateFactorToInt8 = Clip7FactorToInt8<false,8>;
+using Clip7ProductToInt8 = QuantizedClip7FactorMul<8>;
+
 template<int Stages, int Swizzle>
 using DualFfnGemm = cutlass::gemm::device::DualGemm<
   Int8,LayoutA,
@@ -116,6 +252,21 @@ using DualFfnGemm = cutlass::gemm::device::DualGemm<
   cutlass::gemm::GemmShape<64,32,64>,
   cutlass::gemm::GemmShape<16,8,32>,
   DequantToHalf,DequantToHalf,Clip7SwiGLU,
+  cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<Swizzle>,
+  Stages,false,false,false,16,16,
+  cutlass::arch::OpMultiplyAddSaturate>;
+
+template<int Stages, int Swizzle>
+using DualFfnInt8Gemm = cutlass::gemm::device::DualGemm<
+  Int8,LayoutA,
+  Int8,LayoutB,LayoutB,
+  Int8,LayoutOutput,
+  Accum,
+  cutlass::arch::OpClassTensorOp,cutlass::arch::Sm80,
+  cutlass::gemm::GemmShape<128,64,64>,
+  cutlass::gemm::GemmShape<64,32,64>,
+  cutlass::gemm::GemmShape<16,8,32>,
+  Clip7UpFactorToInt8,Clip7GateFactorToInt8,Clip7ProductToInt8,
   cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<Swizzle>,
   Stages,false,false,false,16,16,
   cutlass::arch::OpMultiplyAddSaturate>;
@@ -137,6 +288,9 @@ using ProjectionS3Sw2 = ProjectionGemm<3,2>;
 using DualS3Sw1 = DualFfnGemm<3,1>;
 using DualS3Sw4 = DualFfnGemm<3,4>;
 using DualS4Sw1 = DualFfnGemm<4,1>;
+using DualInt8S3Sw1 = DualFfnInt8Gemm<3,1>;
+using DualInt8S3Sw4 = DualFfnInt8Gemm<3,4>;
+using DualInt8S4Sw1 = DualFfnInt8Gemm<4,1>;
 using DownS2Sw1 = DownGemm<2,1>;
 using DownS3Sw1 = DownGemm<3,1>;
 using DownS3Sw2 = DownGemm<3,2>;
@@ -151,6 +305,10 @@ static_assert(sizeof(typename DualS3Sw1::DualGemmKernel::SharedStorage) <= 10137
 static_assert(sizeof(typename DualS3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
               sizeof(typename DualS4Sw1::DualGemmKernel::SharedStorage) <= 101376,
   "a C384 INT8 dual-FFN candidate exceeds RTX 5090 opt-in shared memory");
+static_assert(sizeof(typename DualInt8S3Sw1::DualGemmKernel::SharedStorage) <= 101376 &&
+              sizeof(typename DualInt8S3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
+              sizeof(typename DualInt8S4Sw1::DualGemmKernel::SharedStorage) <= 101376,
+  "a fused-output C384 INT8 dual-FFN exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename DownS3Sw1::GemmKernel::SharedStorage) <= 101376,
   "C384 INT8 down projection exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename DownS2Sw1::GemmKernel::SharedStorage) <= 101376 &&
@@ -293,7 +451,7 @@ typename Gemm::Arguments makeDualArguments(
   const Int8* activation,
   const Int8* upWeights,
   const Int8* gateWeights,
-  Output* output,
+  typename Gemm::ElementC* output,
   float upAlpha,
   float gateAlpha
 ) {
@@ -308,7 +466,9 @@ typename Gemm::Arguments makeDualArguments(
     {const_cast<Int8*>(gateWeights),LayoutB(kChannels)},
     nullC,nullD,
     {output,LayoutOutput(kFfnChannels)},
-    {upAlpha,0.0f},{gateAlpha,0.0f},{},1,
+    typename Gemm::EpilogueOutputOp0::Params(upAlpha),
+    typename Gemm::EpilogueOutputOp1::Params(gateAlpha),
+    typename Gemm::EpilogueOutputOp2::Params(),1,
   };
 }
 
@@ -318,7 +478,8 @@ cudaError_t prepareDualTyped(const DualFfnHandle& handle) {
     typename Gemm::DualGemmKernel>();
   if(status != cudaSuccess)
     return status;
-  Output* fakeOutput = reinterpret_cast<Output*>(
+  typename Gemm::ElementC* fakeOutput =
+    reinterpret_cast<typename Gemm::ElementC*>(
     const_cast<Int8*>(handle.config.packedUpWeights));
   const auto first = makeDualArguments<Gemm>(
     1,handle.config.packedUpWeights,handle.config.packedUpWeights,
@@ -337,7 +498,7 @@ cudaError_t launchDualTyped(
   const DualFfnHandle& handle,
   int rows,
   const Int8* activation,
-  Output* output,
+  typename Gemm::ElementC* output,
   cudaStream_t stream
 ) {
   using Kernel = typename Gemm::DualGemmKernel;
@@ -359,9 +520,9 @@ cudaError_t launchDualTyped(
   typename Kernel::Params params(
     cutlass::gemm::DualGemmMode::kGemm,problem,tiled,
     a,b0,nullTensor,nullTensor,b1,nullTensor,nullTensor,d2,
-    typename DequantToHalf::Params(handle.upAlpha,0.0f),
-    typename DequantToHalf::Params(handle.gateAlpha,0.0f),
-    typename Clip7SwiGLU::Params(),nullptr);
+    typename Gemm::EpilogueOutputOp0::Params(handle.upAlpha),
+    typename Gemm::EpilogueOutputOp1::Params(handle.gateAlpha),
+    typename Gemm::EpilogueOutputOp2::Params(),nullptr);
   constexpr int threads = Kernel::kThreadCount;
   constexpr int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
   cutlass::Kernel<Kernel><<<
@@ -646,19 +807,34 @@ void* createDualFfn(const DualFfnConfig& config) {
      config.packedUpWeights == nullptr || config.packedGateWeights == nullptr ||
      !aligned16(config.packedUpWeights) || !aligned16(config.packedGateWeights) ||
      !finitePositive(config.upWeightScale) ||
-     !finitePositive(config.gateWeightScale) || !isSm120Compatible())
+     !finitePositive(config.gateWeightScale) ||
+     (config.outputMode != DualFfnOutputMode::Fp16Product &&
+      config.outputMode != DualFfnOutputMode::Int8Product) ||
+     !isSm120Compatible())
     return nullptr;
   DualFfnHandle handle{config,
     kNormActivationScale * config.upWeightScale,
     kNormActivationScale * config.gateWeightScale};
   cudaError_t status = cudaErrorNotSupported;
-  switch(config.tactic) {
-  case DualFfnTactic::M128N64K64S3Sw1:
-    status = prepareDualTyped<DualS3Sw1>(handle); break;
-  case DualFfnTactic::M128N64K64S3Sw4:
-    status = prepareDualTyped<DualS3Sw4>(handle); break;
-  case DualFfnTactic::M128N64K64S4Sw1:
-    status = prepareDualTyped<DualS4Sw1>(handle); break;
+  if(config.outputMode == DualFfnOutputMode::Fp16Product) {
+    switch(config.tactic) {
+    case DualFfnTactic::M128N64K64S3Sw1:
+      status = prepareDualTyped<DualS3Sw1>(handle); break;
+    case DualFfnTactic::M128N64K64S3Sw4:
+      status = prepareDualTyped<DualS3Sw4>(handle); break;
+    case DualFfnTactic::M128N64K64S4Sw1:
+      status = prepareDualTyped<DualS4Sw1>(handle); break;
+    }
+  }
+  else {
+    switch(config.tactic) {
+    case DualFfnTactic::M128N64K64S3Sw1:
+      status = prepareDualTyped<DualInt8S3Sw1>(handle); break;
+    case DualFfnTactic::M128N64K64S3Sw4:
+      status = prepareDualTyped<DualInt8S3Sw4>(handle); break;
+    case DualFfnTactic::M128N64K64S4Sw1:
+      status = prepareDualTyped<DualInt8S4Sw1>(handle); break;
+    }
   }
   if(status != cudaSuccess)
     return nullptr;
@@ -669,9 +845,14 @@ void destroyDualFfn(void* opaque) noexcept {
   delete static_cast<DualFfnHandle*>(opaque);
 }
 
-bool dualFfnSupports(const void* opaque, int tokenRows) noexcept {
+bool dualFfnSupports(
+  const void* opaque,
+  DualFfnOutputMode outputMode,
+  int tokenRows
+) noexcept {
   const DualFfnHandle* handle = static_cast<const DualFfnHandle*>(opaque);
-  return handle != nullptr && tokenRows > 0 &&
+  return handle != nullptr && handle->config.outputMode == outputMode &&
+    tokenRows > 0 &&
     tokenRows <= handle->config.maxTokenRows;
 }
 
@@ -684,7 +865,8 @@ cudaError_t launchDualFfnHalf(
 ) {
   DualFfnHandle* handle = static_cast<DualFfnHandle*>(opaque);
   if(handle == nullptr || activation == nullptr || productFp16 == nullptr ||
-     !dualFfnSupports(handle,tokenRows) || !aligned16(activation) ||
+     !dualFfnSupports(handle,DualFfnOutputMode::Fp16Product,tokenRows) ||
+     !aligned16(activation) ||
      !aligned16(productFp16))
     return cudaErrorInvalidValue;
   Output* output = reinterpret_cast<Output*>(productFp16);
@@ -698,6 +880,32 @@ cudaError_t launchDualFfnHalf(
   case DualFfnTactic::M128N64K64S4Sw1:
     return launchDualTyped<DualS4Sw1>(
       *handle,tokenRows,activation,output,stream);
+  }
+  return cudaErrorNotSupported;
+}
+
+cudaError_t launchDualFfnInt8(
+  void* opaque,
+  int tokenRows,
+  const int8_t* activation,
+  int8_t* productInt8,
+  cudaStream_t stream
+) {
+  DualFfnHandle* handle = static_cast<DualFfnHandle*>(opaque);
+  if(handle == nullptr || activation == nullptr || productInt8 == nullptr ||
+     !dualFfnSupports(handle,DualFfnOutputMode::Int8Product,tokenRows) ||
+     !aligned16(activation) || !aligned16(productInt8))
+    return cudaErrorInvalidValue;
+  switch(handle->config.tactic) {
+  case DualFfnTactic::M128N64K64S3Sw1:
+    return launchDualTyped<DualInt8S3Sw1>(
+      *handle,tokenRows,activation,productInt8,stream);
+  case DualFfnTactic::M128N64K64S3Sw4:
+    return launchDualTyped<DualInt8S3Sw4>(
+      *handle,tokenRows,activation,productInt8,stream);
+  case DualFfnTactic::M128N64K64S4Sw1:
+    return launchDualTyped<DualInt8S4Sw1>(
+      *handle,tokenRows,activation,productInt8,stream);
   }
   return cudaErrorNotSupported;
 }
