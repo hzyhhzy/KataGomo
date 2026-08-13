@@ -207,6 +207,18 @@ descriptor pointers and packed weights per block. Runtime mismatch falls back
 before enqueue to the already-prepared generic/current-C384 route; it must not
 generate, initialize, allocate, or repack on first inference.
 
+CuTe's generated `Kernel_Module_Load` helper is not a production prepare ABI:
+it returns `void`, prints instead of propagating failures, and walks every
+visible device. The bridge calls the raw init/load-to-device entry points,
+checks their explicit `cudaError_t` records, prepares only the requested
+ordinal, and publishes the module only after success. Generated ELF `.o` files
+also belong directly on the final executable link line. Attaching an
+`EXTERNAL_OBJECT` to an object library is insufficient: CMake's
+`$<TARGET_OBJECTS:...>` does not propagate that external object. Preserve the
+order `generated objects -> CUDA-dialect runtime archive`, and retain a link
+fixture that proves the object-island-only form is unresolved while the direct
+final-link form builds and executes.
+
 ## 7. Correctness gates
 
 ### 7.1 CPU/source
@@ -301,6 +313,7 @@ experiments until repeated candidate rounds show no stable positive gain.
 | QKV grid340 first pass | Deferred | Scheduler meaning lacks retained evidence; revisit after grid170 profile. |
 | Dual M64 first pass | Deferred | M128 epilogue mapping audited; M64 is not. |
 | First-launch `call_once(Module_Load)` | Rejected | Cold hot-path work and not per-device safe. |
+| CuTe `.o` only on an object-library source list | Rejected | External objects do not propagate through `$<TARGET_OBJECTS>`; direct final link is required. |
 | Weight/checkpoint SHA dispatch | Rejected | Same structure with retrained weights must reuse kernels. |
 | Packed QKV to generic SDPA | Rejected | Layout mismatch; only typed packed FA4 may consume it. |
 | Claim speed from generation | Rejected | Compilation is not benchmarking. |
