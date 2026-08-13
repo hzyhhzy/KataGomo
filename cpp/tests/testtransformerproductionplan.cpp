@@ -11,6 +11,7 @@
 #include "../neuralnet/activations.h"
 #include "../neuralnet/architecturedesc.h"
 #include "../neuralnet/c384_exact_fixed_aot_plan.h"
+#include "../neuralnet/c384_exact_fixed_aot_weights.h"
 #include "../neuralnet/cudabackend_transformer_winner.h"
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/desc.h"
@@ -941,6 +942,53 @@ void Tests::runTransformerProductionPlanTests() {
     testAssert(!selected.targetShape);
     testAssert(selected.qkvRope.selected());
     testAssert(selected.dualFfn.reason == RejectReason::ShapeMismatch);
+
+    // Generated native entry points are versioned independently from the
+    // portable registry record and the FA4 proof.
+    testAssert(kRegistryAbiVersion == 2);
+    testAssert(kQkvRopeNativeAbiVersion == 1);
+    testAssert(kDualFfnNativeAbiVersion == 1);
+    testAssert(kPackedFa4ProofAbiVersion == 1);
+
+    const size_t qkvElements = (size_t)kChannels * kChannels;
+    vector<float> q(qkvElements,0.0f);
+    vector<float> k(qkvElements,0.0f);
+    vector<float> v(qkvElements,0.0f);
+    q[0] = 1.0f;
+    k[0] = 2.0f;
+    v[0] = 3.0f;
+    q[qkvElements - 1] = 4.0f;
+    k[qkvElements - 1] = 5.0f;
+    v[qkvElements - 1] = 6.0f;
+    const vector<float> packedQkv = packQkvWeights(q,k,v);
+    testAssert(packedQkv.size() == (size_t)kChannels * kQkvPackedColumns);
+    testAssert(packedQkv[packedQkvWeightIndex(0,0,0)] == 1.0f);
+    testAssert(packedQkv[packedQkvWeightIndex(0,1,0)] == 2.0f);
+    testAssert(packedQkv[packedQkvWeightIndex(0,2,0)] == 3.0f);
+    testAssert(packedQkv[packedQkvWeightIndex(383,0,383)] == 4.0f);
+    testAssert(packedQkv[packedQkvWeightIndex(383,1,383)] == 5.0f);
+    testAssert(packedQkv[packedQkvWeightIndex(383,2,383)] == 6.0f);
+
+    const size_t ffnElements = (size_t)kChannels * kFfnChannels;
+    vector<float> up(ffnElements,0.0f);
+    vector<float> gate(ffnElements,0.0f);
+    for(const int output : {0,63,64,1023}) {
+      up[output] = 1000.0f + output;
+      gate[output] = 2000.0f + output;
+    }
+    const vector<float> packedDual = packDualFfnWeights(up,gate);
+    testAssert(packedDual.size() ==
+      (size_t)kChannels * kDualFfnPackedColumns);
+    for(const int output : {0,63,64,1023}) {
+      testAssert(packedDual[packedDualFfnWeightIndex(0,false,output)] ==
+        1000.0f + output);
+      testAssert(packedDual[packedDualFfnWeightIndex(0,true,output)] ==
+        2000.0f + output);
+    }
+    testAssert(packedDualFfnWeightIndex(0,false,63) == 63);
+    testAssert(packedDualFfnWeightIndex(0,true,63) == 127);
+    testAssert(packedDualFfnWeightIndex(0,false,64) == 128);
+    testAssert(packedDualFfnWeightIndex(0,true,64) == 192);
   }
 
   {

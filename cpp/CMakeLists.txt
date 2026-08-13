@@ -43,8 +43,8 @@ set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   "Build qualified clip4/per-matrix INT8 C256 QK and FFN tactics with the SM120 winner")
 set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
-set(KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE "" CACHE FILEPATH
-  "Optional generated C384 exact-B QKV+RoPE/dual-FFN registry provider; empty links the fail-closed stub")
+set(KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST "" CACHE FILEPATH
+  "Optional generated CMake manifest containing audited C384 exact-AOT bridges and external objects")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -136,16 +136,63 @@ if(USE_BACKEND STREQUAL "CUDA")
 
     # The ordinary backend stays a fat CUDA build. Only the source-specialized
     # winner kernels form this SM120 object island.
-    if(KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE STREQUAL "")
+    set(KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES "")
+    set(KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS "")
+    set(KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR "")
+    set(KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256 "")
+    if(NOT KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST STREQUAL "")
+      get_filename_component(KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST
+        "${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}" ABSOLUTE)
+      if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}")
+        message(FATAL_ERROR
+          "KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST does not exist: ${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}")
+      endif()
+      include("${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}")
+      foreach(KATAGO_C384_EXACT_AOT_FILE IN LISTS
+          KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES
+          KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS)
+        if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_FILE}")
+          message(FATAL_ERROR
+            "Generated C384 exact-AOT file does not exist: ${KATAGO_C384_EXACT_AOT_FILE}")
+        endif()
+      endforeach()
+      if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}" OR
+         NOT IS_DIRECTORY "${KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR}")
+        message(FATAL_ERROR "Generated C384 exact-AOT manifest is incomplete")
+      endif()
+      list(LENGTH KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256
+        KATAGO_C384_EXACT_AOT_HASH_LIST_LENGTH)
+      math(EXPR KATAGO_C384_EXACT_AOT_HASH_LIST_REMAINDER
+        "${KATAGO_C384_EXACT_AOT_HASH_LIST_LENGTH} % 2")
+      if(KATAGO_C384_EXACT_AOT_HASH_LIST_LENGTH EQUAL 0 OR
+         NOT KATAGO_C384_EXACT_AOT_HASH_LIST_REMAINDER EQUAL 0)
+        message(FATAL_ERROR "Generated C384 exact-AOT SHA256 list is malformed")
+      endif()
+      math(EXPR KATAGO_C384_EXACT_AOT_HASH_LIST_LAST
+        "${KATAGO_C384_EXACT_AOT_HASH_LIST_LENGTH} - 2")
+      foreach(KATAGO_C384_EXACT_AOT_HASH_INDEX RANGE
+          0 ${KATAGO_C384_EXACT_AOT_HASH_LIST_LAST} 2)
+        math(EXPR KATAGO_C384_EXACT_AOT_HASH_VALUE_INDEX
+          "${KATAGO_C384_EXACT_AOT_HASH_INDEX} + 1")
+        list(GET KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256
+          ${KATAGO_C384_EXACT_AOT_HASH_INDEX} KATAGO_C384_EXACT_AOT_HASH_FILE)
+        list(GET KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256
+          ${KATAGO_C384_EXACT_AOT_HASH_VALUE_INDEX} KATAGO_C384_EXACT_AOT_HASH_WANTED)
+        if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_HASH_FILE}")
+          message(FATAL_ERROR
+            "Generated C384 exact-AOT hashed file is missing: ${KATAGO_C384_EXACT_AOT_HASH_FILE}")
+        endif()
+        file(SHA256 "${KATAGO_C384_EXACT_AOT_HASH_FILE}"
+          KATAGO_C384_EXACT_AOT_HASH_ACTUAL)
+        if(NOT KATAGO_C384_EXACT_AOT_HASH_ACTUAL STREQUAL
+           KATAGO_C384_EXACT_AOT_HASH_WANTED)
+          message(FATAL_ERROR
+            "Generated C384 exact-AOT SHA256 mismatch: ${KATAGO_C384_EXACT_AOT_HASH_FILE}")
+        endif()
+      endforeach()
+    else()
       set(KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER
         neuralnet/c384_exact_fixed_aot_registry_stub.cu)
-    else()
-      get_filename_component(KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER
-        "${KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE}" ABSOLUTE)
-      if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}")
-        message(FATAL_ERROR
-          "KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE does not exist: ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}")
-      endif()
     endif()
 
     set(KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
@@ -154,7 +201,8 @@ if(USE_BACKEND STREQUAL "CUDA")
       neuralnet/renju15_residual_gemm_sm120.cu
       neuralnet/renju15_qkv_rope_gemm_sm120.cu
       neuralnet/c384_exact_fixed_aot_registry.cu
-      ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER})
+      ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}
+      ${KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES})
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
         neuralnet/renju15_int8_fused_sm120.cu)
@@ -181,9 +229,19 @@ if(USE_BACKEND STREQUAL "CUDA")
     endif()
     target_include_directories(katago_sm120_transformer_winner PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR STREQUAL "")
+      target_include_directories(katago_sm120_transformer_winner PRIVATE
+        "${KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR}")
+    endif()
     target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+    if(KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS)
+      set_source_files_properties(${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS}
+        PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+      target_sources(katago_sm120_transformer_winner PRIVATE
+        ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS})
+    endif()
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       add_executable(katago_renju15_int8_weight_gate EXCLUDE_FROM_ALL
         neuralnet/renju15_int8_weight_gate.cpp)
@@ -377,6 +435,7 @@ add_executable(katago
   neuralnet/architecturedesc.cpp
   neuralnet/cudaopregistry.cpp
   neuralnet/c384_exact_fixed_aot_plan.cpp
+  neuralnet/c384_exact_fixed_aot_weights.cpp
   neuralnet/cudabackend_transformer_winner.cpp
   neuralnet/onnxprotoreader.cpp
   ${NEURALNET_BACKEND_SOURCES}

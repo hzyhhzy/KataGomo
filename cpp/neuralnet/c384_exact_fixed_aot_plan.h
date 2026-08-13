@@ -17,8 +17,10 @@ constexpr int kHeadDim = 32;
 constexpr int kFfnChannels = 1024;
 constexpr int kRopePairsTotal = 192;
 constexpr uint32_t kComputeCapability = 120;
-constexpr uint32_t kRegistryAbiVersion = 1;
+constexpr uint32_t kRegistryAbiVersion = 2;
 constexpr uint32_t kPackedFa4ProofAbiVersion = 1;
+constexpr uint32_t kQkvRopeNativeAbiVersion = 1;
+constexpr uint32_t kDualFfnNativeAbiVersion = 1;
 
 // Search priority, not a range. Every generated kernel remains exact-M.
 // Model depth is intentionally absent: it is not runtime batch, and a

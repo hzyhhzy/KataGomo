@@ -31,7 +31,8 @@ PreparedCudaSelection prepareCudaSelection(
   result.dualFfnReason = selected.dualFfn.reason;
   if(selected.qkvRope.selected()) {
     result.qkvRope = reinterpret_cast<const QkvRopeTactic*>(selected.qkvRope.tactic);
-    if(result.qkvRope->eagerPrepare == nullptr || result.qkvRope->launch == nullptr) {
+    if(result.qkvRope->nativeAbiVersion != kQkvRopeNativeAbiVersion ||
+       result.qkvRope->eagerPrepare == nullptr || result.qkvRope->launch == nullptr) {
       result.qkvRope = nullptr;
       result.qkvRopeReason = RejectReason::InvalidImplementation;
     }
@@ -44,7 +45,8 @@ PreparedCudaSelection prepareCudaSelection(
   }
   if(selected.dualFfn.selected()) {
     result.dualFfn = reinterpret_cast<const DualFfnTactic*>(selected.dualFfn.tactic);
-    if(result.dualFfn->eagerPrepare == nullptr || result.dualFfn->launch == nullptr) {
+    if(result.dualFfn->nativeAbiVersion != kDualFfnNativeAbiVersion ||
+       result.dualFfn->eagerPrepare == nullptr || result.dualFfn->launch == nullptr) {
       result.dualFfn = nullptr;
       result.dualFfnReason = RejectReason::InvalidImplementation;
     }

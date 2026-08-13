@@ -18,6 +18,8 @@ using QkvRopeLaunchFn = cudaError_t (*)(
   const half* packedWeights,
   const half2* cosSin,
   half* packedQkvOutput,
+  int tokenRows,
+  int deviceOrdinal,
   cudaStream_t stream
 );
 
@@ -29,6 +31,8 @@ using DualFfnLaunchFn = cudaError_t (*)(
   const half* pairedWeights,
   const half* unusedGateWeights,
   half* output,
+  int tokenRows,
+  int deviceOrdinal,
   cudaStream_t stream
 );
 
@@ -39,12 +43,14 @@ using EagerPrepareFn = cudaError_t (*)(int deviceOrdinal);
 
 struct QkvRopeTactic {
   TacticKey key;
+  uint32_t nativeAbiVersion;
   EagerPrepareFn eagerPrepare;
   QkvRopeLaunchFn launch;
 };
 
 struct DualFfnTactic {
   TacticKey key;
+  uint32_t nativeAbiVersion;
   EagerPrepareFn eagerPrepare;
   DualFfnLaunchFn launch;
 };
