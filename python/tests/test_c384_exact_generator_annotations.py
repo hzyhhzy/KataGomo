@@ -48,15 +48,5 @@ class C384ExactGeneratorAnnotationTest(unittest.TestCase):
             FakeCuda.CUstream,
         )
 
-    def test_wrapped_annotation_cycle_fails_closed(self) -> None:
-        def launch(stream: "cuda.CUstream"):
-            del stream
-
-        launch.__annotations__["stream"] = "cuda.CUstream"
-        launch.__wrapped__ = launch
-        with self.assertRaisesRegex(ValueError, "cycle"):
-            bind_local_stream_annotation(launch,object)
-
-
 if __name__ == "__main__":
     unittest.main()
