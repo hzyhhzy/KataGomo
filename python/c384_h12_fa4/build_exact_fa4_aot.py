@@ -169,6 +169,7 @@ namespace {{
 constexpr int MaxPreparedDevices = 32;
 std::array<{prefix}_Kernel_Module_t,MaxPreparedDevices> modules{{}};
 std::array<std::atomic<bool>,MaxPreparedDevices> prepared{{}};
+std::array<cudaError_t,MaxPreparedDevices> preparationFailures{{}};
 std::array<std::mutex,MaxPreparedDevices> prepareMutexes;
 
 cudaError_t validateDeviceOrdinal(int deviceOrdinal) {{
@@ -178,6 +179,39 @@ cudaError_t validateDeviceOrdinal(int deviceOrdinal) {{
     return status;
   return deviceOrdinal >= 0 && deviceOrdinal < deviceCount &&
       deviceOrdinal < MaxPreparedDevices ? cudaSuccess : cudaErrorInvalidDevice;
+}}
+
+cudaError_t loadModuleForDevice(int deviceOrdinal) {{
+  // The generated void helper logs failures and loads every visible device.
+  // Use the raw CuTe ABI so prepare owns one ordinal and propagates its status.
+  auto& module = modules[deviceOrdinal];
+  module = {{}};
+  cudaLibrary_t* library = &module.module;
+  cudaError_t rawStatus = cudaSuccess;
+  struct InitArgs {{
+    cudaLibrary_t** library;
+    cudaError_t* status;
+  }} initArgs{{&library,&rawStatus}};
+  _mlir_{prefix}_cuda_init(reinterpret_cast<void**>(&initArgs));
+  if(rawStatus != cudaSuccess) {{
+    if(module.module != nullptr)
+      (void)cudaLibraryUnload(module.module);
+    module = {{}};
+    return rawStatus;
+  }}
+
+  int32_t deviceId = deviceOrdinal;
+  struct LoadArgs {{
+    cudaLibrary_t** library;
+    int32_t* deviceId;
+    cudaError_t* status;
+  }} loadArgs{{&library,&deviceId,&rawStatus}};
+  _mlir_{prefix}_cuda_load_to_device(reinterpret_cast<void**>(&loadArgs));
+  if(rawStatus != cudaSuccess) {{
+    (void)cudaLibraryUnload(module.module);
+    module = {{}};
+  }}
+  return rawStatus;
 }}
 }}
 
@@ -202,25 +236,13 @@ extern "C" cudaError_t {prefix}_prepare(int deviceOrdinal) {{
   std::lock_guard<std::mutex> lock(prepareMutexes[deviceOrdinal]);
   if(prepared[deviceOrdinal].load(std::memory_order_relaxed))
     return cudaSuccess;
-  int previousDevice = -1;
-  status = cudaGetDevice(&previousDevice);
-  if(status != cudaSuccess)
-    return status;
-  if(previousDevice != deviceOrdinal) {{
-    status = cudaSetDevice(deviceOrdinal);
-    if(status != cudaSuccess)
-      return status;
-  }}
-  (void)cudaGetLastError();
-  {prefix}_Kernel_Module_Load(&modules[deviceOrdinal]);
-  status = cudaPeekAtLastError();
-  if(previousDevice != deviceOrdinal) {{
-    const cudaError_t restore = cudaSetDevice(previousDevice);
-    if(status == cudaSuccess)
-      status = restore;
-  }}
+  if(preparationFailures[deviceOrdinal] != cudaSuccess)
+    return preparationFailures[deviceOrdinal];
+  status = loadModuleForDevice(deviceOrdinal);
   if(status == cudaSuccess)
     prepared[deviceOrdinal].store(true,std::memory_order_release);
+  else
+    preparationFailures[deviceOrdinal] = status;
   return status;
 }}
 
@@ -359,6 +381,8 @@ def generate(args: argparse.Namespace) -> Path:
             "python": sys.version.split()[0],
             "cutlass_cuda": str(cutlass.CUDA_VERSION),
             "generator_sha256": sha256(Path(__file__).resolve()),
+            # render_bridge intentionally lives in this audited source file.
+            "bridge_generator_sha256": sha256(Path(__file__).resolve()),
         },
         "sha256": {},
     }

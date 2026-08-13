@@ -87,6 +87,7 @@ def load_metadata(path: Path) -> dict:
     generator = data.get("generator", {})
     generator_source = Path(__file__).resolve().parent / "build_exact_fa4_aot.py"
     if generator.get("generator_sha256") != sha256(generator_source) or \
+       generator.get("bridge_generator_sha256") != sha256(generator_source) or \
        not str(generator.get("python", "")) or \
        not str(generator.get("cutlass_cuda", "")):
         raise RuntimeError(f"{path}: generator provenance mismatch")
@@ -106,16 +107,40 @@ def load_metadata(path: Path) -> dict:
             raise RuntimeError(f"{path}: {label} SHA mismatch")
     object_bytes = assets["object"].read_bytes()
     wrapper_symbol = f"cute_dsl_{prefix}_wrapper"
-    if not object_bytes.startswith(b"\x7fELF") or \
-       wrapper_symbol.encode("ascii") not in object_bytes:
-        raise RuntimeError(f"{path}: object ELF/wrapper-symbol gate failed")
+    header_text = assets["header"].read_text(encoding="utf-8")
+    if not object_bytes.startswith(b"\x7fELF"):
+        raise RuntimeError(f"{path}: object ELF gate failed")
+    if f"static inline int32_t {wrapper_symbol}" not in header_text:
+        raise RuntimeError(f"{path}: header inline-wrapper gate failed")
+    runtime_symbols = (
+        f"_mlir_{prefix}_cuda_init",
+        f"_mlir_{prefix}_cuda_load",
+        f"_mlir_{prefix}_cuda_load_to_device",
+        f"_mlir_{prefix}_cuda_num_binaries",
+    )
+    for symbol in runtime_symbols:
+        if symbol.encode("ascii") not in object_bytes:
+            raise RuntimeError(f"{path}: object raw-symbol gate missing {symbol}")
+    raw_ciface_prefix = f"_mlir_{prefix}__mlir_ciface_cutlass_"
+    if raw_ciface_prefix.encode("ascii") not in object_bytes:
+        raise RuntimeError(f"{path}: object raw-launch-symbol gate failed")
+    if f"_mlir_{prefix}_cuda_init" not in header_text or \
+       f"_mlir_{prefix}_cuda_load_to_device" not in header_text or \
+       raw_ciface_prefix not in header_text:
+        raise RuntimeError(f"{path}: header raw-ABI gate failed")
     bridge_text = assets["bridge"].read_text(encoding="utf-8")
     for token in (
         f'{prefix}_prepare', f'{prefix}_launch', wrapper_symbol,
         "MaxPreparedDevices", "cudaPeekAtLastError",
+        f"_mlir_{prefix}_cuda_init",
+        f"_mlir_{prefix}_cuda_load_to_device",
+        "int32_t deviceId = deviceOrdinal",
+        "preparationFailures[deviceOrdinal] = status",
     ):
         if token not in bridge_text:
             raise RuntimeError(f"{path}: bridge ABI gate missing {token}")
+    if f"{prefix}_Kernel_Module_Load(&" in bridge_text:
+        raise RuntimeError(f"{path}: bridge uses non-propagating module loader")
     data["source_metadata"] = str(path.resolve())
     data["source_assets"] = assets
     data["actual_sha256"] = actual
