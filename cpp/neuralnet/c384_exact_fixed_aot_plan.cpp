@@ -6,7 +6,7 @@ namespace C384ExactFixedAot {
 
 namespace {
 
-constexpr int kCandidateBatches[] = {28,24,40};
+constexpr int kCandidateBatches[] = {28,24};
 
 const RegistrySpan& registryFor(Family family, const RegistryView& registry) {
   return family == Family::QkvRope ? registry.qkvRope : registry.dualFfn;

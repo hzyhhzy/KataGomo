@@ -741,7 +741,6 @@ void Tests::runTransformerProductionPlanTests() {
     const TacticKey qkvTactics[] = {
       {Family::QkvRope,28,6300,0,"qkv-rope-b28-test",true,false,kRegistryAbiVersion},
       {Family::QkvRope,24,5400,0,"qkv-rope-b24-test",true,false,kRegistryAbiVersion},
-      {Family::QkvRope,40,9000,0,"qkv-rope-b40-test",true,false,kRegistryAbiVersion},
       // A generated record with a stale M must never match.
       {Family::QkvRope,28,6299,0,"qkv-rope-b28-stale",true,false,kRegistryAbiVersion},
     };
@@ -749,7 +748,6 @@ void Tests::runTransformerProductionPlanTests() {
       {Family::DualFfn,28,6300,170,"dual-b28-grid170-test",false,true,kRegistryAbiVersion},
       {Family::DualFfn,28,6300,340,"dual-b28-grid340-test",false,true,kRegistryAbiVersion},
       {Family::DualFfn,24,5400,170,"dual-b24-grid170-test",false,true,kRegistryAbiVersion},
-      {Family::DualFfn,40,9000,340,"dual-b40-grid340-test",false,true,kRegistryAbiVersion},
     };
     const RegistryView registry = {
       {qkvTactics,sizeof(qkvTactics) / sizeof(qkvTactics[0]),sizeof(TacticKey)},
@@ -794,11 +792,11 @@ void Tests::runTransformerProductionPlanTests() {
 
     std::size_t candidateCount = 0;
     const int* batches = candidateBatches(candidateCount);
-    testAssert(candidateCount == 3);
-    testAssert(batches[0] == 28 && batches[1] == 24 && batches[2] == 40);
+    testAssert(candidateCount == 2);
+    testAssert(batches[0] == 28 && batches[1] == 24);
     testAssert(candidateBatchPriority(28) == 0);
     testAssert(candidateBatchPriority(24) == 1);
-    testAssert(candidateBatchPriority(40) == 2);
+    testAssert(candidateBatchPriority(40) == -1);
     testAssert(candidateBatchPriority(36) == -1);
 
     Selection selected = select(
@@ -868,23 +866,27 @@ void Tests::runTransformerProductionPlanTests() {
     testAssert(selected.qkvRope.reason == RejectReason::RegistryMiss);
     testAssert(selected.dualFfn.reason == RejectReason::RegistryMiss);
 
-    for(const int batch: {24,40}) {
+    for(const int batch: {24}) {
       shape.batchSize = batch;
       shape.enqueuedRows = batch * 225;
-      const char* qkvId = batch == 24 ? "qkv-rope-b24-test" : "qkv-rope-b40-test";
-      const char* dualId = batch == 24 ?
-        "dual-b24-grid170-test" : "dual-b40-grid340-test";
+      const char* qkvId = "qkv-rope-b24-test";
+      const char* dualId = "dual-b24-grid170-test";
       fa4.batchSize = batch;
-      fa4.id = batch == 24 ? "fa4-packed-b24-test" : "fa4-packed-b40-test";
+      fa4.id = "fa4-packed-b24-test";
       selected = select(shape,registry,qkvId,dualId,&fa4);
       testAssert(selected.qkvRope.selected());
       testAssert(selected.dualFfn.selected());
       testAssert(selected.qkvRope.tactic->tokenRows == batch * 225);
     }
 
-    // Runtime batch 36 is unrelated to the 36-layer model depth and is not a
-    // selected fixed-AOT candidate. Other structural/runtime changes also
-    // fail closed without weakening the existing prepared generic path.
+    // B40 was removed from the locked B24/B28 selector and must miss before
+    // enqueue. Runtime batch 36 is likewise unrelated to the 36-layer depth.
+    shape.batchSize = 40;
+    shape.enqueuedRows = 40 * 225;
+    selected = select(shape,registry,nullptr,nullptr,nullptr);
+    testAssert(!selected.targetShape);
+    testAssert(selected.qkvRope.reason == RejectReason::ShapeMismatch);
+    testAssert(selected.dualFfn.reason == RejectReason::ShapeMismatch);
     shape.batchSize = 36;
     shape.enqueuedRows = 36 * 225;
     selected = select(shape,registry,nullptr,nullptr,nullptr);

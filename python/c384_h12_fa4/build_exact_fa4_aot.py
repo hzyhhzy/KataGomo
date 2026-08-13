@@ -155,51 +155,94 @@ def render_bridge(
     stem: str, prefix: str, identity: str, args: argparse.Namespace
 ) -> str:
     layout_id = LAYOUT_IDS[args.layout]
+    accumulation_id = ACCUMULATION_IDS[args.accumulation]
+    warps = args.num_threads // 32
     return f'''#include "{stem}.h"
 
 #include <cuda_runtime.h>
 
+#include <array>
+#include <atomic>
 #include <mutex>
 
 namespace {{
-{prefix}_Kernel_Module_t module = {{}};
-std::once_flag prepareOnce;
-cudaError_t prepareStatus = cudaSuccess;
+constexpr int MaxPreparedDevices = 32;
+std::array<{prefix}_Kernel_Module_t,MaxPreparedDevices> modules{{}};
+std::array<std::atomic<bool>,MaxPreparedDevices> prepared{{}};
+std::array<std::mutex,MaxPreparedDevices> prepareMutexes;
+
+cudaError_t validateDeviceOrdinal(int deviceOrdinal) {{
+  int deviceCount = 0;
+  cudaError_t status = cudaGetDeviceCount(&deviceCount);
+  if(status != cudaSuccess)
+    return status;
+  return deviceOrdinal >= 0 && deviceOrdinal < deviceCount &&
+      deviceOrdinal < MaxPreparedDevices ? cudaSuccess : cudaErrorInvalidDevice;
+}}
 }}
 
 extern "C" int {prefix}_batch() {{ return {args.batch}; }}
 extern "C" int {prefix}_sequence() {{ return {SEQUENCE}; }}
 extern "C" int {prefix}_heads() {{ return {HEADS}; }}
 extern "C" int {prefix}_head_dim() {{ return {HEAD_DIM}; }}
+extern "C" int {prefix}_tile_m() {{ return {args.tile_m}; }}
+extern "C" int {prefix}_tile_n() {{ return {args.tile_n}; }}
+extern "C" int {prefix}_num_stages() {{ return {args.num_stages}; }}
+extern "C" int {prefix}_num_warps() {{ return {warps}; }}
+extern "C" int {prefix}_input_layout() {{ return {layout_id}; }}
+extern "C" int {prefix}_accumulation() {{ return {accumulation_id}; }}
 extern "C" const char* {prefix}_id() {{ return {json.dumps(identity)}; }}
 
 extern "C" cudaError_t {prefix}_prepare(int deviceOrdinal) {{
-  int currentDevice = -1;
-  cudaError_t status = cudaGetDevice(&currentDevice);
-  if(status != cudaSuccess || currentDevice != deviceOrdinal)
-    return status == cudaSuccess ? cudaErrorInvalidDevice : status;
-  std::call_once(prepareOnce, []() {{
-    {prefix}_Kernel_Module_Load(&module);
-    prepareStatus = cudaGetLastError();
-  }});
-  return prepareStatus;
+  cudaError_t status = validateDeviceOrdinal(deviceOrdinal);
+  if(status != cudaSuccess)
+    return status;
+  if(prepared[deviceOrdinal].load(std::memory_order_acquire))
+    return cudaSuccess;
+  std::lock_guard<std::mutex> lock(prepareMutexes[deviceOrdinal]);
+  if(prepared[deviceOrdinal].load(std::memory_order_relaxed))
+    return cudaSuccess;
+  int previousDevice = -1;
+  status = cudaGetDevice(&previousDevice);
+  if(status != cudaSuccess)
+    return status;
+  if(previousDevice != deviceOrdinal) {{
+    status = cudaSetDevice(deviceOrdinal);
+    if(status != cudaSuccess)
+      return status;
+  }}
+  (void)cudaGetLastError();
+  {prefix}_Kernel_Module_Load(&modules[deviceOrdinal]);
+  status = cudaPeekAtLastError();
+  if(previousDevice != deviceOrdinal) {{
+    const cudaError_t restore = cudaSetDevice(previousDevice);
+    if(status == cudaSuccess)
+      status = restore;
+  }}
+  if(status == cudaSuccess)
+    prepared[deviceOrdinal].store(true,std::memory_order_release);
+  return status;
 }}
 
 extern "C" cudaError_t {prefix}_launch(
   void* q, void* k, void* v, void* output,
   int batch, int sequence, int heads, int headDim, float softmaxScale,
-  uint32_t inputLayout, cudaStream_t stream
+  uint32_t inputLayout, int deviceOrdinal, cudaStream_t stream
 ) {{
   if(batch != {args.batch} || sequence != {SEQUENCE} || heads != {HEADS} ||
      headDim != {HEAD_DIM} || inputLayout != {layout_id} ||
      q == nullptr || k == nullptr || v == nullptr || output == nullptr)
     return cudaErrorInvalidValue;
+  if(deviceOrdinal < 0 || deviceOrdinal >= MaxPreparedDevices ||
+     !prepared[deviceOrdinal].load(std::memory_order_acquire))
+    return cudaErrorNotReady;
   {prefix}_Tensor_mQ_t tensorQ = {{q}};
   {prefix}_Tensor_mK_t tensorK = {{k}};
   {prefix}_Tensor_mV_t tensorV = {{v}};
   {prefix}_Tensor_mO_t tensorOutput = {{output}};
   const int32_t result = cute_dsl_{prefix}_wrapper(
-    &module,&tensorQ,&tensorK,&tensorV,&tensorOutput,softmaxScale,stream);
+    &modules[deviceOrdinal],&tensorQ,&tensorK,&tensorV,&tensorOutput,
+    softmaxScale,stream);
   return result == 0 ? cudaPeekAtLastError() : cudaErrorUnknown;
 }}
 '''
@@ -208,8 +251,8 @@ extern "C" cudaError_t {prefix}_launch(
 def generate(args: argparse.Namespace) -> Path:
     # Heavy imports occur only after argument validation, keeping offline
     # contract tests and --help independent of the pinned FA4 environment.
-    os.environ.setdefault("FLASH_ATTENTION_ARCH", "sm_120")
-    os.environ.setdefault("CUTE_DSL_ARCH", "sm_120")
+    os.environ["FLASH_ATTENTION_ARCH"] = "sm_120"
+    os.environ["CUTE_DSL_ARCH"] = "sm_120"
     cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or "/usr/local/cuda"
     os.environ.setdefault("CUDA_TOOLKIT_PATH", cuda_home)
     os.environ.setdefault("CUTE_DSL_PTXAS_PATH", os.path.join(cuda_home, "bin", "ptxas"))
@@ -312,7 +355,11 @@ def generate(args: argparse.Namespace) -> Path:
         "mask": False,
         "compute_capability": "sm_120",
         "gpu_used_for_generation": False,
-        "generator": {"python": sys.version.split()[0], "cutlass_cuda": str(cutlass.CUDA_VERSION)},
+        "generator": {
+            "python": sys.version.split()[0],
+            "cutlass_cuda": str(cutlass.CUDA_VERSION),
+            "generator_sha256": sha256(Path(__file__).resolve()),
+        },
         "sha256": {},
     }
     for label, path in (

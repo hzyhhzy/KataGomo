@@ -9,6 +9,7 @@ using namespace C384H12Fa4Sm120;
 namespace {
 
 int preparedDevice = -1;
+int launchedDevice = -1;
 int launchCount = 0;
 
 cudaError_t prepare(int device) {
@@ -18,30 +19,39 @@ cudaError_t prepare(int device) {
 
 cudaError_t launch(
   void*, void*, void*, void*, int, int, int, int, float,
-  uint32_t, cudaStream_t
+  uint32_t, int deviceOrdinal, cudaStream_t
 ) {
+  launchedDevice = deviceOrdinal;
   launchCount++;
   return cudaSuccess;
 }
 
-#define DEFINE_ACCESSORS(NAME,BATCH,ID) \
+#define DEFINE_ACCESSORS(NAME,BATCH,ID,LAYOUT) \
   int NAME##_batch() { return BATCH; } \
   int NAME##_sequence() { return 225; } \
   int NAME##_heads() { return 12; } \
   int NAME##_dim() { return 32; } \
+  int NAME##_tile_m() { return 128; } \
+  int NAME##_tile_n() { return 64; } \
+  int NAME##_stages() { return 1; } \
+  int NAME##_warps() { return 4; } \
+  int NAME##_layout() { return LAYOUT; } \
+  int NAME##_accumulation() { return 1; } \
   const char* NAME##_id() { return ID; }
 
-DEFINE_ACCESSORS(b24,24,"tm128-tn64-s1-w4-fp32-planar-b24-s225-h12-d32")
-DEFINE_ACCESSORS(b28,28,"tm128-tn64-s1-w4-fp32-planar-b28-s225-h12-d32")
-DEFINE_ACCESSORS(p28,28,"tm128-tn64-s1-w4-fp32-packed-token-b28-s225-h12-d32")
+DEFINE_ACCESSORS(b24,24,"tm128-tn64-s1-w4-fp32-planar-b24-s225-h12-d32",1)
+DEFINE_ACCESSORS(b28,28,"tm128-tn64-s1-w4-fp32-planar-b28-s225-h12-d32",1)
+DEFINE_ACCESSORS(p28,28,"tm128-tn64-s1-w4-fp32-packed-token-b28-s225-h12-d32",2)
 
 Candidate candidates[] = {
   {kRegistryAbiVersion,24,225,12,32,128,64,1,4,
    InputLayout::PlanarQkv,Accumulation::Fp32,b24_id(),
-   b24_batch,b24_sequence,b24_heads,b24_dim,b24_id,prepare,launch},
+   b24_batch,b24_sequence,b24_heads,b24_dim,b24_tile_m,b24_tile_n,
+   b24_stages,b24_warps,b24_layout,b24_accumulation,b24_id,prepare,launch},
   {kRegistryAbiVersion,28,225,12,32,128,64,1,4,
    InputLayout::PlanarQkv,Accumulation::Fp32,b28_id(),
-   b28_batch,b28_sequence,b28_heads,b28_dim,b28_id,prepare,launch},
+   b28_batch,b28_sequence,b28_heads,b28_dim,b28_tile_m,b28_tile_n,
+   b28_stages,b28_warps,b28_layout,b28_accumulation,b28_id,prepare,launch},
 };
 
 RegistryView view = {ArtifactMode::BatchSearch,candidates,2};
@@ -75,6 +85,7 @@ int main() {
   Candidate packed = candidates[1];
   packed.inputLayout = InputLayout::PackedTokenQkv;
   packed.id = p28_id();
+  packed.compiledInputLayout = p28_layout;
   packed.compiledId = p28_id;
   Candidate mixedLayout[] = {candidates[0],packed};
   require(!registryWellFormed({ArtifactMode::BatchSearch,mixedLayout,2}),
@@ -111,23 +122,50 @@ int main() {
   half* o = reinterpret_cast<half*>(0x4000);
   const LaunchResult ok = C384H12Fa4Sm120::launch(
     q,k,v,o,28,225,12,12,32,32,true,true,InputLayout::PlanarQkv,
-    nullptr,true,&proof,12,0,nullptr);
+    nullptr,true,&proof,0,12,0,nullptr);
   require(ok.launched() && launchCount == 1,"default stream launch rejected");
+  require(launchedDevice == 0,"launch did not use the prepared handle device");
+  const LaunchResult wrongDevice = C384H12Fa4Sm120::launch(
+    q,k,v,o,28,225,12,12,32,32,true,true,InputLayout::PlanarQkv,
+    nullptr,true,&proof,1,12,0,nullptr);
+  require(wrongDevice.attempted && wrongDevice.status == cudaErrorInvalidValue,
+          "proof was not bound to the current handle device");
   const LaunchResult neighbor = C384H12Fa4Sm120::launch(
     q,k,v,o,27,225,12,12,32,32,true,true,InputLayout::PlanarQkv,
-    nullptr,true,&proof,12,0,nullptr);
+    nullptr,true,&proof,0,12,0,nullptr);
   require(!neighbor.attempted,"neighbor batch did not fall back before enqueue");
+  const LaunchResult b28HandleActualB24 = C384H12Fa4Sm120::launch(
+    q,k,v,o,24,225,12,12,32,32,true,true,InputLayout::PlanarQkv,
+    nullptr,true,&proof,0,12,0,nullptr);
+  require(!b28HandleActualB24.attempted,
+          "B28 proof hard-failed instead of pre-enqueue B24 fallback");
+  PreparedProof b24Proof;
+  require(prepareProofForExactBatch(
+            24,0,InputLayout::PlanarQkv,b24Proof) == cudaSuccess,
+          "B24 proof preparation failed");
+  const LaunchResult b24HandleActualB28 = C384H12Fa4Sm120::launch(
+    q,k,v,o,28,225,12,12,32,32,true,true,InputLayout::PlanarQkv,
+    nullptr,true,&b24Proof,0,12,0,nullptr);
+  require(!b24HandleActualB28.attempted,
+          "B24 proof hard-failed instead of pre-enqueue B28 fallback");
   const LaunchResult wrongLayout = C384H12Fa4Sm120::launch(
     q,k,v,o,28,225,12,12,32,32,true,true,InputLayout::PackedTokenQkv,
-    nullptr,true,&proof,12,0,nullptr);
+    nullptr,true,&proof,0,12,0,nullptr);
   require(!wrongLayout.attempted,"layout mismatch did not fall back before enqueue");
   PreparedProof stale = proof;
   stale.implementationCookie++;
   const LaunchResult staleResult = C384H12Fa4Sm120::launch(
     q,k,v,o,28,225,12,12,32,32,true,true,InputLayout::PlanarQkv,
-    nullptr,true,&stale,12,0,nullptr);
+    nullptr,true,&stale,0,12,0,nullptr);
   require(staleResult.attempted && staleResult.status == cudaErrorInvalidValue,
           "owned stale proof did not fail hard");
+  Candidate forgedCoordinate = candidates[1];
+  forgedCoordinate.tileN = 96;
+  view = {ArtifactMode::Production,&forgedCoordinate,1};
+  PreparedProof forgedProof;
+  require(prepareProofForExactBatch(
+            28,0,InputLayout::PlanarQkv,forgedProof) == cudaErrorInvalidValue,
+          "editable metadata overrode compiled tile accessors");
 
   std::cout << "C384 H12 FA4 registry contract PASS" << std::endl;
   return 0;

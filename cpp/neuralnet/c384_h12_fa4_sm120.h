@@ -9,8 +9,8 @@
 
 namespace C384H12Fa4Sm120 {
 
-constexpr uint32_t kRegistryAbiVersion = 1;
-constexpr uint32_t kPreparedProofAbiVersion = 1;
+constexpr uint32_t kRegistryAbiVersion = 2;
+constexpr uint32_t kPreparedProofAbiVersion = 2;
 constexpr int kSequenceLength = 225;
 constexpr int kHeads = 12;
 constexpr int kHeadDim = 32;
@@ -47,6 +47,7 @@ using LaunchFn = cudaError_t (*)(
   int headDim,
   float softmaxScale,
   uint32_t inputLayout,
+  int deviceOrdinal,
   cudaStream_t stream
 );
 
@@ -71,6 +72,12 @@ struct Candidate {
   IntAccessor compiledSequence = nullptr;
   IntAccessor compiledHeads = nullptr;
   IntAccessor compiledHeadDim = nullptr;
+  IntAccessor compiledTileM = nullptr;
+  IntAccessor compiledTileN = nullptr;
+  IntAccessor compiledNumStages = nullptr;
+  IntAccessor compiledNumWarps = nullptr;
+  IntAccessor compiledInputLayout = nullptr;
+  IntAccessor compiledAccumulation = nullptr;
   IdAccessor compiledId = nullptr;
   PrepareFn prepare = nullptr;
   LaunchFn launch = nullptr;
@@ -88,6 +95,7 @@ struct PreparedProof {
   int deviceOrdinal = -1;
   InputLayout inputLayout = InputLayout::PlanarQkv;
   const char* id = nullptr;
+  LaunchFn launch = nullptr;
   uintptr_t implementationCookie = 0;
 };
 
@@ -147,6 +155,7 @@ LaunchResult launch(
   const void* mask,
   bool recipeEligibleC384,
   const PreparedProof* preparedProof,
+  int deviceOrdinal,
   int computeMajor,
   int computeMinor,
   cudaStream_t stream

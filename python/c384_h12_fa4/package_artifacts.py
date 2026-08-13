@@ -14,6 +14,9 @@ import shutil
 EXPECTED_SHAPE = {"sequence": 225, "heads": 12, "head_dim": 32}
 VALID_BATCHES = {24, 28}
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+CANDIDATE_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
+LAYOUT_IDS = {"planar": 1, "packed-token": 2}
+ACCUMULATION_IDS = {"fp32": 1, "qk16": 2, "pv16": 3, "both16": 4}
 
 
 def sha256(path: Path) -> str:
@@ -49,12 +52,44 @@ def load_metadata(path: Path) -> dict:
     layout = data.get("layout")
     accumulation = data.get("accumulation")
     if layout not in ("planar", "packed-token") or \
-       accumulation not in ("fp32", "qk16", "pv16", "both16"):
+       accumulation not in ("fp32", "qk16", "pv16", "both16") or \
+       data.get("layout_id") != LAYOUT_IDS.get(layout) or \
+       data.get("accumulation_id") != ACCUMULATION_IDS.get(accumulation) or \
+       data.get("dtype") != "fp16":
         raise RuntimeError(f"{path}: layout/accumulation mismatch")
     tile = data.get("tile", {})
     if tile.get("m") not in (64, 128) or tile.get("n") not in (64, 96, 128) or \
-       tile.get("num_stages") not in (1, 2) or tile.get("num_warps") not in (4, 8):
+       tile.get("num_stages") not in (1, 2) or tile.get("num_warps") not in (4, 8) or \
+       tile.get("num_threads") != tile.get("num_warps") * 32:
         raise RuntimeError(f"{path}: tile contract failed")
+    expected_id = (
+        f'tm{tile["m"]}-tn{tile["n"]}-s{tile["num_stages"]}-'
+        f'w{tile["num_warps"]}-{accumulation}-{layout}-b{batch}-'
+        's225-h12-d32'
+    )
+    if data.get("candidate_id") != expected_id or \
+       CANDIDATE_ID.fullmatch(str(data.get("candidate_id", ""))) is None:
+        raise RuntimeError(f"{path}: candidate identity mismatch")
+    abi_mode = data.get("abi_mode")
+    if abi_mode == "production":
+        expected_stem, expected_prefix = "c384_fa4_winner", "c384fa4win"
+    elif abi_mode == "search":
+        short_layout = "p" if layout == "planar" else "t"
+        suffix = (
+            f'b{batch}m{tile["m"]}n{tile["n"]}s{tile["num_stages"]}'
+            f'w{tile["num_warps"]}{accumulation}{short_layout}'
+        )
+        expected_stem, expected_prefix = f"c384_fa4_{suffix}", f"c384fa4{suffix}"
+    else:
+        raise RuntimeError(f"{path}: invalid ABI mode")
+    if stem != expected_stem or prefix != expected_prefix:
+        raise RuntimeError(f"{path}: artifact/prefix ABI mismatch")
+    generator = data.get("generator", {})
+    generator_source = Path(__file__).resolve().parent / "build_exact_fa4_aot.py"
+    if generator.get("generator_sha256") != sha256(generator_source) or \
+       not str(generator.get("python", "")) or \
+       not str(generator.get("cutlass_cuda", "")):
+        raise RuntimeError(f"{path}: generator provenance mismatch")
     assets = {
         "header": path.parent / f"{stem}.h",
         "object": path.parent / f"{stem}.o",
@@ -69,6 +104,18 @@ def load_metadata(path: Path) -> dict:
     for label in ("header", "object", "bridge"):
         if recorded.get(label) != actual[label]:
             raise RuntimeError(f"{path}: {label} SHA mismatch")
+    object_bytes = assets["object"].read_bytes()
+    wrapper_symbol = f"cute_dsl_{prefix}_wrapper"
+    if not object_bytes.startswith(b"\x7fELF") or \
+       wrapper_symbol.encode("ascii") not in object_bytes:
+        raise RuntimeError(f"{path}: object ELF/wrapper-symbol gate failed")
+    bridge_text = assets["bridge"].read_text(encoding="utf-8")
+    for token in (
+        f'{prefix}_prepare', f'{prefix}_launch', wrapper_symbol,
+        "MaxPreparedDevices", "cudaPeekAtLastError",
+    ):
+        if token not in bridge_text:
+            raise RuntimeError(f"{path}: bridge ABI gate missing {token}")
     data["source_metadata"] = str(path.resolve())
     data["source_assets"] = assets
     data["actual_sha256"] = actual
@@ -100,10 +147,16 @@ def registry_source(candidates: list[dict], mode: str) -> str:
 extern "C" int {prefix}_sequence();
 extern "C" int {prefix}_heads();
 extern "C" int {prefix}_head_dim();
+extern "C" int {prefix}_tile_m();
+extern "C" int {prefix}_tile_n();
+extern "C" int {prefix}_num_stages();
+extern "C" int {prefix}_num_warps();
+extern "C" int {prefix}_input_layout();
+extern "C" int {prefix}_accumulation();
 extern "C" const char* {prefix}_id();
 extern "C" cudaError_t {prefix}_prepare(int);
 extern "C" cudaError_t {prefix}_launch(
-  void*, void*, void*, void*, int, int, int, int, float, uint32_t, cudaStream_t);
+  void*, void*, void*, void*, int, int, int, int, float, uint32_t, int, cudaStream_t);
 ''')
         tile = item["tile"]
         rows.append(f'''  {{kRegistryAbiVersion,{item["batch"]},225,12,32,
@@ -111,6 +164,8 @@ extern "C" cudaError_t {prefix}_launch(
    {layout[item["layout"]]},{accumulation[item["accumulation"]]},
    {quote(item["candidate_id"])},
    {prefix}_batch,{prefix}_sequence,{prefix}_heads,{prefix}_head_dim,
+   {prefix}_tile_m,{prefix}_tile_n,{prefix}_num_stages,{prefix}_num_warps,
+   {prefix}_input_layout,{prefix}_accumulation,
    {prefix}_id,{prefix}_prepare,{prefix}_launch}},''')
     artifact_mode = "BatchSearch" if mode == "batch-search" else "Production"
     return f'''#include "neuralnet/c384_h12_fa4_sm120.h"

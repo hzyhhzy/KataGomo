@@ -16,11 +16,23 @@ bool accessorsMatch(const Candidate& candidate) {
     candidate.compiledSequence != nullptr &&
     candidate.compiledHeads != nullptr &&
     candidate.compiledHeadDim != nullptr &&
+    candidate.compiledTileM != nullptr &&
+    candidate.compiledTileN != nullptr &&
+    candidate.compiledNumStages != nullptr &&
+    candidate.compiledNumWarps != nullptr &&
+    candidate.compiledInputLayout != nullptr &&
+    candidate.compiledAccumulation != nullptr &&
     candidate.compiledId != nullptr &&
     candidate.compiledBatch() == candidate.batch &&
     candidate.compiledSequence() == candidate.sequence &&
     candidate.compiledHeads() == candidate.heads &&
     candidate.compiledHeadDim() == candidate.headDim &&
+    candidate.compiledTileM() == candidate.tileM &&
+    candidate.compiledTileN() == candidate.tileN &&
+    candidate.compiledNumStages() == candidate.numStages &&
+    candidate.compiledNumWarps() == candidate.numWarps &&
+    candidate.compiledInputLayout() == static_cast<int>(candidate.inputLayout) &&
+    candidate.compiledAccumulation() == static_cast<int>(candidate.accumulation) &&
     candidate.compiledId() != nullptr &&
     std::strcmp(candidate.compiledId(),candidate.id) == 0;
 }
@@ -134,7 +146,8 @@ bool proofCompatible(
     proof.deviceOrdinal == deviceOrdinal &&
     proof.inputLayout == requiredLayout &&
     proof.id != nullptr && proof.id[0] != '\0' &&
-    proof.implementationCookie != 0;
+    proof.launch != nullptr && proof.implementationCookie ==
+      reinterpret_cast<uintptr_t>(proof.launch);
 }
 
 cudaError_t prepareProofForExactBatch(
@@ -165,6 +178,7 @@ cudaError_t prepareProofForExactBatch(
   proof.deviceOrdinal = deviceOrdinal;
   proof.inputLayout = candidate->inputLayout;
   proof.id = candidate->id;
+  proof.launch = candidate->launch;
   proof.implementationCookie = reinterpret_cast<uintptr_t>(candidate->launch);
   return cudaSuccess;
 }
@@ -186,41 +200,36 @@ LaunchResult launch(
   const void* mask,
   bool recipeEligibleC384,
   const PreparedProof* preparedProof,
+  int deviceOrdinal,
   int computeMajor,
   int computeMinor,
   cudaStream_t stream
 ) {
   if(!recipeEligibleC384 || computeMajor != 12 || computeMinor != 0 ||
+     deviceOrdinal < 0 ||
      !usingFp16 || !usingNhwc || !validLayout(inputLayout) || mask != nullptr ||
      sequence != kSequenceLength || heads != kHeads || kvHeads != kHeads ||
      qHeadDim != kHeadDim || vHeadDim != kHeadDim)
     return {false,cudaSuccess,nullptr};
 
-  const RegistryView registry = generatedRegistry();
-  if(registry.mode == ArtifactMode::Disabled)
+  // A different actual batch/layout is a pre-enqueue capability miss. This is
+  // essential for a B28 handle evaluating an actual B24 tail: it must use the
+  // planar fallback rather than looking up B24 and then hard-failing a B28
+  // proof. Exact packed QKV callers gate this before producing packed bytes.
+  if(preparedProof == nullptr || preparedProof->batch != batch ||
+     preparedProof->inputLayout != inputLayout)
     return {false,cudaSuccess,nullptr};
-  if(!registryWellFormed(registry))
-    return {true,cudaErrorInvalidValue,"invalid-c384-h12-fa4-registry"};
-  const Candidate* candidate = findExactCandidate(registry,batch);
-  if(candidate == nullptr)
-    return {false,cudaSuccess,nullptr};
-  if(candidate->inputLayout != inputLayout)
-    return {false,cudaSuccess,nullptr};
-  if(preparedProof == nullptr ||
-     !proofCompatible(*preparedProof,batch,preparedProof->deviceOrdinal,inputLayout) ||
-     std::strcmp(preparedProof->id,candidate->id) != 0 ||
-     preparedProof->implementationCookie != reinterpret_cast<uintptr_t>(candidate->launch) ||
-     !accessorsMatch(*candidate) || q == nullptr || k == nullptr || v == nullptr ||
-     output == nullptr)
-    return {true,cudaErrorInvalidValue,candidate->id};
+  if(!proofCompatible(*preparedProof,batch,deviceOrdinal,inputLayout) ||
+     q == nullptr || k == nullptr || v == nullptr || output == nullptr)
+    return {true,cudaErrorInvalidValue,preparedProof->id};
 
   const float scale = 1.0f / std::sqrt(static_cast<float>(kHeadDim));
   return {
     true,
-    candidate->launch(
+    preparedProof->launch(
       q,k,v,output,batch,sequence,heads,qHeadDim,scale,
-      static_cast<uint32_t>(inputLayout),stream),
-    candidate->id,
+      static_cast<uint32_t>(inputLayout),deviceOrdinal,stream),
+    preparedProof->id,
   };
 }
 

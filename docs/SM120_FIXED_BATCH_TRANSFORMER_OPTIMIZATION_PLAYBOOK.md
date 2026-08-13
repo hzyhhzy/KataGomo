@@ -85,7 +85,7 @@ Method:
 5. Choose on end-to-end logical throughput, not one GEMM microbenchmark.
 
 This generator emits B28 first and B24 second. B40 remains a fail-closed
-selector coordinate from the earlier scan, but no B40 object is required by
+runtime input from the earlier scan, but is not a selector coordinate and no B40 object is required by
 the current bounded set. If v2 selects B20 or B16, add that exact batch through
 the same search-space and ABI process; never relabel a B24/B28 object.
 
@@ -268,6 +268,28 @@ partially enqueued output.
 
 Compilation is not a speed result. Correctness, identity, and marker integrity
 are hard gates regardless of performance.
+
+### 8.1 Current C384 evidence boundary
+
+The historical C256/H8 exact FA4 path was generated and measured on the target
+GPU. The C384/H12 provider and packed-token contract in this branch do **not**
+yet include a real B24/B28 object and have not run a GPU correctness or speed
+test. Fixed shapes make AOT specialization possible; they do not establish a
+winner. Treat QKV layout, learned RoPE, and FA4 as one atomic chain. Its first
+qualification must include a raw-output oracle, default-stream (`stream=0`)
+launch, eager module-load audit, and balanced ABBA timing. Never route its
+packed output to planar SDPA after QKV has enqueued.
+
+The retained B28/S2 Nsight profile reports 25.818% under one shared 128x128
+stage-5 kernel symbol. That sample aggregates out-projection and FFN-down calls;
+the operations are neither fused nor adjacent, and the percentage must not be
+split in half. Attribute them separately only after piece-specific NVTX ranges
+or independent ablations. This P0 wiring therefore leaves both kernels intact
+and records them as the next fixed-exact profiling target.
+
+The formal S2 milestone is 8000 N/s versus the current B28 6180.58 N/s, but it
+is not a stopping condition. After crossing it, continue profiling and bounded
+experiments until repeated candidate rounds show no stable positive gain.
 
 ## 9. Rejection log
 
