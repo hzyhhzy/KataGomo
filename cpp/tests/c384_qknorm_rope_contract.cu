@@ -247,7 +247,7 @@ int main() {
   ok &= check(C384QKNormRopeSm120::supports(valid),
     "valid exact QKNorm+RoPE shape was rejected");
   ok &= check(std::strcmp(C384QKNormRopeSm120::marker(),
-      "c384-h12-d32-raw-packed-qknorm-rope-half2-g1360-v1") == 0,
+      "c384-h12-d32-raw-packed-qknorm-rope-half2-t256-g340-v2") == 0,
     "active marker drifted");
 
   LaunchParams changed = valid;

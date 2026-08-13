@@ -23,7 +23,7 @@ constexpr int kPackedChannels = 3 * kChannels;
 constexpr int kRopePairsPerHead = kHeadDim / 2;
 constexpr int kRopePairsTotal = kHeads * kRopePairsPerHead;
 constexpr int kThreads = 256;
-constexpr int kGridBlocks = 1360;
+constexpr int kGridBlocks = 340;
 constexpr float kRmsEpsilon = 1.0e-6f;
 
 enum class InputSemantic : uint32_t {
@@ -77,6 +77,17 @@ cudaError_t launchInPlaceForGridQualification(
   const half* kGamma,
   const half2* learnedRopeCosSin,
   int gridBlocks,
+  cudaStream_t stream
+);
+
+cudaError_t launchInPlaceForGeometryQualification(
+  const LaunchParams& params,
+  half* rawPackedQkv,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* learnedRopeCosSin,
+  int gridBlocks,
+  int threadsPerBlock,
   cudaStream_t stream
 );
 

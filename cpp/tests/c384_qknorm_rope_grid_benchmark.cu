@@ -106,15 +106,19 @@ int main(int argc, char** argv) {
     cudaMemcpyHostToDevice),"copy rope");
 
   const LaunchParams launchParams = params();
-  constexpr int grids[] = {
-    340,510,680,850,1020,1360,1700,2040,2720,3400,4080,6120,8160,9520
+  struct Geometry { int threads; int grid; };
+  constexpr Geometry geometries[] = {
+    {64,1360},{128,680},{256,340},{512,170},
+    {64,2720},{128,1360},{256,680},{512,340},
+    {64,5440},{128,2720},{256,1360},{512,680},
   };
   std::cout << std::fixed << std::setprecision(4);
-  for(int grid: grids) {
+  for(const Geometry geometry: geometries) {
     for(int warmup = 0; warmup < 50; warmup++) {
-      require(C384QKNormRopeSm120::launchInPlaceForGridQualification(
+      require(C384QKNormRopeSm120::launchInPlaceForGeometryQualification(
         launchParams,buffers.packed[0],buffers.qGamma,buffers.kGamma,
-        buffers.rope,grid,buffers.streams[0]),"S1 warmup");
+        buffers.rope,geometry.grid,geometry.threads,buffers.streams[0]),
+        "S1 warmup");
     }
     require(cudaStreamSynchronize(buffers.streams[0]),"S1 warmup sync");
     cudaEvent_t start = nullptr;
@@ -123,9 +127,10 @@ int main(int argc, char** argv) {
     require(cudaEventCreate(&stop),"event stop create");
     require(cudaEventRecord(start,buffers.streams[0]),"event start record");
     for(int i = 0; i < iterations; i++) {
-      require(C384QKNormRopeSm120::launchInPlaceForGridQualification(
+      require(C384QKNormRopeSm120::launchInPlaceForGeometryQualification(
         launchParams,buffers.packed[0],buffers.qGamma,buffers.kGamma,
-        buffers.rope,grid,buffers.streams[0]),"S1 launch");
+        buffers.rope,geometry.grid,geometry.threads,buffers.streams[0]),
+        "S1 launch");
     }
     require(cudaEventRecord(stop,buffers.streams[0]),"event stop record");
     require(cudaEventSynchronize(stop),"event stop sync");
@@ -136,25 +141,28 @@ int main(int argc, char** argv) {
 
     for(int warmup = 0; warmup < 50; warmup++) {
       for(int lane = 0; lane < 2; lane++) {
-        require(C384QKNormRopeSm120::launchInPlaceForGridQualification(
+        require(C384QKNormRopeSm120::launchInPlaceForGeometryQualification(
           launchParams,buffers.packed[lane],buffers.qGamma,buffers.kGamma,
-          buffers.rope,grid,buffers.streams[lane]),"S2 warmup");
+          buffers.rope,geometry.grid,geometry.threads,buffers.streams[lane]),
+          "S2 warmup");
       }
     }
     require(cudaDeviceSynchronize(),"S2 warmup sync");
     const auto s2Start = std::chrono::steady_clock::now();
     for(int i = 0; i < iterations; i++) {
       for(int lane = 0; lane < 2; lane++) {
-        require(C384QKNormRopeSm120::launchInPlaceForGridQualification(
+        require(C384QKNormRopeSm120::launchInPlaceForGeometryQualification(
           launchParams,buffers.packed[lane],buffers.qGamma,buffers.kGamma,
-          buffers.rope,grid,buffers.streams[lane]),"S2 launch");
+          buffers.rope,geometry.grid,geometry.threads,buffers.streams[lane]),
+          "S2 launch");
       }
     }
     require(cudaDeviceSynchronize(),"S2 sync");
     const auto s2Stop = std::chrono::steady_clock::now();
     const double s2Us = std::chrono::duration<double,std::micro>(
       s2Stop - s2Start).count();
-    std::cout << "GRID grid=" << grid
+    std::cout << "GEOMETRY threads=" << geometry.threads
+              << " grid=" << geometry.grid
               << " s1_us=" << (1000.0 * s1Ms / iterations)
               << " s2_pair_us=" << (s2Us / iterations)
               << " s2_effective_us_per_launch=" << (s2Us / (2.0 * iterations))

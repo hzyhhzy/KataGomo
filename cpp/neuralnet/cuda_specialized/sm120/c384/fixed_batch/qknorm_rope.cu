@@ -10,15 +10,13 @@ namespace {
 constexpr int kPlanesToTransform = 2;
 constexpr int kSubgroupWidth = 16;
 constexpr int kSubgroupsPerWarp = 2;
-constexpr int kWarpsPerBlock = kThreads / 32;
-constexpr int kSubgroupsPerBlock = kWarpsPerBlock * kSubgroupsPerWarp;
-
 static_assert(kHeadDim == 2 * kSubgroupWidth,
   "one 16-lane subgroup must cover one D32 head using half2");
 static_assert(kThreads % 32 == 0,"QKNorm+RoPE CTA must contain whole warps");
 static_assert(kPackedChannels % 2 == 0,"packed QKV rows must be half2 aligned");
 
-__global__ __launch_bounds__(kThreads)
+template<int LaunchThreads>
+__global__ __launch_bounds__(LaunchThreads)
 void qknormLearnedRopeHalf2Kernel(
   half* packedQkv,
   const half* qGamma,
@@ -34,12 +32,13 @@ void qknormLearnedRopeHalf2Kernel(
   const int warpInBlock = static_cast<int>(threadIdx.x) / 32;
   const int subgroupInBlock =
     warpInBlock * kSubgroupsPerWarp + subgroupInWarp;
+  const int subgroupsPerBlock = static_cast<int>(blockDim.x) / kSubgroupWidth;
   const int totalHeadVectors = tokenRows * kPlanesToTransform * kHeads;
 
   for(int vectorIndex =
-        static_cast<int>(blockIdx.x) * kSubgroupsPerBlock + subgroupInBlock;
+        static_cast<int>(blockIdx.x) * subgroupsPerBlock + subgroupInBlock;
       vectorIndex < totalHeadVectors;
-      vectorIndex += static_cast<int>(gridDim.x) * kSubgroupsPerBlock) {
+      vectorIndex += static_cast<int>(gridDim.x) * subgroupsPerBlock) {
     const int token = vectorIndex / (kPlanesToTransform * kHeads);
     const int vectorInToken = vectorIndex % (kPlanesToTransform * kHeads);
     const int plane = vectorInToken / kHeads;
@@ -99,7 +98,7 @@ bool supports(const LaunchParams& params) noexcept {
 }
 
 const char* marker() noexcept {
-  return "c384-h12-d32-raw-packed-qknorm-rope-half2-g1360-v1";
+  return "c384-h12-d32-raw-packed-qknorm-rope-half2-t256-g340-v2";
 }
 
 cudaError_t launchInPlace(
@@ -123,6 +122,21 @@ cudaError_t launchInPlaceForGridQualification(
   int gridBlocks,
   cudaStream_t stream
 ) {
+  return launchInPlaceForGeometryQualification(
+    params,rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,gridBlocks,kThreads,
+    stream);
+}
+
+cudaError_t launchInPlaceForGeometryQualification(
+  const LaunchParams& params,
+  half* rawPackedQkv,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* learnedRopeCosSin,
+  int gridBlocks,
+  int threadsPerBlock,
+  cudaStream_t stream
+) {
   if(!supports(params))
     return cudaErrorNotSupported;
   if(rawPackedQkv == nullptr || qGamma == nullptr || kGamma == nullptr ||
@@ -130,9 +144,30 @@ cudaError_t launchInPlaceForGridQualification(
     return cudaErrorInvalidValue;
   if(gridBlocks <= 0 || gridBlocks > 16384)
     return cudaErrorInvalidConfiguration;
-  qknormLearnedRopeHalf2Kernel<<<gridBlocks,kThreads,0,stream>>>(
-    rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,
-    params.qEpsilon,params.kEpsilon);
+  switch(threadsPerBlock) {
+  case 64:
+    qknormLearnedRopeHalf2Kernel<64><<<gridBlocks,64,0,stream>>>(
+      rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,
+      params.qEpsilon,params.kEpsilon);
+    break;
+  case 128:
+    qknormLearnedRopeHalf2Kernel<128><<<gridBlocks,128,0,stream>>>(
+      rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,
+      params.qEpsilon,params.kEpsilon);
+    break;
+  case 256:
+    qknormLearnedRopeHalf2Kernel<256><<<gridBlocks,256,0,stream>>>(
+      rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,
+      params.qEpsilon,params.kEpsilon);
+    break;
+  case 512:
+    qknormLearnedRopeHalf2Kernel<512><<<gridBlocks,512,0,stream>>>(
+      rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,
+      params.qEpsilon,params.kEpsilon);
+    break;
+  default:
+    return cudaErrorInvalidConfiguration;
+  }
   return cudaPeekAtLastError();
 }
 
