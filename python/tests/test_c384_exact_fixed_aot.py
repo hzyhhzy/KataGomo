@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -92,25 +93,232 @@ class C384ExactFixedAotTest(unittest.TestCase):
             self.assertNotIn("cudaMalloc", launch)
             self.assertNotIn("cudaMemcpy", launch)
             self.assertNotIn("cudaGetDevice(", launch)
+            self.assertNotIn("_cuda_init", launch)
+            self.assertNotIn("_cuda_load_to_device", launch)
+            self.assertNotIn(
+                f"{task.artifact_stem}_Kernel_Module_Load(&", source,
+            )
+            self.assertIn(
+                f"_mlir_{task.artifact_stem}_cuda_init", source,
+            )
+            self.assertIn(
+                f"_mlir_{task.artifact_stem}_cuda_load_to_device", source,
+            )
+            self.assertIn("int32_t deviceId = deviceOrdinal", source)
+            self.assertNotIn("for (int32_t i", source)
+            self.assertIn("preparationFailures[deviceOrdinal] = status", source)
             if task.family == "qkv_rope":
                 self.assertIn("const half2* cosSin", launch)
                 self.assertIn("Tensor_table_arg_t", launch)
             else:
                 self.assertIn("(void)unusedGateWeights", launch)
 
+    def test_bridge_raw_loader_compiles_and_propagates_failures(self) -> None:
+        task = next(task for task in self.tasks
+                    if task.family == "qkv_rope" and task.batch == 28)
+        with writable_fixture() as root:
+            (root / "cuda_runtime.h").write_text(r'''
+#pragma once
+#include <cstdint>
+struct CUlib_st;
+using cudaLibrary_t = CUlib_st*;
+using cudaStream_t = void*;
+enum cudaError_t {
+  cudaSuccess = 0,
+  cudaErrorInvalidValue = 1,
+  cudaErrorInvalidDevice = 10,
+  cudaErrorNotReady = 34,
+  cudaErrorUnknown = 999,
+};
+extern int fakeDeviceCount;
+extern int fakeUnloadCalls;
+inline cudaError_t cudaGetDeviceCount(int* count) {
+  *count = fakeDeviceCount;
+  return cudaSuccess;
+}
+inline cudaError_t cudaLibraryUnload(cudaLibrary_t) {
+  ++fakeUnloadCalls;
+  return cudaSuccess;
+}
+inline cudaError_t cudaPeekAtLastError() { return cudaSuccess; }
+''', encoding="utf-8")
+            (root / "cuda_fp16.h").write_text(r'''
+#pragma once
+struct half { unsigned short bits; };
+struct half2 { half x; half y; };
+''', encoding="utf-8")
+            header = f'''#pragma once
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cstdint>
+typedef struct {{ cudaLibrary_t module; }} {task.artifact_stem}_Kernel_Module_t;
+typedef struct {{ void* data; }} {task.artifact_stem}_Tensor_a_arg_t;
+typedef struct {{ void* data; }} {task.artifact_stem}_Tensor_b_arg_t;
+typedef struct {{ void* data; }} {task.artifact_stem}_Tensor_c_arg_t;
+typedef struct {{ void* data; }} {task.artifact_stem}_Tensor_table_arg_t;
+extern int fakeMode;
+extern int fakeInitCalls;
+extern int fakeLoadCalls;
+extern int fakeLastDevice;
+extern int fakeWrapperCalls;
+extern "C" inline void _mlir_{task.artifact_stem}_cuda_init(void** opaque) {{
+  struct Args {{ cudaLibrary_t** library; cudaError_t* status; }};
+  auto* args = reinterpret_cast<Args*>(opaque);
+  ++fakeInitCalls;
+  **args->library = reinterpret_cast<cudaLibrary_t>(uintptr_t(0x1234));
+  *args->status = fakeMode == 1 ? cudaErrorUnknown : cudaSuccess;
+}}
+extern "C" inline void _mlir_{task.artifact_stem}_cuda_load_to_device(
+    void** opaque) {{
+  struct Args {{
+    cudaLibrary_t** library;
+    int32_t* deviceId;
+    cudaError_t* status;
+  }};
+  auto* args = reinterpret_cast<Args*>(opaque);
+  (void)args->library;
+  ++fakeLoadCalls;
+  fakeLastDevice = *args->deviceId;
+  *args->status = fakeMode == 2 ? cudaErrorUnknown : cudaSuccess;
+}}
+extern "C" inline int32_t cute_dsl_{task.artifact_stem}_wrapper(
+    {task.artifact_stem}_Kernel_Module_t*,
+    {task.artifact_stem}_Tensor_a_arg_t*,
+    {task.artifact_stem}_Tensor_b_arg_t*,
+    {task.artifact_stem}_Tensor_c_arg_t*,
+    {task.artifact_stem}_Tensor_table_arg_t*, cudaStream_t) {{
+  ++fakeWrapperCalls;
+  return 0;
+}}
+'''
+            (root / f"{task.artifact_stem}.h").write_text(
+                header, encoding="utf-8",
+            )
+            source = render_qkv_rope_bridge(task) + f'''
+int fakeDeviceCount = 3;
+int fakeUnloadCalls = 0;
+int fakeMode = 0;
+int fakeInitCalls = 0;
+int fakeLoadCalls = 0;
+int fakeLastDevice = -1;
+int fakeWrapperCalls = 0;
+
+int main() {{
+  half* pointer = nullptr;
+  if({task.prepare_symbol}(3) != cudaErrorInvalidDevice || fakeInitCalls != 0)
+    return 1;
+
+  fakeMode = 1;
+  if({task.prepare_symbol}(0) != cudaErrorUnknown || fakeInitCalls != 1 ||
+     fakeLoadCalls != 0 || fakeUnloadCalls != 1)
+    return 2;
+  if({task.launch_symbol}(pointer,pointer,
+       reinterpret_cast<half2*>(pointer),pointer,{task.token_rows},0,nullptr) !=
+       cudaErrorNotReady)
+    return 3;
+  if({task.prepare_symbol}(0) != cudaErrorUnknown || fakeInitCalls != 1)
+    return 4;
+
+  fakeMode = 2;
+  if({task.prepare_symbol}(1) != cudaErrorUnknown || fakeInitCalls != 2 ||
+     fakeLoadCalls != 1 || fakeLastDevice != 1 || fakeUnloadCalls != 2)
+    return 5;
+  if({task.launch_symbol}(pointer,pointer,
+       reinterpret_cast<half2*>(pointer),pointer,{task.token_rows},1,nullptr) !=
+       cudaErrorNotReady)
+    return 6;
+  if({task.prepare_symbol}(1) != cudaErrorUnknown || fakeLoadCalls != 1)
+    return 7;
+
+  fakeMode = 0;
+  if({task.prepare_symbol}(2) != cudaSuccess || fakeInitCalls != 3 ||
+     fakeLoadCalls != 2 || fakeLastDevice != 2 || fakeUnloadCalls != 2)
+    return 8;
+  if({task.prepare_symbol}(2) != cudaSuccess || fakeInitCalls != 3)
+    return 9;
+  if({task.launch_symbol}(pointer,pointer,
+       reinterpret_cast<half2*>(pointer),pointer,{task.token_rows},2,nullptr) !=
+       cudaSuccess || fakeWrapperCalls != 1)
+    return 10;
+  return 0;
+}}
+'''
+            source_path = root / "bridge_contract.cpp"
+            source_path.write_text(source, encoding="utf-8")
+            executable = root / ("bridge_contract.exe" if os.name == "nt"
+                                 else "bridge_contract")
+
+            if os.name == "nt":
+                roots = [Path(r"C:\Program Files\Microsoft Visual Studio")]
+                vcvars = next((path for base in roots for path in
+                               base.glob("*/Community/VC/Auxiliary/Build/"
+                                         "vcvars64.bat")), None)
+                if vcvars is None:
+                    self.skipTest("MSVC vcvars64.bat is required")
+                compile_args = [
+                    "cl", "/nologo", "/EHsc", "/std:c++17",
+                    f"/I{root}", str(source_path), f"/Fe:{executable}",
+                    f"/Fo:{root / 'bridge_contract.obj'}",
+                ]
+                compile_batch = root / "compile-contract.bat"
+                compile_batch.write_text(
+                    f'@call "{vcvars}" >nul\n@' +
+                    subprocess.list2cmdline(compile_args) + "\n",
+                    encoding="utf-8",
+                )
+                compiled = subprocess.run(
+                    ["cmd", "/d", "/c", str(compile_batch)],
+                    text=True, capture_output=True, check=False,
+                )
+            else:
+                compiler = next((shutil.which(name)
+                                 for name in ("c++", "clang++", "g++")
+                                 if shutil.which(name)), None)
+                if compiler is None:
+                    self.skipTest("a C++17 compiler is required")
+                compiled = subprocess.run(
+                    [compiler, "-std=c++17", "-pthread", "-I", str(root),
+                     str(source_path), "-o", str(executable)],
+                    text=True, capture_output=True, check=False,
+                )
+            self.assertEqual(
+                compiled.returncode, 0, compiled.stdout + compiled.stderr,
+            )
+            executed = subprocess.run(
+                [str(executable)], text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(
+                executed.returncode, 0, executed.stdout + executed.stderr,
+            )
+
     def _write_artifact(self, directory: Path, task) -> Path:
         header = directory / f"{task.artifact_stem}.h"
         object_file = directory / f"{task.artifact_stem}.o"
         bridge = directory / f"{task.artifact_stem}_bridge.cu"
-        header.write_text("// synthetic header\n", encoding="utf-8")
         wrapper = f"cute_dsl_{task.artifact_stem}_wrapper"
-        object_file.write_bytes(b"\x7fELFsynthetic-sm120-object\0" +
-                                wrapper.encode("ascii"))
-        bridge.write_text(
-            f'extern "C" int {task.prepare_symbol}(int);\n'
-            f'extern "C" int {task.launch_symbol}();\n'
-            f'{wrapper}();\nMaxPreparedDevices; cudaPeekAtLastError();\n',
+        raw_ciface = f"_mlir_{task.artifact_stem}__mlir_ciface_cutlass_launch"
+        header.write_text(
+            f'extern "C" void _mlir_{task.artifact_stem}_cuda_init(void**);\n'
+            f'extern "C" void '
+            f'_mlir_{task.artifact_stem}_cuda_load_to_device(void**);\n'
+            f'extern "C" void {raw_ciface}(void**);\n'
+            f'static inline int32_t {wrapper}() {{ return 0; }}\n',
             encoding="utf-8",
+        )
+        raw_symbols = (
+            f"_mlir_{task.artifact_stem}_cuda_init",
+            f"_mlir_{task.artifact_stem}_cuda_load",
+            f"_mlir_{task.artifact_stem}_cuda_load_to_device",
+            f"_mlir_{task.artifact_stem}_cuda_num_binaries",
+            raw_ciface,
+        )
+        object_file.write_bytes(
+            b"\x7fELFsynthetic-sm120-object\0" +
+            b"\0".join(symbol.encode("ascii") for symbol in raw_symbols)
+        )
+        bridge.write_text(
+            render_qkv_rope_bridge(task) if task.family == "qkv_rope"
+            else render_dual_ffn_bridge(task), encoding="utf-8",
         )
         metadata = {
             "schema": 2,
@@ -135,6 +343,9 @@ class C384ExactFixedAotTest(unittest.TestCase):
                 "generator_sha256": sha256_file(
                     TOOLS / ("generate_qkv_rope.py" if task.family == "qkv_rope"
                              else "generate_dual_ffn.py")
+                ),
+                "bridge_codegen_sha256": sha256_file(
+                    TOOLS / "bridge_codegen.py"
                 ),
                 "cutlass_commit": "dcf215af68a2d08d305076c152a06f201728cd53",
                 "dense_gemm_sha256": "1" * 64,

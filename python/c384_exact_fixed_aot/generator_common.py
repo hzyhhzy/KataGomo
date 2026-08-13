@@ -270,6 +270,9 @@ def artifact_metadata(
         },
         "provenance": {
             "generator_sha256": sha256_file(generator_path.resolve()),
+            "bridge_codegen_sha256": sha256_file(
+                Path(__file__).resolve().parent / "bridge_codegen.py"
+            ),
             "cutlass_commit": cutlass_commit,
             "dense_gemm_sha256": sha256_file(dense_path),
             "patched_dense_gemm_sha256": sha256_file(patched_dense_path),

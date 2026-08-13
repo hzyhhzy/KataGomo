@@ -335,6 +335,9 @@ def verify_artifact(space: dict, metadata_path: Path) -> VerifiedArtifact:
     )
     require(provenance.get("generator_sha256") == sha256_file(generator),
             "artifact generator provenance mismatch")
+    require(provenance.get("bridge_codegen_sha256") ==
+            sha256_file(HERE / "bridge_codegen.py"),
+            "artifact bridge generator provenance mismatch")
     require(provenance.get("cutlass_commit") == PINNED_CUTLASS_COMMIT,
             "artifact CUTLASS provenance mismatch")
     _verify_imported_module_provenance(
@@ -389,14 +392,38 @@ def verify_artifact(space: dict, metadata_path: Path) -> VerifiedArtifact:
     require(object_bytes.startswith(b"\x7fELF"),
             "generated object is not an ELF object")
     wrapper = f"cute_dsl_{task.artifact_stem}_wrapper".encode("ascii")
-    require(wrapper in object_bytes,
-            "generated object lacks the expected unique wrapper symbol")
+    header_text = verified.header.read_text(encoding="utf-8")
+    require(f"static inline int32_t {wrapper.decode('ascii')}" in header_text,
+            "generated header lacks the expected inline wrapper")
+    runtime_symbols = (
+        f"_mlir_{task.artifact_stem}_cuda_init",
+        f"_mlir_{task.artifact_stem}_cuda_load",
+        f"_mlir_{task.artifact_stem}_cuda_load_to_device",
+        f"_mlir_{task.artifact_stem}_cuda_num_binaries",
+    )
+    for symbol in runtime_symbols:
+        require(symbol.encode("ascii") in object_bytes,
+                f"generated object lacks raw runtime symbol {symbol}")
+    raw_ciface_prefix = (
+        f"_mlir_{task.artifact_stem}__mlir_ciface_cutlass_"
+    )
+    require(raw_ciface_prefix.encode("ascii") in object_bytes,
+            "generated object lacks the unique raw launch symbol")
+    require(f"_mlir_{task.artifact_stem}_cuda_init" in header_text and
+            f"_mlir_{task.artifact_stem}_cuda_load_to_device" in header_text and
+            raw_ciface_prefix in header_text,
+            "generated header lacks the raw CuTe ABI declarations")
     bridge_text = verified.bridge.read_text(encoding="utf-8")
     require(task.prepare_symbol in bridge_text and task.launch_symbol in bridge_text and
             wrapper.decode("ascii") in bridge_text,
             "generated bridge lacks the selected ABI symbols")
     require("MaxPreparedDevices" in bridge_text and
-            "cudaPeekAtLastError" in bridge_text,
+            "cudaPeekAtLastError" in bridge_text and
+            f"_mlir_{task.artifact_stem}_cuda_init" in bridge_text and
+            f"_mlir_{task.artifact_stem}_cuda_load_to_device" in bridge_text and
+            "int32_t deviceId = deviceOrdinal" in bridge_text and
+            "preparationFailures[deviceOrdinal] = status" in bridge_text and
+            f"{task.artifact_stem}_Kernel_Module_Load(&" not in bridge_text,
             "generated bridge lacks per-device eager preparation")
     return verified
 

@@ -35,6 +35,7 @@ namespace {{
 constexpr int MaxPreparedDevices = 32;
 std::array<{stem}_Kernel_Module_t,MaxPreparedDevices> modules{{}};
 std::array<std::atomic<bool>,MaxPreparedDevices> prepared{{}};
+std::array<cudaError_t,MaxPreparedDevices> preparationFailures{{}};
 std::array<std::mutex,MaxPreparedDevices> prepareMutexes;
 
 cudaError_t validateDeviceOrdinal(int deviceOrdinal) {{
@@ -44,6 +45,40 @@ cudaError_t validateDeviceOrdinal(int deviceOrdinal) {{
     return status;
   return deviceOrdinal >= 0 && deviceOrdinal < deviceCount &&
       deviceOrdinal < MaxPreparedDevices ? cudaSuccess : cudaErrorInvalidDevice;
+}}
+
+cudaError_t loadModuleForDevice(int deviceOrdinal) {{
+  // Do not use the generated Kernel_Module_Load helper here. It returns void,
+  // logs instead of propagating errors, and loads every visible device. The
+  // raw CuTe ABI carries cudaError_t through these two argument records.
+  auto& module = modules[deviceOrdinal];
+  module = {{}};
+  cudaLibrary_t* library = &module.module;
+  cudaError_t rawStatus = cudaSuccess;
+  struct InitArgs {{
+    cudaLibrary_t** library;
+    cudaError_t* status;
+  }} initArgs{{&library,&rawStatus}};
+  _mlir_{stem}_cuda_init(reinterpret_cast<void**>(&initArgs));
+  if(rawStatus != cudaSuccess) {{
+    if(module.module != nullptr)
+      (void)cudaLibraryUnload(module.module);
+    module = {{}};
+    return rawStatus;
+  }}
+
+  int32_t deviceId = deviceOrdinal;
+  struct LoadArgs {{
+    cudaLibrary_t** library;
+    int32_t* deviceId;
+    cudaError_t* status;
+  }} loadArgs{{&library,&deviceId,&rawStatus}};
+  _mlir_{stem}_cuda_load_to_device(reinterpret_cast<void**>(&loadArgs));
+  if(rawStatus != cudaSuccess) {{
+    (void)cudaLibraryUnload(module.module);
+    module = {{}};
+  }}
+  return rawStatus;
 }}
 
 }}  // namespace
@@ -57,25 +92,13 @@ extern "C" cudaError_t {task.prepare_symbol}(int deviceOrdinal) {{
   std::lock_guard<std::mutex> lock(prepareMutexes[deviceOrdinal]);
   if(prepared[deviceOrdinal].load(std::memory_order_relaxed))
     return cudaSuccess;
-  int previousDevice = -1;
-  status = cudaGetDevice(&previousDevice);
-  if(status != cudaSuccess)
-    return status;
-  if(previousDevice != deviceOrdinal) {{
-    status = cudaSetDevice(deviceOrdinal);
-    if(status != cudaSuccess)
-      return status;
-  }}
-  (void)cudaGetLastError();
-  {stem}_Kernel_Module_Load(&modules[deviceOrdinal]);
-  status = cudaPeekAtLastError();
-  if(previousDevice != deviceOrdinal) {{
-    cudaError_t restore = cudaSetDevice(previousDevice);
-    if(status == cudaSuccess)
-      status = restore;
-  }}
+  if(preparationFailures[deviceOrdinal] != cudaSuccess)
+    return preparationFailures[deviceOrdinal];
+  status = loadModuleForDevice(deviceOrdinal);
   if(status == cudaSuccess)
     prepared[deviceOrdinal].store(true,std::memory_order_release);
+  else
+    preparationFailures[deviceOrdinal] = status;
   return status;
 }}
 '''
