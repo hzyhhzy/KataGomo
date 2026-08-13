@@ -99,7 +99,7 @@ bool supports(const LaunchParams& params) noexcept {
 }
 
 const char* marker() noexcept {
-  return "c384-h12-d32-raw-packed-qknorm-rope-half2-g340-v1";
+  return "c384-h12-d32-raw-packed-qknorm-rope-half2-g1360-v1";
 }
 
 cudaError_t launchInPlace(
@@ -128,7 +128,7 @@ cudaError_t launchInPlaceForGridQualification(
   if(rawPackedQkv == nullptr || qGamma == nullptr || kGamma == nullptr ||
      learnedRopeCosSin == nullptr)
     return cudaErrorInvalidValue;
-  if(gridBlocks <= 0 || gridBlocks > 4096)
+  if(gridBlocks <= 0 || gridBlocks > 16384)
     return cudaErrorInvalidConfiguration;
   qknormLearnedRopeHalf2Kernel<<<gridBlocks,kThreads,0,stream>>>(
     rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,

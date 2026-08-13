@@ -106,7 +106,9 @@ int main(int argc, char** argv) {
     cudaMemcpyHostToDevice),"copy rope");
 
   const LaunchParams launchParams = params();
-  constexpr int grids[] = {85,170,255,340,510,680,1020};
+  constexpr int grids[] = {
+    340,510,680,850,1020,1360,1700,2040,2720,3400,4080,6120,8160,9520
+  };
   std::cout << std::fixed << std::setprecision(4);
   for(int grid: grids) {
     for(int warmup = 0; warmup < 50; warmup++) {
