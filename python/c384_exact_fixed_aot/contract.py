@@ -48,6 +48,46 @@ def canonical_json_sha256(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _canonical_version(value: object) -> str:
+    # Keep this identical to generator_common.py. The imported module is the
+    # authority; visible dist-info is only accepted when it describes that
+    # exact imported version.
+    return str(value).strip().lower().replace("_", "-")
+
+
+def _verify_imported_module_provenance(
+    provenance: dict, key: str, expected_distribution: str,
+) -> None:
+    record = provenance.get(key)
+    require(isinstance(record, dict),
+            f"artifact {key} provenance must be a record")
+    require(record.get("distribution") == expected_distribution,
+            f"artifact {key} distribution mismatch")
+    for field in ("module", "version", "version_module", "module_file"):
+        value = record.get(field)
+        require(isinstance(value, str) and value.strip() != "",
+                f"artifact {key} {field} is missing")
+    require(
+        isinstance(record.get("module_file_sha256"), str) and
+        HEX_SHA256.fullmatch(record["module_file_sha256"]) is not None,
+        f"artifact {key} module file hash is invalid",
+    )
+    status = record.get("metadata_status")
+    require(status in ("absent", "present-matching"),
+            f"artifact {key} metadata status is invalid")
+    distribution_version = record.get("distribution_version")
+    if status == "absent":
+        require(distribution_version is None,
+                f"artifact {key} absent dist-info must have null version")
+    else:
+        require(isinstance(distribution_version, str) and
+                distribution_version.strip() != "",
+                f"artifact {key} dist-info version is missing")
+        require(_canonical_version(distribution_version) ==
+                _canonical_version(record["version"]),
+                f"artifact {key} dist-info version mismatch")
+
+
 @dataclass(frozen=True)
 class Task:
     family: str
@@ -297,6 +337,12 @@ def verify_artifact(space: dict, metadata_path: Path) -> VerifiedArtifact:
             "artifact generator provenance mismatch")
     require(provenance.get("cutlass_commit") == PINNED_CUTLASS_COMMIT,
             "artifact CUTLASS provenance mismatch")
+    _verify_imported_module_provenance(
+        provenance, "nvidia_cutlass_dsl", "nvidia-cutlass-dsl",
+    )
+    _verify_imported_module_provenance(
+        provenance, "cuda_bindings", "cuda-bindings",
+    )
     for label in ("dense_gemm_sha256", "patched_dense_gemm_sha256"):
         require(HEX_SHA256.fullmatch(str(provenance.get(label, ""))) is not None,
                 f"artifact {label} is invalid")

@@ -139,6 +139,26 @@ class C384ExactFixedAotTest(unittest.TestCase):
                 "cutlass_commit": "dcf215af68a2d08d305076c152a06f201728cd53",
                 "dense_gemm_sha256": "1" * 64,
                 "patched_dense_gemm_sha256": "2" * 64,
+                "nvidia_cutlass_dsl": {
+                    "module": "cutlass",
+                    "version": "4.6.0.dev0",
+                    "version_module": "cutlass",
+                    "module_file": "/staged/cutlass/__init__.py",
+                    "module_file_sha256": "6" * 64,
+                    "distribution": "nvidia-cutlass-dsl",
+                    "metadata_status": "absent",
+                    "distribution_version": None,
+                },
+                "cuda_bindings": {
+                    "module": "cuda.bindings.driver",
+                    "version": "13.3.1",
+                    "version_module": "cuda.bindings._version",
+                    "module_file": "/staged/cuda/bindings/driver.pyd",
+                    "module_file_sha256": "7" * 64,
+                    "distribution": "cuda-bindings",
+                    "metadata_status": "present-matching",
+                    "distribution_version": "13.3.1",
+                },
                 "nvcc": "Cuda compilation tools, release 13.0, V13.0.0",
                 "gpu_kernel_executed": False,
             },
@@ -461,6 +481,49 @@ katago_c384_exact_validate_cuda_version()
             metadata[0].write_text(json.dumps(value), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "native ABI mismatch"):
                 verify_artifact(self.space, metadata[0])
+
+    def test_imported_tool_provenance_fails_closed(self) -> None:
+        task = self.tasks[0]
+        with writable_fixture() as root:
+            metadata_path = self._write_artifact(root, task)
+            baseline = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+            def missing_cutlass(value):
+                del value["provenance"]["nvidia_cutlass_dsl"]
+
+            def wrong_distribution(value):
+                value["provenance"]["cuda_bindings"]["distribution"] = (
+                    "cuda-python"
+                )
+
+            def bad_module_hash(value):
+                value["provenance"]["nvidia_cutlass_dsl"][
+                    "module_file_sha256"
+                ] = "not-a-sha256"
+
+            def mismatched_dist_version(value):
+                value["provenance"]["cuda_bindings"][
+                    "distribution_version"
+                ] = "13.4.0"
+
+            cases = (
+                ("missing record", missing_cutlass, "must be a record"),
+                ("wrong distribution", wrong_distribution,
+                 "distribution mismatch"),
+                ("bad module hash", bad_module_hash,
+                 "module file hash is invalid"),
+                ("mismatched version", mismatched_dist_version,
+                 "dist-info version mismatch"),
+            )
+            for label, mutate, expected in cases:
+                with self.subTest(label=label):
+                    value = json.loads(json.dumps(baseline))
+                    mutate(value)
+                    metadata_path.write_text(
+                        json.dumps(value), encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(ValueError, expected):
+                        verify_artifact(self.space, metadata_path)
 
     def test_old_shape_literals_are_not_silently_reused(self) -> None:
         qkv = (TOOLS / "generate_qkv_rope.py").read_text(encoding="utf-8")
