@@ -1,0 +1,186 @@
+{
+  "schema": 2,
+  "kind": "katago-c384-sm120-exact-fixed-aot-search",
+  "status": "generator-ready-not-generated-not-benchmarked",
+  "target": {
+    "model_depth": 36,
+    "board": [15, 15],
+    "sequence": 225,
+    "channels": 384,
+    "heads": 12,
+    "kv_heads": 12,
+    "head_dim": 32,
+    "ffn_channels": 1024,
+    "numeric": "fp16",
+    "layout": "nhwc",
+    "mask": "none",
+    "compute_capability": 120
+  },
+  "batches": [
+    {
+      "batch": 28,
+      "priority": 1,
+      "token_rows": 6300,
+      "qkv_rope": [
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k64-a4x2-sauto-g170-b28-abi1",
+          "tile": [128, 128, 64],
+          "atom_layout": [4, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k64-a2x2-sauto-g170-b28-abi1",
+          "tile": [128, 128, 64],
+          "atom_layout": [2, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k32-a4x2-sauto-g170-b28-abi1",
+          "tile": [128, 128, 32],
+          "atom_layout": [4, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k32-a2x2-sauto-g170-b28-abi1",
+          "tile": [128, 128, 32],
+          "atom_layout": [2, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        }
+      ],
+      "dual_ffn": [
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k32-ab2e4-g170-b28-abi1",
+          "tile": [128, 128, 32],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k32-ab2e4-g340-b28-abi1",
+          "tile": [128, 128, 32],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 340
+        },
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k64-ab2e4-g170-b28-abi1",
+          "tile": [128, 128, 64],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k64-ab2e4-g340-b28-abi1",
+          "tile": [128, 128, 64],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 340
+        }
+      ]
+    },
+    {
+      "batch": 24,
+      "priority": 2,
+      "token_rows": 5400,
+      "qkv_rope": [
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k64-a4x2-sauto-g170-b24-abi1",
+          "tile": [128, 128, 64],
+          "atom_layout": [4, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k64-a2x2-sauto-g170-b24-abi1",
+          "tile": [128, 128, 64],
+          "atom_layout": [2, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k32-a4x2-sauto-g170-b24-abi1",
+          "tile": [128, 128, 32],
+          "atom_layout": [4, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-s225-h12d32-qkv1152-rope192-m128n128k32-a2x2-sauto-g170-b24-abi1",
+          "tile": [128, 128, 32],
+          "atom_layout": [2, 2, 1],
+          "stage_policy": "cutlass-pinned-auto",
+          "max_active_clusters": 170
+        }
+      ],
+      "dual_ffn": [
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k32-ab2e4-g170-b24-abi1",
+          "tile": [128, 128, 32],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k32-ab2e4-g340-b24-abi1",
+          "tile": [128, 128, 32],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 340
+        },
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k64-ab2e4-g170-b24-abi1",
+          "tile": [128, 128, 64],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 170
+        },
+        {
+          "id": "c384-f1024-swiglu-m128n64x2k64-ab2e4-g340-b24-abi1",
+          "tile": [128, 128, 64],
+          "effective_output_tile": [128, 64],
+          "atom_layout": [4, 2, 1],
+          "ab_stages": 2,
+          "epilogue_stages": 4,
+          "max_active_clusters": 340
+        }
+      ]
+    }
+  ],
+  "layouts": {
+    "qkv_weights": "row-major-Kx3C-[384,1152]",
+    "qkv_output": "row-major-Mx3C-packed-token-[Q384,K384,V384]",
+    "rope_table": "row-major-[225,192]-half2-cos-sin",
+    "dual_weights": "row-major-Kx2F-[384,2048]-paired-linear64-gate64",
+    "dual_output": "row-major-MxF-[M,1024]-silu(linear)*gate"
+  },
+  "native_abi": {
+    "registry": 2,
+    "qkv_rope": 1,
+    "dual_ffn": 1,
+    "packed_fa4_proof": 1
+  },
+  "reference": {
+    "repository": "runtime_data/int8_ptq/cuda_fork_ref",
+    "commit": "38a99ee43252f4f6e8979d2f3944bfed55ce7f7a",
+    "cutlass_commit": "dcf215af68a2d08d305076c152a06f201728cd53",
+    "dense_gemm_sha256": "613052799aff35d5564d49c8bbb4bbac2e22bc58cb3e27499c4c9c3ee95c6e03"
+  }
+}

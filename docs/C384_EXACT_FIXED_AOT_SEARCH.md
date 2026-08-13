@@ -9,14 +9,15 @@ existing prepared generic/dynamic paths and their markers and fingerprints.
 ## Fixed search coordinates
 
 Runtime batch and model depth are separate quantities. The model has 36
-attention and 36 FFN descriptors. The only AOT runtime batches in this search
-are, in priority order:
+attention and 36 FFN descriptors. The portable selector retains the earlier
+runtime coordinates below. The current bounded generator emits objects only
+for B28 and B24; B40 has no generated entry and stays fail-closed.
 
 | priority | physical batch | exact token rows (`B * 225`) |
 | ---: | ---: | ---: |
 | 1 | 28 | 6300 |
 | 2 | 24 | 5400 |
-| 3 | 40 | 9000 |
+| 3 (selector/future only) | 40 | 9000 |
 
 The selector validates a coherent alternating transformer structure and marks
 36 attention + 36 FFN blocks as the primary target. Model depth is not a kernel
@@ -43,8 +44,9 @@ CUDA descriptors and the launch ABI live in
   attention.
 - Dual FFN is independent. Its paired weights hold 64-channel up/gate chunks
   for C384/F1024, and its search coordinates include grid 170 and grid 340.
-- Every launch is exact-M. A partial/tail row count, a non-candidate batch,
-  mask, FP32, NCHW, another board, or a non-SM120 device misses the overlay.
+- Every launch receives and rechecks exact token rows. A partial/tail row
+  count, a non-candidate batch, mask, FP32, NCHW, another board, or a
+  non-SM120 device misses the overlay.
 - Registry lookup and selection happen while each block is constructed. Each
   generated descriptor must expose a non-null, idempotent per-device eager
   prepare hook; construction calls it before publishing the descriptor. The
@@ -65,10 +67,11 @@ registry provider. By default it uses the checked-in empty provider:
 cpp/neuralnet/c384_exact_fixed_aot_registry_stub.cu
 ```
 
-A search build replaces only that provider:
+A generated search build supplies the hash-bound manifest emitted by
+`python/c384_exact_fixed_aot/emit_registry.py`:
 
 ```text
--DKATAGO_C384_EXACT_AOT_REGISTRY_SOURCE=/absolute/path/generated_registry.cu
+-DKATAGO_C384_EXACT_AOT_GENERATED_MANIFEST=/absolute/path/c384_exact_generated_manifest.cmake
 ```
 
 The generated source must define both provider functions declared by
@@ -77,11 +80,16 @@ the other family. Records are keyed by exact batch and explicit candidate ID;
 duplicates and artifact manifests are validated by the generator workflow,
 not selected heuristically at runtime.
 
-Current candidate geometry:
+Current bounded geometry (at B28 and B24):
 
-- QKV+RoPE: `M128 N128 K64`, atom `4x2x1`, packed output.
-- dual FFN: `M128 N64x2 K32`, AB stages 2, epilogue stages 4,
-  paired weights, grids 170 and 340.
+- QKV+RoPE: `M128 N128 K{32,64}` x atom `{2x2x1,4x2x1}`,
+  pinned-CUTLASS automatic stages, grid 170, packed output.
+- dual FFN: `M128 N64x2 K{32,64}`, atom `4x2x1`, AB stages 2,
+  epilogue stages 4, paired weights, grids 170 and 340.
+
+The reusable derivation, measurement ladder, candidate rejection log, and
+generalization checklist are recorded in
+`docs/SM120_FIXED_BATCH_TRANSFORMER_OPTIMIZATION_PLAYBOOK.md`.
 
 The reference workflow is the clean `doomoooo/KataGomo_fork` mirror at
 `38a99ee43252f4f6e8979d2f3944bfed55ce7f7a`. No CUDA generation or GPU run was
