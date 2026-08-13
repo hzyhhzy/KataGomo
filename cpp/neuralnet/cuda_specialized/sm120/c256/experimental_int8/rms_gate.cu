@@ -1,4 +1,4 @@
-#include "cudabackend_sm120_renju15_kernels.h"
+#include "../../shared/rms_norm.h"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>

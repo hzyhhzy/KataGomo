@@ -509,7 +509,7 @@ if(USE_BACKEND STREQUAL "CUDA")
       ${KATAGO_C384_H12_FA4_BRIDGES})
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
-        neuralnet/renju15_int8_fused_sm120.cu)
+        neuralnet/cuda_specialized/sm120/c256/experimental_int8/fused.cu)
     endif()
     add_library(katago_sm120_transformer_winner OBJECT
       ${KATAGO_SM120_TRANSFORMER_WINNER_SOURCES})
@@ -553,9 +553,9 @@ if(USE_BACKEND STREQUAL "CUDA")
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       add_executable(katago_renju15_int8_weight_gate EXCLUDE_FROM_ALL
-        neuralnet/renju15_int8_weight_gate.cpp)
+        neuralnet/cuda_specialized/sm120/c256/experimental_int8/weight_gate.cpp)
       add_executable(katago_renju15_int8_rms_gate EXCLUDE_FROM_ALL
-        neuralnet/renju15_int8_rms_gate.cu
+        neuralnet/cuda_specialized/sm120/c256/experimental_int8/rms_gate.cu
         neuralnet/cuda_specialized/sm120/shared/rms_norm.cu)
       set_target_properties(katago_renju15_int8_rms_gate PROPERTIES
         CUDA_ARCHITECTURES "120"

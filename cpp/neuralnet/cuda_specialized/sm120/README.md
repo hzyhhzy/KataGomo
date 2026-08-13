@@ -19,3 +19,8 @@ Legacy headers remain at their former `cpp/neuralnet` paths as forwarding
 headers for generated packages and external ABI consumers. Historical C
 symbols, tactic IDs, markers, structure layouts, and ABI versions are kept
 unchanged.
+
+The CUDA tactics and validation gates under `c256/experimental_int8` are
+explicitly opt-in and are excluded from the standard production build unless
+their CMake option is enabled. The CPU quantization helpers remain available
+to the model loader, as before the directory move.

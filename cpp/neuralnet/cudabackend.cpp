@@ -38,8 +38,8 @@
 #include "../neuralnet/cuda_specialized/sm120/shared/rms_norm.h"
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
-#include "../neuralnet/renju15_int8_fused_sm120.h"
-#include "../neuralnet/renju15_int8_quantization.h"
+#include "../neuralnet/cuda_specialized/sm120/c256/experimental_int8/fused.h"
+#include "../neuralnet/cuda_specialized/sm120/c256/experimental_int8/quantization.h"
 #endif
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/nninterface.h"

@@ -11,7 +11,7 @@
 #include "../core/sha2.h"
 #include "../neuralnet/architecturedesc.h"
 #include "../neuralnet/desc.h"
-#include "../neuralnet/renju15_int8_quantization.h"
+#include "../neuralnet/cuda_specialized/sm120/c256/experimental_int8/quantization.h"
 
 using namespace std;
 

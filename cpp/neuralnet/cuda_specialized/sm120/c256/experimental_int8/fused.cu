@@ -1,4 +1,4 @@
-#include "renju15_int8_fused_sm120.h"
+#include "fused.h"
 
 #include "cutlass/cutlass.h"
 #include "cutlass/device_kernel.h"

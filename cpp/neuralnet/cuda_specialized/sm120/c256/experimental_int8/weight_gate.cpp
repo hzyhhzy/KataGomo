@@ -1,4 +1,4 @@
-#include "renju15_int8_quantization.h"
+#include "quantization.h"
 
 #include <cstdint>
 #include <cstring>
