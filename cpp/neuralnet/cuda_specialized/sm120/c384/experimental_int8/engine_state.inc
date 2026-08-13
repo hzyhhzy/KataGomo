@@ -155,6 +155,8 @@
         KATAGO_C384_INT8_DUAL_TACTIC);
       const auto w = static_cast<C384Int8Experiment::DownTactic>(
         KATAGO_C384_INT8_DOWN_TACTIC);
+      const auto o = static_cast<C384Int8Experiment::AttentionOutTactic>(
+        KATAGO_C384_INT8_ATTENTION_OUT_TACTIC);
       logger->write(
         string("KATAGO_C384_SM120_INT8_ACTIVE model=v105 mode=") +
         C384Int8Experiment::engineModeName(c384Int8Mode) +
@@ -171,6 +173,9 @@
           string("none") : string("fused-dual-epilogue-v2")) +
         " rms=" + (expectedC384Int8Down == 0 ?
           string("fp16+int8-x2") : string("int8-only-x2")) +
+        " attention_out=" + (expectedC384Int8Down == 0 ?
+          string("fp16-beta1") :
+          C384Int8Experiment::attentionOutTacticName(o)) +
         " scratch=persistent-per-handle transaction=active");
       loggedC384Int8TransactionActive = true;
     }

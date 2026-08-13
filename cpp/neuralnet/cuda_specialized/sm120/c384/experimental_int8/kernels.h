@@ -53,6 +53,15 @@ enum class DownTactic : uint32_t {
   M128N128K64S3Sw2 = 3,
 };
 
+// Kept distinct from DownTactic even though the initial candidates share the
+// same CUTLASS tile family. Attention out is K=384,N=384 and consumes clip4
+// activations; FFN down is K=1024,N=384 and consumes clip7 products.
+enum class AttentionOutTactic : uint32_t {
+  M128N128K64S2Sw1 = 1,
+  M128N128K64S3Sw1 = 2,
+  M128N128K64S3Sw2 = 3,
+};
+
 // Mirrors the production C384 Warp4Vec4x3 FP16 RMSNorm arithmetic and emits
 // a second row-major signed-INT8 tensor. Quantization occurs after the FP16
 // rounding boundary using clip4, round-to-nearest-even, zero point 0, and a
@@ -172,6 +181,16 @@ cudaError_t launchQuantizeClip7Product(
   cudaStream_t stream
 );
 
+// Quantizes the FP16 packed FA4 output [M,384] using clip4, RNE, zero point
+// 0, and saturation [-127,127]. The output may reuse the attention RMS INT8
+// scratch only after QKV projection has consumed it.
+cudaError_t launchQuantizeAttentionOutput(
+  const half* attentionFp16,
+  int8_t* attentionInt8,
+  int tokenRows,
+  cudaStream_t stream
+);
+
 struct DownConfig {
   DownTactic tactic = DownTactic::M128N128K64S3Sw2;
   int maxTokenRows = 0;
@@ -195,9 +214,33 @@ cudaError_t launchDownResidual(
   cudaStream_t stream
 );
 
+struct AttentionOutConfig {
+  AttentionOutTactic tactic = AttentionOutTactic::M128N128K64S3Sw2;
+  int maxTokenRows = 0;
+  // Output-major K-contiguous signed-INT8 [384,384].
+  const int8_t* packedWeights = nullptr;
+  float weightScale = 0.0f;
+};
+
+void* createAttentionOut(const AttentionOutConfig& config);
+void destroyAttentionOut(void* opaque) noexcept;
+bool attentionOutSupports(const void* opaque, int tokenRows) noexcept;
+
+// Computes half(alpha * S8[M,384] * S8[384,384] + residual), with
+// alpha=(4/127)*weightScale and beta=1 in the CUTLASS epilogue.
+cudaError_t launchAttentionOutResidual(
+  void* opaque,
+  int tokenRows,
+  const int8_t* attentionInt8,
+  const half* residual,
+  half* output,
+  cudaStream_t stream
+);
+
 const char* projectionTacticName(ProjectionTactic tactic) noexcept;
 const char* dualFfnTacticName(DualFfnTactic tactic) noexcept;
 const char* downTacticName(DownTactic tactic) noexcept;
+const char* attentionOutTacticName(AttentionOutTactic tactic) noexcept;
 
 }  // namespace C384Int8Experiment
 

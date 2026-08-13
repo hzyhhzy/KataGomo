@@ -272,7 +272,7 @@ using DualFfnInt8Gemm = cutlass::gemm::device::DualGemm<
   cutlass::arch::OpMultiplyAddSaturate>;
 
 template<int Stages, int Swizzle>
-using DownGemm = cutlass::gemm::device::Gemm<
+using ResidualInt8Gemm = cutlass::gemm::device::Gemm<
   Int8,LayoutA,Int8,LayoutB,Output,LayoutOutput,
   Accum,cutlass::arch::OpClassTensorOp,cutlass::arch::Sm80,
   cutlass::gemm::GemmShape<128,128,64>,
@@ -291,9 +291,9 @@ using DualS4Sw1 = DualFfnGemm<4,1>;
 using DualInt8S3Sw1 = DualFfnInt8Gemm<3,1>;
 using DualInt8S3Sw4 = DualFfnInt8Gemm<3,4>;
 using DualInt8S4Sw1 = DualFfnInt8Gemm<4,1>;
-using DownS2Sw1 = DownGemm<2,1>;
-using DownS3Sw1 = DownGemm<3,1>;
-using DownS3Sw2 = DownGemm<3,2>;
+using ResidualS2Sw1 = ResidualInt8Gemm<2,1>;
+using ResidualS3Sw1 = ResidualInt8Gemm<3,1>;
+using ResidualS3Sw2 = ResidualInt8Gemm<3,2>;
 
 static_assert(sizeof(typename ProjectionS3Sw1::GemmKernel::SharedStorage) <= 101376,
   "C384 INT8 projection exceeds RTX 5090 opt-in shared memory");
@@ -309,11 +309,11 @@ static_assert(sizeof(typename DualInt8S3Sw1::DualGemmKernel::SharedStorage) <= 1
               sizeof(typename DualInt8S3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
               sizeof(typename DualInt8S4Sw1::DualGemmKernel::SharedStorage) <= 101376,
   "a fused-output C384 INT8 dual-FFN exceeds RTX 5090 opt-in shared memory");
-static_assert(sizeof(typename DownS3Sw1::GemmKernel::SharedStorage) <= 101376,
-  "C384 INT8 down projection exceeds RTX 5090 opt-in shared memory");
-static_assert(sizeof(typename DownS2Sw1::GemmKernel::SharedStorage) <= 101376 &&
-              sizeof(typename DownS3Sw2::GemmKernel::SharedStorage) <= 101376,
-  "a C384 INT8 down candidate exceeds RTX 5090 opt-in shared memory");
+static_assert(sizeof(typename ResidualS3Sw1::GemmKernel::SharedStorage) <= 101376,
+  "C384 INT8 residual projection exceeds RTX 5090 opt-in shared memory");
+static_assert(sizeof(typename ResidualS2Sw1::GemmKernel::SharedStorage) <= 101376 &&
+              sizeof(typename ResidualS3Sw2::GemmKernel::SharedStorage) <= 101376,
+  "a C384 INT8 residual projection candidate exceeds RTX 5090 opt-in shared memory");
 
 union Half4Pack {
   uint2 packed;
@@ -367,6 +367,11 @@ struct DualFfnHandle {
 
 struct DownHandle {
   DownConfig config;
+  float alpha;
+};
+
+struct AttentionOutHandle {
+  AttentionOutConfig config;
   float alpha;
 };
 
@@ -531,8 +536,10 @@ cudaError_t launchDualTyped(
 }
 
 template<typename Gemm>
-typename Gemm::Arguments makeDownArguments(
+typename Gemm::Arguments makeResidualArguments(
   int rows,
+  int innerChannels,
+  int outputChannels,
   const Int8* activation,
   const Int8* packedWeights,
   const Output* residual,
@@ -540,39 +547,48 @@ typename Gemm::Arguments makeDownArguments(
   float alpha
 ) {
   return typename Gemm::Arguments(
-    {rows,kChannels,kFfnChannels},
+    {rows,outputChannels,innerChannels},
     typename Gemm::TensorRefA(
-      const_cast<Int8*>(activation),LayoutA(kFfnChannels)),
+      const_cast<Int8*>(activation),LayoutA(innerChannels)),
     typename Gemm::TensorRefB(
-      const_cast<Int8*>(packedWeights),LayoutB(kFfnChannels)),
+      const_cast<Int8*>(packedWeights),LayoutB(innerChannels)),
     typename Gemm::TensorRefC(
-      const_cast<Output*>(residual),LayoutOutput(kChannels)),
-    typename Gemm::TensorRefD(output,LayoutOutput(kChannels)),
+      const_cast<Output*>(residual),LayoutOutput(outputChannels)),
+    typename Gemm::TensorRefD(output,LayoutOutput(outputChannels)),
     typename DequantResidualToHalf::Params(alpha,1.0f));
 }
 
 template<typename Gemm>
-cudaError_t prepareDownTyped(const DownHandle& handle) {
+cudaError_t prepareResidualTyped(
+  int maxTokenRows,
+  int innerChannels,
+  int outputChannels,
+  const Int8* packedWeights,
+  float alpha
+) {
   cudaError_t status = setDynamicSharedAttribute<typename Gemm::GemmKernel>();
   if(status != cudaSuccess)
     return status;
   Output* fakeOutput = reinterpret_cast<Output*>(
-    const_cast<Int8*>(handle.config.packedWeights));
-  const auto first = makeDownArguments<Gemm>(
-    1,handle.config.packedWeights,handle.config.packedWeights,
-    fakeOutput,fakeOutput,handle.alpha);
-  const auto last = makeDownArguments<Gemm>(
-    handle.config.maxTokenRows,handle.config.packedWeights,
-    handle.config.packedWeights,fakeOutput,fakeOutput,handle.alpha);
+    const_cast<Int8*>(packedWeights));
+  const auto first = makeResidualArguments<Gemm>(
+    1,innerChannels,outputChannels,packedWeights,packedWeights,
+    fakeOutput,fakeOutput,alpha);
+  const auto last = makeResidualArguments<Gemm>(
+    maxTokenRows,innerChannels,outputChannels,packedWeights,packedWeights,
+    fakeOutput,fakeOutput,alpha);
   return Gemm::can_implement(first) == cutlass::Status::kSuccess &&
          Gemm::can_implement(last) == cutlass::Status::kSuccess ?
     cudaSuccess : cudaErrorNotSupported;
 }
 
 template<typename Gemm>
-cudaError_t launchDownTyped(
-  const DownHandle& handle,
+cudaError_t launchResidualTyped(
   int rows,
+  int innerChannels,
+  int outputChannels,
+  const Int8* packedWeights,
+  float alpha,
   const Int8* activation,
   const Output* residual,
   Output* output,
@@ -580,21 +596,21 @@ cudaError_t launchDownTyped(
 ) {
   using Kernel = typename Gemm::GemmKernel;
   using Swizzle = typename Gemm::ThreadblockSwizzle;
-  const cutlass::gemm::GemmCoord problem(rows,kChannels,kFfnChannels);
+  const cutlass::gemm::GemmCoord problem(rows,outputChannels,innerChannels);
   const cutlass::gemm::GemmCoord tiled = Swizzle::get_tiled_shape(
     problem,{Gemm::ThreadblockShape::kM,Gemm::ThreadblockShape::kN,
              Gemm::ThreadblockShape::kK},1);
   typename Kernel::Mma::IteratorA::TensorRef a(
-    const_cast<Int8*>(activation),LayoutA(kFfnChannels));
+    const_cast<Int8*>(activation),LayoutA(innerChannels));
   typename Kernel::Mma::IteratorB::TensorRef b(
-    const_cast<Int8*>(handle.config.packedWeights),LayoutB(kFfnChannels));
+    const_cast<Int8*>(packedWeights),LayoutB(innerChannels));
   typename Kernel::Epilogue::OutputTileIterator::TensorRef c(
-    const_cast<Output*>(residual),LayoutOutput(kChannels));
+    const_cast<Output*>(residual),LayoutOutput(outputChannels));
   typename Kernel::Epilogue::OutputTileIterator::TensorRef d(
-    output,LayoutOutput(kChannels));
+    output,LayoutOutput(outputChannels));
   typename Kernel::Params params(
     problem,tiled,a,b,c,d,
-    typename DequantResidualToHalf::Params(handle.alpha,1.0f),nullptr);
+    typename DequantResidualToHalf::Params(alpha,1.0f),nullptr);
   constexpr int threads = Kernel::kThreadCount;
   constexpr int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
   cutlass::Kernel<Kernel><<<
@@ -683,6 +699,34 @@ __global__ void quantizeClip7ProductKernel(
       const float x1 = fminf(49.0f,fmaxf(-49.0f,value.y));
       int q0 = __float2int_rn(x0 * (127.0f / 49.0f));
       int q1 = __float2int_rn(x1 * (127.0f / 49.0f));
+      q0 = q0 < -127 ? -127 : (q0 > 127 ? 127 : q0);
+      q1 = q1 < -127 ? -127 : (q1 > 127 ? 127 : q1);
+      out.values[2 * pair] = static_cast<int8_t>(q0);
+      out.values[2 * pair + 1] = static_cast<int8_t>(q1);
+    }
+    output[vector] = out.packed;
+  }
+}
+
+__global__ void quantizeAttentionOutputKernel(
+  const uint2* __restrict__ input,
+  uint32_t* __restrict__ output,
+  std::size_t vectors
+) {
+  for(std::size_t vector = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+      vector < vectors; vector += std::size_t(gridDim.x) * blockDim.x) {
+    Half4Pack in;
+    Int8x4Pack out;
+    in.packed = input[vector];
+    #pragma unroll
+    for(int pair = 0; pair < 2; pair++) {
+      const float2 value = __half22float2(in.values[pair]);
+      const float x0 = fminf(kNormActivationClip,
+        fmaxf(-kNormActivationClip,value.x));
+      const float x1 = fminf(kNormActivationClip,
+        fmaxf(-kNormActivationClip,value.y));
+      int q0 = __float2int_rn(x0 * (127.0f / kNormActivationClip));
+      int q1 = __float2int_rn(x1 * (127.0f / kNormActivationClip));
       q0 = q0 < -127 ? -127 : (q0 > 127 ? 127 : q0);
       q1 = q1 < -127 ? -127 : (q1 > 127 ? 127 : q1);
       out.values[2 * pair] = static_cast<int8_t>(q0);
@@ -954,6 +998,32 @@ cudaError_t launchQuantizeClip7Product(
   return cudaPeekAtLastError();
 }
 
+cudaError_t launchQuantizeAttentionOutput(
+  const half* attentionFp16,
+  int8_t* attentionInt8,
+  int tokenRows,
+  cudaStream_t stream
+) {
+  if(attentionFp16 == nullptr || attentionInt8 == nullptr || tokenRows <= 0 ||
+     tokenRows > kMaxTokenRows || !aligned16(attentionFp16) ||
+     !aligned16(attentionInt8))
+    return cudaErrorInvalidValue;
+  const std::size_t vectors = std::size_t(tokenRows) * kChannels / 4;
+  // Keep the lightweight conversion from flooding the scheduler ahead of the
+  // following GEMM. The kernel is grid-stride, so this cap preserves the full
+  // tensor including the final partial traversal.
+  constexpr int kAttentionQuantGridCap = 340;
+  const int fullBlocks = int((vectors + kThreadsPerQuantBlock - 1) /
+    kThreadsPerQuantBlock);
+  const int blocks = fullBlocks < kAttentionQuantGridCap ?
+    fullBlocks : kAttentionQuantGridCap;
+  quantizeAttentionOutputKernel<<<
+    blocks,kThreadsPerQuantBlock,0,stream>>>(
+      reinterpret_cast<const uint2*>(attentionFp16),
+      reinterpret_cast<uint32_t*>(attentionInt8),vectors);
+  return cudaPeekAtLastError();
+}
+
 cudaError_t launchPackPlanarV(
   const half* planarV,
   half* rawPackedQkv,
@@ -983,11 +1053,17 @@ void* createDown(const DownConfig& config) {
   cudaError_t status = cudaErrorNotSupported;
   switch(config.tactic) {
   case DownTactic::M128N128K64S2Sw1:
-    status = prepareDownTyped<DownS2Sw1>(handle); break;
+    status = prepareResidualTyped<ResidualS2Sw1>(
+      config.maxTokenRows,kFfnChannels,kChannels,
+      config.packedWeights,handle.alpha); break;
   case DownTactic::M128N128K64S3Sw1:
-    status = prepareDownTyped<DownS3Sw1>(handle); break;
+    status = prepareResidualTyped<ResidualS3Sw1>(
+      config.maxTokenRows,kFfnChannels,kChannels,
+      config.packedWeights,handle.alpha); break;
   case DownTactic::M128N128K64S3Sw2:
-    status = prepareDownTyped<DownS3Sw2>(handle); break;
+    status = prepareResidualTyped<ResidualS3Sw2>(
+      config.maxTokenRows,kFfnChannels,kChannels,
+      config.packedWeights,handle.alpha); break;
   }
   if(status != cudaSuccess)
     return nullptr;
@@ -1021,14 +1097,87 @@ cudaError_t launchDownResidual(
   Output* destination = reinterpret_cast<Output*>(output);
   switch(handle->config.tactic) {
   case DownTactic::M128N128K64S2Sw1:
-    return launchDownTyped<DownS2Sw1>(
-      *handle,tokenRows,productInt8,residualOutput,destination,stream);
+    return launchResidualTyped<ResidualS2Sw1>(
+      tokenRows,kFfnChannels,kChannels,handle->config.packedWeights,
+      handle->alpha,productInt8,residualOutput,destination,stream);
   case DownTactic::M128N128K64S3Sw1:
-    return launchDownTyped<DownS3Sw1>(
-      *handle,tokenRows,productInt8,residualOutput,destination,stream);
+    return launchResidualTyped<ResidualS3Sw1>(
+      tokenRows,kFfnChannels,kChannels,handle->config.packedWeights,
+      handle->alpha,productInt8,residualOutput,destination,stream);
   case DownTactic::M128N128K64S3Sw2:
-    return launchDownTyped<DownS3Sw2>(
-      *handle,tokenRows,productInt8,residualOutput,destination,stream);
+    return launchResidualTyped<ResidualS3Sw2>(
+      tokenRows,kFfnChannels,kChannels,handle->config.packedWeights,
+      handle->alpha,productInt8,residualOutput,destination,stream);
+  }
+  return cudaErrorNotSupported;
+}
+
+void* createAttentionOut(const AttentionOutConfig& config) {
+  if(config.maxTokenRows <= 0 || config.maxTokenRows > kMaxTokenRows ||
+     config.packedWeights == nullptr || !aligned16(config.packedWeights) ||
+     !finitePositive(config.weightScale) || !isSm120Compatible())
+    return nullptr;
+  AttentionOutHandle handle{
+    config,kNormActivationScale * config.weightScale};
+  cudaError_t status = cudaErrorNotSupported;
+  switch(config.tactic) {
+  case AttentionOutTactic::M128N128K64S2Sw1:
+    status = prepareResidualTyped<ResidualS2Sw1>(
+      config.maxTokenRows,kChannels,kChannels,
+      config.packedWeights,handle.alpha); break;
+  case AttentionOutTactic::M128N128K64S3Sw1:
+    status = prepareResidualTyped<ResidualS3Sw1>(
+      config.maxTokenRows,kChannels,kChannels,
+      config.packedWeights,handle.alpha); break;
+  case AttentionOutTactic::M128N128K64S3Sw2:
+    status = prepareResidualTyped<ResidualS3Sw2>(
+      config.maxTokenRows,kChannels,kChannels,
+      config.packedWeights,handle.alpha); break;
+  }
+  if(status != cudaSuccess)
+    return nullptr;
+  return new(std::nothrow) AttentionOutHandle(handle);
+}
+
+void destroyAttentionOut(void* opaque) noexcept {
+  delete static_cast<AttentionOutHandle*>(opaque);
+}
+
+bool attentionOutSupports(const void* opaque, int tokenRows) noexcept {
+  const AttentionOutHandle* handle =
+    static_cast<const AttentionOutHandle*>(opaque);
+  return handle != nullptr && tokenRows > 0 &&
+    tokenRows <= handle->config.maxTokenRows;
+}
+
+cudaError_t launchAttentionOutResidual(
+  void* opaque,
+  int tokenRows,
+  const int8_t* attentionInt8,
+  const half* residual,
+  half* output,
+  cudaStream_t stream
+) {
+  AttentionOutHandle* handle = static_cast<AttentionOutHandle*>(opaque);
+  if(handle == nullptr || attentionInt8 == nullptr || residual == nullptr ||
+     output == nullptr || !attentionOutSupports(handle,tokenRows) ||
+     !aligned16(attentionInt8) || !aligned16(residual) || !aligned16(output))
+    return cudaErrorInvalidValue;
+  const Output* residualOutput = reinterpret_cast<const Output*>(residual);
+  Output* destination = reinterpret_cast<Output*>(output);
+  switch(handle->config.tactic) {
+  case AttentionOutTactic::M128N128K64S2Sw1:
+    return launchResidualTyped<ResidualS2Sw1>(
+      tokenRows,kChannels,kChannels,handle->config.packedWeights,
+      handle->alpha,attentionInt8,residualOutput,destination,stream);
+  case AttentionOutTactic::M128N128K64S3Sw1:
+    return launchResidualTyped<ResidualS3Sw1>(
+      tokenRows,kChannels,kChannels,handle->config.packedWeights,
+      handle->alpha,attentionInt8,residualOutput,destination,stream);
+  case AttentionOutTactic::M128N128K64S3Sw2:
+    return launchResidualTyped<ResidualS3Sw2>(
+      tokenRows,kChannels,kChannels,handle->config.packedWeights,
+      handle->alpha,attentionInt8,residualOutput,destination,stream);
   }
   return cudaErrorNotSupported;
 }
@@ -1065,6 +1214,18 @@ const char* downTacticName(DownTactic tactic) noexcept {
     return "int8-down-beta1-m128n128k64-s3-sw1";
   case DownTactic::M128N128K64S3Sw2:
     return "int8-down-beta1-m128n128k64-s3-sw2";
+  }
+  return "invalid";
+}
+
+const char* attentionOutTacticName(AttentionOutTactic tactic) noexcept {
+  switch(tactic) {
+  case AttentionOutTactic::M128N128K64S2Sw1:
+    return "int8-attention-out-k384-beta1-m128n128k64-s2-sw1";
+  case AttentionOutTactic::M128N128K64S3Sw1:
+    return "int8-attention-out-k384-beta1-m128n128k64-s3-sw1";
+  case AttentionOutTactic::M128N128K64S3Sw2:
+    return "int8-attention-out-k384-beta1-m128n128k64-s3-sw2";
   }
   return "invalid";
 }

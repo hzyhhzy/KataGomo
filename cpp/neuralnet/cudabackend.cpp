@@ -40,6 +40,9 @@
 #ifndef KATAGO_C384_INT8_DOWN_TACTIC
 #define KATAGO_C384_INT8_DOWN_TACTIC 3
 #endif
+#ifndef KATAGO_C384_INT8_ATTENTION_OUT_TACTIC
+#define KATAGO_C384_INT8_ATTENTION_OUT_TACTIC 3
+#endif
 #endif
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/int8policy.h"
@@ -157,6 +160,11 @@ struct C384Int8DownDeleter {
     C384Int8Experiment::destroyDown(pointer);
   }
 };
+struct C384Int8AttentionOutDeleter {
+  void operator()(void* pointer) const noexcept {
+    C384Int8Experiment::destroyAttentionOut(pointer);
+  }
+};
 
 using UniqueC384Int8DeviceBuffer =
   std::unique_ptr<void,C384Int8DeviceBufferDeleter>;
@@ -164,6 +172,8 @@ using UniqueC384Int8Projection =
   std::unique_ptr<void,C384Int8ProjectionDeleter>;
 using UniqueC384Int8Dual = std::unique_ptr<void,C384Int8DualDeleter>;
 using UniqueC384Int8Down = std::unique_ptr<void,C384Int8DownDeleter>;
+using UniqueC384Int8AttentionOut =
+  std::unique_ptr<void,C384Int8AttentionOutDeleter>;
 
 void uploadC384Int8Weights(
   const string& name,
@@ -3057,8 +3067,10 @@ struct TransformerAttentionBlock {
 #endif
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
   UniqueC384Int8DeviceBuffer c384Int8ProjectionWeights;
+  UniqueC384Int8DeviceBuffer c384Int8AttentionOutWeights;
   UniqueC384Int8DeviceBuffer c384Int8RopeTable;
   UniqueC384Int8Projection c384Int8Projection;
+  UniqueC384Int8AttentionOut c384Int8AttentionOut;
   C384H12Fa4Sm120::PreparedProof c384Int8Fa4Proof;
   mutable bool countedC384Int8Attention;
 #endif
@@ -3070,7 +3082,9 @@ struct TransformerAttentionBlock {
 
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
   void discardC384Int8Prepared() noexcept {
+    c384Int8AttentionOut.reset();
     c384Int8Projection.reset();
+    c384Int8AttentionOutWeights.reset();
     c384Int8ProjectionWeights.reset();
     c384Int8RopeTable.reset();
     c384Int8Fa4Proof = C384H12Fa4Sm120::PreparedProof{};
@@ -3166,8 +3180,10 @@ struct TransformerAttentionBlock {
 #endif
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
     c384Int8ProjectionWeights(nullptr),
+    c384Int8AttentionOutWeights(nullptr),
     c384Int8RopeTable(nullptr),
     c384Int8Projection(nullptr),
+    c384Int8AttentionOut(nullptr),
     c384Int8Fa4Proof(),
     countedC384Int8Attention(false),
 #endif
@@ -3386,9 +3402,34 @@ struct TransformerAttentionBlock {
           C384Int8Experiment::createProjection(config));
         if(projection == nullptr)
           throw StringError(name + ": C384 INT8 projection preparation failed");
+        UniqueC384Int8DeviceBuffer attentionOutWeights;
+        UniqueC384Int8AttentionOut attentionOut;
+        if(cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive) {
+          const C384Int8Experiment::PackedWeights packedOut =
+            C384Int8Experiment::packAttentionOut(desc->outProj.weights);
+          uploadC384Int8Weights(
+            name + ":c384Int8AttentionOut",packedOut.values,
+            attentionOutWeights);
+          C384Int8Experiment::AttentionOutConfig outConfig;
+          outConfig.tactic =
+            static_cast<C384Int8Experiment::AttentionOutTactic>(
+              KATAGO_C384_INT8_ATTENTION_OUT_TACTIC);
+          outConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
+          outConfig.packedWeights =
+            (const int8_t*)attentionOutWeights.get();
+          outConfig.weightScale = packedOut.scale;
+          attentionOut.reset(
+            C384Int8Experiment::createAttentionOut(outConfig));
+          if(attentionOut == nullptr)
+            throw StringError(
+              name + ": C384 INT8 attention-out preparation failed");
+        }
         c384Int8ProjectionWeights = std::move(weights);
+        c384Int8AttentionOutWeights = std::move(attentionOutWeights);
         c384Int8RopeTable = std::move(ropeTable);
         c384Int8Projection = std::move(projection);
+        c384Int8AttentionOut = std::move(attentionOut);
         c384Int8Fa4Proof = fa4Proof;
         cudaHandles->preparedC384Int8Attention++;
         cudaHandles->registerC384Int8PreparedCleanup(
@@ -3554,6 +3595,10 @@ struct TransformerAttentionBlock {
       preLN.canApplyC384Fp16Int8(maskBuf) &&
       scratch->hasC384Int8Scratch(cudaHandles->c384Int8Mode) &&
       c384Int8Projection != nullptr && c384Int8RopeTable != nullptr &&
+      (cudaHandles->c384Int8Mode !=
+         C384Int8Experiment::EngineMode::Aggressive ||
+       C384Int8Experiment::attentionOutSupports(
+         c384Int8AttentionOut.get(),matBatchSize)) &&
       qNorm != nullptr && kNorm != nullptr &&
       C384Int8Experiment::projectionSupports(
         c384Int8Projection.get(),cudaHandles->c384Int8ProjectionMode(),
@@ -3858,6 +3903,9 @@ struct TransformerAttentionBlock {
     SizedBuf<void*> attnOutBuf(scratch->allocator, (size_t)numHeads * vHeadDim * seqLen * batchSize * bytesPerElt);
 
     bool usedSDPA = false;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    const char* usedC384Int8Fa4Marker = nullptr;
+#endif
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     if(usedC384ExactPackedQkv
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
@@ -3883,22 +3931,8 @@ struct TransformerAttentionBlock {
       CUDA_ERR(name.c_str(),result.status);
       usedSDPA = true;
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
-      if(usedC384Int8PackedQkv) {
-        cudaHandles->noteC384Int8Launch(
-          countedC384Int8Attention,cudaHandles->activeC384Int8Attention);
-        if(!cudaHandles->loggedC384Int8Attention &&
-           cudaHandles->logger != NULL) {
-          cudaHandles->logger->write(
-            string("KATAGO_C384_SM120_INT8_ATTENTION_ACTIVE mode=") +
-            C384Int8Experiment::engineModeName(cudaHandles->c384Int8Mode) +
-            " projection=" + C384Int8Experiment::projectionTacticName(
-              static_cast<C384Int8Experiment::ProjectionTactic>(
-                KATAGO_C384_INT8_PROJECTION_TACTIC)) + " qknorm_rope=" +
-            C384QKNormRopeSm120::marker() + " fa4=" +
-            (result.marker == nullptr ? "missing" : result.marker));
-          cudaHandles->loggedC384Int8Attention = true;
-        }
-      }
+      if(usedC384Int8PackedQkv)
+        usedC384Int8Fa4Marker = result.marker;
       else
 #endif
       {
@@ -4024,10 +4058,30 @@ struct TransformerAttentionBlock {
       recipe.rmsNorm == CudaTransformerWinner::RmsNormTactic::Sm120C384Warp4Vec4x3 &&
       recipe.outProjection ==
         CudaTransformerWinner::ResidualTactic::CublasHgemmBetaOne;
-    const bool usedPreparedResidual = outProj.applyPreparedResidual(
-      cudaHandles,recipe.outProjection,outProjectionKernel,matBatchSize,
-      attnOutBuf.buf,trunkBuf,maskBuf,c384MeasuredGenericResidual,
-      false,usedSpecializedResidual);
+    bool usedPreparedResidual = false;
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(usedC384Int8PackedQkv && cudaHandles->c384Int8Mode ==
+         C384Int8Experiment::EngineMode::Aggressive) {
+      // Attention RMS INT8 scratch is dead after the packed QKV projection,
+      // so reuse it for clip4 FA4-output quantization before the K384/N384
+      // INT8 projection. The GEMM epilogue writes beta=1 directly to trunk.
+      CUDA_ERR(name.c_str(),
+        C384Int8Experiment::launchQuantizeAttentionOutput(
+          (const half*)attnOutBuf.buf,
+          (int8_t*)scratch->c384Int8NormBuf,matBatchSize,
+          cudaHandles->stream));
+      CUDA_ERR(name.c_str(),C384Int8Experiment::launchAttentionOutResidual(
+        c384Int8AttentionOut.get(),matBatchSize,
+        (const int8_t*)scratch->c384Int8NormBuf,(const half*)trunkBuf,
+        (half*)trunkBuf,cudaHandles->stream));
+      usedPreparedResidual = true;
+    }
+    else
+#endif
+      usedPreparedResidual = outProj.applyPreparedResidual(
+        cudaHandles,recipe.outProjection,outProjectionKernel,matBatchSize,
+        attnOutBuf.buf,trunkBuf,maskBuf,c384MeasuredGenericResidual,
+        false,usedSpecializedResidual);
     if(usedSpecializedResidual && recipe.outProjection ==
          CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
       cudaHandles->noteWinnerLaunch(
@@ -4050,6 +4104,35 @@ struct TransformerAttentionBlock {
       }
       CUDA_ERR(name.c_str(), cudaPeekAtLastError());
     }
+
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(usedC384Int8PackedQkv) {
+      // Count the attention transaction only after its output projection and
+      // beta1 residual write have both enqueued successfully.
+      cudaHandles->noteC384Int8Launch(
+        countedC384Int8Attention,cudaHandles->activeC384Int8Attention);
+      if(!cudaHandles->loggedC384Int8Attention &&
+         cudaHandles->logger != NULL) {
+        const bool int8Out = cudaHandles->c384Int8Mode ==
+          C384Int8Experiment::EngineMode::Aggressive;
+        cudaHandles->logger->write(
+          string("KATAGO_C384_SM120_INT8_ATTENTION_ACTIVE mode=") +
+          C384Int8Experiment::engineModeName(cudaHandles->c384Int8Mode) +
+          " projection=" + C384Int8Experiment::projectionTacticName(
+            static_cast<C384Int8Experiment::ProjectionTactic>(
+              KATAGO_C384_INT8_PROJECTION_TACTIC)) + " qknorm_rope=" +
+          C384QKNormRopeSm120::marker() + " fa4=" +
+          (usedC384Int8Fa4Marker == nullptr ? "missing" :
+            usedC384Int8Fa4Marker) + " out=" +
+          (int8Out ? string("int8-k384-beta1 tactic=") +
+            C384Int8Experiment::attentionOutTacticName(
+              static_cast<C384Int8Experiment::AttentionOutTactic>(
+                KATAGO_C384_INT8_ATTENTION_OUT_TACTIC)) :
+            string("fp16-beta1")));
+        cudaHandles->loggedC384Int8Attention = true;
+      }
+    }
+#endif
 
 #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D("CUDA Attn residual", trunkBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);

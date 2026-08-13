@@ -32,6 +32,8 @@ struct Options {
   ProjectionTactic projection = ProjectionTactic::M128N128K64S3Sw2;
   DualFfnTactic dual = DualFfnTactic::M128N64K64S3Sw4;
   DownTactic down = DownTactic::M128N128K64S3Sw2;
+  AttentionOutTactic attentionOut =
+    AttentionOutTactic::M128N128K64S3Sw2;
   int streams = 1;
   int warmup = 10;
   int iterations = 100;
@@ -96,6 +98,12 @@ Options parseOptions(int argc, char** argv) {
         throw std::runtime_error("down tactic must be 1..3");
       options.down = static_cast<DownTactic>(value);
     }
+    else if(arg == "--attention-out-tactic") {
+      const int value = parsePositive(requireValue(),"attention-out tactic");
+      if(value < 1 || value > 3)
+        throw std::runtime_error("attention-out tactic must be 1..3");
+      options.attentionOut = static_cast<AttentionOutTactic>(value);
+    }
     else if(arg == "--contracts-only")
       options.contractsOnly = true;
     else if(arg == "--help") {
@@ -103,6 +111,7 @@ Options parseOptions(int argc, char** argv) {
         << "c384_int8_microbench [--variant conservative|aggressive] "
         << "[--streams 1|2] [--rows 6300] [--projection-tactic 1..3] "
         << "[--dual-tactic 1..3] [--down-tactic 1..3] "
+        << "[--attention-out-tactic 1..3] "
         << "[--warmup N] [--iterations N] [--contracts-only]\n";
       std::exit(0);
     }
@@ -198,9 +207,15 @@ struct DualDeleter {
 struct DownDeleter {
   void operator()(void* pointer) const noexcept { destroyDown(pointer); }
 };
+struct AttentionOutDeleter {
+  void operator()(void* pointer) const noexcept {
+    destroyAttentionOut(pointer);
+  }
+};
 using ProjectionHandle = std::unique_ptr<void,ProjectionDeleter>;
 using DualHandle = std::unique_ptr<void,DualDeleter>;
 using DownHandle = std::unique_ptr<void,DownDeleter>;
+using AttentionOutHandle = std::unique_ptr<void,AttentionOutDeleter>;
 
 struct HostData {
   std::vector<half> input;
@@ -209,11 +224,13 @@ struct HostData {
   std::vector<int8_t> upWeights;
   std::vector<int8_t> gateWeights;
   std::vector<int8_t> downWeights;
+  std::vector<int8_t> attentionOutWeights;
   std::vector<half> residual;
   float projectionWeightScale = 1.0f / 64.0f;
   float upWeightScale = 1.0f / 96.0f;
   float gateWeightScale = 1.0f / 80.0f;
   float downWeightScale = 1.0f / 112.0f;
+  float attentionOutWeightScale = 1.0f / 104.0f;
 };
 
 float toFloat(half value) { return __half2float(value); }
@@ -234,6 +251,7 @@ HostData makeHostData(ProjectionMode mode) {
   data.upWeights.resize(std::size_t(kChannels) * kFfnChannels);
   data.gateWeights.resize(std::size_t(kChannels) * kFfnChannels);
   data.downWeights.resize(std::size_t(kFfnChannels) * kChannels);
+  data.attentionOutWeights.resize(std::size_t(kChannels) * kChannels);
   data.residual.resize(std::size_t(kTokenRows) * kChannels);
 
   for(int channel = 0; channel < kChannels; channel++)
@@ -256,6 +274,8 @@ HostData makeHostData(ProjectionMode mode) {
     data.gateWeights[i] = patternWeight(i,3);
   for(std::size_t i = 0; i < data.downWeights.size(); i++)
     data.downWeights[i] = patternWeight(i,4);
+  for(std::size_t i = 0; i < data.attentionOutWeights.size(); i++)
+    data.attentionOutWeights[i] = patternWeight(i,5);
   return data;
 }
 
@@ -264,6 +284,7 @@ struct DeviceWeights {
   GuardedBuffer up;
   GuardedBuffer gate;
   GuardedBuffer down;
+  GuardedBuffer attentionOut;
   GuardedBuffer gamma;
   GuardedBuffer input;
   GuardedBuffer residual;
@@ -273,6 +294,7 @@ struct DeviceWeights {
       up(host.upWeights.size()),
       gate(host.gateWeights.size()),
       down(host.downWeights.size()),
+      attentionOut(host.attentionOutWeights.size()),
       gamma(host.gamma.size() * sizeof(half)),
       input(host.input.size() * sizeof(half)),
       residual(host.residual.size() * sizeof(half)) {
@@ -280,6 +302,7 @@ struct DeviceWeights {
     up.upload(host.upWeights);
     gate.upload(host.gateWeights);
     down.upload(host.downWeights);
+    attentionOut.upload(host.attentionOutWeights);
     gamma.upload(host.gamma);
     input.upload(host.input);
     residual.upload(host.residual);
@@ -298,6 +321,9 @@ struct Lane {
   GuardedBuffer productInt8{std::size_t(kTokenRows) * kFfnChannels};
   GuardedBuffer downOutput{
     std::size_t(kTokenRows) * kChannels * sizeof(half)};
+  GuardedBuffer attentionInt8{std::size_t(kTokenRows) * kChannels};
+  GuardedBuffer attentionOutput{
+    std::size_t(kTokenRows) * kChannels * sizeof(half)};
   ProjectionHandle projection{nullptr};
   DualHandle dual{nullptr};
   // Legacy half-output handle is retained only to time the superseded
@@ -305,12 +331,14 @@ struct Lane {
   // aggressive connected subpath.
   DualHandle legacyHalfDual{nullptr};
   DownHandle down{nullptr};
+  AttentionOutHandle attentionOut{nullptr};
 
   Lane() { checkCuda(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking),
     "cudaStreamCreateWithFlags"); }
   Lane(const Lane&) = delete;
   Lane& operator=(const Lane&) = delete;
   ~Lane() {
+    attentionOut.reset();
     down.reset();
     legacyHalfDual.reset();
     dual.reset();
@@ -333,6 +361,8 @@ void prepareLane(
   lane.productHalf.zeroPayload();
   lane.productInt8.zeroPayload();
   lane.downOutput.zeroPayload();
+  lane.attentionInt8.zeroPayload();
+  lane.attentionOutput.zeroPayload();
   ProjectionConfig projectionConfig;
   projectionConfig.mode = options.mode;
   projectionConfig.tactic = options.projection;
@@ -370,6 +400,15 @@ void prepareLane(
     lane.down.reset(createDown(downConfig));
     if(lane.down == nullptr)
       throw std::runtime_error("down handle preparation failed");
+
+    AttentionOutConfig attentionOutConfig;
+    attentionOutConfig.tactic = options.attentionOut;
+    attentionOutConfig.maxTokenRows = kTokenRows;
+    attentionOutConfig.packedWeights = weights.attentionOut.data<int8_t>();
+    attentionOutConfig.weightScale = host.attentionOutWeightScale;
+    lane.attentionOut.reset(createAttentionOut(attentionOutConfig));
+    if(lane.attentionOut == nullptr)
+      throw std::runtime_error("attention-out handle preparation failed");
   }
 }
 
@@ -395,6 +434,13 @@ void enqueuePrototypeSubpath(
     lane.rawPackedQkv.data<half>(),kQkvChannels,lane.stream),
     "launch INT8 packed projection");
   if(options.mode == ProjectionMode::AggressiveQkv) {
+    checkCuda(launchQuantizeAttentionOutput(
+      weights.input.data<half>(),lane.attentionInt8.data<int8_t>(),
+      kTokenRows,lane.stream),"launch attention-output quantization");
+    checkCuda(launchAttentionOutResidual(
+      lane.attentionOut.get(),kTokenRows,lane.attentionInt8.data<int8_t>(),
+      weights.residual.data<half>(),lane.attentionOutput.data<half>(),
+      lane.stream),"launch INT8 attention-out residual");
     checkCuda(launchDualFfnInt8(
       lane.dual.get(),kTokenRows,lane.normInt8.data<int8_t>(),
       lane.productInt8.data<int8_t>(),lane.stream),
@@ -418,6 +464,8 @@ enum class TimingFamily {
   DualFfn,
   ProductQuantization,
   DownResidual,
+  AttentionOutputQuantization,
+  AttentionOutResidual,
   PrototypeSubpath,
 };
 
@@ -429,6 +477,10 @@ const char* timingFamilyName(TimingFamily family) {
   case TimingFamily::DualFfn: return "dual_clip7_mode_output";
   case TimingFamily::ProductQuantization: return "legacy_product_quantization";
   case TimingFamily::DownResidual: return "down_beta1_residual";
+  case TimingFamily::AttentionOutputQuantization:
+    return "attention_output_clip4_quantization";
+  case TimingFamily::AttentionOutResidual:
+    return "attention_out_k384_beta1_residual";
   case TimingFamily::PrototypeSubpath: return "prototype_subpath";
   }
   return "invalid";
@@ -439,8 +491,7 @@ const char* omittedFp16AndAttention(ProjectionMode mode) {
     "residual_add_after_attention,fp16_v_projection,qknorm_rope,fa4,"
     "attention_out_projection,second_rms,fp16_down_residual,"
     "policy_value_heads,36_layer_scheduling" :
-    "residual_add_after_attention,qknorm_rope,fa4,attention_out_projection,"
-    "second_rms,policy_value_heads,36_layer_scheduling";
+    "qknorm_rope,fa4,second_rms,policy_value_heads,36_layer_scheduling";
 }
 
 void enqueueFamily(
@@ -493,6 +544,21 @@ void enqueueFamily(
       lane.down.get(),kTokenRows,lane.productInt8.data<int8_t>(),
       weights.residual.data<half>(),lane.downOutput.data<half>(),lane.stream),
       "launch INT8 down residual");
+    return;
+  case TimingFamily::AttentionOutputQuantization:
+    if(options.mode != ProjectionMode::AggressiveQkv)
+      throw std::runtime_error("attention-output quantization is aggressive-only");
+    checkCuda(launchQuantizeAttentionOutput(
+      weights.input.data<half>(),lane.attentionInt8.data<int8_t>(),
+      kTokenRows,lane.stream),"launch attention-output quantization");
+    return;
+  case TimingFamily::AttentionOutResidual:
+    if(options.mode != ProjectionMode::AggressiveQkv)
+      throw std::runtime_error("INT8 attention-out is aggressive-only");
+    checkCuda(launchAttentionOutResidual(
+      lane.attentionOut.get(),kTokenRows,lane.attentionInt8.data<int8_t>(),
+      weights.residual.data<half>(),lane.attentionOutput.data<half>(),
+      lane.stream),"launch INT8 attention-out residual");
     return;
   case TimingFamily::PrototypeSubpath:
     enqueuePrototypeSubpath(lane,options,weights);
@@ -550,6 +616,39 @@ void requireNear(
     throw std::runtime_error(label + ": actual=" + std::to_string(actual) +
       " expected=" + std::to_string(expected) +
       " tolerance=" + std::to_string(tolerance));
+}
+
+void checkAttentionOutputQuantizerFixture(cudaStream_t stream) {
+  std::vector<half> input(kChannels,toHalf(0.0f));
+  input[0] = toHalf(100.0f);
+  input[1] = toHalf(-100.0f);
+  input[2] = toHalf(4.0f);
+  input[3] = toHalf(-4.0f);
+  // 2 * 127 / 4 = 63.5 exactly: RNE must choose even 64. The negative
+  // counterpart must analogously choose -64.
+  input[4] = toHalf(2.0f);
+  input[5] = toHalf(-2.0f);
+  GuardedBuffer inputDevice(input.size() * sizeof(half));
+  GuardedBuffer outputDevice(input.size());
+  inputDevice.upload(input);
+  outputDevice.zeroPayload();
+  checkCuda(launchQuantizeAttentionOutput(
+    inputDevice.data<half>(),outputDevice.data<int8_t>(),1,stream),
+    "launch attention-output quantizer fixture");
+  checkCuda(cudaStreamSynchronize(stream),
+    "attention-output quantizer fixture sync");
+  const std::vector<int8_t> output = outputDevice.download<int8_t>();
+  const std::array<int,7> expected{{127,-127,127,-127,64,-64,0}};
+  for(std::size_t i = 0; i < expected.size(); i++)
+    if(int(output[i]) != expected[i])
+      throw std::runtime_error(
+        "attention-output saturation/RNE fixture mismatch at " +
+        std::to_string(i));
+  if(std::find(output.begin(),output.end(),int8_t(-128)) != output.end())
+    throw std::runtime_error(
+      "attention-output saturation/RNE fixture emitted forbidden -128");
+  inputDevice.requireCanary("attention-output quantizer fixture input");
+  outputDevice.requireCanary("attention-output quantizer fixture output");
 }
 
 // Dedicated saturation fixture. It is never used by benchmarkFamily(): the
@@ -685,6 +784,22 @@ void checkContracts(
        cudaErrorInvalidValue)
     throw std::runtime_error("INT8-only RMS invalid contract did not fail closed");
 
+  if(options.mode == ProjectionMode::AggressiveQkv &&
+     (launchQuantizeAttentionOutput(
+        nullptr,lane.attentionInt8.data<int8_t>(),kTokenRows,lane.stream) !=
+        cudaErrorInvalidValue ||
+      launchQuantizeAttentionOutput(
+        weights.input.data<half>(),nullptr,kTokenRows,lane.stream) !=
+        cudaErrorInvalidValue ||
+      launchAttentionOutResidual(
+        nullptr,kTokenRows,lane.attentionInt8.data<int8_t>(),
+        weights.residual.data<half>(),lane.attentionOutput.data<half>(),
+        lane.stream) != cudaErrorInvalidValue))
+    throw std::runtime_error(
+      "attention-out invalid contract did not fail closed");
+  if(options.mode == ProjectionMode::AggressiveQkv)
+    checkAttentionOutputQuantizerFixture(lane.stream);
+
   // Use the legacy dual-output kernel as the bit-exact oracle. The
   // INT8-only path receives no FP16 destination at all.
   checkCuda(launchRmsNormFp16Int8(
@@ -707,6 +822,9 @@ void checkContracts(
   const std::vector<int8_t> productInt8 =
     options.mode == ProjectionMode::AggressiveQkv ?
       lane.productInt8.download<int8_t>() : std::vector<int8_t>();
+  const std::vector<int8_t> attentionInt8 =
+    options.mode == ProjectionMode::AggressiveQkv ?
+      lane.attentionInt8.download<int8_t>() : std::vector<int8_t>();
   requireFinite(normHalf,"RMS FP16");
   if(options.mode == ProjectionMode::AggressiveQkv && normInt8 != normControl)
     throw std::runtime_error(
@@ -783,6 +901,36 @@ void checkContracts(
   }
 
   if(options.mode == ProjectionMode::AggressiveQkv) {
+    const std::vector<half> attentionOutput =
+      lane.attentionOutput.download<half>();
+    requireFinite(attentionOutput,"INT8 attention-out residual");
+    if(std::find(attentionInt8.begin(),attentionInt8.end(),int8_t(-128)) !=
+       attentionInt8.end())
+      throw std::runtime_error("attention-output quantizer emitted forbidden -128");
+    for(int row: sampleRows) {
+      for(int inputChannel: std::array<int,5>{{0,1,127,255,383}}) {
+        const std::size_t index =
+          std::size_t(row) * kChannels + inputChannel;
+        const int expected = quantize(
+          toFloat(host.input[index]),kNormActivationClip);
+        if(int(attentionInt8[index]) != expected)
+          throw std::runtime_error(
+            "attention-output clip4 quantization relation mismatch");
+      }
+      for(int channel: std::array<int,5>{{0,1,127,255,383}}) {
+        const int32_t accum = dot(
+          attentionInt8,row,kChannels,host.attentionOutWeights,channel);
+        const float residual = toFloat(
+          host.residual[std::size_t(row) * kChannels + channel]);
+        const float expected = float(accum) * kNormActivationScale *
+          host.attentionOutWeightScale + residual;
+        const float actual = toFloat(
+          attentionOutput[std::size_t(row) * kChannels + channel]);
+        requireNear(actual,expected,0.01f,
+          "attention-out int32-dequant beta1 oracle");
+      }
+    }
+
     const std::vector<half> downOutput = lane.downOutput.download<half>();
     requireFinite(downOutput,"INT8 down residual");
     if(std::find(productInt8.begin(),productInt8.end(),int8_t(-128)) !=
@@ -810,10 +958,13 @@ void checkContracts(
   lane.productHalf.requireCanary("productHalf");
   lane.productInt8.requireCanary("productInt8");
   lane.downOutput.requireCanary("downOutput");
+  lane.attentionInt8.requireCanary("attentionInt8");
+  lane.attentionOutput.requireCanary("attentionOutput");
   weights.projection.requireCanary("projection weights");
   weights.up.requireCanary("up weights");
   weights.gate.requireCanary("gate weights");
   weights.down.requireCanary("down weights");
+  weights.attentionOut.requireCanary("attention-out weights");
   weights.gamma.requireCanary("gamma");
   weights.input.requireCanary("input");
   weights.residual.requireCanary("residual");
@@ -826,6 +977,15 @@ float benchmarkFamily(
   const Options& options,
   const DeviceWeights& weights
 ) {
+  if(family == TimingFamily::AttentionOutResidual) {
+    for(auto& lane: lanes) {
+      checkCuda(launchQuantizeAttentionOutput(
+        weights.input.data<half>(),lane->attentionInt8.data<int8_t>(),
+        kTokenRows,lane->stream),"seed attention-output quantization");
+      checkCuda(cudaStreamSynchronize(lane->stream),
+        "seed attention-output quantization sync");
+    }
+  }
   if(family == TimingFamily::ProductQuantization) {
     // Seed the legacy FP16 product outside timing. This family measures only
     // the removed standalone conversion and is not part of the connected path.
@@ -928,7 +1088,13 @@ int main(int argc, char** argv) {
       << " dual=" << dualFfnTacticName(options.dual)
       << " down=" << (options.mode == ProjectionMode::AggressiveQkv ?
         downTacticName(options.down) : "none")
+      << " attention_out=" << (options.mode == ProjectionMode::AggressiveQkv ?
+        attentionOutTacticName(options.attentionOut) : "none")
       << " finite=1 canary=1 int32_dequant=1"
+      << " attention_out_clip4_quant=1 attention_out_beta1=1"
+      << " attention_out_endpoints_plus4_minus4=1"
+      << " attention_out_saturation=1 attention_out_rne_tie=1"
+      << " attention_out_no_neg128=1 attention_out_tail=1"
       << " clip7_silu_positive=1 clip7_gate_positive=1"
       << " clip7_gate_negative=1 clip7_silu_negative_unreachable=1"
       << " product_endpoints_plus49_minus49=1 missing_clamp_witness=1"
@@ -937,20 +1103,24 @@ int main(int argc, char** argv) {
     if(options.contractsOnly)
       return 0;
 
-    const std::array<TimingFamily,7> requestedFamilies{{
+    const std::array<TimingFamily,9> requestedFamilies{{
       TimingFamily::RmsInt8Only,
       TimingFamily::RmsFp16Int8Control,
       TimingFamily::Projection,
       TimingFamily::DualFfn,
       TimingFamily::ProductQuantization,
       TimingFamily::DownResidual,
+      TimingFamily::AttentionOutputQuantization,
+      TimingFamily::AttentionOutResidual,
       TimingFamily::PrototypeSubpath,
     }};
     std::vector<FamilyMeasurement> measurements;
     for(const TimingFamily family: requestedFamilies) {
       const bool aggressiveOnly =
         family == TimingFamily::ProductQuantization ||
-        family == TimingFamily::DownResidual;
+        family == TimingFamily::DownResidual ||
+        family == TimingFamily::AttentionOutputQuantization ||
+        family == TimingFamily::AttentionOutResidual;
       if(aggressiveOnly && options.mode != ProjectionMode::AggressiveQkv)
         continue;
       const float elapsedMs = benchmarkFamily(

@@ -111,6 +111,13 @@ inline PackedWeights packProjection(
   return result;
 }
 
+inline PackedWeights packAttentionOut(const std::vector<float>& source) {
+  constexpr int channels = 384;
+  if(source.size() != std::size_t(channels) * channels)
+    throw std::invalid_argument("C384 INT8 attention-out shape mismatch");
+  return packMatrix(source,channels,channels);
+}
+
 }  // namespace C384Int8Experiment
 
 #endif  // KATAGO_C384_EXPERIMENTAL_INT8_WEIGHTS_H_

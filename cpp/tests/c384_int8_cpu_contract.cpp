@@ -164,6 +164,24 @@ int main() {
             std::fabs(aggressive.scale - 4.0f / 127.0f) < 1.0e-8f,
             "projection common scale changed");
 
+    std::vector<float> attentionOut(
+      std::size_t(kChannels) * kChannels,0.0f);
+    attentionOut[std::size_t(19) * kChannels + 23] = -3.0f;
+    attentionOut[std::size_t(29) * kChannels + 31] = 1.5f;
+    const PackedWeights packedAttentionOut = packAttentionOut(attentionOut);
+    require(packedAttentionOut.inputChannels == kChannels &&
+            packedAttentionOut.outputChannels == kChannels &&
+            packedAttentionOut.values.size() ==
+              std::size_t(kChannels) * kChannels,
+            "attention-out packed shape changed");
+    require(packedAttentionOut.values[std::size_t(23) * kChannels + 19] ==
+              -127 &&
+            packedAttentionOut.values[std::size_t(31) * kChannels + 29] ==
+              64,
+            "attention-out output-major packing or RNE changed");
+    require(std::fabs(packedAttentionOut.scale - 3.0f / 127.0f) < 1.0e-8f,
+            "attention-out scale changed");
+
     std::cout << "KATAGO_C384_INT8_CPU_CONTRACT_PASS"
               << " M=" << kTokenRows
               << " C=" << kChannels
@@ -172,6 +190,7 @@ int main() {
               << " norm_scale=" << kNormActivationScale
               << " product_scale=" << kClip7ProductScale
               << " fused_product_quant=fused-dual-epilogue-v2"
+              << " attention_out_pack=k384-n384-output-major"
               << " rms_int8_only_api=explicit"
               << " endpoints_plus49_minus49=1 rne=1 no_neg128=1"
               << " engine_default=off"
