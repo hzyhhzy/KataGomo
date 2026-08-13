@@ -2815,6 +2815,21 @@ struct TransformerRMSNormLayer {
       (const half*)weightBuf,batchSize * xySize,epsilon,
       cudaHandles->stream));
   }
+
+  void applyC384Int8(
+    CudaHandles* cudaHandles,
+    int batchSize,
+    int xySize,
+    const void* inputBuf,
+    void* outputInt8,
+    const void* maskBuf
+  ) const {
+    if(!canApplyC384Fp16Int8(maskBuf))
+      throw StringError(name + ": incompatible C384 INT8-only RMSNorm");
+    CUDA_ERR(name.c_str(),C384Int8Experiment::launchRmsNormInt8(
+      (const half*)inputBuf,(int8_t*)outputInt8,(const half*)weightBuf,
+      batchSize * xySize,epsilon,cudaHandles->stream));
+  }
 #endif
 
   // Apply RMSNorm on NHWC data [N, XY, C], applying mask [N, XY] to zero padded positions.
@@ -3548,9 +3563,15 @@ struct TransformerAttentionBlock {
        !useC384Int8Attention)
       throw StringError(name + ": committed C384 INT8 attention contract miss");
     if(useC384Int8Attention) {
-      preLN.applyC384Fp16Int8(
-        cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
-        scratch->c384Int8NormBuf,maskBuf);
+      if(cudaHandles->c384Int8Mode ==
+           C384Int8Experiment::EngineMode::Aggressive)
+        preLN.applyC384Int8(
+          cudaHandles,batchSize,seqLen,trunkBuf,
+          scratch->c384Int8NormBuf,maskBuf);
+      else
+        preLN.applyC384Fp16Int8(
+          cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
+          scratch->c384Int8NormBuf,maskBuf);
     }
     else
 #endif
@@ -3569,7 +3590,11 @@ struct TransformerAttentionBlock {
     // NHWC: trunk is [N, XY, C]. RMSNorm + mask zeroing.
 
 #ifdef DEBUG_INTERMEDIATE_VALUES
-    CudaUtils::debugPrint3D("CUDA Attn RMSNorm out", trunkScratchBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(!useC384Int8Attention || cudaHandles->c384Int8Mode !=
+         C384Int8Experiment::EngineMode::Aggressive)
+#endif
+      CudaUtils::debugPrint3D("CUDA Attn RMSNorm out", trunkScratchBuf, batchSize, inChannels, seqLen, usingNHWC, usingFP16, maskBuf);
 #endif
 
     // Step 2: Q/K/V projections
@@ -4530,9 +4555,15 @@ struct TransformerFFNBlock {
 #endif
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
     if(useC384Int8Ffn) {
-      preLN.applyC384Fp16Int8(
-        cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
-        scratch->c384Int8NormBuf,maskBuf);
+      if(cudaHandles->c384Int8Mode ==
+           C384Int8Experiment::EngineMode::Aggressive)
+        preLN.applyC384Int8(
+          cudaHandles,batchSize,seqLen,trunkBuf,
+          scratch->c384Int8NormBuf,maskBuf);
+      else
+        preLN.applyC384Fp16Int8(
+          cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,
+          scratch->c384Int8NormBuf,maskBuf);
     }
     else
 #endif
@@ -4549,7 +4580,11 @@ struct TransformerFFNBlock {
     }
 
 #ifdef DEBUG_INTERMEDIATE_VALUES
-    CudaUtils::debugPrint3D("CUDA FFN RMSNorm out", trunkScratchBuf, batchSize, numChannels, seqLen, usingNHWC, usingFP16, maskBuf);
+#if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
+    if(!useC384Int8Ffn || cudaHandles->c384Int8Mode !=
+         C384Int8Experiment::EngineMode::Aggressive)
+#endif
+      CudaUtils::debugPrint3D("CUDA FFN RMSNorm out", trunkScratchBuf, batchSize, numChannels, seqLen, usingNHWC, usingFP16, maskBuf);
 #endif
 
     // Step 2-3: dual projection + SwiGLU. A failed handle or launch-shape

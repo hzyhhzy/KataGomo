@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace {
 
@@ -50,6 +51,10 @@ int main() {
       "dual FP16 output ABI changed");
     static_assert(int(DualFfnOutputMode::Int8Product) == 2,
       "dual INT8 output ABI changed");
+    using RmsInt8OnlyFn = cudaError_t (*)(
+      const half*,int8_t*,const half*,int,float,cudaStream_t);
+    static_assert(std::is_same_v<decltype(&launchRmsNormInt8),RmsInt8OnlyFn>,
+      "explicit INT8-only RMS ABI changed");
 
     require(std::fesetround(FE_TONEAREST) == 0,"cannot select round-to-nearest-even");
     const std::array<float,13> normValues = {
@@ -167,6 +172,7 @@ int main() {
               << " norm_scale=" << kNormActivationScale
               << " product_scale=" << kClip7ProductScale
               << " fused_product_quant=fused-dual-epilogue-v2"
+              << " rms_int8_only_api=explicit"
               << " endpoints_plus49_minus49=1 rne=1 no_neg128=1"
               << " engine_default=off"
               << '\n';

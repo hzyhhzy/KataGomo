@@ -602,7 +602,8 @@ cudaError_t launchDownTyped(
   return cudaPeekAtLastError();
 }
 
-__global__ void rmsNorm384Fp16Int8Kernel(
+template<bool EmitFp16>
+__global__ void rmsNorm384Int8Kernel(
   const uint2* __restrict__ input,
   uint2* __restrict__ outputFp16,
   uint32_t* __restrict__ outputInt8,
@@ -659,7 +660,8 @@ __global__ void rmsNorm384Fp16Int8Kernel(
     }
     const int vector = lane + round * 32;
     const std::size_t index = std::size_t(row) * vectorsPerRow + vector;
-    outputFp16[index] = out[round].packed;
+    if constexpr(EmitFp16)
+      outputFp16[index] = out[round].packed;
     outputInt8[index] = quantized[round].packed;
   }
 }
@@ -723,10 +725,31 @@ cudaError_t launchRmsNormFp16Int8(
      !finitePositive(epsilon) || !aligned16(input) ||
      !aligned16(outputFp16) || !aligned16(outputInt8) || !aligned16(gamma))
     return cudaErrorInvalidValue;
-  rmsNorm384Fp16Int8Kernel<<<
+  rmsNorm384Int8Kernel<true><<<
     (tokenRows + 3) / 4,kThreadsPerRmsBlock,0,stream>>>(
       reinterpret_cast<const uint2*>(input),
       reinterpret_cast<uint2*>(outputFp16),
+      reinterpret_cast<uint32_t*>(outputInt8),
+      reinterpret_cast<const uint2*>(gamma),tokenRows,epsilon);
+  return cudaPeekAtLastError();
+}
+
+cudaError_t launchRmsNormInt8(
+  const half* input,
+  int8_t* outputInt8,
+  const half* gamma,
+  int tokenRows,
+  float epsilon,
+  cudaStream_t stream
+) {
+  if(input == nullptr || outputInt8 == nullptr || gamma == nullptr ||
+     tokenRows <= 0 || tokenRows > kMaxTokenRows ||
+     !finitePositive(epsilon) || !aligned16(input) ||
+     !aligned16(outputInt8) || !aligned16(gamma))
+    return cudaErrorInvalidValue;
+  rmsNorm384Int8Kernel<false><<<
+    (tokenRows + 3) / 4,kThreadsPerRmsBlock,0,stream>>>(
+      reinterpret_cast<const uint2*>(input),nullptr,
       reinterpret_cast<uint32_t*>(outputInt8),
       reinterpret_cast<const uint2*>(gamma),tokenRows,epsilon);
   return cudaPeekAtLastError();

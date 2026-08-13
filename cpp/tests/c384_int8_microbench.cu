@@ -290,6 +290,7 @@ struct Lane {
   cudaStream_t stream = nullptr;
   GuardedBuffer normHalf{std::size_t(kTokenRows) * kChannels * sizeof(half)};
   GuardedBuffer normInt8{std::size_t(kTokenRows) * kChannels};
+  GuardedBuffer normInt8Only{std::size_t(kTokenRows) * kChannels};
   GuardedBuffer rawPackedQkv{
     std::size_t(kTokenRows) * kQkvChannels * sizeof(half)};
   GuardedBuffer productHalf{
@@ -327,6 +328,7 @@ void prepareLane(
 ) {
   lane.normHalf.zeroPayload();
   lane.normInt8.zeroPayload();
+  lane.normInt8Only.zeroPayload();
   lane.rawPackedQkv.zeroPayload();
   lane.productHalf.zeroPayload();
   lane.productInt8.zeroPayload();
@@ -378,10 +380,16 @@ void enqueuePrototypeSubpath(
   const Options& options,
   const DeviceWeights& weights
 ) {
-  checkCuda(launchRmsNormFp16Int8(
-    weights.input.data<half>(),lane.normHalf.data<half>(),
-    lane.normInt8.data<int8_t>(),weights.gamma.data<half>(),kTokenRows,
-    kRmsEpsilon,lane.stream),"launch RMS FP16+INT8");
+  if(options.mode == ProjectionMode::AggressiveQkv)
+    checkCuda(launchRmsNormInt8(
+      weights.input.data<half>(),lane.normInt8.data<int8_t>(),
+      weights.gamma.data<half>(),kTokenRows,kRmsEpsilon,lane.stream),
+      "launch INT8-only RMS");
+  else
+    checkCuda(launchRmsNormFp16Int8(
+      weights.input.data<half>(),lane.normHalf.data<half>(),
+      lane.normInt8.data<int8_t>(),weights.gamma.data<half>(),kTokenRows,
+      kRmsEpsilon,lane.stream),"launch RMS FP16+INT8");
   checkCuda(launchProjection(
     lane.projection.get(),kTokenRows,lane.normInt8.data<int8_t>(),
     lane.rawPackedQkv.data<half>(),kQkvChannels,lane.stream),
@@ -404,7 +412,8 @@ void enqueuePrototypeSubpath(
 }
 
 enum class TimingFamily {
-  Rms,
+  RmsInt8Only,
+  RmsFp16Int8Control,
   Projection,
   DualFfn,
   ProductQuantization,
@@ -414,7 +423,8 @@ enum class TimingFamily {
 
 const char* timingFamilyName(TimingFamily family) {
   switch(family) {
-  case TimingFamily::Rms: return "rms_fp16_int8";
+  case TimingFamily::RmsInt8Only: return "rms_int8_only";
+  case TimingFamily::RmsFp16Int8Control: return "rms_fp16_int8_control";
   case TimingFamily::Projection: return "packed_projection";
   case TimingFamily::DualFfn: return "dual_clip7_mode_output";
   case TimingFamily::ProductQuantization: return "legacy_product_quantization";
@@ -440,7 +450,13 @@ void enqueueFamily(
   const DeviceWeights& weights
 ) {
   switch(family) {
-  case TimingFamily::Rms:
+  case TimingFamily::RmsInt8Only:
+    checkCuda(launchRmsNormInt8(
+      weights.input.data<half>(),lane.normInt8.data<int8_t>(),
+      weights.gamma.data<half>(),kTokenRows,kRmsEpsilon,lane.stream),
+      "launch INT8-only RMS");
+    return;
+  case TimingFamily::RmsFp16Int8Control:
     checkCuda(launchRmsNormFp16Int8(
       weights.input.data<half>(),lane.normHalf.data<half>(),
       lane.normInt8.data<int8_t>(),weights.gamma.data<half>(),kTokenRows,
@@ -653,6 +669,32 @@ void checkContracts(
   const HostData& host,
   const DeviceWeights& weights
 ) {
+  if(launchRmsNormInt8(
+       nullptr,lane.normInt8.data<int8_t>(),weights.gamma.data<half>(),
+       kTokenRows,kRmsEpsilon,lane.stream) != cudaErrorInvalidValue ||
+     launchRmsNormInt8(
+       weights.input.data<half>(),nullptr,weights.gamma.data<half>(),
+       kTokenRows,kRmsEpsilon,lane.stream) != cudaErrorInvalidValue ||
+     launchRmsNormInt8(
+       weights.input.data<half>(),lane.normInt8.data<int8_t>(),
+       weights.gamma.data<half>(),0,kRmsEpsilon,lane.stream) !=
+       cudaErrorInvalidValue ||
+     launchRmsNormInt8(
+       weights.input.data<half>(),lane.normInt8.data<int8_t>(),
+       weights.gamma.data<half>(),kTokenRows,0.0f,lane.stream) !=
+       cudaErrorInvalidValue)
+    throw std::runtime_error("INT8-only RMS invalid contract did not fail closed");
+
+  // Use the legacy dual-output kernel as the bit-exact oracle. The
+  // INT8-only path receives no FP16 destination at all.
+  checkCuda(launchRmsNormFp16Int8(
+    weights.input.data<half>(),lane.normHalf.data<half>(),
+    lane.normInt8Only.data<int8_t>(),weights.gamma.data<half>(),kTokenRows,
+    kRmsEpsilon,lane.stream),"launch RMS bit-exact control");
+  checkCuda(cudaStreamSynchronize(lane.stream),"RMS control sync");
+  const std::vector<int8_t> normControl =
+    lane.normInt8Only.download<int8_t>();
+
   enqueuePrototypeSubpath(lane,options,weights);
   checkCuda(cudaStreamSynchronize(lane.stream),"contract stream sync");
 
@@ -666,6 +708,11 @@ void checkContracts(
     options.mode == ProjectionMode::AggressiveQkv ?
       lane.productInt8.download<int8_t>() : std::vector<int8_t>();
   requireFinite(normHalf,"RMS FP16");
+  if(options.mode == ProjectionMode::AggressiveQkv && normInt8 != normControl)
+    throw std::runtime_error(
+      "INT8-only RMS differs from FP16+INT8 control bytes");
+  if(std::find(normInt8.begin(),normInt8.end(),int8_t(-128)) != normInt8.end())
+    throw std::runtime_error("RMS emitted forbidden -128");
   requireFinite(qkv,"packed QKV");
   if(options.mode == ProjectionMode::ConservativeQk)
     requireFinite(productHalf,"clip7 dual product");
@@ -758,6 +805,7 @@ void checkContracts(
 
   lane.normHalf.requireCanary("normHalf");
   lane.normInt8.requireCanary("normInt8");
+  lane.normInt8Only.requireCanary("normInt8Only");
   lane.rawPackedQkv.requireCanary("rawPackedQkv");
   lane.productHalf.requireCanary("productHalf");
   lane.productInt8.requireCanary("productInt8");
@@ -884,12 +932,14 @@ int main(int argc, char** argv) {
       << " clip7_silu_positive=1 clip7_gate_positive=1"
       << " clip7_gate_negative=1 clip7_silu_negative_unreachable=1"
       << " product_endpoints_plus49_minus49=1 missing_clamp_witness=1"
-      << " product_rne_saturate_no_neg128=1\n";
+      << " product_rne_saturate_no_neg128=1"
+      << " rms_int8_only_bitexact=1 rms_fp16_unmaterialized=1\n";
     if(options.contractsOnly)
       return 0;
 
-    const std::array<TimingFamily,6> requestedFamilies{{
-      TimingFamily::Rms,
+    const std::array<TimingFamily,7> requestedFamilies{{
+      TimingFamily::RmsInt8Only,
+      TimingFamily::RmsFp16Int8Control,
       TimingFamily::Projection,
       TimingFamily::DualFfn,
       TimingFamily::ProductQuantization,

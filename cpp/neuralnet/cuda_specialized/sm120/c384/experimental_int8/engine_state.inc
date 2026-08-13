@@ -169,6 +169,8 @@
           C384Int8Experiment::downTacticName(w)) +
         " product_quant=" + (expectedC384Int8Down == 0 ?
           string("none") : string("fused-dual-epilogue-v2")) +
+        " rms=" + (expectedC384Int8Down == 0 ?
+          string("fp16+int8-x2") : string("int8-only-x2")) +
         " scratch=persistent-per-handle transaction=active");
       loggedC384Int8TransactionActive = true;
     }

@@ -151,6 +151,18 @@ cudaError_t launchDualFfnInt8(
   cudaStream_t stream
 );
 
+// Aggressive-engine RMSNorm. It preserves the same FP16 rounding boundary,
+// clip4, RNE, and [-127,127] quantization contract as
+// launchRmsNormFp16Int8, but does not materialize an unused FP16 tensor.
+cudaError_t launchRmsNormInt8(
+  const half* input,
+  int8_t* outputInt8,
+  const half* gamma,
+  int tokenRows,
+  float epsilon,
+  cudaStream_t stream
+);
+
 // Legacy component-control conversion retained only for microbench comparison.
 // The aggressive engine path must use launchDualFfnInt8 and never call this.
 cudaError_t launchQuantizeClip7Product(
