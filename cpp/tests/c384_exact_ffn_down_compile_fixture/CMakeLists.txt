@@ -62,4 +62,24 @@ if(NOT KATAGO_CUDNN_INCLUDE_DIR STREQUAL "")
   target_include_directories(c384_cudabackend_compile_contract PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/../.."
     "${CMAKE_CURRENT_LIST_DIR}/../../external")
+
+  # The shared dual-FFN family is independently configurable. Keep a compile
+  # contract for DUAL=1/EXACT=0 so exact-transaction bookkeeping cannot leak
+  # across its feature guard.
+  add_library(c384_cudabackend_dual_only_compile_contract OBJECT
+    "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cudabackend.cpp")
+  set_target_properties(c384_cudabackend_dual_only_compile_contract PROPERTIES
+    EXCLUDE_FROM_ALL TRUE)
+  target_compile_features(c384_cudabackend_dual_only_compile_contract PRIVATE
+    cxx_std_17)
+  target_compile_definitions(c384_cudabackend_dual_only_compile_contract PRIVATE
+    USE_CUDA_BACKEND
+    CUDA_TARGET_VERSION=${CMAKE_CUDA_COMPILER_VERSION}
+    KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120=1)
+  target_include_directories(c384_cudabackend_dual_only_compile_contract SYSTEM PRIVATE
+    "${CUDAToolkit_INCLUDE_DIRS}"
+    "${KATAGO_CUDNN_INCLUDE_DIR}")
+  target_include_directories(c384_cudabackend_dual_only_compile_contract PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/../.."
+    "${CMAKE_CURRENT_LIST_DIR}/../../external")
 endif()

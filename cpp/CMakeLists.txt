@@ -848,6 +848,16 @@ if(USE_BACKEND STREQUAL "CUDA")
   target_include_directories(c384_qknorm_rope_contract PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(c384_qknorm_rope_contract PRIVATE CUDA::cudart)
+  add_executable(c384_qknorm_rope_grid_benchmark EXCLUDE_FROM_ALL
+    tests/c384_qknorm_rope_grid_benchmark.cu
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/qknorm_rope.cu)
+  set_target_properties(c384_qknorm_rope_grid_benchmark PROPERTIES
+    CUDA_ARCHITECTURES "120"
+    CUDA_STANDARD 17
+    CUDA_STANDARD_REQUIRED ON)
+  target_include_directories(c384_qknorm_rope_grid_benchmark PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(c384_qknorm_rope_grid_benchmark PRIVATE CUDA::cudart)
   add_executable(c384_exact_ffn_down_generated_provider_contract EXCLUDE_FROM_ALL
     tests/c384_exact_ffn_down_generated_provider_contract.cpp
     tests/c384_exact_ffn_down_generated_provider_fixture.cu

@@ -3837,12 +3837,14 @@ struct TransformerFFNBlock {
     // Count the shared clip7 dual only when no generated exact clip7 dual was
     // published above. This keeps the whole-model transaction counters exact
     // and also guarantees that apply() cannot enqueue both dual producers.
+#if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     if(swigluClip == 7.0f && c384ExactSelection.dualFfn == nullptr &&
        c384ExactFfnDownSelection.selected() && dualFfnKernel != nullptr) {
       c384SharedClipDualCountsAsExact = true;
       cudaHandles->preparedC384ExactDualFfn++;
       cudaHandles->preparedC384ExactFfnDown++;
     }
+#endif
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
     if(recipe.downProjection ==
@@ -4113,6 +4115,7 @@ struct TransformerFFNBlock {
         (const half*)linear1.matBuf,(const half*)linearGate->matBuf,
         (half*)ffnBuf.buf,matBatchSize,cudaHandles->stream));
       usedDualFfn = true;
+#if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
       if(c384SharedClipTransactionEligible) {
         usedC384SharedClipDual = true;
         cudaHandles->noteC384ExactLaunch(
@@ -4128,6 +4131,7 @@ struct TransformerFFNBlock {
           cudaHandles->loggedC384ExactDualFfn = true;
         }
       }
+#endif
       if(!cudaHandles->loggedDualFfn && cudaHandles->logger != NULL) {
         const char* marker = katago_renju15_dual_ffn_sm120_active_marker(
           dualFfnKernel);

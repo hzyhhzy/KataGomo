@@ -66,6 +66,20 @@ cudaError_t launchInPlace(
   cudaStream_t stream
 );
 
+// Test/qualification-only launch surface used to choose the fixed production
+// grid on the target GPU. It has the identical ABI and math as launchInPlace,
+// but rejects grids outside a small explicit bound. Engine code must use
+// launchInPlace so the selected grid remains part of marker()/source identity.
+cudaError_t launchInPlaceForGridQualification(
+  const LaunchParams& params,
+  half* rawPackedQkv,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* learnedRopeCosSin,
+  int gridBlocks,
+  cudaStream_t stream
+);
+
 }  // namespace C384QKNormRopeSm120
 
 #endif  // KATAGO_C384_QKNORM_ROPE_SM120_H_

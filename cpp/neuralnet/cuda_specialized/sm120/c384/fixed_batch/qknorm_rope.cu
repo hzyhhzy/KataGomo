@@ -110,12 +110,27 @@ cudaError_t launchInPlace(
   const half2* learnedRopeCosSin,
   cudaStream_t stream
 ) {
+  return launchInPlaceForGridQualification(
+    params,rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,kGridBlocks,stream);
+}
+
+cudaError_t launchInPlaceForGridQualification(
+  const LaunchParams& params,
+  half* rawPackedQkv,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* learnedRopeCosSin,
+  int gridBlocks,
+  cudaStream_t stream
+) {
   if(!supports(params))
     return cudaErrorNotSupported;
   if(rawPackedQkv == nullptr || qGamma == nullptr || kGamma == nullptr ||
      learnedRopeCosSin == nullptr)
     return cudaErrorInvalidValue;
-  qknormLearnedRopeHalf2Kernel<<<kGridBlocks,kThreads,0,stream>>>(
+  if(gridBlocks <= 0 || gridBlocks > 4096)
+    return cudaErrorInvalidConfiguration;
+  qknormLearnedRopeHalf2Kernel<<<gridBlocks,kThreads,0,stream>>>(
     rawPackedQkv,qGamma,kGamma,learnedRopeCosSin,params.tokenRows,
     params.qEpsilon,params.kEpsilon);
   return cudaPeekAtLastError();
