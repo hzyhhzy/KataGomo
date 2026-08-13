@@ -741,8 +741,6 @@ void Tests::runTransformerProductionPlanTests() {
     const TacticKey qkvTactics[] = {
       {Family::QkvRope,28,6300,0,"qkv-rope-b28-test",true,false,kRegistryAbiVersion},
       {Family::QkvRope,24,5400,0,"qkv-rope-b24-test",true,false,kRegistryAbiVersion},
-      // A generated record with a stale M must never match.
-      {Family::QkvRope,28,6299,0,"qkv-rope-b28-stale",true,false,kRegistryAbiVersion},
     };
     const TacticKey dualTactics[] = {
       {Family::DualFfn,28,6300,170,"dual-b28-grid170-test",false,true,kRegistryAbiVersion},
@@ -823,6 +821,20 @@ void Tests::runTransformerProductionPlanTests() {
     };
     selected = select(
       shape,duplicateRegistry,"duplicate","dual-b28-grid170-test",&fa4);
+    testAssert(selected.qkvRope.reason == RejectReason::InvalidRegistry);
+    testAssert(selected.dualFfn.selected());
+
+    // A generated record with stale exact-M metadata invalidates its family
+    // registry rather than merely becoming an unselectable search candidate.
+    const TacticKey staleRowsQkv[] = {
+      {Family::QkvRope,28,6299,0,"stale-rows",true,false,kRegistryAbiVersion},
+    };
+    const RegistryView staleRowsRegistry = {
+      {staleRowsQkv,1,sizeof(TacticKey)},
+      {dualTactics,sizeof(dualTactics) / sizeof(dualTactics[0]),sizeof(TacticKey)},
+    };
+    selected = select(
+      shape,staleRowsRegistry,"stale-rows","dual-b28-grid170-test",&fa4);
     testAssert(selected.qkvRope.reason == RejectReason::InvalidRegistry);
     testAssert(selected.dualFfn.selected());
 
