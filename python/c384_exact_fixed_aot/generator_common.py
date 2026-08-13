@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import inspect
 import importlib.metadata
 import importlib.util
 import json
@@ -137,6 +138,24 @@ def replace_exactly_once(source: str, before: str, after: str) -> str:
     return source.replace(before, after)
 
 
+def bind_local_stream_annotation(function, stream_type):
+    """Replace a deferred local ``cuda.CUstream`` annotation with its type.
+
+    CuTe's Python 3.12 path resolves annotations with ``inspect`` against the
+    defining module globals. The CUDA binding is deliberately imported only
+    inside each generator's main function, so leaving the deferred string
+    would make compilation fail with ``NameError: cuda``. Binding the concrete
+    type preserves lazy imports and gives the compiler an inspectable callable.
+    """
+    annotations = dict(getattr(function, "__annotations__", {}))
+    require("stream" in annotations, "generated launch lacks stream annotation")
+    annotations["stream"] = stream_type
+    function.__annotations__ = annotations
+    require(inspect.get_annotations(function, eval_str=True).get("stream") is stream_type,
+            "generated launch stream annotation did not bind")
+    return function
+
+
 def package_version(name: str) -> str:
     return importlib.metadata.version(name)
 
@@ -167,6 +186,8 @@ def artifact_metadata(
         "kind": "katago-c384-exact-aot-artifact",
         "generation_complete": True,
         "verified_on_target": False,
+        "compute_capability": "sm_120",
+        "dtype": "fp16",
         "search_space_sha256": canonical_json_sha256(space),
         "family": task.family,
         "candidate_id": task.candidate_id,

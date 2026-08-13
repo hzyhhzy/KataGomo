@@ -13,7 +13,7 @@ import json
 import os
 from pathlib import Path
 
-os.environ.setdefault("CUTE_DSL_ARCH", "sm_120")
+os.environ["CUTE_DSL_ARCH"] = "sm_120"
 
 from bridge_codegen import render_qkv_rope_bridge
 from contract import DEFAULT_SPACE, find_task, load_space, require
@@ -207,6 +207,8 @@ def main() -> int:
             a_arg, b_arg, c_arg, table_arg,
             task.max_active_clusters, stream,
         )
+
+    common.bind_local_stream_annotation(launch,cuda.CUstream)
 
     compiled = cute.compile(
         launch, a, b, c, table,
