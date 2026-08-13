@@ -43,6 +43,8 @@ set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   "Build qualified clip4/per-matrix INT8 C256 QK and FFN tactics with the SM120 winner")
 set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
+set(KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE "" CACHE FILEPATH
+  "Optional generated C384 exact-B QKV+RoPE/dual-FFN registry provider; empty links the fail-closed stub")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -134,11 +136,25 @@ if(USE_BACKEND STREQUAL "CUDA")
 
     # The ordinary backend stays a fat CUDA build. Only the source-specialized
     # winner kernels form this SM120 object island.
+    if(KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE STREQUAL "")
+      set(KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER
+        neuralnet/c384_exact_fixed_aot_registry_stub.cu)
+    else()
+      get_filename_component(KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER
+        "${KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE}" ABSOLUTE)
+      if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}")
+        message(FATAL_ERROR
+          "KATAGO_C384_EXACT_AOT_REGISTRY_SOURCE does not exist: ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}")
+      endif()
+    endif()
+
     set(KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
       neuralnet/cudabackend_sm120_renju15_kernels.cu
       neuralnet/renju15_dual_ffn_sm120.cu
       neuralnet/renju15_residual_gemm_sm120.cu
-      neuralnet/renju15_qkv_rope_gemm_sm120.cu)
+      neuralnet/renju15_qkv_rope_gemm_sm120.cu
+      neuralnet/c384_exact_fixed_aot_registry.cu
+      ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER})
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
         neuralnet/renju15_int8_fused_sm120.cu)
@@ -157,11 +173,14 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_RMS_SM120=1
       KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120=1
       KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
-      KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
+      KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1
+      KATAGO_ENABLE_C384_EXACT_FIXED_AOT_SEARCH=1)
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       target_compile_definitions(katago_sm120_transformer_winner PRIVATE
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
     endif()
+    target_include_directories(katago_sm120_transformer_winner PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}")
     target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
@@ -357,6 +376,7 @@ add_executable(katago
   neuralnet/nativeint8quant.cpp
   neuralnet/architecturedesc.cpp
   neuralnet/cudaopregistry.cpp
+  neuralnet/c384_exact_fixed_aot_plan.cpp
   neuralnet/cudabackend_transformer_winner.cpp
   neuralnet/onnxprotoreader.cpp
   ${NEURALNET_BACKEND_SOURCES}

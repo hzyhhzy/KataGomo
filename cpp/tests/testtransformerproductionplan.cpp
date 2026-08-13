@@ -10,6 +10,7 @@
 #include "../core/config_parser.h"
 #include "../neuralnet/activations.h"
 #include "../neuralnet/architecturedesc.h"
+#include "../neuralnet/c384_exact_fixed_aot_plan.h"
 #include "../neuralnet/cudabackend_transformer_winner.h"
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/desc.h"
@@ -731,6 +732,217 @@ static void assertC384ProductionRuntimeGatePolicy() {
 }  // namespace
 
 void Tests::runTransformerProductionPlanTests() {
+  // Fixed-exact C384 AOT search contracts are deliberately independent of
+  // the production dynamic-M plan above. The checked-in CUDA registry is
+  // empty, while generated search providers use this CPU selector unchanged.
+  {
+    using namespace C384ExactFixedAot;
+    const TacticKey qkvTactics[] = {
+      {Family::QkvRope,28,6300,0,"qkv-rope-b28-test",true,false,kRegistryAbiVersion},
+      {Family::QkvRope,24,5400,0,"qkv-rope-b24-test",true,false,kRegistryAbiVersion},
+      {Family::QkvRope,40,9000,0,"qkv-rope-b40-test",true,false,kRegistryAbiVersion},
+      // A generated record with a stale M must never match.
+      {Family::QkvRope,28,6299,0,"qkv-rope-b28-stale",true,false,kRegistryAbiVersion},
+    };
+    const TacticKey dualTactics[] = {
+      {Family::DualFfn,28,6300,170,"dual-b28-grid170-test",false,true,kRegistryAbiVersion},
+      {Family::DualFfn,28,6300,340,"dual-b28-grid340-test",false,true,kRegistryAbiVersion},
+      {Family::DualFfn,24,5400,170,"dual-b24-grid170-test",false,true,kRegistryAbiVersion},
+      {Family::DualFfn,40,9000,340,"dual-b40-grid340-test",false,true,kRegistryAbiVersion},
+    };
+    const RegistryView registry = {
+      {qkvTactics,sizeof(qkvTactics) / sizeof(qkvTactics[0]),sizeof(TacticKey)},
+      {dualTactics,sizeof(dualTactics) / sizeof(dualTactics[0]),sizeof(TacticKey)},
+    };
+    RuntimeShape shape;
+    shape.modelDepth = 36;
+    shape.attentionBlockCount = 36;
+    shape.ffnBlockCount = 36;
+    shape.alternatingAttentionFfn = true;
+    shape.batchSize = 28;
+    shape.enqueuedRows = 6300;
+    shape.boardX = 15;
+    shape.boardY = 15;
+    shape.sequenceLength = 225;
+    shape.channels = 384;
+    shape.numHeads = 12;
+    shape.numKvHeads = 12;
+    shape.qHeadDim = 32;
+    shape.vHeadDim = 32;
+    shape.ffnChannels = 1024;
+    shape.ropePairsTotal = 192;
+    shape.deviceOrdinal = 0;
+    shape.computeCapability = 120;
+    shape.usingFp16 = true;
+    shape.usingNhwc = true;
+    shape.exactNoMask = true;
+    shape.learnedRope = true;
+    shape.swiglu = true;
+    PreparedPackedFa4 fa4;
+    fa4.abiVersion = kPackedFa4ProofAbiVersion;
+    fa4.batchSize = 28;
+    fa4.sequenceLength = 225;
+    fa4.numHeads = 12;
+    fa4.numKvHeads = 12;
+    fa4.qHeadDim = 32;
+    fa4.vHeadDim = 32;
+    fa4.deviceOrdinal = 0;
+    fa4.acceptsPackedTokenQkv = true;
+    fa4.id = "fa4-packed-b28-test";
+    fa4.implementationCookie = 1;
+
+    std::size_t candidateCount = 0;
+    const int* batches = candidateBatches(candidateCount);
+    testAssert(candidateCount == 3);
+    testAssert(batches[0] == 28 && batches[1] == 24 && batches[2] == 40);
+    testAssert(candidateBatchPriority(28) == 0);
+    testAssert(candidateBatchPriority(24) == 1);
+    testAssert(candidateBatchPriority(40) == 2);
+    testAssert(candidateBatchPriority(36) == -1);
+
+    Selection selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(selected.targetShape);
+    testAssert(selected.qkvRope.selected());
+    testAssert(selected.packedFa4 == &fa4);
+    testAssert(selected.dualFfn.selected());
+
+    const RegistryView emptyRegistry{};
+    selected = select(
+      shape,emptyRegistry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(selected.targetShape);
+    testAssert(selected.qkvRope.reason == RejectReason::RegistryMiss);
+    testAssert(selected.dualFfn.reason == RejectReason::RegistryMiss);
+
+    const TacticKey duplicateQkv[] = {
+      {Family::QkvRope,28,6300,0,"duplicate",true,false,kRegistryAbiVersion},
+      {Family::QkvRope,28,6300,0,"duplicate",true,false,kRegistryAbiVersion},
+    };
+    const RegistryView duplicateRegistry = {
+      {duplicateQkv,2,sizeof(TacticKey)},
+      {dualTactics,sizeof(dualTactics) / sizeof(dualTactics[0]),sizeof(TacticKey)},
+    };
+    selected = select(
+      shape,duplicateRegistry,"duplicate","dual-b28-grid170-test",&fa4);
+    testAssert(selected.qkvRope.reason == RejectReason::InvalidRegistry);
+    testAssert(selected.dualFfn.selected());
+
+    const TacticKey staleAbiQkv[] = {
+      {Family::QkvRope,28,6300,0,"stale-abi",true,false,0},
+    };
+    const RegistryView staleAbiRegistry = {
+      {staleAbiQkv,1,sizeof(TacticKey)},
+      {dualTactics,sizeof(dualTactics) / sizeof(dualTactics[0]),sizeof(TacticKey)},
+    };
+    selected = select(
+      shape,staleAbiRegistry,"stale-abi","dual-b28-grid170-test",&fa4);
+    testAssert(selected.qkvRope.reason == RejectReason::InvalidRegistry);
+    testAssert(selected.dualFfn.selected());
+
+    // Packed QKV cannot be consumed by generic SDPA or a different-batch FA4.
+    // Dual FFN remains independently reusable.
+    fa4.batchSize = 24;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid340-test",&fa4);
+    testAssert(!selected.qkvRope.selected());
+    testAssert(selected.packedFa4 == nullptr);
+    testAssert(selected.qkvRope.reason == RejectReason::MissingSameBatchFa4);
+    testAssert(selected.dualFfn.selected());
+    fa4.batchSize = 28;
+    fa4.abiVersion = 0;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(selected.qkvRope.reason == RejectReason::MissingSameBatchFa4);
+    testAssert(selected.dualFfn.selected());
+    fa4.abiVersion = kPackedFa4ProofAbiVersion;
+    fa4.deviceOrdinal = 1;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(selected.qkvRope.reason == RejectReason::MissingSameBatchFa4);
+    testAssert(selected.dualFfn.selected());
+    fa4.deviceOrdinal = 0;
+
+    selected = select(
+      shape,registry,"qkv-rope-b28-stale","dual-missing",&fa4);
+    testAssert(selected.qkvRope.reason == RejectReason::RegistryMiss);
+    testAssert(selected.dualFfn.reason == RejectReason::RegistryMiss);
+
+    for(const int batch: {24,40}) {
+      shape.batchSize = batch;
+      shape.enqueuedRows = batch * 225;
+      const char* qkvId = batch == 24 ? "qkv-rope-b24-test" : "qkv-rope-b40-test";
+      const char* dualId = batch == 24 ?
+        "dual-b24-grid170-test" : "dual-b40-grid340-test";
+      fa4.batchSize = batch;
+      fa4.id = batch == 24 ? "fa4-packed-b24-test" : "fa4-packed-b40-test";
+      selected = select(shape,registry,qkvId,dualId,&fa4);
+      testAssert(selected.qkvRope.selected());
+      testAssert(selected.dualFfn.selected());
+      testAssert(selected.qkvRope.tactic->tokenRows == batch * 225);
+    }
+
+    // Runtime batch 36 is unrelated to the 36-layer model depth and is not a
+    // selected fixed-AOT candidate. Other structural/runtime changes also
+    // fail closed without weakening the existing prepared generic path.
+    shape.batchSize = 36;
+    shape.enqueuedRows = 36 * 225;
+    selected = select(shape,registry,nullptr,nullptr,nullptr);
+    testAssert(!selected.targetShape);
+    testAssert(selected.qkvRope.reason == RejectReason::ShapeMismatch);
+    testAssert(selected.dualFfn.reason == RejectReason::ShapeMismatch);
+    shape.batchSize = 28;
+    shape.enqueuedRows = 6300;
+    fa4.batchSize = 28;
+    fa4.id = "fa4-packed-b28-test";
+    shape.enqueuedRows--;
+    testAssert(!targetShapeEligible(shape));
+    shape.enqueuedRows = 6300;
+    shape.exactNoMask = false;
+    testAssert(!targetShapeEligible(shape));
+    shape.exactNoMask = true;
+    shape.computeCapability = 89;
+    testAssert(!targetShapeEligible(shape));
+    shape.computeCapability = 120;
+
+    // Depth identifies the primary whole-model target but is not a local
+    // kernel dimension. This preserves exact operator reuse across depths.
+    shape.modelDepth = 32;
+    shape.attentionBlockCount = 32;
+    shape.ffnBlockCount = 32;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(!selected.targetShape);
+    testAssert(selected.qkvRope.selected());
+    testAssert(selected.dualFfn.selected());
+    shape.modelDepth = 36;
+    shape.attentionBlockCount = 36;
+    shape.ffnBlockCount = 36;
+    shape.attentionBlockCount = 35;
+    testAssert(!modelStructureEligible(shape));
+    shape.attentionBlockCount = 36;
+
+    // Family-local matching preserves reusable kernels on a structurally
+    // nearby model: attention changes do not discard a compatible FFN, and
+    // FFN changes do not discard a compatible QKV+RoPE operator.
+    shape.numHeads = 8;
+    shape.numKvHeads = 8;
+    shape.ropePairsTotal = 128;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(!selected.targetShape);
+    testAssert(selected.qkvRope.reason == RejectReason::ShapeMismatch);
+    testAssert(selected.dualFfn.selected());
+    shape.numHeads = 12;
+    shape.numKvHeads = 12;
+    shape.ropePairsTotal = 192;
+    shape.ffnChannels = 1536;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(!selected.targetShape);
+    testAssert(selected.qkvRope.selected());
+    testAssert(selected.dualFfn.reason == RejectReason::ShapeMismatch);
+  }
+
   {
     map<string,string> emptyValues;
     ConfigParser emptyConfig(emptyValues);
