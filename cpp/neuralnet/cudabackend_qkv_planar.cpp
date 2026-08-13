@@ -3,7 +3,7 @@
 #include "../neuralnet/cudabackend_qkv_planar.h"
 #include "../neuralnet/cudautils.h"
 #if defined(KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120) && KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120
-#include "../neuralnet/renju15_qkv_rope_gemm_sm120.h"
+#include "../neuralnet/cuda_specialized/sm120/c256/fixed_batch/qkv_rope_gemm.h"
 #endif
 
 #include "../core/using.h"

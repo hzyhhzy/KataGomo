@@ -1,4 +1,4 @@
-#include "../neuralnet/c384_exact_ffn_down_aot.h"
+#include "ffn_down.h"
 
 namespace C384ExactFfnDownAot {
 

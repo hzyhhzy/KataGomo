@@ -178,7 +178,7 @@ if(USE_BACKEND STREQUAL "CUDA")
     set(KATAGO_C384_H12_FA4_RUNTIME "")
     if(KATAGO_C384_H12_FA4_PACKAGE_CMAKE STREQUAL "")
       set(KATAGO_C384_H12_FA4_REGISTRY_PROVIDER
-        neuralnet/c384_h12_fa4_registry_stub.cpp)
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4_registry_stub.cpp)
     else()
       get_filename_component(KATAGO_C384_H12_FA4_PACKAGE_CMAKE
         "${KATAGO_C384_H12_FA4_PACKAGE_CMAKE}" ABSOLUTE)
@@ -388,11 +388,11 @@ if(USE_BACKEND STREQUAL "CUDA")
       endif()
     else()
       set(KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER
-        neuralnet/c384_exact_fixed_aot_registry_stub.cu)
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/registry_stub.cu)
     endif()
 
     set(KATAGO_C384_FFN_DOWN_EFFECTIVE_REGISTRY_PROVIDER
-      neuralnet/c384_exact_ffn_down_aot_registry_stub.cu)
+      neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry_stub.cu)
     set(KATAGO_C384_FFN_DOWN_BRIDGES "")
     set(KATAGO_C384_FFN_DOWN_OBJECTS "")
     set(KATAGO_C384_FFN_DOWN_INCLUDE_DIR "")
@@ -496,12 +496,12 @@ if(USE_BACKEND STREQUAL "CUDA")
     katago_c384_validate_b28_production_bundle_policy()
 
     set(KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
-      neuralnet/cudabackend_sm120_renju15_kernels.cu
-      neuralnet/renju15_dual_ffn_sm120.cu
-      neuralnet/renju15_residual_gemm_sm120.cu
-      neuralnet/renju15_qkv_rope_gemm_sm120.cu
-      neuralnet/c384_exact_fixed_aot_registry.cu
-      neuralnet/c384_exact_ffn_down_aot_registry.cu
+      neuralnet/cuda_specialized/sm120/shared/rms_norm.cu
+      neuralnet/cuda_specialized/sm120/shared/dual_ffn.cu
+      neuralnet/cuda_specialized/sm120/shared/residual_gemm.cu
+      neuralnet/cuda_specialized/sm120/c256/fixed_batch/qkv_rope_gemm.cu
+      neuralnet/cuda_specialized/sm120/c384/fixed_batch/registry.cu
+      neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry.cu
       ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}
       ${KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES}
       ${KATAGO_C384_FFN_DOWN_EFFECTIVE_REGISTRY_PROVIDER}
@@ -556,7 +556,7 @@ if(USE_BACKEND STREQUAL "CUDA")
         neuralnet/renju15_int8_weight_gate.cpp)
       add_executable(katago_renju15_int8_rms_gate EXCLUDE_FROM_ALL
         neuralnet/renju15_int8_rms_gate.cu
-        neuralnet/cudabackend_sm120_renju15_kernels.cu)
+        neuralnet/cuda_specialized/sm120/shared/rms_norm.cu)
       set_target_properties(katago_renju15_int8_rms_gate PROPERTIES
         CUDA_ARCHITECTURES "120"
         CUDA_STANDARD 17
@@ -566,9 +566,9 @@ if(USE_BACKEND STREQUAL "CUDA")
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
     endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
-      neuralnet/renju15_fa4_sm120.cpp
-      neuralnet/c384_exact_ffn_down_aot.cpp
-      neuralnet/c384_h12_fa4_sm120.cpp
+      neuralnet/cuda_specialized/sm120/c256/fixed_batch/fa4.cpp
+      neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.cpp
+      neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4.cpp
       ${KATAGO_C384_H12_FA4_REGISTRY_PROVIDER}
       $<TARGET_OBJECTS:katago_sm120_transformer_winner>)
   endif()
@@ -746,8 +746,8 @@ add_executable(katago
   neuralnet/nativeint8quant.cpp
   neuralnet/architecturedesc.cpp
   neuralnet/cudaopregistry.cpp
-  neuralnet/c384_exact_fixed_aot_plan.cpp
-  neuralnet/c384_exact_fixed_aot_weights.cpp
+  neuralnet/cuda_specialized/sm120/c384/fixed_batch/plan.cpp
+  neuralnet/cuda_specialized/sm120/c384/fixed_batch/weights.cpp
   neuralnet/cudabackend_transformer_winner.cpp
   neuralnet/onnxprotoreader.cpp
   ${NEURALNET_BACKEND_SOURCES}
@@ -820,16 +820,16 @@ if(USE_BACKEND STREQUAL "CUDA")
   # packed/planar and current-device proof ownership.
   add_executable(c384_h12_fa4_registry_contract EXCLUDE_FROM_ALL
     tests/c384_h12_fa4_registry_contract.cpp
-    neuralnet/c384_h12_fa4_sm120.cpp)
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4.cpp)
   target_include_directories(c384_h12_fa4_registry_contract PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(c384_h12_fa4_registry_contract PRIVATE CUDA::cudart)
   add_executable(c384_exact_ffn_down_contract EXCLUDE_FROM_ALL
     tests/c384_exact_ffn_down_contract.cpp
-    neuralnet/c384_exact_fixed_aot_plan.cpp
-    neuralnet/c384_exact_ffn_down_aot.cpp
-    neuralnet/c384_exact_ffn_down_aot_registry.cu
-    neuralnet/c384_exact_ffn_down_aot_registry_stub.cu)
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/plan.cpp
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.cpp
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry.cu
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry_stub.cu)
   set_target_properties(c384_exact_ffn_down_contract PROPERTIES
     CUDA_ARCHITECTURES "120"
     CUDA_STANDARD 17
@@ -840,8 +840,8 @@ if(USE_BACKEND STREQUAL "CUDA")
   add_executable(c384_exact_ffn_down_generated_provider_contract EXCLUDE_FROM_ALL
     tests/c384_exact_ffn_down_generated_provider_contract.cpp
     tests/c384_exact_ffn_down_generated_provider_fixture.cu
-    neuralnet/c384_exact_ffn_down_aot.cpp
-    neuralnet/c384_exact_ffn_down_aot_registry.cu)
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.cpp
+    neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry.cu)
   set_target_properties(c384_exact_ffn_down_generated_provider_contract PROPERTIES
     CUDA_ARCHITECTURES "120"
     CUDA_STANDARD 17

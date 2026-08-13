@@ -1,4 +1,4 @@
-#include "../neuralnet/c384_exact_fixed_aot_weights.h"
+#include "weights.h"
 
 #include <stdexcept>
 

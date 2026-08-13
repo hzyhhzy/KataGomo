@@ -1,4 +1,4 @@
-#include "../neuralnet/c384_exact_fixed_aot_plan.h"
+#include "plan.h"
 
 #include <cstring>
 

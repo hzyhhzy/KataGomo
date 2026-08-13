@@ -1,4 +1,4 @@
-#include "../neuralnet/c384_h12_fa4_sm120.h"
+#include "fa4.h"
 
 #include <cmath>
 #include <cstring>

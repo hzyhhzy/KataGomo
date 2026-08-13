@@ -68,7 +68,7 @@ With the SM120 winner enabled, CMake always builds the selector bridge and one
 registry provider. By default it uses the checked-in empty provider:
 
 ```text
-cpp/neuralnet/c384_exact_fixed_aot_registry_stub.cu
+cpp/neuralnet/cuda_specialized/sm120/c384/fixed_batch/registry_stub.cu
 ```
 
 A generated build is either `search-pair` or `production`. In both modes it

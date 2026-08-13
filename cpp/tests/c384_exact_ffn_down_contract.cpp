@@ -1,5 +1,5 @@
-#include "../neuralnet/c384_exact_ffn_down_aot.h"
-#include "../neuralnet/c384_exact_fixed_aot_plan.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/plan.h"
 
 #include <cstdlib>
 #include <cstring>

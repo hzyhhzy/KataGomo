@@ -1,4 +1,4 @@
-#include "renju15_fa4_sm120.h"
+#include "fa4.h"
 
 #include "renju15_fa4_b36_tn128.h"
 

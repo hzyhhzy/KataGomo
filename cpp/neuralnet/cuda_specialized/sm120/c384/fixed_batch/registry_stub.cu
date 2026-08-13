@@ -1,4 +1,4 @@
-#include "../neuralnet/c384_exact_fixed_aot_kernels.h"
+#include "kernels.h"
 
 namespace C384ExactFixedAot {
 

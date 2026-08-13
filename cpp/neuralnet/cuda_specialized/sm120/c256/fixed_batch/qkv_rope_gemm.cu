@@ -7,7 +7,7 @@
  * resource checks, and half2 table consumption.
  **************************************************************************************************/
 
-#include "renju15_qkv_rope_gemm_sm120.h"
+#include "qkv_rope_gemm.h"
 
 #include "cutlass/cutlass.h"
 #include "cutlass/device_kernel.h"

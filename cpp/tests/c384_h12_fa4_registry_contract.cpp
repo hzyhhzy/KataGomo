@@ -1,4 +1,4 @@
-#include "../neuralnet/c384_h12_fa4_sm120.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4.h"
 
 #include <cstdlib>
 #include <cstring>

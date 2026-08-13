@@ -18,24 +18,24 @@
 #include "../neuralnet/cudabackend_qkv_planar.h"
 #include "../neuralnet/cudabackend_transformer_winner.h"
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
-#include "../neuralnet/c384_exact_fixed_aot_kernels.h"
-#include "../neuralnet/c384_exact_fixed_aot_weights.h"
-#include "../neuralnet/c384_exact_ffn_down_aot.h"
-#include "../neuralnet/c384_h12_fa4_sm120.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/kernels.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/weights.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.h"
+#include "../neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4.h"
 #endif
 #include "../neuralnet/cudaopregistry.h"
 #include "../neuralnet/int8policy.h"
 #if defined(KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120) && KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120
-#include "../neuralnet/renju15_dual_ffn_sm120.h"
+#include "../neuralnet/cuda_specialized/sm120/shared/dual_ffn.h"
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_FA4_SM120) && KATAGO_ENABLE_RENJU15_FA4_SM120
-#include "../neuralnet/renju15_fa4_sm120.h"
+#include "../neuralnet/cuda_specialized/sm120/c256/fixed_batch/fa4.h"
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120) && KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120
-#include "../neuralnet/renju15_residual_gemm_sm120.h"
+#include "../neuralnet/cuda_specialized/sm120/shared/residual_gemm.h"
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_RMS_SM120) && KATAGO_ENABLE_RENJU15_RMS_SM120
-#include "../neuralnet/cudabackend_sm120_renju15_kernels.h"
+#include "../neuralnet/cuda_specialized/sm120/shared/rms_norm.h"
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
 #include "../neuralnet/renju15_int8_fused_sm120.h"

@@ -1,4 +1,4 @@
-#include "cudabackend_sm120_renju15_kernels.h"
+#include "rms_norm.h"
 
 #include <cstdint>
 

@@ -10,9 +10,11 @@ POLICY_CONTRACT = pathlib.Path(__file__).with_name(
     "c384_b28_production_policy_contract.cmake"
 )
 FIXED_REGISTRY_HEADER = (
-    ROOT / "cpp" / "neuralnet" / "c384_exact_fixed_aot_kernels.h"
+    ROOT / "cpp" / "neuralnet" / "cuda_specialized" / "sm120" /
+    "c384" / "fixed_batch" / "kernels.h"
 )
 CUDA_BACKEND = ROOT / "cpp" / "neuralnet" / "cudabackend.cpp"
+NEURALNET = ROOT / "cpp" / "neuralnet"
 
 
 class C384B28ProductionPolicyTests(unittest.TestCase):
@@ -51,8 +53,8 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
 
     def test_cmake_uses_a_separate_down_provider(self) -> None:
         source = CMAKE_LISTS.read_text(encoding="utf-8")
-        self.assertIn("c384_exact_ffn_down_aot_registry.cu", source)
-        self.assertIn("c384_exact_ffn_down_aot_registry_stub.cu", source)
+        self.assertIn("c384/fixed_batch/ffn_down_registry.cu", source)
+        self.assertIn("c384/fixed_batch/ffn_down_registry_stub.cu", source)
         self.assertIn("KATAGO_C384_FFN_DOWN_EFFECTIVE_REGISTRY_PROVIDER", source)
         self.assertIn('"${CMAKE_CURRENT_SOURCE_DIR}/neuralnet"', source)
         fixed_registry = FIXED_REGISTRY_HEADER.read_text(encoding="utf-8")
@@ -81,6 +83,23 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
         self.assertGreaterEqual(transaction.count(' + " depth=" +'), 2)
         self.assertIn("c384ExactAttentionBlockCount", transaction)
         self.assertIn("c384ExactFfnBlockCount", transaction)
+
+    def test_specialized_layout_keeps_generated_include_compatibility(self) -> None:
+        forwards = {
+            "c384_exact_fixed_aot_kernels.h":
+                "cuda_specialized/sm120/c384/fixed_batch/kernels.h",
+            "c384_exact_ffn_down_aot.h":
+                "cuda_specialized/sm120/c384/fixed_batch/ffn_down.h",
+            "c384_h12_fa4_sm120.h":
+                "cuda_specialized/sm120/c384/fixed_batch/fa4.h",
+        }
+        for legacy_name, canonical_rel in forwards.items():
+            legacy = (NEURALNET / legacy_name).read_text(encoding="utf-8")
+            canonical = (NEURALNET / canonical_rel).read_text(encoding="utf-8")
+            self.assertIn(f'#include "{canonical_rel}"', legacy)
+            legacy_guard = legacy.splitlines()[0]
+            canonical_guard = canonical.splitlines()[0]
+            self.assertNotEqual(legacy_guard, canonical_guard)
 
 
 if __name__ == "__main__":

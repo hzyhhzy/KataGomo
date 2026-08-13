@@ -5,10 +5,10 @@ find_package(CUDAToolkit REQUIRED)
 
 add_executable(c384_exact_ffn_down_contract
   "${CMAKE_CURRENT_LIST_DIR}/../c384_exact_ffn_down_contract.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/c384_exact_fixed_aot_plan.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/c384_exact_ffn_down_aot.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/c384_exact_ffn_down_aot_registry.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/c384_exact_ffn_down_aot_registry_stub.cu")
+  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cuda_specialized/sm120/c384/fixed_batch/plan.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry.cu"
+  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry_stub.cu")
 target_compile_features(c384_exact_ffn_down_contract PRIVATE cxx_std_17)
 set_target_properties(c384_exact_ffn_down_contract PROPERTIES
   CUDA_ARCHITECTURES 120
@@ -21,8 +21,8 @@ target_link_libraries(c384_exact_ffn_down_contract PRIVATE CUDA::cudart)
 add_executable(c384_exact_ffn_down_generated_provider_contract
   "${CMAKE_CURRENT_LIST_DIR}/../c384_exact_ffn_down_generated_provider_contract.cpp"
   "${CMAKE_CURRENT_LIST_DIR}/../c384_exact_ffn_down_generated_provider_fixture.cu"
-  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/c384_exact_ffn_down_aot.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/c384_exact_ffn_down_aot_registry.cu")
+  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/../../neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry.cu")
 target_compile_features(c384_exact_ffn_down_generated_provider_contract PRIVATE
   cxx_std_17)
 set_target_properties(c384_exact_ffn_down_generated_provider_contract PROPERTIES
