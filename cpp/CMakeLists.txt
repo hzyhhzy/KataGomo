@@ -407,12 +407,6 @@ if(USE_BACKEND STREQUAL "CUDA")
     target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
-    if(KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS)
-      set_source_files_properties(${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS}
-        PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-      target_sources(katago_sm120_transformer_winner PRIVATE
-        ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS})
-    endif()
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       add_executable(katago_renju15_int8_weight_gate EXCLUDE_FROM_ALL
         neuralnet/renju15_int8_weight_gate.cpp)
@@ -730,6 +724,14 @@ if(USE_BACKEND STREQUAL "CUDA")
     target_link_libraries(katago
       "${KATAGO_RENJU15_FA4_B36_OBJECT}"
       "${KATAGO_RENJU15_FA4_CUTE_RUNTIME}")
+    # EXTERNAL_OBJECT entries attached to an OBJECT library are not emitted by
+    # $<TARGET_OBJECTS:...>. Link exact CuTe ELF objects into the final binary
+    # explicitly, before the shared CUDA-dialect runtime archive that resolves
+    # their support symbols.
+    if(KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS)
+      target_link_libraries(katago
+        ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS})
+    endif()
     if(KATAGO_C384_H12_FA4_ENABLED)
       target_link_libraries(katago
         ${KATAGO_C384_H12_FA4_OBJECTS}

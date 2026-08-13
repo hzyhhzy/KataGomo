@@ -19,6 +19,7 @@ CMAKE_POLICY = (
     Path(__file__).resolve().parents[2] / "cpp" / "cmake" /
     "C384ExactAotPolicy.cmake"
 )
+CMAKE_MAIN = Path(__file__).resolve().parents[2] / "cpp" / "CMakeLists.txt"
 sys.path.insert(0, str(TOOLS))
 
 from bridge_codegen import render_dual_ffn_bridge, render_qkv_rope_bridge
@@ -681,6 +682,137 @@ katago_c384_exact_validate_cuda_version()
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("require CUDA 13.0 or newer",
                           result.stdout + result.stderr)
+
+    def test_exact_objects_are_on_the_final_link_not_object_island(self) -> None:
+        source = CMAKE_MAIN.read_text(encoding="utf-8")
+        island_start = source.index(
+            "add_library(katago_sm120_transformer_winner OBJECT"
+        )
+        island_end = source.index(
+            "list(APPEND NEURALNET_BACKEND_SOURCES", island_start,
+        )
+        island = source[island_start:island_end]
+        self.assertNotIn(
+            "target_sources(katago_sm120_transformer_winner PRIVATE\n"
+            "        ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS}",
+            island,
+        )
+        final_link = source.index(
+            "target_link_libraries(katago\n"
+            "        ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS})"
+        )
+        runtime_link = source.index(
+            "target_link_libraries(katago\n"
+            "        ${KATAGO_C384_H12_FA4_OBJECTS}", final_link,
+        )
+        self.assertLess(final_link, runtime_link)
+
+    @unittest.skipUnless(shutil.which("cmake"), "cmake is required")
+    def test_external_object_requires_explicit_final_link_item(self) -> None:
+        with writable_fixture() as root:
+            object_name = "external.obj" if os.name == "nt" else "external.o"
+            (root / "external.cpp").write_text(
+                'extern "C" int external_value() { return 37; }\n',
+                encoding="utf-8",
+            )
+            (root / "island.cpp").write_text(
+                'extern "C" int island_value() { return 5; }\n',
+                encoding="utf-8",
+            )
+            (root / "main.cpp").write_text(
+                'extern "C" int external_value();\n'
+                'extern "C" int island_value();\n'
+                'int main() { return external_value() + island_value() == 42 '
+                '? 0 : 1; }\n',
+                encoding="utf-8",
+            )
+            (root / "CMakeLists.txt").write_text(f'''
+cmake_minimum_required(VERSION 3.20)
+project(external_object_link_contract LANGUAGES CXX)
+add_library(island OBJECT island.cpp {object_name})
+set_source_files_properties({object_name} PROPERTIES
+  EXTERNAL_OBJECT TRUE GENERATED TRUE)
+add_executable(broken EXCLUDE_FROM_ALL main.cpp $<TARGET_OBJECTS:island>)
+add_executable(fixed EXCLUDE_FROM_ALL main.cpp $<TARGET_OBJECTS:island>)
+target_link_libraries(fixed PRIVATE "${{CMAKE_CURRENT_SOURCE_DIR}}/{object_name}")
+''', encoding="utf-8")
+            build = root / "build"
+            if os.name == "nt":
+                visual_studio = Path(r"C:\Program Files\Microsoft Visual Studio")
+                vcvars = next(iter(visual_studio.glob(
+                    "*/Community/VC/Auxiliary/Build/vcvars64.bat"
+                )), None)
+                if vcvars is None:
+                    self.skipTest("MSVC vcvars64.bat is required")
+                batch = root / "link-contract.bat"
+                batch.write_text(f'''@echo off
+call "{vcvars}" >nul
+cl /nologo /c /EHsc /std:c++17 "{root / 'external.cpp'}" /Fo:"{root / object_name}"
+if errorlevel 1 exit /b 1
+cmake -S "{root}" -B "{build}" -G "NMake Makefiles"
+if errorlevel 1 exit /b 2
+cmake --build "{build}" --target broken
+if not errorlevel 1 exit /b 90
+cmake --build "{build}" --target fixed
+if errorlevel 1 exit /b 3
+"{build / 'fixed.exe'}"
+''', encoding="utf-8")
+                result = subprocess.run(
+                    ["cmd", "/d", "/c", str(batch)], text=True,
+                    encoding="utf-8", errors="replace", capture_output=True,
+                    check=False,
+                )
+                executable = build / "fixed.exe"
+            else:
+                compiler = next((shutil.which(name)
+                                 for name in ("c++", "clang++", "g++")
+                                 if shutil.which(name)), None)
+                if compiler is None:
+                    self.skipTest("a C++ compiler is required")
+                compiled = subprocess.run(
+                    [compiler, "-c", str(root / "external.cpp"),
+                     "-o", str(root / object_name)], text=True,
+                    capture_output=True, check=False,
+                )
+                self.assertEqual(
+                    compiled.returncode, 0, compiled.stdout + compiled.stderr,
+                )
+                configured = subprocess.run(
+                    ["cmake", "-S", str(root), "-B", str(build)], text=True,
+                    capture_output=True, check=False,
+                )
+                self.assertEqual(
+                    configured.returncode, 0,
+                    configured.stdout + configured.stderr,
+                )
+                broken = subprocess.run(
+                    ["cmake", "--build", str(build), "--target", "broken"],
+                    text=True, capture_output=True, check=False,
+                )
+                self.assertNotEqual(broken.returncode, 0)
+                result = subprocess.run(
+                    ["cmake", "--build", str(build), "--target", "fixed"],
+                    text=True, capture_output=True, check=False,
+                )
+                executable = build / "fixed"
+            self.assertEqual(
+                result.returncode, 0, result.stdout + result.stderr,
+            )
+            self.assertEqual(
+                subprocess.run([str(executable)], check=False).returncode, 0,
+            )
+            link_records = [
+                path for path in build.rglob("*")
+                if path.is_file() and "fixed" in path.as_posix() and
+                (path.name == "link.txt" or path.name == "build.make" or
+                 (path.name.startswith("objects") and
+                  path.suffix == ".rsp"))
+            ]
+            self.assertTrue(link_records)
+            link_text = "\n".join(path.read_text(
+                encoding="utf-8", errors="replace",
+            ) for path in link_records)
+            self.assertIn(object_name, link_text)
 
     def test_incomplete_set_and_stale_abi_fail_closed(self) -> None:
         with writable_fixture() as root:
