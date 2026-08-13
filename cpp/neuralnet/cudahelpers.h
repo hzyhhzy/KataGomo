@@ -104,6 +104,14 @@ void customCudaFlashAttention(
 void customCudaSwiGLU(const float* a, const float* b, float* out, int size, cudaStream_t stream);
 void customCudaSwiGLU(const half* a, const half* b, half* out, int size, cudaStream_t stream);
 
+//Clipped SwiGLU: out[i] = clamp(SiLU(a[i]),-clip,clip) * clamp(b[i],-clip,clip).
+//The two operands are clipped independently before multiplication. This is
+//the native transformer "swiglu_clip" semantic, not a clamp of the product.
+void customCudaClippedSwiGLU(
+  const float* a, const float* b, float* out, int size, float clip, cudaStream_t stream);
+void customCudaClippedSwiGLU(
+  const half* a, const half* b, half* out, int size, float clip, cudaStream_t stream);
+
 //Masked residual add: trunk[i] += residual[i] * mask[spatial_idx], for NHWC or NCHW layouts.
 //mask has shape [n, xy].
 void customCudaMaskedResidualAddNCHW(float* trunk, const float* residual, const float* mask, int nSize, int cSize, int xySize, cudaStream_t stream);

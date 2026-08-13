@@ -96,7 +96,8 @@ bool attentionShapeEligible(const RuntimeShape& shape) {
 
 bool ffnShapeEligible(const RuntimeShape& shape) {
   return commonShapeEligible(shape) &&
-    shape.ffnChannels == kFfnChannels && shape.swiglu;
+    shape.ffnChannels == kFfnChannels && shape.swiglu &&
+    (shape.swigluClipBits == 0 || shape.swigluClipBits == kSwiGluClip7Bits);
 }
 
 bool targetShapeEligible(const RuntimeShape& shape) {
@@ -145,17 +146,22 @@ bool tacticKeyWellFormed(const TacticKey& key) {
      key.id == nullptr || key.id[0] == '\0')
     return false;
   if(key.family == Family::QkvRope)
-    return key.launchGridSms == 0 && key.packedQkvOutput && !key.pairedFfnWeights;
+    return key.launchGridSms == 0 && key.packedQkvOutput &&
+      !key.pairedFfnWeights && key.runtimeRopeTableDriven &&
+      key.swigluClipBits == 0;
   if(key.family == Family::DualFfn)
     return (key.launchGridSms == 170 || key.launchGridSms == 340) &&
-      !key.packedQkvOutput && key.pairedFfnWeights;
+      !key.packedQkvOutput && key.pairedFfnWeights &&
+      (key.swigluClipBits == 0 || key.swigluClipBits == kSwiGluClip7Bits);
   return false;
 }
 
 bool tacticKeyCompatible(const RuntimeShape& shape, const TacticKey& key) {
   return pieceShapeEligible(shape,key.family) && tacticKeyWellFormed(key) &&
     key.batchSize == shape.batchSize &&
-    key.tokenRows == shape.batchSize * shape.sequenceLength;
+    key.tokenRows == shape.batchSize * shape.sequenceLength &&
+    (key.family != Family::DualFfn ||
+     key.swigluClipBits == shape.swigluClipBits);
 }
 
 bool registrySpanWellFormed(Family family, const RegistrySpan& registry) {

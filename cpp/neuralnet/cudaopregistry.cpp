@@ -75,6 +75,8 @@ static void encodeCapabilityKey(FingerprintWriter& out, const CapabilityKey& key
   out.i32(key.vHeadDim);
   out.u32(key.semanticScalar0Bits);
   out.u32(key.semanticScalar1Bits);
+  out.u32(key.semanticScalar2Bits);
+  out.u32(key.semanticScalar3Bits);
   out.u32(key.deviceComputeCapability);
   out.u32(key.streamCount);
   out.u64(key.runtimeLibraryFingerprint);
@@ -113,6 +115,8 @@ bool CapabilityKey::operator==(const CapabilityKey& other) const {
     vHeadDim == other.vHeadDim &&
     semanticScalar0Bits == other.semanticScalar0Bits &&
     semanticScalar1Bits == other.semanticScalar1Bits &&
+    semanticScalar2Bits == other.semanticScalar2Bits &&
+    semanticScalar3Bits == other.semanticScalar3Bits &&
     deviceComputeCapability == other.deviceComputeCapability &&
     streamCount == other.streamCount &&
     runtimeLibraryFingerprint == other.runtimeLibraryFingerprint;
@@ -254,6 +258,8 @@ CapabilityKey makeCapabilityKey(
   key.vHeadDim = op.vHeadDim;
   key.semanticScalar0Bits = op.semanticScalar0Bits;
   key.semanticScalar1Bits = op.semanticScalar1Bits;
+  key.semanticScalar2Bits = op.semanticScalar2Bits;
+  key.semanticScalar3Bits = op.semanticScalar3Bits;
   key.deviceComputeCapability = runtime.deviceComputeCapability;
   key.streamCount = runtime.streamCount;
   key.runtimeLibraryFingerprint = runtime.runtimeLibraryFingerprint;

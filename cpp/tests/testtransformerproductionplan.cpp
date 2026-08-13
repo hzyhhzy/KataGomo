@@ -745,6 +745,8 @@ void Tests::runTransformerProductionPlanTests() {
     const TacticKey dualTactics[] = {
       {Family::DualFfn,28,6300,170,"dual-b28-grid170-test",false,true,kRegistryAbiVersion},
       {Family::DualFfn,28,6300,340,"dual-b28-grid340-test",false,true,kRegistryAbiVersion},
+      {Family::DualFfn,28,6300,340,"dual-b28-clip7-grid340-test",false,true,
+       kRegistryAbiVersion,true,kSwiGluClip7Bits},
       {Family::DualFfn,24,5400,170,"dual-b24-grid170-test",false,true,kRegistryAbiVersion},
     };
     const RegistryView registry = {
@@ -810,6 +812,29 @@ void Tests::runTransformerProductionPlanTests() {
     testAssert(selected.qkvRope.selected());
     testAssert(selected.packedFa4 == &fa4);
     testAssert(selected.dualFfn.selected());
+    testAssert(selected.qkvRope.tactic->runtimeRopeTableDriven);
+    testAssert(selected.dualFfn.tactic->swigluClipBits == 0);
+
+    // QKN reuses the same table-driven packed QKV producer with an identity
+    // table, followed by the typed QKNorm+real-RoPE postprocess. Clip7 is a
+    // distinct dual-FFN semantic and may never silently select the old
+    // unclipped epilogue.
+    shape.qkNorm = true;
+    shape.swigluClipBits = kSwiGluClip7Bits;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test",
+      "dual-b28-clip7-grid340-test",&fa4);
+    testAssert(selected.targetShape);
+    testAssert(selected.qkvRope.selected());
+    testAssert(selected.qkvRope.tactic->runtimeRopeTableDriven);
+    testAssert(selected.dualFfn.selected());
+    testAssert(selected.dualFfn.tactic->swigluClipBits == kSwiGluClip7Bits);
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(selected.qkvRope.selected());
+    testAssert(selected.dualFfn.reason == RejectReason::RegistryMiss);
+    shape.qkNorm = false;
+    shape.swigluClipBits = 0;
 
     const RegistryView emptyRegistry{};
     selected = select(

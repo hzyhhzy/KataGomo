@@ -13,8 +13,10 @@ struct TransformerFFNDesc;
 
 namespace NeuralNetArchitecture {
 
-// Bump this whenever the canonical byte encoding changes. Signatures with
-// different schema versions must never be compared as if they were equal.
+// Bump this whenever the encoding of an architecture already representable by
+// an earlier schema changes. New tagged semantics for a newer model version
+// may extend the encoding without invalidating byte-identical legacy models.
+// Signatures with different schema versions must never compare equal.
 constexpr uint32_t CANONICAL_ARCHITECTURE_SCHEMA_VERSION = 1;
 
 struct ArchitectureSignature {
@@ -52,6 +54,8 @@ enum ArchitectureOpFlag : uint32_t {
   OP_FLAG_USE_ROPE = 1u << 2,
   OP_FLAG_LEARNABLE_ROPE = 1u << 3,
   OP_FLAG_USE_SWIGLU = 1u << 4,
+  OP_FLAG_USE_QK_NORM = 1u << 5,
+  OP_FLAG_USE_SWIGLU_CLIP = 1u << 6,
   OP_FLAG_ACTIVATION_SHIFT = 16,
   OP_FLAG_ACTIVATION_MASK = 0xFFu << OP_FLAG_ACTIVATION_SHIFT,
 };
@@ -87,10 +91,13 @@ struct ArchitectureOpDesc {
   int32_t qHeadDim;
   int32_t vHeadDim;
 
-  // Exact IEEE-754 bit patterns for semantic scalars such as epsilon and a
-  // fixed RoPE theta. Learned tensors are weights and are never included.
+  // Exact IEEE-754 bit patterns for semantic scalars such as epsilon, a fixed
+  // RoPE theta, or a clipping threshold. Learned tensors are weights and are
+  // never included. Attention uses slots 2 and 3 for q/k norm epsilon.
   uint32_t semanticScalar0Bits;
   uint32_t semanticScalar1Bits;
+  uint32_t semanticScalar2Bits;
+  uint32_t semanticScalar3Bits;
 };
 
 enum OuterNormBit : uint8_t {

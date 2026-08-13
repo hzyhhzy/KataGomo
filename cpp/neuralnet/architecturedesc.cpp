@@ -26,6 +26,8 @@ enum class EncodingTag : uint32_t {
   RMSNorm = 11,
   TransformerAttention = 12,
   TransformerFFN = 13,
+  QKNorm = 14,
+  SwiGLUClip = 15,
 };
 
 class CanonicalWriter {
@@ -225,6 +227,11 @@ static void encodeAttention(
   encodeMatMul(out,desc.kProj,result,false);
   encodeMatMul(out,desc.vProj,result,false);
   encodeMatMul(out,desc.outProj,result,false);
+  if(desc.useQKNorm) {
+    out.tag(EncodingTag::QKNorm);
+    encodeRMSNorm(out,desc.qNorm);
+    encodeRMSNorm(out,desc.kNorm);
+  }
   if(desc.useRope) {
     if(desc.learnableRope) {
       out.i32(desc.ropeNumKVHeads);
@@ -253,6 +260,14 @@ ArchitectureOpDesc describeTransformerAttentionOpImpl(const TransformerAttention
     op.flags |= OP_FLAG_USE_ROPE;
   if(desc.learnableRope)
     op.flags |= OP_FLAG_LEARNABLE_ROPE;
+  if(desc.useQKNorm) {
+    if(desc.qNorm.numChannels != desc.qHeadDim ||
+       desc.kNorm.numChannels != desc.qHeadDim)
+      throw StringError("Invalid architecture descriptor: q/k norm channels must match qHeadDim");
+    requireFinitePositive(desc.qNorm.epsilon,"attention.qNorm.epsilon");
+    requireFinitePositive(desc.kNorm.epsilon,"attention.kNorm.epsilon");
+    op.flags |= OP_FLAG_USE_QK_NORM;
+  }
   op.inChannels = desc.preLN.numChannels;
   op.outChannels = desc.outProj.outChannels;
   // Learned RoPE pair count changes the legal Q/K epilogue shape. It is a
@@ -264,6 +279,8 @@ ArchitectureOpDesc describeTransformerAttentionOpImpl(const TransformerAttention
   op.vHeadDim = desc.vHeadDim;
   op.semanticScalar0Bits = getFloatBits(desc.preLN.epsilon);
   op.semanticScalar1Bits = desc.useRope && !desc.learnableRope ? getFloatBits(desc.ropeTheta) : 0;
+  op.semanticScalar2Bits = desc.useQKNorm ? getFloatBits(desc.qNorm.epsilon) : 0;
+  op.semanticScalar3Bits = desc.useQKNorm ? getFloatBits(desc.kNorm.epsilon) : 0;
   return op;
 }
 
@@ -278,6 +295,14 @@ static void encodeFFN(
   out.i32(desc.numChannels);
   out.i32(desc.ffnChannels);
   out.boolean(desc.useSwiGLU);
+  if(!isfinite(desc.swigluClip) || desc.swigluClip < 0.0f)
+    throw StringError("Invalid architecture descriptor: ffn.swigluClip must be finite and nonnegative");
+  if(desc.swigluClip > 0.0f) {
+    if(!desc.useSwiGLU)
+      throw StringError("Invalid architecture descriptor: ffn.swigluClip requires SwiGLU");
+    out.tag(EncodingTag::SwiGLUClip);
+    out.u32(getFloatBits(desc.swigluClip));
+  }
   encodeRMSNorm(out,desc.preLN);
   encodeMatMul(out,desc.linear1,result,false);
   if(desc.useSwiGLU)
@@ -297,10 +322,18 @@ ArchitectureOpDesc describeTransformerFFNOpImpl(const TransformerFFNDesc& desc) 
   op.runtimeDependencies = OP_RUNTIME_BATCH | OP_RUNTIME_SPATIAL_AREA | OP_RUNTIME_MASK;
   if(desc.useSwiGLU)
     op.flags |= OP_FLAG_USE_SWIGLU;
+  if(!isfinite(desc.swigluClip) || desc.swigluClip < 0.0f)
+    throw StringError("Invalid architecture descriptor: ffn.swigluClip must be finite and nonnegative");
+  if(desc.swigluClip > 0.0f) {
+    if(!desc.useSwiGLU)
+      throw StringError("Invalid architecture descriptor: ffn.swigluClip requires SwiGLU");
+    op.flags |= OP_FLAG_USE_SWIGLU_CLIP;
+  }
   op.inChannels = desc.numChannels;
   op.outChannels = desc.numChannels;
   op.auxiliaryChannels = desc.ffnChannels;
   op.semanticScalar0Bits = getFloatBits(desc.preLN.epsilon);
+  op.semanticScalar1Bits = desc.swigluClip > 0.0f ? getFloatBits(desc.swigluClip) : 0;
   return op;
 }
 

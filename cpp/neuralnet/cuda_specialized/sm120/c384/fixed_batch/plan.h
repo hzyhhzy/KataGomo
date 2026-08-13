@@ -25,6 +25,7 @@ constexpr uint32_t kRegistryAbiVersion = 2;
 constexpr uint32_t kPackedFa4ProofAbiVersion = 1;
 constexpr uint32_t kQkvRopeNativeAbiVersion = 1;
 constexpr uint32_t kDualFfnNativeAbiVersion = 1;
+constexpr uint32_t kSwiGluClip7Bits = 0x40E00000u;
 
 // Search priority, not a range. Every generated kernel remains exact-M.
 // Model depth is intentionally absent: it is not runtime batch, and a
@@ -66,6 +67,12 @@ struct RuntimeShape {
   bool exactNoMask = false;
   bool learnedRope = false;
   bool swiglu = false;
+  // QKN is completed by the engine's typed post-projection operation. QKV
+  // tactics remain reusable only when they explicitly honor the supplied
+  // runtime RoPE table (an identity table produces raw packed QKV).
+  bool qkNorm = false;
+  // Exact IEEE-754 bits. Zero means unclipped SwiGLU.
+  uint32_t swigluClipBits = 0;
 };
 
 // This is deliberately weight-free metadata. The first member of every CUDA
@@ -83,6 +90,13 @@ struct TacticKey {
   // Zero is invalid. Generated providers must spell out the ABI version so
   // recompiling an old initializer cannot silently claim a newer ABI.
   uint32_t abiVersion = 0;
+  // QKV ABI v1 is table-driven, including an all-identity table. Keep the
+  // default true so already promoted v1 registry initializers remain source
+  // compatible when rebuilt with this extended key. Ignored for dual FFN.
+  bool runtimeRopeTableDriven = true;
+  // Zero is standard SwiGLU. A dual-FFN tactic for a clipped model must state
+  // the exact clip bits and therefore cannot be selected for the old model.
+  uint32_t swigluClipBits = 0;
 };
 
 static_assert(std::is_standard_layout<TacticKey>::value,

@@ -24,7 +24,7 @@ struct ProtoReader {
 
   std::string readString() ;
 };
-class ModelDesc;
+struct ModelDesc;
 class NNEvaluator;
 //static void loadModelDescFromONNX(const std::string& onnxFile, ModelDesc& desc) ;
 

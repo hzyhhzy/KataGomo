@@ -13,6 +13,7 @@ enum KatagoRenju15DualFfnSm120Tactic {
   KATAGO_RENJU15_DUAL_FFN_DISABLED = 0,
   KATAGO_RENJU15_DUAL_FFN_M128_N64_K32_S3_SW4 = 1,
   KATAGO_RENJU15_DUAL_FFN_C384_F1024_M128_N64_K32_S3_SW4 = 2,
+  KATAGO_RENJU15_DUAL_FFN_C384_F1024_CLIP7_M128_N64_K32_S3_SW4 = 3,
 };
 
 struct KatagoRenju15DualFfnSm120Descriptor {
@@ -62,7 +63,9 @@ extern "C" bool katago_renju15_dual_ffn_sm120_supports(
 // The typed handle supports either exact-M A[M,256] x W[256,768] or dynamic-M
 // A[M,384] x W[384,1024], where 0 < M <= the configured maximum, followed by
 // output = SiLU(A*linearWeights) * (A*gateWeights), all contiguous row-major
-// FP16. The handle is stream-local and must not be launched concurrently.
+// FP16. The C384 clip7 tactic instead independently clamps both the SiLU
+// result and gate to [-7,7] before multiplying. The handle is stream-local and
+// must not be launched concurrently.
 extern "C" cudaError_t katago_renju15_dual_ffn_sm120_launch(
   void* opaque,
   const half* input,

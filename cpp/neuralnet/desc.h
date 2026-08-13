@@ -124,12 +124,18 @@ struct TransformerAttentionDesc {
   int vHeadDim;
   bool useRope;
   bool learnableRope;
+  bool useQKNorm;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc qProj;
   MatMulLayerDesc kProj;
   MatMulLayerDesc vProj;
   MatMulLayerDesc outProj;
+  // When useQKNorm is true, these affine RMS norms operate independently on
+  // each q/k head after projection and before RoPE. Their channel count is the
+  // per-head qHeadDim, and their learned scale is shared across heads.
+  TransformerRMSNormDesc qNorm;
+  TransformerRMSNormDesc kNorm;
 
   int ropeNumKVHeads;
   int ropeNumPairs;
@@ -137,7 +143,7 @@ struct TransformerAttentionDesc {
   float ropeTheta;
 
   TransformerAttentionDesc();
-  TransformerAttentionDesc(std::istream& in, bool binaryFloats);
+  TransformerAttentionDesc(std::istream& in, int modelVersion, bool binaryFloats);
   TransformerAttentionDesc(TransformerAttentionDesc&& other);
 
   TransformerAttentionDesc(const TransformerAttentionDesc&) = delete;
@@ -158,6 +164,9 @@ struct TransformerFFNDesc {
   int numChannels;
   int ffnChannels;
   bool useSwiGLU;
+  // Zero disables clipping. A positive value clips the activated linear
+  // branch and gate branch independently before their SwiGLU product.
+  float swigluClip;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc linear1;
@@ -165,7 +174,7 @@ struct TransformerFFNDesc {
   MatMulLayerDesc linear2;
 
   TransformerFFNDesc();
-  TransformerFFNDesc(std::istream& in, bool binaryFloats);
+  TransformerFFNDesc(std::istream& in, int modelVersion, bool binaryFloats);
   TransformerFFNDesc(TransformerFFNDesc&& other);
 
   TransformerFFNDesc(const TransformerFFNDesc&) = delete;

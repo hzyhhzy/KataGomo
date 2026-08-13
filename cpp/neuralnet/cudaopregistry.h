@@ -15,9 +15,9 @@ struct ModelDesc;
 namespace CudaOpRegistry {
 
 // v2 assigns TransformerAttention.auxiliaryChannels to the local RoPE pair
-// count. v1 left that field zero and therefore could not safely distinguish a
-// fused Q/K RoPE epilogue with a different learned-frequency geometry.
-constexpr uint32_t CAPABILITY_KEY_SCHEMA_VERSION = 2;
+// count. v3 adds two semantic scalar slots so Q and K RMSNorm epsilon values
+// are both part of tactic compatibility identity.
+constexpr uint32_t CAPABILITY_KEY_SCHEMA_VERSION = 3;
 constexpr uint32_t RECIPE_FINGERPRINT_SCHEMA_VERSION = 1;
 constexpr uint32_t PLAN_FINGERPRINT_SCHEMA_VERSION = 1;
 
@@ -94,6 +94,8 @@ struct CapabilityKey {
 
   uint32_t semanticScalar0Bits;
   uint32_t semanticScalar1Bits;
+  uint32_t semanticScalar2Bits;
+  uint32_t semanticScalar3Bits;
   uint32_t deviceComputeCapability;
   uint32_t streamCount;
   uint64_t runtimeLibraryFingerprint;

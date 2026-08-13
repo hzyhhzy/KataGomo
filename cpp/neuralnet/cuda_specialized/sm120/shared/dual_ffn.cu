@@ -38,12 +38,81 @@ using ProjectionOutput = cutlass::epilogue::thread::LinearCombination<
   Element, 8, Element, float, cutlass::epilogue::thread::ScaleType::Nothing>;
 using SwiGLU = cutlass::epilogue::thread::LeftSiLUAndMul<
   Element, 8, Element, float>;
+
+// CUTLASS' stock dual-GEMM epilogue computes SiLU(lhs)*rhs. The QKNorm+clip7
+// model uses the same two GEMMs but clips the two operands independently
+// before multiplication. Keeping this operation in the register epilogue
+// avoids materializing either projection or adding a conversion launch.
+template <
+  typename ElementOutput_, int Count,
+  typename ElementAccumulator_ = ElementOutput_,
+  typename ElementCompute_ = ElementOutput_,
+  cutlass::FloatRoundStyle Round = cutlass::FloatRoundStyle::round_to_nearest
+>
+class LeftClippedSiLUAndMul {
+public:
+  using ElementOutput = ElementOutput_;
+  using ElementAccumulator = ElementAccumulator_;
+  using ElementCompute = ElementCompute_;
+  static int const kCount = Count;
+  using FragmentOutput = cutlass::Array<ElementOutput,kCount>;
+  using FragmentAccumulator = cutlass::Array<ElementAccumulator,kCount>;
+  using ComputeFragment = cutlass::Array<ElementCompute,kCount>;
+  struct Params {};
+
+  CUTLASS_HOST_DEVICE
+  LeftClippedSiLUAndMul(Params const&) {}
+
+  CUTLASS_HOST_DEVICE bool is_source_needed() const { return true; }
+
+  CUTLASS_HOST_DEVICE
+  void set_k_partition(int, int) { assert(false); }
+
+  CUTLASS_HOST_DEVICE
+  static ElementCompute clipped(ElementCompute value) {
+    const ElementCompute limit = ElementCompute(7.0f);
+    return value < -limit ? -limit : (value > limit ? limit : value);
+  }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(
+    FragmentAccumulator const& lhs,
+    FragmentAccumulator const& rhs
+  ) const {
+    cutlass::NumericArrayConverter<
+      ElementCompute,ElementAccumulator,kCount,Round> toCompute;
+    cutlass::NumericArrayConverter<
+      ElementOutput,ElementCompute,kCount,Round> toOutput;
+    ComputeFragment left = toCompute(lhs);
+    ComputeFragment right = toCompute(rhs);
+    cutlass::epilogue::thread::SiLu<ComputeFragment> silu;
+    left = silu(left);
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++)
+      left[i] = clipped(left[i]) * clipped(right[i]);
+    return toOutput(left);
+  }
+
+  CUTLASS_HOST_DEVICE
+  ElementOutput operator()(
+    ElementAccumulator const& lhs,
+    ElementAccumulator const& rhs
+  ) const {
+    const ElementCompute left(lhs);
+    const ElementCompute right(rhs);
+    cutlass::epilogue::thread::SiLu<ElementCompute> silu;
+    return ElementOutput(clipped(silu(left)) * clipped(right));
+  }
+};
+
+using ClippedSwiGLU = LeftClippedSiLUAndMul<Element,8,Element,float>;
 using InstructionShape = cutlass::gemm::GemmShape<16,8,16>;
 
 template<
   int ThreadblockM, int ThreadblockN, int ThreadblockK,
   int WarpM, int WarpN, int WarpK,
-  int Stages, int Swizzle>
+  int Stages, int Swizzle,
+  typename FinalEpilogue = SwiGLU>
 using DualGemm = cutlass::gemm::device::DualGemm<
   Element, cutlass::layout::RowMajor,
   Element, cutlass::layout::RowMajor,
@@ -54,11 +123,13 @@ using DualGemm = cutlass::gemm::device::DualGemm<
   cutlass::gemm::GemmShape<ThreadblockM,ThreadblockN,ThreadblockK>,
   cutlass::gemm::GemmShape<WarpM,WarpN,WarpK>,
   InstructionShape,
-  ProjectionOutput, ProjectionOutput, SwiGLU,
+  ProjectionOutput, ProjectionOutput, FinalEpilogue,
   cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<Swizzle>,
   Stages, false, false, false, 8, 8>;
 
 using Winner = DualGemm<128,64,32,64,32,32,3,4>;
+using Clip7Winner = DualGemm<
+  128,64,32,64,32,32,3,4,ClippedSwiGLU>;
 
 constexpr KatagoRenju15DualFfnSm120Descriptor Descriptors[] = {
   {
@@ -69,6 +140,11 @@ constexpr KatagoRenju15DualFfnSm120Descriptor Descriptors[] = {
   {
     KATAGO_RENJU15_DUAL_FFN_C384_F1024_M128_N64_K32_S3_SW4,
     "dual-ffn-c384-f1024-m128-n64-k32-s3-sw4",
+    128,64,32,64,32,32,3,4,C384InputChannels,C384FfnChannels,
+  },
+  {
+    KATAGO_RENJU15_DUAL_FFN_C384_F1024_CLIP7_M128_N64_K32_S3_SW4,
+    "dual-ffn-c384-f1024-clip7-m128-n64-k32-s3-sw4",
     128,64,32,64,32,32,3,4,C384InputChannels,C384FfnChannels,
   },
 };
@@ -278,6 +354,8 @@ std::unique_ptr<StateBase> stateForTactic(int tactic) {
     return std::unique_ptr<StateBase>(new State<Winner>());
   case KATAGO_RENJU15_DUAL_FFN_C384_F1024_M128_N64_K32_S3_SW4:
     return std::unique_ptr<StateBase>(new DynamicState<Winner>());
+  case KATAGO_RENJU15_DUAL_FFN_C384_F1024_CLIP7_M128_N64_K32_S3_SW4:
+    return std::unique_ptr<StateBase>(new DynamicState<Clip7Winner>());
   default:
     return nullptr;
   }

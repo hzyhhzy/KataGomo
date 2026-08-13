@@ -64,6 +64,62 @@ static void setActivation(ActivationLayerDesc& desc, int activation, float weigh
   desc.activation = activation;
 }
 
+static void appendTextWeights(ostream& out, size_t count, float value = 0.125f) {
+  for(size_t i = 0; i < count; i++)
+    out << value << "\n";
+}
+
+static void appendTextRMSNorm(
+  ostream& out,
+  const string& name,
+  int channels,
+  float epsilon
+) {
+  out << name << "\n" << channels << "\n" << epsilon << "\n";
+  appendTextWeights(out,(size_t)channels);
+}
+
+static void appendTextMatMul(
+  ostream& out,
+  const string& name,
+  int inChannels,
+  int outChannels
+) {
+  out << name << "\n" << inChannels << "\n" << outChannels << "\n";
+  appendTextWeights(out,(size_t)inChannels * outChannels);
+}
+
+static string attentionWireFixture(int modelVersion, bool useQKNorm) {
+  ostringstream out;
+  out << "attention\n2\n2\n4\n4\n1\n1\n";
+  if(modelVersion >= 105)
+    out << (useQKNorm ? 1 : 0) << "\n";
+  appendTextRMSNorm(out,"attention.norm1",8,1e-6f);
+  appendTextMatMul(out,"attention.q",8,8);
+  appendTextMatMul(out,"attention.k",8,8);
+  appendTextMatMul(out,"attention.v",8,8);
+  appendTextMatMul(out,"attention.out",8,8);
+  if(useQKNorm) {
+    appendTextRMSNorm(out,"attention.q_norm",4,1e-6f);
+    appendTextRMSNorm(out,"attention.k_norm",4,2e-6f);
+  }
+  out << "attention.rope_freqs\n2\n2\n2\n";
+  appendTextWeights(out,8);
+  return out.str();
+}
+
+static string ffnWireFixture(int modelVersion, float swigluClip) {
+  ostringstream out;
+  out << "ffn\n8\n16\n1\n";
+  if(modelVersion >= 105)
+    out << swigluClip << "\n";
+  appendTextRMSNorm(out,"ffn.norm",8,1e-6f);
+  appendTextMatMul(out,"ffn.up",8,16);
+  appendTextMatMul(out,"ffn.gate",8,16);
+  appendTextMatMul(out,"ffn.down",16,8);
+  return out.str();
+}
+
 static unique_ptr_void makeAttention(int channels, int heads, int headDim, float weight) {
   TransformerAttentionDesc* desc = new TransformerAttentionDesc();
   desc->name = "ignored-attention-name-" + Global::floatToString(weight);
@@ -170,6 +226,36 @@ static ModelDesc makeModel(
   return model;
 }
 
+static void enableQKNormAndClip(
+  ModelDesc& model,
+  float qEpsilon,
+  float kEpsilon,
+  float swigluClip
+) {
+  model.version = 105;
+  model.trunk.version = 105;
+  model.policyHead.version = 105;
+  model.valueHead.version = 105;
+  for(auto& entry: model.trunk.blocks) {
+    if(entry.first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+      TransformerAttentionDesc* desc = (TransformerAttentionDesc*)entry.second.get();
+      desc->useQKNorm = true;
+      desc->qNorm.name = "ignored-q-norm";
+      desc->qNorm.numChannels = desc->qHeadDim;
+      desc->qNorm.epsilon = qEpsilon;
+      desc->qNorm.weight.assign(desc->qHeadDim,1.0f);
+      desc->kNorm.name = "ignored-k-norm";
+      desc->kNorm.numChannels = desc->qHeadDim;
+      desc->kNorm.epsilon = kEpsilon;
+      desc->kNorm.weight.assign(desc->qHeadDim,1.0f);
+    }
+    else if(entry.first == TRANSFORMER_FFN_BLOCK_KIND) {
+      TransformerFFNDesc* desc = (TransformerFFNDesc*)entry.second.get();
+      desc->swigluClip = swigluClip;
+    }
+  }
+}
+
 static RuntimeOpContext runtimeContext(int batch, int x, int y, MaskMode mask) {
   RuntimeOpContext context{};
   context.batchSize = batch;
@@ -243,10 +329,46 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
     NNModelVersion::getNumSpatialFeatures(102));
   testAssert(NNModelVersion::getNumGlobalFeatures(104) ==
     NNModelVersion::getNumGlobalFeatures(102));
+  testAssert(NNModelVersion::getInputsVersion(105) == 101);
+  testAssert(NNModelVersion::getNumSpatialFeatures(105) == 22);
+  testAssert(NNModelVersion::getNumGlobalFeatures(105) == 39);
   static_assert(is_trivially_copyable<OpRequest>::value,"OpRequest should be POD-like");
   static_assert(is_trivially_copyable<CapabilityKey>::value,"CapabilityKey should be POD-like");
   static_assert(is_trivially_copyable<TacticId>::value,"TacticId should be POD-like");
   static_assert(is_trivially_copyable<PreparedOp>::value,"PreparedOp should be POD-like");
+
+  // The version-aware transformer parser must leave every legacy v102 byte in
+  // its old position while admitting the new v105 semantic fields.
+  {
+    istringstream attentionV102In(attentionWireFixture(102,false));
+    TransformerAttentionDesc attentionV102(attentionV102In,102,false);
+    testAssert(!attentionV102.useQKNorm);
+    testAssert(attentionV102.qNorm.numChannels == 0);
+    attentionV102In >> ws;
+    testAssert(attentionV102In.peek() == EOF);
+
+    istringstream ffnV102In(ffnWireFixture(102,0.0f));
+    TransformerFFNDesc ffnV102(ffnV102In,102,false);
+    testAssert(ffnV102.swigluClip == 0.0f);
+    ffnV102In >> ws;
+    testAssert(ffnV102In.peek() == EOF);
+
+    istringstream attentionV105In(attentionWireFixture(105,true));
+    TransformerAttentionDesc attentionV105(attentionV105In,105,false);
+    testAssert(attentionV105.useQKNorm);
+    testAssert(attentionV105.qNorm.numChannels == 4);
+    testAssert(attentionV105.kNorm.numChannels == 4);
+    testAssert(getFloatBits(attentionV105.qNorm.epsilon) == getFloatBits(1e-6f));
+    testAssert(getFloatBits(attentionV105.kNorm.epsilon) == getFloatBits(2e-6f));
+    attentionV105In >> ws;
+    testAssert(attentionV105In.peek() == EOF);
+
+    istringstream ffnV105In(ffnWireFixture(105,7.0f));
+    TransformerFFNDesc ffnV105(ffnV105In,105,false);
+    testAssert(ffnV105.swigluClip == 7.0f);
+    ffnV105In >> ws;
+    testAssert(ffnV105In.peek() == EOF);
+  }
 
   ModelDesc modelA = makeModel(2,256,768,8,32,0.1f);
   ModelDesc modelB = makeModel(2,256,768,8,32,0.9f);
@@ -297,6 +419,52 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   CapabilityKey attention = makeCapabilityKey(attentionOp,baseRuntime);
   CapabilityKey ffn = makeCapabilityKey(ffnOp,baseRuntime);
   CapabilityKey globalMatMul = makeCapabilityKey(globalMatMulOp,baseRuntime);
+  testAssert((attention.flags & OP_FLAG_USE_QK_NORM) == 0);
+  testAssert(attention.semanticScalar2Bits == 0);
+  testAssert(attention.semanticScalar3Bits == 0);
+  testAssert((ffn.flags & OP_FLAG_USE_SWIGLU_CLIP) == 0);
+  testAssert(ffn.semanticScalar1Bits == 0);
+
+  ModelDesc qknClipModel = makeModel(2,384,1024,12,32,0.2f);
+  enableQKNormAndClip(qknClipModel,1e-6f,2e-6f,7.0f);
+  ArchitectureDesc qknClipArchitecture = buildArchitectureDesc(qknClipModel);
+  testAssert(qknClipArchitecture.signature != architectureA.signature);
+  const ArchitectureOpDesc& qknAttentionOp = findOp(
+    qknClipArchitecture,ArchitectureOpKind::TransformerAttention
+  );
+  const ArchitectureOpDesc& clippedFFNOp = findOp(
+    qknClipArchitecture,ArchitectureOpKind::TransformerFFN
+  );
+  CapabilityKey qknAttention = makeCapabilityKey(qknAttentionOp,baseRuntime);
+  CapabilityKey clippedFFN = makeCapabilityKey(clippedFFNOp,baseRuntime);
+  testAssert((qknAttention.flags & OP_FLAG_USE_QK_NORM) != 0);
+  testAssert(qknAttention.semanticScalar2Bits == getFloatBits(1e-6f));
+  testAssert(qknAttention.semanticScalar3Bits == getFloatBits(2e-6f));
+  testAssert((clippedFFN.flags & OP_FLAG_USE_SWIGLU_CLIP) != 0);
+  testAssert(clippedFFN.semanticScalar1Bits == getFloatBits(7.0f));
+
+  // Gamma tensors are trained weights and deliberately do not affect either
+  // identity, while each semantic scalar must invalidate tactic reuse.
+  TransformerAttentionDesc* firstQKN = (TransformerAttentionDesc*)
+    qknClipModel.trunk.blocks[0].second.get();
+  const ArchitectureSignature qknSignature = qknClipArchitecture.signature;
+  firstQKN->qNorm.weight[0] = 3.0f;
+  testAssert(buildArchitectureDesc(qknClipModel).signature == qknSignature);
+  firstQKN->qNorm.epsilon = 4e-6f;
+  ArchitectureDesc changedQKNArchitecture = buildArchitectureDesc(qknClipModel);
+  testAssert(changedQKNArchitecture.signature != qknSignature);
+  testAssert(makeCapabilityKey(
+    findOp(changedQKNArchitecture,ArchitectureOpKind::TransformerAttention),
+    baseRuntime
+  ) != qknAttention);
+  TransformerFFNDesc* firstClippedFFN = (TransformerFFNDesc*)
+    qknClipModel.trunk.blocks[1].second.get();
+  firstClippedFFN->swigluClip = 6.0f;
+  ArchitectureDesc changedClipArchitecture = buildArchitectureDesc(qknClipModel);
+  testAssert(makeCapabilityKey(
+    findOp(changedClipArchitecture,ArchitectureOpKind::TransformerFFN),
+    baseRuntime
+  ) != clippedFFN);
 
   RuntimeOpContext batch32 = runtimeContext(32,15,15,MaskMode::None);
   testAssert(makeCapabilityKey(ffnOp,batch32) != ffn);
@@ -347,6 +515,29 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   }
   testAssert(rejectedBadEpsilon);
 
+  bool rejectedBadQKNGeometry = false;
+  firstQKN->qNorm.epsilon = 1e-6f;
+  firstQKN->qNorm.numChannels = firstQKN->qHeadDim + 1;
+  try {
+    (void)buildArchitectureDesc(qknClipModel);
+  }
+  catch(const StringError&) {
+    rejectedBadQKNGeometry = true;
+  }
+  testAssert(rejectedBadQKNGeometry);
+  firstQKN->qNorm.numChannels = firstQKN->qHeadDim;
+
+  bool rejectedClipWithoutSwiGLU = false;
+  firstClippedFFN->useSwiGLU = false;
+  firstClippedFFN->swigluClip = 7.0f;
+  try {
+    (void)buildArchitectureDesc(qknClipModel);
+  }
+  catch(const StringError&) {
+    rejectedClipWithoutSwiGLU = true;
+  }
+  testAssert(rejectedClipWithoutSwiGLU);
+
   vector<OpRequest> requests = buildOpRequests(architectureB,baseRuntime);
   OpRequest ffnRequest{};
   bool foundFFNRequest = false;
@@ -391,7 +582,7 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   vector<OpRequest> oneRequest(1,ffnRequest);
   vector<PreparedOp> onePrepared(1,resolved.prepared);
   PlanFingerprint planA = fingerprintPreparedPlan(oneRequest,onePrepared);
-  testAssert(planA.toHex() == "9c0902829abe4a309abdc77f10e89f5abbdf86832f3935b841cd9d473ad074db");
+  testAssert(planA.toHex() == "55ef32d613f48d0a81d452f2028edd10a127b2101cd96d537d7c7c9b90a3bfaa");
   onePrepared[0].implementationCookie = 999;
   PlanFingerprint planSame = fingerprintPreparedPlan(oneRequest,onePrepared);
   testAssert(planA == planSame);
@@ -597,12 +788,47 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
       cout << "Loaded and validated native v104 model: " <<
         nativeModelFile << endl;
     }
-    else {
-      testAssert(external.version == 102);
+    else if(external.version == 102) {
       testAssert(!external.nativeInt8Quant.present());
       testAssert(externalArchitecture ==
         "ad026614455c0475b31997f1c5452af99d1eb347713f77950671fc5d1a522f24");
       cout << "Loaded unchanged legacy native v102 model: " <<
+        nativeModelFile << endl;
+    }
+    else {
+      testAssert(external.version == 105);
+      size_t attentionCount = 0;
+      size_t qknCount = 0;
+      size_t ffnCount = 0;
+      size_t clippedFFNCount = 0;
+      for(const auto& entry: external.trunk.blocks) {
+        if(entry.first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+          attentionCount++;
+          const TransformerAttentionDesc* desc =
+            (const TransformerAttentionDesc*)entry.second.get();
+          if(desc->useQKNorm) {
+            qknCount++;
+            testAssert(desc->qNorm.numChannels == desc->qHeadDim);
+            testAssert(desc->kNorm.numChannels == desc->qHeadDim);
+            testAssert(desc->qNorm.weight.size() == (size_t)desc->qHeadDim);
+            testAssert(desc->kNorm.weight.size() == (size_t)desc->qHeadDim);
+            testAssert(desc->qNorm.epsilon == 1e-6f);
+            testAssert(desc->kNorm.epsilon == 1e-6f);
+          }
+        }
+        else if(entry.first == TRANSFORMER_FFN_BLOCK_KIND) {
+          ffnCount++;
+          const TransformerFFNDesc* desc =
+            (const TransformerFFNDesc*)entry.second.get();
+          if(desc->swigluClip > 0.0f) {
+            testAssert(desc->swigluClip == 7.0f);
+            clippedFFNCount++;
+          }
+        }
+      }
+      testAssert(attentionCount == 36 && qknCount == 36);
+      testAssert(ffnCount == 36 && clippedFFNCount == 36);
+      cout << "Loaded and validated native v105 QKN/clip model: " <<
         nativeModelFile << endl;
     }
   }

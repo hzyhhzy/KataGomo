@@ -1,6 +1,7 @@
 
 #include "../neuralnet/cudahelpers.h"
 
+#include <cmath>
 #include <mma.h>
 #include <stdexcept>
 
@@ -2455,6 +2456,88 @@ void customCudaSwiGLU(const half* a, const half* b, half* out, int size, cudaStr
   int blocks = (pairCount + threads * ELTS_PER_THREAD - 1) / (threads * ELTS_PER_THREAD);
   if(blocks < 1) blocks = 1;  // ensure the odd-size tail still gets a block
   swiGLUHalfStrideKernel<ELTS_PER_THREAD><<<blocks, threads,0,stream>>>(a, b, out, size);
+}
+
+__device__ __forceinline__ float clampSymmetric(float value, float limit) {
+  return fminf(limit,fmaxf(-limit,value));
+}
+
+__global__
+void clippedSwiGLUKernel(
+  const float* a, const float* b, float* out, int size, float clip
+) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if(idx < size) {
+    const float linear = clampSymmetric(siluf(a[idx]),clip);
+    const float gate = clampSymmetric(b[idx],clip);
+    out[idx] = linear * gate;
+  }
+}
+
+template<int ELTS_PER_THREAD>
+__global__
+void clippedSwiGLUHalfStrideKernel(
+  const half* a, const half* b, half* out, int size, float clip
+) {
+#ifdef CUDA_SUPPORTS_FP16
+  const half2* a2 = reinterpret_cast<const half2*>(a);
+  const half2* b2 = reinterpret_cast<const half2*>(b);
+  half2* out2 = reinterpret_cast<half2*>(out);
+  const int pairCount = size >> 1;
+  const int tileStart = blockIdx.x * blockDim.x * ELTS_PER_THREAD;
+  const int lid = threadIdx.x;
+  #pragma unroll
+  for(int d = 0; d < ELTS_PER_THREAD; d++) {
+    const int p = tileStart + d * blockDim.x + lid;
+    if(p < pairCount) {
+      const half2 av = a2[p];
+      const half2 bv = b2[p];
+      const float a0 = clampSymmetric(siluf(__half2float(__low2half(av))),clip);
+      const float a1 = clampSymmetric(siluf(__half2float(__high2half(av))),clip);
+      const float b0 = clampSymmetric(__half2float(__low2half(bv)),clip);
+      const float b1 = clampSymmetric(__half2float(__high2half(bv)),clip);
+      out2[p] = __halves2half2(
+        __float2half_rn(a0 * b0),__float2half_rn(a1 * b1));
+    }
+  }
+  if((size & 1) != 0 && blockIdx.x == 0 && lid == 0) {
+    const int last = size - 1;
+    const float linear = clampSymmetric(siluf(__half2float(a[last])),clip);
+    const float gate = clampSymmetric(__half2float(b[last]),clip);
+    out[last] = __float2half_rn(linear * gate);
+  }
+#else
+  (void)a; (void)b; (void)out; (void)size; (void)clip;
+#endif
+}
+
+void customCudaClippedSwiGLU(
+  const float* a, const float* b, float* out, int size, float clip,
+  cudaStream_t stream
+) {
+  if(size <= 0 || !(clip > 0.0f) || !std::isfinite(clip))
+    return;
+  const int threads = targetNumThreads;
+  const int blocks = (size + threads - 1) / threads;
+  clippedSwiGLUKernel<<<blocks,threads,0,stream>>>(a,b,out,size,clip);
+}
+
+void customCudaClippedSwiGLU(
+  const half* a, const half* b, half* out, int size, float clip,
+  cudaStream_t stream
+) {
+  if(size <= 0 || !(clip > 0.0f) || !std::isfinite(clip))
+    return;
+  constexpr int ELTS_PER_THREAD = 4;
+  const int threads = 256;
+  const int pairCount = size >> 1;
+  int blocks =
+    (pairCount + threads * ELTS_PER_THREAD - 1) /
+    (threads * ELTS_PER_THREAD);
+  if(blocks < 1)
+    blocks = 1;
+  clippedSwiGLUHalfStrideKernel<ELTS_PER_THREAD>
+    <<<blocks,threads,0,stream>>>(a,b,out,size,clip);
 }
 
 //--------------------------------------------------------------------------------------------------------------
