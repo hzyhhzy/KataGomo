@@ -706,6 +706,13 @@ katago_c384_exact_validate_cuda_version()
             "        ${KATAGO_C384_H12_FA4_OBJECTS}", final_link,
         )
         self.assertLess(final_link, runtime_link)
+        self.assertIn(
+            "KATAGO_C384_EXACT_AOT_EXPECTED_HASHED_FILES", source,
+        )
+        self.assertIn(
+            "hashes must cover exactly "
+            "registry+headers+metadata+bridges+objects+promotion", source,
+        )
 
     @unittest.skipUnless(shutil.which("cmake"), "cmake is required")
     def test_external_object_requires_explicit_final_link_item(self) -> None:
