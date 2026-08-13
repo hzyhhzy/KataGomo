@@ -51,6 +51,11 @@ CUDA descriptors and the launch ABI live in
   prepare hook; construction calls it before publishing the descriptor. The
   eventual hot path stores immutable descriptor pointers and performs no
   lookup, allocation, module load, weight packing, or kernel initialization.
+- Eager prepare bypasses CuTe's generated `void Kernel_Module_Load` convenience
+  helper, because that helper only prints failures and iterates over every
+  visible device. The bridge calls the raw init/load-to-device ABI, propagates
+  its `cudaError_t`, loads only the requested device ordinal, and never
+  publishes a failed module. A failed ordinal remains sticky and fail-closed.
 - Model names, model bytes, checkpoint hashes, and weight hashes are absent
   from all keys.
 
@@ -89,6 +94,13 @@ CMake derives the effective compile definitions from the manifest; when set,
 they must match it exactly. Family-specific ID lists, selected batch, two
 headers, two objects, two bridges, two metadata files, and every SHA-256 are
 validated before the target is created.
+
+Artifact verification follows the actual CuTe export boundary: the generated
+header must contain the unique inline wrapper and raw ABI declarations, the
+ELF object must contain the unique raw runtime and launch symbols, and the
+bridge must reference both. Metadata binds the top-level generator, bridge
+emitter, imported CUTLASS DSL source/version, and loaded CUDA bindings binary;
+visible distribution metadata must describe those exact imported versions.
 
 `production` mode additionally requires a hash-bound promotion JSON with
 `activation`, `long_gate`, and `accuracy` gates all marked `PASSED`, and must be
