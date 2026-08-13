@@ -93,9 +93,19 @@ void uploadExactFp16Weights(
   const vector<float>& packed,
   UniqueExactCudaDeviceBuffer& destination
 ) {
-  void* device = nullptr;
-  CudaUtils::mallocAndCopyToDevice(name,packed,device,true);
-  destination.reset(device);
+  vector<half_t> packedHalf(packed.size());
+  for(size_t i = 0; i < packed.size(); i++)
+    packedHalf[i] = half_float::half_cast<half_t>(packed[i]);
+  const size_t bytes = packedHalf.size() * sizeof(half_t);
+  void* rawDevice = nullptr;
+  CUDA_ERR(name.c_str(),cudaMalloc(&rawDevice,bytes));
+  // Publish only after the copy succeeds, but let the local owner release an
+  // allocation if H2D copy throws. The generic helper cannot provide this
+  // transaction because it exposes the raw pointer before copying.
+  UniqueExactCudaDeviceBuffer pending(rawDevice);
+  CUDA_ERR(name.c_str(),cudaMemcpy(
+    pending.get(),packedHalf.data(),bytes,cudaMemcpyHostToDevice));
+  destination = std::move(pending);
 }
 
 } // namespace
@@ -864,7 +874,7 @@ struct CudaHandles {
     return shape;
   }
 
-  void commitC384ExactFixedAot() noexcept {
+  void commitC384ExactFixedAot() {
     c384ExactQkvFa4Enabled = c384ExactModelEligible &&
       preparedC384ExactQkvFa4 == 36;
     c384ExactDualFfnEnabled = c384ExactModelEligible &&
@@ -2895,6 +2905,9 @@ struct TransformerAttentionBlock {
               cudaHandles->c384ExactRuntimeShape(true),
               KATAGO_C384_EXACT_QKV_TACTIC_ID,nullptr,
               &portableProof);
+          if(selection.qkvRopeReason ==
+               C384ExactFixedAot::RejectReason::PreparationFailed)
+            (void)cudaGetLastError();
           if(selection.qkvRope != nullptr && selection.packedFa4 != nullptr) {
             UniqueExactCudaDeviceBuffer qkvWeights;
             UniqueExactCudaDeviceBuffer ropeTable;
@@ -3538,6 +3551,9 @@ struct TransformerFFNBlock {
           C384ExactFixedAot::prepareCudaSelection(
             cudaHandles->c384ExactRuntimeShape(false),nullptr,
             KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID,nullptr);
+        if(selection.dualFfnReason ==
+             C384ExactFixedAot::RejectReason::PreparationFailed)
+          (void)cudaGetLastError();
         if(selection.dualFfn != nullptr) {
           UniqueExactCudaDeviceBuffer dualWeights;
           uploadExactFp16Weights(
