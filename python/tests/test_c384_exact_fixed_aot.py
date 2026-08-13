@@ -875,6 +875,43 @@ if errorlevel 1 exit /b 3
                     with self.assertRaisesRegex(ValueError, expected):
                         verify_artifact(self.space, metadata_path)
 
+    def test_nvcc_cuda13_provenance_accepts_official_lines_only(self) -> None:
+        task = self.tasks[0]
+        with writable_fixture() as root:
+            metadata_path = self._write_artifact(root, task)
+            baseline = json.loads(metadata_path.read_text(encoding="utf-8"))
+
+            accepted = (
+                "Cuda compilation tools, release 13.0, V13.0.88",
+                "Cuda compilation tools, release 13.2",
+                "Build cuda_13.0.r13.0/compiler.36424714_0",
+                "Build cuda_13.2.r13.2/compiler.40123456_1",
+            )
+            for value in accepted:
+                with self.subTest(accepted=value):
+                    metadata = json.loads(json.dumps(baseline))
+                    metadata["provenance"]["nvcc"] = value
+                    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                    verify_artifact(self.space, metadata_path)
+
+            rejected = (
+                "Cuda compilation tools, release 12.9, V12.9.0",
+                "Build cuda_13.0.r12.9/compiler.36424714_0",
+                "Build cuda_13.0.r13.0",
+                "prefix Build cuda_13.0.r13.0/compiler.36424714_0",
+                "Build cuda_13.0.r13.0/compiler.36424714_0 suffix",
+                "arbitrary release 13.0 text",
+            )
+            for value in rejected:
+                with self.subTest(rejected=value):
+                    metadata = json.loads(json.dumps(baseline))
+                    metadata["provenance"]["nvcc"] = value
+                    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        ValueError, "generated with CUDA 13.x"
+                    ):
+                        verify_artifact(self.space, metadata_path)
+
     def test_old_shape_literals_are_not_silently_reused(self) -> None:
         qkv = (TOOLS / "generate_qkv_rope.py").read_text(encoding="utf-8")
         dual = (TOOLS / "generate_dual_ffn.py").read_text(encoding="utf-8")

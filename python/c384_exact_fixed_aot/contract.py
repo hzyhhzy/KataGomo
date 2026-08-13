@@ -351,8 +351,23 @@ def verify_artifact(space: dict, metadata_path: Path) -> VerifiedArtifact:
                 f"artifact {label} is invalid")
     require(provenance.get("gpu_kernel_executed") is False,
             "generation provenance must remain CPU-only")
-    require(re.search(r"release 13(?:\.|,)", str(provenance.get("nvcc", "")),
-                      re.IGNORECASE) is not None,
+    nvcc = str(provenance.get("nvcc", "")).strip()
+    # nvcc --version uses one of two official CUDA 13.x lines depending on
+    # whether callers retain the banner's "release" line or its final build
+    # identity line. The generator intentionally records the last nonempty
+    # line, e.g. "Build cuda_13.0.r13.0/compiler.36424714_0". Anchor both
+    # accepted grammars so arbitrary text containing "release 13" cannot pass.
+    require(
+        re.fullmatch(
+            r"Cuda compilation tools, release 13\.\d+(?:, V13\.\d+(?:\.\d+)?)?",
+            nvcc,
+            re.IGNORECASE,
+        ) is not None or
+        re.fullmatch(
+            r"Build cuda_13\.\d+\.r13\.\d+/compiler\.\d+_\d+",
+            nvcc,
+            re.IGNORECASE,
+        ) is not None,
             "artifact must be generated with CUDA 13.x")
     expected_coordinate = {
         "tile": list(task.tile),
