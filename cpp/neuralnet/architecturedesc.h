@@ -108,6 +108,22 @@ struct ArchitectureDesc {
   uint8_t outerBatchNormBiasMask;
 };
 
+// Describes the complete contiguous transformer segment of a model trunk.
+// Operators before and after that segment (input projection, trunk tip, and
+// heads) are deliberately ignored, but a non-transformer operator inside the
+// segment makes it ineligible. This keeps whole-model exact transactions from
+// silently treating a mixed residual stack as a pure (Attention,FFN)^N stack.
+struct TransformerPairStackTopology {
+  bool eligible;
+  int depth;
+  int attentionCount;
+  int ffnCount;
+};
+
+TransformerPairStackTopology analyzeTransformerPairStack(
+  const ArchitectureDesc& architecture
+);
+
 // Requires a native ModelDesc with complete typed descriptors. The current
 // ONNX header-only ModelDesc does not expose enough graph structure and is
 // rejected rather than assigned a misleading signature.

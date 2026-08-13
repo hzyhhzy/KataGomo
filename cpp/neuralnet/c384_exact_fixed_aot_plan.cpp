@@ -100,8 +100,16 @@ bool ffnShapeEligible(const RuntimeShape& shape) {
 }
 
 bool targetShapeEligible(const RuntimeShape& shape) {
-  return shape.modelDepth == 36 &&
-    attentionShapeEligible(shape) && ffnShapeEligible(shape);
+  return attentionShapeEligible(shape) && ffnShapeEligible(shape);
+}
+
+bool transactionProgressComplete(const TransactionProgress& progress) {
+  return progress.modelDepth > 0 &&
+    progress.attentionBlockCount == progress.modelDepth &&
+    progress.ffnBlockCount == progress.modelDepth &&
+    progress.qkvFa4Count == progress.attentionBlockCount &&
+    progress.dualFfnCount == progress.ffnBlockCount &&
+    progress.ffnDownCount == progress.ffnBlockCount;
 }
 
 bool pieceShapeEligible(const RuntimeShape& shape, Family family) {

@@ -106,20 +106,59 @@ void require(bool condition, const char* message) {
 
 int main() {
   require(C384ExactFixedAot::productionBatchEligible(28,6300),
-    "shared production plan rejected B28/M6300");
+    "shared production plan rejected bs28/M6300");
   require(!C384ExactFixedAot::productionBatchEligible(24,5400),
-    "shared production plan admitted B24/M5400");
+    "shared production plan admitted bs24/M5400");
   resetDescriptor();
   const RuntimeShape shape = validShape();
   Tactic tactic = validTactic();
-  require(targetShapeEligible(shape),"B28 target shape rejected");
-  require(tacticWellFormed(tactic),"typed B28 tactic rejected");
+  require(targetShapeEligible(shape),"b36 bs28 target shape rejected");
+  RuntimeShape b24Model = shape;
+  b24Model.modelDepth = 24;
+  b24Model.attentionBlockCount = 24;
+  b24Model.ffnBlockCount = 24;
+  require(targetShapeEligible(b24Model),"b24 bs28 target shape rejected");
+  const C384ExactFixedAot::TransactionProgress b24Complete = {
+    24,24,24,24,24,24
+  };
+  const C384ExactFixedAot::TransactionProgress b36Complete = {
+    36,36,36,36,36,36
+  };
+  require(C384ExactFixedAot::transactionProgressComplete(b24Complete),
+    "complete b24 transaction rejected");
+  require(C384ExactFixedAot::transactionProgressComplete(b36Complete),
+    "complete b36 transaction rejected");
+  C384ExactFixedAot::TransactionProgress incomplete = b24Complete;
+  incomplete.qkvFa4Count--;
+  require(!C384ExactFixedAot::transactionProgressComplete(incomplete),
+    "incomplete b24 transaction committed");
+  incomplete = b24Complete;
+  incomplete.modelDepth = 36;
+  require(!C384ExactFixedAot::transactionProgressComplete(incomplete),
+    "mismatched typed model depth committed");
+  RuntimeShape unequalModel = shape;
+  unequalModel.attentionBlockCount--;
+  require(!targetShapeEligible(unequalModel),
+    "unequal attention/FFN counts entered AOT");
+  RuntimeShape nonAlternatingModel = shape;
+  nonAlternatingModel.alternatingAttentionFfn = false;
+  require(!targetShapeEligible(nonAlternatingModel),
+    "non-alternating model entered AOT");
+  RuntimeShape emptyModel = shape;
+  emptyModel.modelDepth = 0;
+  emptyModel.attentionBlockCount = 0;
+  emptyModel.ffnBlockCount = 0;
+  require(!targetShapeEligible(emptyModel),"empty model entered AOT");
+  RuntimeShape c256Model = shape;
+  c256Model.channels = 256;
+  require(!targetShapeEligible(c256Model),"C256 model entered C384 AOT");
+  require(tacticWellFormed(tactic),"typed bs28 tactic rejected");
   require(registryWellFormed(&tactic,1),"one-entry production registry rejected");
 
-  RuntimeShape b24 = shape;
-  b24.batchSize = 24;
-  b24.tokenRows = 24 * kSequenceLength;
-  require(!targetShapeEligible(b24),"B24 entered the production AOT route");
+  RuntimeShape bs24 = shape;
+  bs24.batchSize = 24;
+  bs24.tokenRows = 24 * kSequenceLength;
+  require(!targetShapeEligible(bs24),"bs24 entered the production AOT route");
   RuntimeShape tail = shape;
   tail.tokenRows--;
   require(!targetShapeEligible(tail),"nonintegral/tail rows entered AOT");
@@ -151,9 +190,9 @@ int main() {
       reinterpret_cast<void*>(0x2000),reinterpret_cast<void*>(0x3000)),
     "hot-path preflight accepted a malformed published tactic");
   require(!supports(
-      selected,b24,reinterpret_cast<void*>(0x1000),
+      selected,bs24,reinterpret_cast<void*>(0x1000),
       reinterpret_cast<void*>(0x2000),reinterpret_cast<void*>(0x3000)),
-    "B24 reused a B28 prepared selection");
+    "bs24 reused a bs28 prepared selection");
   RuntimeShape wrongDevice = shape;
   wrongDevice.deviceOrdinal = 1;
   require(!supports(
@@ -168,9 +207,9 @@ int main() {
   require(prepareSelectionFromRegistry(shape,"",&tactic,1).reason ==
       RejectReason::NoRequestedTactic,
     "empty ID did not select generic fallback");
-  require(prepareSelectionFromRegistry(b24,kId,&tactic,1).reason ==
+  require(prepareSelectionFromRegistry(bs24,kId,&tactic,1).reason ==
       RejectReason::ShapeMismatch,
-    "B24 rejection happened after registry preparation");
+    "bs24 rejection happened after registry preparation");
 
   descriptor.family = static_cast<std::uint32_t>(
     C384ResidualAotAbi::Family::OutProjResidual);
@@ -199,10 +238,11 @@ int main() {
     "prepare failure did not fail closed");
 
   resetDescriptor();
-  Tactic b24Tactic = tactic;
-  b24Tactic.batchSize = 24;
-  b24Tactic.tokenRows = 24 * kSequenceLength;
-  require(!tacticWellFormed(b24Tactic),"B24 descriptor accepted by production registry");
+  Tactic bs24Tactic = tactic;
+  bs24Tactic.batchSize = 24;
+  bs24Tactic.tokenRows = 24 * kSequenceLength;
+  require(!tacticWellFormed(bs24Tactic),
+    "bs24 descriptor accepted by production registry");
   Tactic duplicated[] = {tactic,tactic};
   require(!registryWellFormed(duplicated,2),"multi-entry production registry accepted");
   require(registryWellFormed(nullptr,0),"empty provider is not a valid disabled state");

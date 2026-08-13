@@ -423,6 +423,44 @@ uint32_t getFloatBits(float value) {
   return bits;
 }
 
+TransformerPairStackTopology analyzeTransformerPairStack(
+  const ArchitectureDesc& architecture
+) {
+  TransformerPairStackTopology result{false,0,0,0};
+  size_t first = architecture.operators.size();
+  size_t last = architecture.operators.size();
+  for(size_t i = 0; i < architecture.operators.size(); i++) {
+    const ArchitectureOpKind kind = architecture.operators[i].kind;
+    if(kind == ArchitectureOpKind::TransformerAttention ||
+       kind == ArchitectureOpKind::TransformerFFN) {
+      if(first == architecture.operators.size())
+        first = i;
+      last = i;
+      if(kind == ArchitectureOpKind::TransformerAttention)
+        result.attentionCount++;
+      else
+        result.ffnCount++;
+    }
+  }
+  if(first == architecture.operators.size())
+    return result;
+
+  for(size_t i = first; i <= last; i++) {
+    const ArchitectureOpKind expected = ((i - first) % 2 == 0) ?
+      ArchitectureOpKind::TransformerAttention :
+      ArchitectureOpKind::TransformerFFN;
+    if(architecture.operators[i].kind != expected)
+      return result;
+  }
+  if(result.attentionCount <= 0 ||
+     result.attentionCount != result.ffnCount)
+    return result;
+
+  result.eligible = true;
+  result.depth = result.attentionCount;
+  return result;
+}
+
 ArchitectureDesc buildArchitectureDesc(const ModelDesc& model) {
   if(model.onnxHeader.isOnnx)
     throw StringError("Cannot build a complete architecture signature from an ONNX header-only ModelDesc");

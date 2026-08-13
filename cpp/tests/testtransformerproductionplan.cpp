@@ -926,22 +926,56 @@ void Tests::runTransformerProductionPlanTests() {
     testAssert(!targetShapeEligible(shape));
     shape.computeCapability = 120;
 
-    // Depth identifies the primary whole-model target but is not a local
-    // kernel dimension. This preserves exact operator reuse across depths.
-    shape.modelDepth = 32;
-    shape.attentionBlockCount = 32;
-    shape.ffnBlockCount = 32;
-    selected = select(
-      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
-    testAssert(!selected.targetShape);
-    testAssert(selected.qkvRope.selected());
-    testAssert(selected.dualFfn.selected());
+    // Model depth is not a local kernel dimension. Both b24 and b36 models
+    // reuse the exact bs28 operators when every local shape is unchanged.
+    for(const int modelDepth: {24,36}) {
+      shape.modelDepth = modelDepth;
+      shape.attentionBlockCount = modelDepth;
+      shape.ffnBlockCount = modelDepth;
+      selected = select(
+        shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+      testAssert(selected.targetShape);
+      testAssert(selected.qkvRope.selected());
+      testAssert(selected.dualFfn.selected());
+
+      const TransactionProgress complete = {
+        modelDepth,modelDepth,modelDepth,modelDepth,modelDepth,modelDepth
+      };
+      testAssert(transactionProgressComplete(complete));
+      TransactionProgress incomplete = complete;
+      incomplete.ffnDownCount--;
+      testAssert(!transactionProgressComplete(incomplete));
+      incomplete = complete;
+      incomplete.modelDepth++;
+      testAssert(!transactionProgressComplete(incomplete));
+    }
     shape.modelDepth = 36;
     shape.attentionBlockCount = 36;
     shape.ffnBlockCount = 36;
     shape.attentionBlockCount = 35;
     testAssert(!modelStructureEligible(shape));
     shape.attentionBlockCount = 36;
+    shape.alternatingAttentionFfn = false;
+    testAssert(!modelStructureEligible(shape));
+    shape.alternatingAttentionFfn = true;
+    shape.modelDepth = 0;
+    shape.attentionBlockCount = 0;
+    shape.ffnBlockCount = 0;
+    testAssert(!modelStructureEligible(shape));
+    testAssert(!transactionProgressComplete(TransactionProgress{}));
+    shape.modelDepth = 36;
+    shape.attentionBlockCount = 36;
+    shape.ffnBlockCount = 36;
+
+    // The dynamic-depth gate remains C384-specific; the existing C256 route
+    // cannot enter either exact family or the whole-model transaction.
+    shape.channels = 256;
+    selected = select(
+      shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);
+    testAssert(!selected.targetShape);
+    testAssert(selected.qkvRope.reason == RejectReason::ShapeMismatch);
+    testAssert(selected.dualFfn.reason == RejectReason::ShapeMismatch);
+    shape.channels = 384;
 
     // Family-local matching preserves reusable kernels on a structurally
     // nearby model: attention changes do not discard a compatible FFN, and
@@ -1083,6 +1117,37 @@ void Tests::runTransformerProductionPlanTests() {
   weightsB.onnxHeader.model_config_sha256 = "export-config-b";
   ArchitectureDesc architectureA = buildArchitectureDesc(weightsA);
   ArchitectureDesc architectureB = buildArchitectureDesc(weightsB);
+  const TransformerPairStackTopology pairStackA =
+    analyzeTransformerPairStack(architectureA);
+  testAssert(pairStackA.eligible);
+  testAssert(pairStackA.depth == 24);
+  testAssert(pairStackA.attentionCount == 24);
+  testAssert(pairStackA.ffnCount == 24);
+
+  // Outer input/head operators are valid, but a non-transformer operation
+  // inserted between Attention and FFN must invalidate the whole-model exact
+  // transaction rather than being silently filtered out.
+  ArchitectureDesc interruptedPairStack = architectureA;
+  size_t firstAttention = interruptedPairStack.operators.size();
+  for(size_t i = 0; i < interruptedPairStack.operators.size(); i++) {
+    if(interruptedPairStack.operators[i].kind ==
+       ArchitectureOpKind::TransformerAttention) {
+      firstAttention = i;
+      break;
+    }
+  }
+  testAssert(firstAttention < interruptedPairStack.operators.size());
+  ArchitectureOpDesc insertedConv{};
+  insertedConv.kind = ArchitectureOpKind::Conv2D;
+  interruptedPairStack.operators.insert(
+    interruptedPairStack.operators.begin() + firstAttention + 1,
+    insertedConv);
+  const TransformerPairStackTopology interruptedTopology =
+    analyzeTransformerPairStack(interruptedPairStack);
+  testAssert(!interruptedTopology.eligible);
+  testAssert(interruptedTopology.depth == 0);
+  testAssert(interruptedTopology.attentionCount == 24);
+  testAssert(interruptedTopology.ffnCount == 24);
   testAssert(architectureA.signature == architectureB.signature);
   testAssert(architectureA.canonicalEncoding == architectureB.canonicalEncoding);
   // This weight-free fixture mirrors REAL_MODEL_ARCHITECTURE_MANIFEST.json,

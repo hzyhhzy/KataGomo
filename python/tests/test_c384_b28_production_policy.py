@@ -12,6 +12,7 @@ POLICY_CONTRACT = pathlib.Path(__file__).with_name(
 FIXED_REGISTRY_HEADER = (
     ROOT / "cpp" / "neuralnet" / "c384_exact_fixed_aot_kernels.h"
 )
+CUDA_BACKEND = ROOT / "cpp" / "neuralnet" / "cudabackend.cpp"
 
 
 class C384B28ProductionPolicyTests(unittest.TestCase):
@@ -56,6 +57,30 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
         self.assertIn('"${CMAKE_CURRENT_SOURCE_DIR}/neuralnet"', source)
         fixed_registry = FIXED_REGISTRY_HEADER.read_text(encoding="utf-8")
         self.assertNotIn("FfnDown", fixed_registry)
+
+    def test_standard_sm120_build_does_not_enable_int8_experiment(self) -> None:
+        source = CMAKE_LISTS.read_text(encoding="utf-8")
+        declaration = source.split(
+            "set(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT", 1,
+        )[1].split(")", 1)[0]
+        self.assertIn("\n  0 CACHE BOOL", declaration)
+        self.assertNotIn("${KATAGO_ENABLE_SM120_TRANSFORMER_WINNER}", declaration)
+
+    def test_exact_transaction_markers_report_typed_dynamic_depth(self) -> None:
+        source = CUDA_BACKEND.read_text(encoding="utf-8")
+        transaction = source.split("void configureC384ExactFixedAot", 1)[1]
+        transaction = transaction.split(
+            "#if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)", 1,
+        )[0]
+        self.assertNotIn("attentionCount != 36", transaction)
+        self.assertNotIn("preparedC384ExactQkvFa4 == 36", transaction)
+        self.assertNotIn("activeC384ExactQkvFa4 == 36", transaction)
+        self.assertNotIn("/36", transaction)
+        self.assertIn("KATAGO_C384_EXACT_FIXED_PREPARED batch=", transaction)
+        self.assertIn("KATAGO_C384_EXACT_FIXED_ACTIVE batch=", transaction)
+        self.assertGreaterEqual(transaction.count(' + " depth=" +'), 2)
+        self.assertIn("c384ExactAttentionBlockCount", transaction)
+        self.assertIn("c384ExactFfnBlockCount", transaction)
 
 
 if __name__ == "__main__":

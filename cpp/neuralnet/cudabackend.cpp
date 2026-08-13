@@ -525,6 +525,9 @@ struct CudaHandles {
   bool c384ExactTransactionEnabled;
   int c384ExactBatchSize;
   int c384ExactDeviceOrdinal;
+  int c384ExactModelDepth;
+  int c384ExactAttentionBlockCount;
+  int c384ExactFfnBlockCount;
   int preparedC384ExactQkvFa4;
   int preparedC384ExactDualFfn;
   int preparedC384ExactFfnDown;
@@ -605,6 +608,9 @@ struct CudaHandles {
       c384ExactTransactionEnabled(false),
       c384ExactBatchSize(0),
       c384ExactDeviceOrdinal(-1),
+      c384ExactModelDepth(0),
+      c384ExactAttentionBlockCount(0),
+      c384ExactFfnBlockCount(0),
       preparedC384ExactQkvFa4(0),
       preparedC384ExactDualFfn(0),
       preparedC384ExactFfnDown(0),
@@ -801,6 +807,9 @@ struct CudaHandles {
     c384ExactModelEligible = false;
     c384ExactBatchSize = 0;
     c384ExactDeviceOrdinal = -1;
+    c384ExactModelDepth = 0;
+    c384ExactAttentionBlockCount = 0;
+    c384ExactFfnBlockCount = 0;
     if(!C384ExactFixedAot::productionBatchEligible(
          physicalBatchSize,
          physicalBatchSize * C384ExactFixedAot::kSequenceLength) ||
@@ -809,12 +818,11 @@ struct CudaHandles {
        !exactNoMask || majorComputeCapability != 12 || minorComputeCapability != 0)
       return;
 
-    int attentionCount = 0;
-    int ffnCount = 0;
-    bool alternating = true;
-    NeuralNetArchitecture::ArchitectureOpKind previous =
-      NeuralNetArchitecture::ArchitectureOpKind::Conv2D;
-    bool sawTransformer = false;
+    const NeuralNetArchitecture::TransformerPairStackTopology topology =
+      NeuralNetArchitecture::analyzeTransformerPairStack(architecture);
+    if(!topology.eligible)
+      return;
+    bool allLocalShapesEligible = true;
     for(const NeuralNetArchitecture::ArchitectureOpDesc& operation:
         architecture.operators) {
       if(operation.kind !=
@@ -822,17 +830,10 @@ struct CudaHandles {
          operation.kind !=
            NeuralNetArchitecture::ArchitectureOpKind::TransformerFFN)
         continue;
-      if(!sawTransformer && operation.kind !=
-           NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention)
-        alternating = false;
-      if(sawTransformer && operation.kind == previous)
-        alternating = false;
-      previous = operation.kind;
-      sawTransformer = true;
       if(operation.kind ==
            NeuralNetArchitecture::ArchitectureOpKind::TransformerAttention) {
-        attentionCount++;
-        alternating = alternating && operation.inChannels == 384 &&
+        allLocalShapesEligible = allLocalShapesEligible &&
+          operation.inChannels == 384 &&
           operation.outChannels == 384 && operation.numHeads == 12 &&
           operation.numKVHeads == 12 && operation.qHeadDim == 32 &&
           operation.vHeadDim == 32 && operation.auxiliaryChannels == 16 &&
@@ -843,13 +844,13 @@ struct CudaHandles {
              NeuralNetArchitecture::OP_FLAG_LEARNABLE_ROPE);
       }
       else {
-        ffnCount++;
-        alternating = alternating && operation.inChannels == 384 &&
+        allLocalShapesEligible = allLocalShapesEligible &&
+          operation.inChannels == 384 &&
           operation.outChannels == 384 && operation.auxiliaryChannels == 1024 &&
           (operation.flags & NeuralNetArchitecture::OP_FLAG_USE_SWIGLU) != 0;
       }
     }
-    if(!alternating || attentionCount != 36 || ffnCount != 36)
+    if(!allLocalShapesEligible)
       return;
     int deviceOrdinal = -1;
     if(cudaGetDevice(&deviceOrdinal) != cudaSuccess || deviceOrdinal < 0) {
@@ -859,15 +860,18 @@ struct CudaHandles {
     c384ExactModelEligible = true;
     c384ExactBatchSize = physicalBatchSize;
     c384ExactDeviceOrdinal = deviceOrdinal;
+    c384ExactModelDepth = topology.depth;
+    c384ExactAttentionBlockCount = topology.attentionCount;
+    c384ExactFfnBlockCount = topology.ffnCount;
   }
 
   C384ExactFixedAot::RuntimeShape c384ExactRuntimeShape(
     bool attention
   ) const noexcept {
     C384ExactFixedAot::RuntimeShape shape;
-    shape.modelDepth = 36;
-    shape.attentionBlockCount = 36;
-    shape.ffnBlockCount = 36;
+    shape.modelDepth = c384ExactModelDepth;
+    shape.attentionBlockCount = c384ExactAttentionBlockCount;
+    shape.ffnBlockCount = c384ExactFfnBlockCount;
     shape.alternatingAttentionFfn = true;
     shape.batchSize = c384ExactBatchSize;
     shape.enqueuedRows = c384ExactBatchSize * C384ExactFixedAot::kSequenceLength;
@@ -893,9 +897,9 @@ struct CudaHandles {
 
   C384ExactFfnDownAot::RuntimeShape c384ExactFfnDownRuntimeShape() const noexcept {
     C384ExactFfnDownAot::RuntimeShape shape;
-    shape.modelDepth = 36;
-    shape.attentionBlockCount = 36;
-    shape.ffnBlockCount = 36;
+    shape.modelDepth = c384ExactModelDepth;
+    shape.attentionBlockCount = c384ExactAttentionBlockCount;
+    shape.ffnBlockCount = c384ExactFfnBlockCount;
     shape.alternatingAttentionFfn = true;
     shape.batchSize = c384ExactBatchSize;
     shape.tokenRows = c384ExactBatchSize * C384ExactFfnDownAot::kSequenceLength;
@@ -914,18 +918,25 @@ struct CudaHandles {
   }
 
   void commitC384ExactFixedAot() {
+    const C384ExactFixedAot::TransactionProgress progress = {
+      c384ExactModelDepth,c384ExactAttentionBlockCount,c384ExactFfnBlockCount,
+      preparedC384ExactQkvFa4,preparedC384ExactDualFfn,
+      preparedC384ExactFfnDown
+    };
     c384ExactTransactionEnabled = c384ExactModelEligible &&
       c384ExactBatchSize == C384ExactFixedAot::kProductionBatch &&
-      preparedC384ExactQkvFa4 == 36 &&
-      preparedC384ExactDualFfn == 36 &&
-      preparedC384ExactFfnDown == 36;
+      C384ExactFixedAot::transactionProgressComplete(progress);
     if(logger != NULL && c384ExactModelEligible) {
       logger->write(
         string("KATAGO_C384_EXACT_FIXED_PREPARED batch=") +
-        Global::intToString(c384ExactBatchSize) + " qkv_fa4=" +
-        Global::intToString(preparedC384ExactQkvFa4) + "/36 dual_ffn=" +
-        Global::intToString(preparedC384ExactDualFfn) + "/36 ffn_down=" +
-        Global::intToString(preparedC384ExactFfnDown) + "/36 transaction=" +
+        Global::intToString(c384ExactBatchSize) + " depth=" +
+        Global::intToString(c384ExactModelDepth) + " qkv_fa4=" +
+        Global::intToString(preparedC384ExactQkvFa4) + "/" +
+        Global::intToString(c384ExactAttentionBlockCount) + " dual_ffn=" +
+        Global::intToString(preparedC384ExactDualFfn) + "/" +
+        Global::intToString(c384ExactFfnBlockCount) + " ffn_down=" +
+        Global::intToString(preparedC384ExactFfnDown) + "/" +
+        Global::intToString(c384ExactFfnBlockCount) + " transaction=" +
         (c384ExactTransactionEnabled ? "active" : "fallback") +
         " fallback=pre-enqueue-generic");
     }
@@ -936,14 +947,23 @@ struct CudaHandles {
       return;
     blockCounted = true;
     activeCount++;
+    const C384ExactFixedAot::TransactionProgress progress = {
+      c384ExactModelDepth,c384ExactAttentionBlockCount,c384ExactFfnBlockCount,
+      activeC384ExactQkvFa4,activeC384ExactDualFfn,activeC384ExactFfnDown
+    };
     if(!loggedC384ExactTransactionActive && logger != NULL &&
-       activeC384ExactQkvFa4 == 36 && activeC384ExactDualFfn == 36 &&
-       activeC384ExactFfnDown == 36) {
+       C384ExactFixedAot::transactionProgressComplete(progress)) {
       logger->write(
         string("KATAGO_C384_EXACT_FIXED_ACTIVE batch=") +
-        Global::intToString(c384ExactBatchSize) +
-        " qkv_fa4=36/36 dual_ffn=36/36 ffn_down=36/36 "
-        "out_projection=cublas-hgemm-beta1 transaction=active");
+        Global::intToString(c384ExactBatchSize) + " depth=" +
+        Global::intToString(c384ExactModelDepth) + " qkv_fa4=" +
+        Global::intToString(activeC384ExactQkvFa4) + "/" +
+        Global::intToString(c384ExactAttentionBlockCount) + " dual_ffn=" +
+        Global::intToString(activeC384ExactDualFfn) + "/" +
+        Global::intToString(c384ExactFfnBlockCount) + " ffn_down=" +
+        Global::intToString(activeC384ExactFfnDown) + "/" +
+        Global::intToString(c384ExactFfnBlockCount) +
+        " out_projection=cublas-hgemm-beta1 transaction=active");
       loggedC384ExactTransactionActive = true;
     }
   }

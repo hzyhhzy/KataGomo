@@ -40,8 +40,9 @@ enum class Family : uint32_t {
 };
 
 struct RuntimeShape {
-  // Used only to identify the primary 36-layer target. Per-operator matching
-  // intentionally remains depth-independent for safe local reuse.
+  // Whole-model transaction metadata. Per-operator matching intentionally
+  // remains depth-independent so compatible b24 and b36 models reuse the
+  // same exact-bs28 kernel objects.
   int modelDepth = 0;
   int attentionBlockCount = 0;
   int ffnBlockCount = 0;
@@ -143,10 +144,24 @@ struct Selection {
   PieceSelection dualFfn;
 };
 
+// Construction and first-use accounting for the all-or-nothing exact route.
+// Attention and FFN blocks have different prepared objects, so both expected
+// counts are retained even though an eligible architecture requires them to
+// be equal. The same predicate is used for prepared and active progress.
+struct TransactionProgress {
+  int modelDepth = 0;
+  int attentionBlockCount = 0;
+  int ffnBlockCount = 0;
+  int qkvFa4Count = 0;
+  int dualFfnCount = 0;
+  int ffnDownCount = 0;
+};
+
 bool modelStructureEligible(const RuntimeShape& shape);
 bool attentionShapeEligible(const RuntimeShape& shape);
 bool ffnShapeEligible(const RuntimeShape& shape);
 bool targetShapeEligible(const RuntimeShape& shape);
+bool transactionProgressComplete(const TransactionProgress& progress);
 bool pieceShapeEligible(const RuntimeShape& shape, Family family);
 bool preparedPackedFa4Compatible(
   const RuntimeShape& shape,

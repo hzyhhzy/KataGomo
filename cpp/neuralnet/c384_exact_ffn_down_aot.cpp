@@ -14,8 +14,10 @@ bool aligned16(const void* pointer) {
 }  // namespace
 
 bool targetShapeEligible(const RuntimeShape& shape) {
-  return shape.modelDepth == 36 && shape.attentionBlockCount == 36 &&
-    shape.ffnBlockCount == 36 && shape.alternatingAttentionFfn &&
+  return shape.modelDepth > 0 &&
+    shape.attentionBlockCount == shape.modelDepth &&
+    shape.ffnBlockCount == shape.modelDepth &&
+    shape.alternatingAttentionFfn &&
     shape.batchSize == kSelectedBatch &&
     shape.tokenRows == kSelectedTokenRows &&
     shape.boardX == kBoardX && shape.boardY == kBoardY &&
