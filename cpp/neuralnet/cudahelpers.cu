@@ -2459,7 +2459,10 @@ void customCudaSwiGLU(const half* a, const half* b, half* out, int size, cudaStr
 }
 
 __device__ __forceinline__ float clampSymmetric(float value, float limit) {
-  return fminf(limit,fmaxf(-limit,value));
+  // Match torch.clamp and the exact CUTLASS clip7 epilogue, including NaN
+  // propagation. fminf/fmaxf would instead silently replace a NaN with one
+  // of the finite bounds, making generic fallback semantics tactic-dependent.
+  return value > limit ? limit : (value < -limit ? -limit : value);
 }
 
 __global__

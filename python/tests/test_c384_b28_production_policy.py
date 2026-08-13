@@ -14,6 +14,7 @@ FIXED_REGISTRY_HEADER = (
     "c384" / "fixed_batch" / "kernels.h"
 )
 CUDA_BACKEND = ROOT / "cpp" / "neuralnet" / "cudabackend.cpp"
+CUDA_HELPERS = ROOT / "cpp" / "neuralnet" / "cudahelpers.cu"
 NEURALNET = ROOT / "cpp" / "neuralnet"
 
 
@@ -106,6 +107,19 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
             "       (swigluClip == 0.0f || swigluClip == 7.0f)",
             apply,
         )
+
+    def test_generic_clip7_propagates_nan_like_exact_epilogue(self) -> None:
+        source = CUDA_HELPERS.read_text(encoding="utf-8")
+        clamp = source.split(
+            "__device__ __forceinline__ float clampSymmetric", 1,
+        )[1].split("}", 1)[0]
+        self.assertIn(
+            "value > limit ? limit : (value < -limit ? -limit : value)",
+            clamp,
+        )
+        return_line = clamp.split("return", 1)[1]
+        self.assertNotIn("fminf", return_line)
+        self.assertNotIn("fmaxf", return_line)
 
     def test_specialized_layout_keeps_generated_include_compatibility(self) -> None:
         forwards = {
