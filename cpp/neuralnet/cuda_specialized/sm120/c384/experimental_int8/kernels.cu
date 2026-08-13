@@ -3,8 +3,10 @@
 #include "cutlass/cutlass.h"
 #include "cutlass/device_kernel.h"
 #include "cutlass/epilogue/thread/linear_combination.h"
+#include "cutlass/epilogue/threadblock/epilogue.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/gemm/gemm.h"
+#include "cutlass/gemm/kernel/gemm.h"
 #include "cutlass/gemm/threadblock/threadblock_swizzle.h"
 #include "device/dual_gemm.h"
 
@@ -42,6 +44,208 @@ using ProjectionGemm = cutlass::gemm::device::Gemm<
   DequantToHalf,
   cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<Swizzle>,
   Stages,16,16,false,cutlass::arch::OpMultiplyAddSaturate>;
+
+// The P3 output thread map is particularly useful for D32 QK normalization:
+// each warp covers four output rows over its two epilogue row iterations;
+// each row uses 16 lanes, every lane owns 8 adjacent half values, and thus
+// each four-lane subgroup owns exactly one head.
+// N tiles are 128-wide and all Q/K/V plane boundaries are multiples of 128,
+// so no CTA or subgroup straddles a plane boundary.  This iterator consumes
+// the already-dequantized FP16 epilogue fragment, performs the D32 FP32
+// reduction in registers, preserves the FP16 post-gamma rounding boundary,
+// applies learned RoPE, and stores the final packed Q/K values once.  V takes
+// the unmodified Base path and is therefore bit-identical to ProjectionGemm.
+template<typename BaseIterator>
+class QknormRopeOutputTileIterator : public BaseIterator {
+public:
+  using IteratorBase = BaseIterator;
+  using Base = BaseIterator;
+  using ThreadMap = typename Base::ThreadMap;
+  using Element = typename Base::Element;
+  using Layout = typename Base::Layout;
+  using TensorRef = typename Base::TensorRef;
+  using ConstTensorRef = typename Base::ConstTensorRef;
+  using TensorCoord = typename Base::TensorCoord;
+  using LongIndex = typename Base::LongIndex;
+  using Fragment = typename Base::Fragment;
+  using AccessType = typename Base::AccessType;
+  using Mask = typename Base::Mask;
+
+  static int const kElementsPerAccess = Base::kElementsPerAccess;
+  static int const kIterations = Base::kIterations;
+
+  static_assert(kElementsPerAccess == 8,
+    "C384 fused QKNorm requires the qualified eight-half output access");
+  static_assert(kHeadDim == 4 * kElementsPerAccess,
+    "four adjacent epilogue lanes must cover one complete D32 head");
+  static_assert(ThreadMap::kThreads == 128,
+    "C384 fused QKNorm requires the qualified 128-thread epilogue map");
+  static_assert(ThreadMap::Iterations::kColumn == 1 &&
+                ThreadMap::Iterations::kRow == 2 &&
+                ThreadMap::Iterations::kGroup == 1 &&
+                ThreadMap::Iterations::kCluster == 1,
+    "C384 fused QKNorm epilogue iteration geometry changed");
+  static_assert(ThreadMap::Delta::kColumn == 128 &&
+                ThreadMap::Delta::kRow == 2,
+    "C384 fused QKNorm epilogue access deltas changed");
+  static_assert(ThreadMap::Shape::kColumn == 128,
+    "C384 fused QKNorm requires a 128-wide output tile");
+  static_assert((kChannels % 128) == 0,
+    "Q/K/V boundaries must align with the 128-wide projection N tile");
+
+  struct Params : public IteratorBase::Params {
+    const half* qGamma;
+    const half* kGamma;
+    const half2* ropeCosSin;
+    int totalRows;
+    float qEpsilon;
+    float kEpsilon;
+
+    CUTLASS_HOST_DEVICE
+    Params() : IteratorBase::Params(), qGamma(nullptr), kGamma(nullptr),
+      ropeCosSin(nullptr), totalRows(0), qEpsilon(0.0f), kEpsilon(0.0f) {}
+
+    CUTLASS_HOST_DEVICE
+    explicit Params(Layout const& layout) : IteratorBase::Params(layout),
+      qGamma(nullptr), kGamma(nullptr), ropeCosSin(nullptr), totalRows(0),
+      qEpsilon(0.0f), kEpsilon(0.0f) {}
+  };
+
+private:
+  const half* qGamma_;
+  const half* kGamma_;
+  const half2* ropeCosSin_;
+  int totalRows_;
+  float qEpsilon_;
+  float kEpsilon_;
+
+public:
+  CUTLASS_DEVICE
+  QknormRopeOutputTileIterator(
+    Params const& params,
+    Element* pointer,
+    TensorCoord extent,
+    int threadIdx,
+    TensorCoord threadblockOffset = TensorCoord(),
+    int const* indices = nullptr
+  ) : Base(params,pointer,extent,threadIdx,threadblockOffset,indices),
+      qGamma_(params.qGamma), kGamma_(params.kGamma),
+      ropeCosSin_(params.ropeCosSin), totalRows_(params.totalRows),
+      qEpsilon_(params.qEpsilon), kEpsilon_(params.kEpsilon) {}
+
+  CUTLASS_DEVICE
+  void store_with_byte_offset(Fragment const& fragment, int64_t byteOffset) const {
+    Fragment transformed = fragment;
+    AccessType* accesses = reinterpret_cast<AccessType*>(&transformed);
+    const int startRow = Base::thread_start_row();
+    const int startColumn = Base::thread_start_column();
+
+    CUTLASS_PRAGMA_UNROLL
+    for(int cluster = 0; cluster < ThreadMap::Iterations::kCluster; cluster++) {
+      CUTLASS_PRAGMA_UNROLL
+      for(int group = 0; group < ThreadMap::Iterations::kGroup; group++) {
+        CUTLASS_PRAGMA_UNROLL
+        for(int row = 0; row < ThreadMap::Iterations::kRow; row++) {
+          const int fragmentRow = row + ThreadMap::Iterations::kRow *
+            (group + ThreadMap::Iterations::kGroup * cluster);
+          const int rowOffset = row * ThreadMap::Delta::kRow +
+            group * ThreadMap::Delta::kGroup +
+            cluster * ThreadMap::Delta::kCluster;
+          const int outputRow = startRow + rowOffset;
+
+          CUTLASS_PRAGMA_UNROLL
+          for(int column = 0; column < ThreadMap::Iterations::kColumn; column++) {
+            const int outputColumn =
+              startColumn + column * ThreadMap::Delta::kColumn;
+            AccessType& access = accesses[
+              fragmentRow * ThreadMap::Iterations::kColumn + column];
+
+            // Every 16-lane row subgroup is wholly in Q/K or V because the
+            // 128-wide N tile and all plane boundaries are aligned. Keep the
+            // subgroup converged across shuffles, including tail rows.
+            if(outputColumn < kQkChannels) {
+              float sumSquares = 0.0f;
+              CUTLASS_PRAGMA_UNROLL
+              for(int element = 0; element < kElementsPerAccess; element++) {
+                const float value = static_cast<float>(access[element]);
+                sumSquares += value * value;
+              }
+              sumSquares += __shfl_xor_sync(
+                0xffffffffu,sumSquares,2,kHeadDim / kElementsPerAccess);
+              sumSquares += __shfl_xor_sync(
+                0xffffffffu,sumSquares,1,kHeadDim / kElementsPerAccess);
+
+              // Predication only affects whole 16-lane row groups.  Do the
+              // reduction above unconditionally, then avoid an out-of-range
+              // RoPE table access for the final partial M tile.
+              if(outputRow < totalRows_) {
+                const int plane = outputColumn / kChannels;
+                const int channelInPlane = outputColumn - plane * kChannels;
+                const int head = channelInPlane / kHeadDim;
+                const int dimension = channelInPlane - head * kHeadDim;
+                const half2* gamma = reinterpret_cast<const half2*>(
+                  plane == 0 ? qGamma_ : kGamma_);
+                const float epsilon = plane == 0 ? qEpsilon_ : kEpsilon_;
+                const float invRms = rsqrtf(
+                  sumSquares / static_cast<float>(kHeadDim) + epsilon);
+                const int xy = outputRow % kSequence;
+
+                CUTLASS_PRAGMA_UNROLL
+                for(int element = 0; element < kElementsPerAccess; element += 2) {
+                  const float2 gammaValues = __half22float2(
+                    gamma[(dimension + element) / 2]);
+                  const half2 normalizedHalf = __floats2half2_rn(
+                    static_cast<float>(access[element]) * invRms * gammaValues.x,
+                    static_cast<float>(access[element + 1]) * invRms * gammaValues.y);
+                  const float2 normalized = __half22float2(normalizedHalf);
+                  const half2 ropeHalf = ropeCosSin_[
+                    (static_cast<std::size_t>(xy) * kChannels +
+                     head * kHeadDim + dimension + element) / 2];
+                  const float2 rope = __half22float2(ropeHalf);
+                  access[element] = Element(
+                    normalized.x * rope.x - normalized.y * rope.y);
+                  access[element + 1] = Element(
+                    normalized.x * rope.y + normalized.y * rope.x);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    Base::store_with_byte_offset(transformed,byteOffset);
+  }
+
+  CUTLASS_DEVICE
+  void store(Fragment const& fragment) const {
+    store_with_byte_offset(fragment,0);
+  }
+};
+
+template<int Stages, int SwizzleFactor>
+struct FusedQknProjectionBundle {
+  using DeviceGemm = ProjectionGemm<Stages,SwizzleFactor>;
+  using DefaultKernel = typename DeviceGemm::GemmKernel;
+  using Mma = typename DefaultKernel::Mma;
+  using DefaultEpilogue = typename DefaultKernel::Epilogue;
+  static_assert(DefaultEpilogue::kPartitionsK == 1,
+    "QKNorm may only run after the final non-split-K projection reduction");
+  using DefaultIterator = typename DefaultEpilogue::OutputTileIterator;
+  using OutputIterator = QknormRopeOutputTileIterator<DefaultIterator>;
+  using Epilogue = cutlass::epilogue::threadblock::Epilogue<
+    typename DefaultEpilogue::Shape,
+    typename DefaultEpilogue::WarpMmaOperator,
+    DefaultEpilogue::kPartitionsK,
+    OutputIterator,
+    typename DefaultEpilogue::AccumulatorFragmentIterator,
+    typename DefaultEpilogue::WarpTileIterator,
+    typename DefaultEpilogue::SharedLoadIterator,
+    typename DefaultEpilogue::OutputOp,
+    typename DefaultEpilogue::Padding,
+    DefaultEpilogue::Base::kFragmentsPerIteration>;
+  using Swizzle = typename DeviceGemm::ThreadblockSwizzle;
+  using Kernel = cutlass::gemm::kernel::Gemm<Mma,Epilogue,Swizzle,false>;
+};
 
 template <
   typename ElementOutput_, int Count,
@@ -285,6 +489,7 @@ using ResidualInt8Gemm = cutlass::gemm::device::Gemm<
 using ProjectionS2Sw1 = ProjectionGemm<2,1>;
 using ProjectionS3Sw1 = ProjectionGemm<3,1>;
 using ProjectionS3Sw2 = ProjectionGemm<3,2>;
+using FusedQknProjectionP3 = FusedQknProjectionBundle<3,2>;
 using DualS3Sw1 = DualFfnGemm<3,1>;
 using DualS3Sw4 = DualFfnGemm<3,4>;
 using DualS4Sw1 = DualFfnGemm<4,1>;
@@ -300,6 +505,9 @@ static_assert(sizeof(typename ProjectionS3Sw1::GemmKernel::SharedStorage) <= 101
 static_assert(sizeof(typename ProjectionS2Sw1::GemmKernel::SharedStorage) <= 101376 &&
               sizeof(typename ProjectionS3Sw2::GemmKernel::SharedStorage) <= 101376,
   "a C384 INT8 projection candidate exceeds RTX 5090 opt-in shared memory");
+static_assert(
+  sizeof(typename FusedQknProjectionP3::Kernel::SharedStorage) <= 101376,
+  "the fused C384 INT8 P3 QKV+QKNorm+RoPE kernel exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename DualS3Sw1::DualGemmKernel::SharedStorage) <= 101376,
   "C384 INT8 dual FFN exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename DualS3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
@@ -357,6 +565,7 @@ struct ProjectionHandle {
   ProjectionConfig config;
   int outputChannels;
   float alpha;
+  bool fusedQknormRopePrepared;
 };
 
 struct DualFfnHandle {
@@ -443,6 +652,74 @@ cudaError_t launchProjectionTyped(
   typename Kernel::Params params(
     problem,tiled,a,b,c,d,
     typename DequantToHalf::Params(handle.alpha,0.0f),nullptr);
+  constexpr int threads = Kernel::kThreadCount;
+  constexpr int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
+  cutlass::Kernel<Kernel><<<
+    Swizzle::get_grid_shape(tiled),dim3(threads,1,1),sharedBytes,stream>>>(params);
+  return cudaPeekAtLastError();
+}
+
+template<typename Bundle>
+cudaError_t prepareFusedQknProjectionTyped(const ProjectionHandle& handle) {
+  using Kernel = typename Bundle::Kernel;
+  cudaError_t status = setDynamicSharedAttribute<Kernel>();
+  if(status != cudaSuccess)
+    return status;
+  typename Kernel::Mma::IteratorA::TensorRef a(
+    const_cast<Int8*>(handle.config.packedWeights),LayoutA(kChannels));
+  typename Kernel::Mma::IteratorB::TensorRef b(
+    const_cast<Int8*>(handle.config.packedWeights),LayoutB(kChannels));
+  typename Bundle::OutputIterator::TensorRef c(
+    nullptr,LayoutOutput(kQkvChannels));
+  typename Bundle::OutputIterator::TensorRef d(
+    reinterpret_cast<Output*>(
+      const_cast<Int8*>(handle.config.packedWeights)),
+    LayoutOutput(kQkvChannels));
+  const auto supportsRows = [&](int rows) {
+    return Kernel::can_implement(
+      {rows,kQkvChannels,kChannels},a,b,c,d) == cutlass::Status::kSuccess;
+  };
+  return supportsRows(1) && supportsRows(handle.config.maxTokenRows) ?
+    cudaSuccess : cudaErrorNotSupported;
+}
+
+template<typename Bundle>
+cudaError_t launchFusedQknProjectionTyped(
+  const ProjectionHandle& handle,
+  int rows,
+  const Int8* activation,
+  Output* output,
+  int outputStride,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* ropeCosSin,
+  float qEpsilon,
+  float kEpsilon,
+  cudaStream_t stream
+) {
+  using Kernel = typename Bundle::Kernel;
+  using Swizzle = typename Bundle::Swizzle;
+  using Iterator = typename Bundle::OutputIterator;
+  const cutlass::gemm::GemmCoord problem(rows,kQkvChannels,kChannels);
+  const cutlass::gemm::GemmCoord tiled = Swizzle::get_tiled_shape(
+    problem,{Bundle::DeviceGemm::ThreadblockShape::kM,
+             Bundle::DeviceGemm::ThreadblockShape::kN,
+             Bundle::DeviceGemm::ThreadblockShape::kK},1);
+  typename Kernel::Mma::IteratorA::TensorRef a(
+    const_cast<Int8*>(activation),LayoutA(kChannels));
+  typename Kernel::Mma::IteratorB::TensorRef b(
+    const_cast<Int8*>(handle.config.packedWeights),LayoutB(kChannels));
+  typename Iterator::TensorRef c(nullptr,LayoutOutput(outputStride));
+  typename Iterator::TensorRef d(output,LayoutOutput(outputStride));
+  typename Kernel::Params params(
+    problem,tiled,a,b,c,d,
+    typename DequantToHalf::Params(handle.alpha,0.0f),nullptr);
+  params.params_D.qGamma = qGamma;
+  params.params_D.kGamma = kGamma;
+  params.params_D.ropeCosSin = ropeCosSin;
+  params.params_D.totalRows = rows;
+  params.params_D.qEpsilon = qEpsilon;
+  params.params_D.kEpsilon = kEpsilon;
   constexpr int threads = Kernel::kThreadCount;
   constexpr int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
   cutlass::Kernel<Kernel><<<
@@ -809,7 +1086,7 @@ void* createProjection(const ProjectionConfig& config) {
      !isSm120Compatible())
     return nullptr;
   ProjectionHandle handle{config,outputChannels,
-    kNormActivationScale * config.weightScale};
+    kNormActivationScale * config.weightScale,false};
   cudaError_t status = cudaErrorNotSupported;
   switch(config.tactic) {
   case ProjectionTactic::M128N128K64S2Sw1:
@@ -821,6 +1098,16 @@ void* createProjection(const ProjectionConfig& config) {
   }
   if(status != cudaSuccess)
     return nullptr;
+  if(config.mode == ProjectionMode::AggressiveQkv) {
+    status = config.tactic == ProjectionTactic::M128N128K64S3Sw2 ?
+      prepareFusedQknProjectionTyped<FusedQknProjectionP3>(handle) :
+      cudaErrorNotSupported;
+    handle.fusedQknormRopePrepared = status == cudaSuccess;
+    if(status != cudaSuccess) {
+      (void)cudaGetLastError();
+      return nullptr;
+    }
+  }
   return new(std::nothrow) ProjectionHandle(handle);
 }
 
@@ -866,6 +1153,56 @@ cudaError_t launchProjection(
     return launchProjectionTyped<ProjectionS3Sw2>(
       *handle,tokenRows,activation,output,outputRowStride,stream);
   }
+  return cudaErrorNotSupported;
+}
+
+bool projectionQknormRopeSupports(
+  const void* opaque,
+  int tokenRows,
+  int inputChannels,
+  int outputRowStride,
+  float qEpsilon,
+  float kEpsilon
+) noexcept {
+  const ProjectionHandle* handle = static_cast<const ProjectionHandle*>(opaque);
+  return handle != nullptr && handle->fusedQknormRopePrepared &&
+    handle->config.mode == ProjectionMode::AggressiveQkv &&
+    tokenRows == kTokenRows && inputChannels == kChannels &&
+    outputRowStride == kQkvChannels && qEpsilon == kRmsEpsilon &&
+    kEpsilon == kRmsEpsilon;
+}
+
+const char* projectionQknormRopeMarker() noexcept {
+  return "c384-int8-qkv-qknorm-rope-epilogue-h12-d32-half-boundary-v1";
+}
+
+cudaError_t launchProjectionQknormRope(
+  void* opaque,
+  int tokenRows,
+  const int8_t* activation,
+  half* packedQkv,
+  int outputRowStride,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* learnedRopeCosSin,
+  float qEpsilon,
+  float kEpsilon,
+  cudaStream_t stream
+) {
+  ProjectionHandle* handle = static_cast<ProjectionHandle*>(opaque);
+  if(handle == nullptr || activation == nullptr || packedQkv == nullptr ||
+     qGamma == nullptr || kGamma == nullptr || learnedRopeCosSin == nullptr ||
+     !projectionQknormRopeSupports(
+       handle,tokenRows,kChannels,outputRowStride,qEpsilon,kEpsilon) ||
+     !aligned16(activation) || !aligned16(packedQkv) ||
+     !aligned16(qGamma) || !aligned16(kGamma) ||
+     !aligned16(learnedRopeCosSin))
+    return cudaErrorInvalidValue;
+  Output* output = reinterpret_cast<Output*>(packedQkv);
+  if(handle->config.tactic == ProjectionTactic::M128N128K64S3Sw2)
+    return launchFusedQknProjectionTyped<FusedQknProjectionP3>(
+      *handle,tokenRows,activation,output,outputRowStride,qGamma,kGamma,
+      learnedRopeCosSin,qEpsilon,kEpsilon,stream);
   return cudaErrorNotSupported;
 }
 

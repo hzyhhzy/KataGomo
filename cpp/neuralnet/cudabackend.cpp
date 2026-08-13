@@ -3602,7 +3602,12 @@ struct TransformerAttentionBlock {
       qNorm != nullptr && kNorm != nullptr &&
       C384Int8Experiment::projectionSupports(
         c384Int8Projection.get(),cudaHandles->c384Int8ProjectionMode(),
-        matBatchSize,inChannels,C384Int8Experiment::kQkvChannels);
+        matBatchSize,inChannels,C384Int8Experiment::kQkvChannels) &&
+      (cudaHandles->c384Int8Mode !=
+         C384Int8Experiment::EngineMode::Aggressive ||
+       C384Int8Experiment::projectionQknormRopeSupports(
+         c384Int8Projection.get(),matBatchSize,inChannels,
+         C384Int8Experiment::kQkvChannels,qNorm->epsilon,kNorm->epsilon));
     if(cudaHandles->c384Int8TransactionEnabled &&
        batchSize == C384Int8Experiment::kBatch && maskBuf == nullptr &&
        !useC384Int8Attention)
@@ -3658,17 +3663,29 @@ struct TransformerAttentionBlock {
     bool usedC384ExactPackedQkv = false;
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
     bool usedC384Int8PackedQkv = false;
+    bool usedC384Int8FusedQknormRope = false;
     if(useC384Int8Attention) {
       qData = qkvBuf.buf;
       kData = (char*)qkvBuf.buf + C384Int8Experiment::kChannels * bytesPerElt;
       vData = (char*)qkvBuf.buf +
         2 * C384Int8Experiment::kChannels * bytesPerElt;
-      CUDA_ERR(name.c_str(),C384Int8Experiment::launchProjection(
-        c384Int8Projection.get(),matBatchSize,
-        (const int8_t*)scratch->c384Int8NormBuf,(half*)qkvBuf.buf,
-        C384Int8Experiment::kQkvChannels,cudaHandles->stream));
       if(cudaHandles->c384Int8Mode ==
-           C384Int8Experiment::EngineMode::Conservative) {
+           C384Int8Experiment::EngineMode::Aggressive) {
+        CUDA_ERR(name.c_str(),
+          C384Int8Experiment::launchProjectionQknormRope(
+            c384Int8Projection.get(),matBatchSize,
+            (const int8_t*)scratch->c384Int8NormBuf,(half*)qkvBuf.buf,
+            C384Int8Experiment::kQkvChannels,
+            (const half*)qNorm->weightBuf,(const half*)kNorm->weightBuf,
+            (const half2*)c384Int8RopeTable.get(),qNorm->epsilon,
+            kNorm->epsilon,cudaHandles->stream));
+        usedC384Int8FusedQknormRope = true;
+      }
+      else {
+        CUDA_ERR(name.c_str(),C384Int8Experiment::launchProjection(
+          c384Int8Projection.get(),matBatchSize,
+          (const int8_t*)scratch->c384Int8NormBuf,(half*)qkvBuf.buf,
+          C384Int8Experiment::kQkvChannels,cudaHandles->stream));
         // Write V directly into the third 384-wide slice of every packed
         // token. MatMulLayer::apply fixes ldc=384 and would corrupt Q/K from
         // row two onward, so this bridge must explicitly use ldc=1152.
@@ -3680,31 +3697,31 @@ struct TransformerAttentionBlock {
           (const half*)trunkScratchBuf,C384Int8Experiment::kChannels,
           (const half*)scratch->zeroBuf,(half*)vData,
           C384Int8Experiment::kQkvChannels));
+        C384QKNormRopeSm120::LaunchParams params;
+        params.abiVersion = C384QKNormRopeSm120::kAbiVersion;
+        params.batch = batchSize;
+        params.sequence = seqLen;
+        params.heads = numHeads;
+        params.kvHeads = numKVHeads;
+        params.headDim = qHeadDim;
+        params.tokenRows = matBatchSize;
+        params.deviceOrdinal = cudaHandles->c384ExactDeviceOrdinal;
+        params.computeCapability = static_cast<uint32_t>(
+          cudaHandles->majorComputeCapability * 10 +
+          cudaHandles->minorComputeCapability);
+        params.usingFp16 = usingFP16;
+        params.usingNhwc = usingNHWC;
+        params.learnedRope = learnableRope;
+        params.qkNorm = true;
+        params.inputSemantic =
+          C384QKNormRopeSm120::InputSemantic::RawPackedQkv;
+        params.qEpsilon = qNorm->epsilon;
+        params.kEpsilon = kNorm->epsilon;
+        CUDA_ERR(name.c_str(),C384QKNormRopeSm120::launchInPlace(
+          params,(half*)qkvBuf.buf,(const half*)qNorm->weightBuf,
+          (const half*)kNorm->weightBuf,(const half2*)c384Int8RopeTable.get(),
+          cudaHandles->stream));
       }
-      C384QKNormRopeSm120::LaunchParams params;
-      params.abiVersion = C384QKNormRopeSm120::kAbiVersion;
-      params.batch = batchSize;
-      params.sequence = seqLen;
-      params.heads = numHeads;
-      params.kvHeads = numKVHeads;
-      params.headDim = qHeadDim;
-      params.tokenRows = matBatchSize;
-      params.deviceOrdinal = cudaHandles->c384ExactDeviceOrdinal;
-      params.computeCapability = static_cast<uint32_t>(
-        cudaHandles->majorComputeCapability * 10 +
-        cudaHandles->minorComputeCapability);
-      params.usingFp16 = usingFP16;
-      params.usingNhwc = usingNHWC;
-      params.learnedRope = learnableRope;
-      params.qkNorm = true;
-      params.inputSemantic =
-        C384QKNormRopeSm120::InputSemantic::RawPackedQkv;
-      params.qEpsilon = qNorm->epsilon;
-      params.kEpsilon = kNorm->epsilon;
-      CUDA_ERR(name.c_str(),C384QKNormRopeSm120::launchInPlace(
-        params,(half*)qkvBuf.buf,(const half*)qNorm->weightBuf,
-        (const half*)kNorm->weightBuf,(const half2*)c384Int8RopeTable.get(),
-        cudaHandles->stream));
       usedFusedQkvRope = true;
       usedC384Int8PackedQkv = true;
     }
@@ -4121,7 +4138,9 @@ struct TransformerAttentionBlock {
           " projection=" + C384Int8Experiment::projectionTacticName(
             static_cast<C384Int8Experiment::ProjectionTactic>(
               KATAGO_C384_INT8_PROJECTION_TACTIC)) + " qknorm_rope=" +
-          C384QKNormRopeSm120::marker() + " fa4=" +
+          (usedC384Int8FusedQknormRope ?
+            C384Int8Experiment::projectionQknormRopeMarker() :
+            C384QKNormRopeSm120::marker()) + " fa4=" +
           (usedC384Int8Fa4Marker == nullptr ? "missing" :
             usedC384Int8Fa4Marker) + " out=" +
           (int8Out ? string("int8-k384-beta1 tactic=") +

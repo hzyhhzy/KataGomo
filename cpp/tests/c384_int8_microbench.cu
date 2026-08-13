@@ -1,4 +1,5 @@
 #include "neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.h"
+#include "neuralnet/cuda_specialized/sm120/c384/fixed_batch/qknorm_rope.h"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -971,6 +972,158 @@ void checkContracts(
   checkClip7SaturationContract(lane,options,normInt8);
 }
 
+void checkFusedProjectionQknormRopeContract(
+  Lane& lane,
+  const Options& options
+) {
+  if(options.mode != ProjectionMode::AggressiveQkv ||
+     options.projection != ProjectionTactic::M128N128K64S3Sw2)
+    return;
+
+  if(!projectionQknormRopeSupports(
+       lane.projection.get(),kTokenRows,kChannels,kQkvChannels,
+       kRmsEpsilon,kRmsEpsilon))
+    throw std::runtime_error("fused QKV+QKNorm+RoPE production gate rejected P3");
+  if(projectionQknormRopeSupports(
+       lane.projection.get(),kTokenRows - 1,kChannels,kQkvChannels,
+       kRmsEpsilon,kRmsEpsilon) ||
+     projectionQknormRopeSupports(
+       lane.projection.get(),kTokenRows,kChannels,kQkvChannels,
+       1.0e-5f,kRmsEpsilon))
+    throw std::runtime_error("fused QKV+QKNorm+RoPE exact gate accepted drift");
+
+  const std::size_t qkvElements =
+    std::size_t(kTokenRows) * kQkvChannels;
+  GuardedBuffer reference(qkvElements * sizeof(half));
+  GuardedBuffer candidate(qkvElements * sizeof(half));
+  std::vector<half> qGamma(kHeadDim);
+  std::vector<half> kGamma(kHeadDim);
+  std::vector<half2> rope(
+    std::size_t(kSequence) * kHeads * kRopePairsPerHead);
+  for(int d = 0; d < kHeadDim; d++) {
+    qGamma[d] = toHalf(0.61f + 0.017f * float(d));
+    kGamma[d] = toHalf(1.39f - 0.011f * float(d));
+  }
+  for(int xy = 0; xy < kSequence; xy++) {
+    for(int head = 0; head < kHeads; head++) {
+      for(int pair = 0; pair < kRopePairsPerHead; pair++) {
+        const float angle = 0.00071f * float(1 + xy + 3 * head + 5 * pair);
+        const std::size_t index =
+          (std::size_t(xy) * kHeads + head) * kRopePairsPerHead + pair;
+        rope[index] = __floats2half2_rn(std::cos(angle),std::sin(angle));
+      }
+    }
+  }
+  GuardedBuffer qGammaDevice(qGamma.size() * sizeof(half));
+  GuardedBuffer kGammaDevice(kGamma.size() * sizeof(half));
+  GuardedBuffer ropeDevice(rope.size() * sizeof(half2));
+  qGammaDevice.upload(qGamma);
+  kGammaDevice.upload(kGamma);
+  ropeDevice.upload(rope);
+  reference.zeroPayload();
+  candidate.zeroPayload();
+
+  // Reference and candidate receive the same prepared P3 handle, input bytes,
+  // weights/scales, output layout, gamma and RoPE table on one nonblocking
+  // stream. The only arithmetic difference is standalone versus epilogue QKN.
+  checkCuda(launchProjection(
+    lane.projection.get(),kTokenRows,lane.normInt8.data<int8_t>(),
+    reference.data<half>(),kQkvChannels,lane.stream),
+    "launch reference P3 projection");
+  C384QKNormRopeSm120::LaunchParams params;
+  params.abiVersion = C384QKNormRopeSm120::kAbiVersion;
+  params.batch = kBatch;
+  params.sequence = kSequence;
+  params.heads = kHeads;
+  params.kvHeads = kHeads;
+  params.headDim = kHeadDim;
+  params.tokenRows = kTokenRows;
+  params.deviceOrdinal = 0;
+  params.computeCapability = 120;
+  params.usingFp16 = true;
+  params.usingNhwc = true;
+  params.learnedRope = true;
+  params.qkNorm = true;
+  params.inputSemantic =
+    C384QKNormRopeSm120::InputSemantic::RawPackedQkv;
+  params.qEpsilon = kRmsEpsilon;
+  params.kEpsilon = kRmsEpsilon;
+  checkCuda(C384QKNormRopeSm120::launchInPlace(
+    params,reference.data<half>(),qGammaDevice.data<half>(),
+    kGammaDevice.data<half>(),ropeDevice.data<half2>(),lane.stream),
+    "launch reference QKNorm+RoPE");
+  checkCuda(launchProjectionQknormRope(
+    lane.projection.get(),kTokenRows,lane.normInt8.data<int8_t>(),
+    candidate.data<half>(),kQkvChannels,qGammaDevice.data<half>(),
+    kGammaDevice.data<half>(),ropeDevice.data<half2>(),kRmsEpsilon,
+    kRmsEpsilon,lane.stream),"launch fused P3 QKV+QKNorm+RoPE");
+  checkCuda(cudaStreamSynchronize(lane.stream),
+    "fused QKNorm comparison sync");
+
+  const std::vector<half> referenceHost = reference.download<half>();
+  const std::vector<half> candidateHost = candidate.download<half>();
+  std::size_t qkBitMismatch = 0;
+  std::size_t vBitMismatch = 0;
+  std::size_t tailQkBitMismatch = 0;
+  double maxAbs = 0.0;
+  double tailMaxAbs = 0.0;
+  constexpr int tailRows = kTokenRows % 128;
+  static_assert(tailRows == 28,"P3 M-tail contract changed");
+  for(int row = 0; row < kTokenRows; row++) {
+    for(int channel = 0; channel < kQkvChannels; channel++) {
+      const std::size_t index = std::size_t(row) * kQkvChannels + channel;
+      uint16_t referenceBits = 0;
+      uint16_t candidateBits = 0;
+      std::memcpy(&referenceBits,&referenceHost[index],sizeof(referenceBits));
+      std::memcpy(&candidateBits,&candidateHost[index],sizeof(candidateBits));
+      if(channel >= kQkChannels) {
+        if(referenceBits != candidateBits)
+          vBitMismatch++;
+        continue;
+      }
+      const float referenceValue = toFloat(referenceHost[index]);
+      const float candidateValue = toFloat(candidateHost[index]);
+      if(!std::isfinite(referenceValue) || !std::isfinite(candidateValue))
+        throw std::runtime_error("fused QKNorm comparison produced non-finite Q/K");
+      if(referenceBits != candidateBits) {
+        qkBitMismatch++;
+        if(row >= kTokenRows - tailRows)
+          tailQkBitMismatch++;
+      }
+      const double absError = std::fabs(
+        double(referenceValue) - double(candidateValue));
+      maxAbs = std::max(maxAbs,absError);
+      if(row >= kTokenRows - tailRows)
+        tailMaxAbs = std::max(tailMaxAbs,absError);
+    }
+  }
+  if(vBitMismatch != 0)
+    throw std::runtime_error("fused projection changed V bytes");
+  // The standalone half2 kernel and fused four-lane epilogue have different
+  // FP32 sum-of-squares trees. Their allowed diagnostic delta is therefore
+  // one small FP16 neighborhood, while all semantic rounding boundaries are
+  // preserved. A larger delta is a lane-map, stride, or RoPE-index failure.
+  if(maxAbs > 0.004 || tailMaxAbs > 0.004)
+    throw std::runtime_error("fused Q/K differs from standalone beyond 0.004");
+  reference.requireCanary("reference QKV+QKNorm+RoPE");
+  candidate.requireCanary("fused QKV+QKNorm+RoPE");
+  qGammaDevice.requireCanary("fused Q gamma");
+  kGammaDevice.requireCanary("fused K gamma");
+  ropeDevice.requireCanary("fused learned RoPE table");
+  lane.normInt8.requireCanary("fused QKNorm input");
+  std::cout << std::setprecision(9)
+    << "KATAGO_C384_INT8_FUSED_QKNORM_ROPE_CONTRACT_PASS"
+    << " stream=nonblocking"
+    << " rows=" << kTokenRows
+    << " tail_rows=" << tailRows
+    << " v_bit_mismatch=" << vBitMismatch
+    << " qk_bit_mismatch=" << qkBitMismatch
+    << " qk_max_abs=" << maxAbs
+    << " tail_qk_bit_mismatch=" << tailQkBitMismatch
+    << " tail_qk_max_abs=" << tailMaxAbs
+    << " canary=1 marker=" << projectionQknormRopeMarker() << '\n';
+}
+
 float benchmarkFamily(
   std::vector<std::unique_ptr<Lane>>& lanes,
   TimingFamily family,
@@ -1075,6 +1228,8 @@ int main(int argc, char** argv) {
 
     for(auto& lane: lanes)
       checkContracts(*lane,options,host,weights);
+    for(auto& lane: lanes)
+      checkFusedProjectionQknormRopeContract(*lane,options);
     std::cout
       << "KATAGO_C384_INT8_MICROBENCH_SCOPE"
       << " scope=component_and_prototype_subpath_latency_only"

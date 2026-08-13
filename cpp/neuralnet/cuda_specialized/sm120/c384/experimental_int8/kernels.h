@@ -15,6 +15,9 @@ constexpr int kChannels = 384;
 constexpr int kQkChannels = 2 * kChannels;
 constexpr int kQkvChannels = 3 * kChannels;
 constexpr int kFfnChannels = 1024;
+constexpr int kHeads = 12;
+constexpr int kHeadDim = 32;
+constexpr int kRopePairsPerHead = kHeadDim / 2;
 constexpr float kRmsEpsilon = 1.0e-6f;
 constexpr float kNormActivationClip = 4.0f;
 constexpr float kNormActivationScale = kNormActivationClip / 127.0f;
@@ -106,6 +109,38 @@ cudaError_t launchProjection(
   const int8_t* activation,
   half* rawPackedQkv,
   int outputRowStride,
+  cudaStream_t stream
+);
+
+// Aggressive-only fused producer. The INT8 QKV mainloop is identical to the
+// selected projection tactic. Its epilogue reduces each token/head D32 Q/K
+// vector in FP32, applies gamma, rounds the normalized tensor to FP16, then
+// applies learned RoPE. Only the final packed Q/K values reach global memory;
+// V is byte-for-byte identical to launchProjection and the [Q|K|V] ABI is
+// unchanged. This exact contract intentionally fails closed outside B28/S225,
+// H12/D32, epsilon=1e-6.
+bool projectionQknormRopeSupports(
+  const void* opaque,
+  int tokenRows,
+  int inputChannels,
+  int outputRowStride,
+  float qEpsilon,
+  float kEpsilon
+) noexcept;
+
+const char* projectionQknormRopeMarker() noexcept;
+
+cudaError_t launchProjectionQknormRope(
+  void* opaque,
+  int tokenRows,
+  const int8_t* activation,
+  half* packedQkv,
+  int outputRowStride,
+  const half* qGamma,
+  const half* kGamma,
+  const half2* learnedRopeCosSin,
+  float qEpsilon,
+  float kEpsilon,
   cudaStream_t stream
 );
 

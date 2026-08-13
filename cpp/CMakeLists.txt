@@ -614,7 +614,8 @@ if(USE_BACKEND STREQUAL "CUDA")
     if(KATAGO_ENABLE_C384_INT8_EXPERIMENT)
       add_executable(katago_c384_int8_microbench EXCLUDE_FROM_ALL
         tests/c384_int8_microbench.cu
-        neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.cu)
+        neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.cu
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/qknorm_rope.cu)
       set_target_properties(katago_c384_int8_microbench PROPERTIES
         CUDA_ARCHITECTURES "120"
         CUDA_STANDARD 17
