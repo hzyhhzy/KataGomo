@@ -1,0 +1,82 @@
+# Design skeleton only. The production materializer replaces every @...@
+# token, emits repository-relative paths, and writes their hashes into the
+# immutable JSON manifest. This template is never included directly.
+
+set(KATAGO_C384_PRODUCTION_PACKAGE_SCHEMA "1")
+set(KATAGO_C384_PRODUCTION_PACKAGE_MODE "PRODUCTION")
+set(KATAGO_C384_PRODUCTION_PLATFORM "linux-x86_64")
+set(KATAGO_C384_PRODUCTION_COMPUTE_CAPABILITY "120")
+set(KATAGO_C384_PRODUCTION_BATCH "@SELECTED_BATCH@")
+set(KATAGO_C384_PRODUCTION_TOKEN_ROWS "@SELECTED_TOKEN_ROWS@")
+
+set(_katago_c384_root "${CMAKE_CURRENT_LIST_DIR}")
+set(KATAGO_C384_PRODUCTION_MANIFEST
+  "${_katago_c384_root}/PRODUCTION_MANIFEST.json")
+
+set(KATAGO_C384_PRODUCTION_REGISTRIES
+  "${_katago_c384_root}/registry/c384_exact_generated_registry.cu"
+  "${_katago_c384_root}/registry/c384_h12_fa4_registry.cpp"
+  "${_katago_c384_root}/registry/c384_exact_ffn_down_registry.cu")
+
+set(KATAGO_C384_PRODUCTION_BRIDGES
+  "${_katago_c384_root}/artifacts/qkv_rope/@QKV_BRIDGE@"
+  "${_katago_c384_root}/artifacts/dual_ffn/@DUAL_BRIDGE@"
+  "${_katago_c384_root}/artifacts/fa4/@FA4_BRIDGE@"
+  "${_katago_c384_root}/artifacts/ffn_down/@DOWN_BRIDGE@")
+
+# Keep this order. EXTERNAL_OBJECT inputs do not propagate through an OBJECT
+# library's TARGET_OBJECTS expansion, so the final executable links them
+# explicitly before the single CUDA-dialect support archive.
+set(KATAGO_C384_PRODUCTION_OBJECTS
+  "${_katago_c384_root}/artifacts/qkv_rope/@QKV_OBJECT@"
+  "${_katago_c384_root}/artifacts/dual_ffn/@DUAL_OBJECT@"
+  "${_katago_c384_root}/artifacts/fa4/@FA4_OBJECT@"
+  "${_katago_c384_root}/artifacts/ffn_down/@DOWN_OBJECT@")
+set(KATAGO_C384_PRODUCTION_CUTE_RUNTIME
+  "${_katago_c384_root}/artifacts/libcuda_dialect_runtime_static.a")
+
+set(KATAGO_C384_PRODUCTION_INCLUDE_DIRS
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${_katago_c384_root}/include"
+  "${_katago_c384_root}/artifacts/qkv_rope"
+  "${_katago_c384_root}/artifacts/dual_ffn"
+  "${_katago_c384_root}/artifacts/fa4"
+  "${_katago_c384_root}/artifacts/ffn_down")
+
+# The materializer expands this to one path/SHA pair for every package file.
+set(KATAGO_C384_PRODUCTION_FILE_SHA256
+  @EXACT_PATH_SHA_PAIRS@)
+
+function(katago_c384_verify_production_package)
+  list(LENGTH KATAGO_C384_PRODUCTION_FILE_SHA256 _length)
+  math(EXPR _remainder "${_length} % 2")
+  if(_length EQUAL 0 OR NOT _remainder EQUAL 0)
+    message(FATAL_ERROR "Malformed C384 production SHA list")
+  endif()
+  math(EXPR _last "${_length} - 2")
+  foreach(_index RANGE 0 ${_last} 2)
+    math(EXPR _sha_index "${_index} + 1")
+    list(GET KATAGO_C384_PRODUCTION_FILE_SHA256 ${_index} _path)
+    list(GET KATAGO_C384_PRODUCTION_FILE_SHA256 ${_sha_index} _wanted)
+    if(NOT EXISTS "${_path}")
+      message(FATAL_ERROR "Missing C384 production asset: ${_path}")
+    endif()
+    file(SHA256 "${_path}" _actual)
+    if(NOT _actual STREQUAL _wanted)
+      message(FATAL_ERROR "C384 production asset SHA mismatch: ${_path}")
+    endif()
+  endforeach()
+endfunction()
+function(katago_c384_attach_production_package winner_object_target final_target)
+  katago_c384_verify_production_package()
+  target_sources(${winner_object_target} PRIVATE
+    ${KATAGO_C384_PRODUCTION_REGISTRIES}
+    ${KATAGO_C384_PRODUCTION_BRIDGES})
+  target_include_directories(${winner_object_target} PRIVATE
+    ${KATAGO_C384_PRODUCTION_INCLUDE_DIRS})
+  target_include_directories(${final_target} PRIVATE
+    ${KATAGO_C384_PRODUCTION_INCLUDE_DIRS})
+  target_link_libraries(${final_target} PRIVATE
+    ${KATAGO_C384_PRODUCTION_OBJECTS}
+    "${KATAGO_C384_PRODUCTION_CUTE_RUNTIME}")
+endfunction()

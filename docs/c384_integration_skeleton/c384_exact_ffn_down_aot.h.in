@@ -1,0 +1,100 @@
+#pragma once
+
+// Design skeleton only. Materialize as cpp/neuralnet/c384_exact_ffn_down_aot.h
+// after the combined 36-layer result supplies SELECTED_BATCH and SELECTED_ID.
+
+#include "c384_residual_aot_abi.h"
+
+#include <cuda_fp16.h>
+#include <cuda_runtime_api.h>
+
+#include <cstddef>
+#include <cstdint>
+
+namespace C384ExactFfnDownAot {
+
+constexpr std::uint32_t kRegistryAbiVersion = 1;
+constexpr std::uint32_t kNativeAbiVersion = 1;
+constexpr int kSequenceLength = 225;
+constexpr int kInputChannels = 1024;
+constexpr int kOutputChannels = 384;
+constexpr int kSelectedBatch = @SELECTED_BATCH@;
+constexpr int kSelectedTokenRows = kSelectedBatch * kSequenceLength;
+
+using PrepareFn = cudaError_t (*)(int deviceOrdinal);
+using QueryFn = cudaError_t (*)(C384ResidualRawDescriptorV1* output);
+using LaunchFn = cudaError_t (*)(
+  const half* activation,
+  const half* rowMajorWeights,
+  half* residualInOut,
+  int tokenRows,
+  int deviceOrdinal,
+  cudaStream_t stream);
+
+struct Tactic {
+  std::uint32_t registryAbiVersion;
+  std::uint32_t nativeAbiVersion;
+  int batch;
+  int tokenRows;
+  int inputChannels;
+  int outputChannels;
+  const char* id;
+  PrepareFn prepare;
+  QueryFn query;
+  LaunchFn launch;
+};
+
+struct RuntimeShape {
+  int modelDepth;
+  int attentionBlockCount;
+  int ffnBlockCount;
+  bool alternatingAttentionFfn;
+  int batch;
+  int tokenRows;
+  int boardX;
+  int boardY;
+  int sequenceLength;
+  int channels;
+  int ffnChannels;
+  int deviceOrdinal;
+  std::uint32_t computeCapability;
+  bool usingFp16;
+  bool usingNhwc;
+  bool exactNoMask;
+  bool swiglu;
+};
+
+enum class RejectReason : std::uint32_t {
+  None = 0,
+  ShapeMismatch,
+  NoRequestedTactic,
+  InvalidRegistry,
+  RegistryMiss,
+  InvalidImplementation,
+  QueryMismatch,
+  PreparationFailed,
+};
+
+struct PreparedSelection {
+  const Tactic* tactic = nullptr;
+  RejectReason reason = RejectReason::ShapeMismatch;
+  int deviceOrdinal = -1;
+};
+
+// The normal build supplies an empty provider. The production package
+// replaces only this provider with one exact fixed-batch descriptor.
+const Tactic* generatedTactics(std::size_t& count);
+
+bool targetShapeEligible(const RuntimeShape& shape);
+bool tacticWellFormed(const Tactic& tactic);
+bool queryMatchesTactic(
+  const C384ResidualRawDescriptorV1& native,
+  const Tactic& tactic);
+PreparedSelection prepareSelection(
+  const RuntimeShape& shape,
+  const char* requestedId);
+bool supports(
+  const PreparedSelection& selection,
+  const RuntimeShape& actualShape);
+
+}  // namespace C384ExactFfnDownAot

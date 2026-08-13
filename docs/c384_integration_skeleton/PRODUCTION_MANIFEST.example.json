@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "kind": "katago-c384-sm120-production-package",
+  "mode": "PRODUCTION",
+  "selection": {
+    "batch": "@SELECTED_BATCH@",
+    "token_rows": "@SELECTED_TOKEN_ROWS@",
+    "qkv_rope": "@FULL_QKV_ID@",
+    "fa4": "@FULL_FA4_ID@",
+    "dual_ffn": "@FULL_DUAL_ID@",
+    "ffn_down": "@FULL_DOWN_ID@",
+    "out_projection": "cublas-beta1"
+  },
+  "batch_selection": {
+    "policy_version": 1,
+    "default_batch": 24,
+    "challenger_batch": 28,
+    "selected_batch": "@SELECTED_BATCH@",
+    "decision": "@DEFAULT_B24_OR_PROMOTED_B28@",
+    "comparison_kind": "@FULL_ENGINE_OR_ENGINE_EXTERNAL_COMPLETE_EQUIVALENT@",
+    "schedule": "ABBA_BAAB",
+    "superrounds": "@INTEGER_AT_LEAST_3@",
+    "promotion_ratio_exclusive": 1.005,
+    "paired_geomean_ratio": "@UNROUNDED_RATIO@",
+    "gain_percent_unrounded": "@UNROUNDED_PERCENT@",
+    "confidence_kind": "one-sided-student-t-on-superround-log-ratios",
+    "confidence_level": 0.95,
+    "confidence_lcb_ratio": "@UNROUNDED_RATIO@",
+    "max_log_ratio_cv_allowed": 0.005,
+    "observed_log_ratio_cv": "@UNROUNDED_RATIO@",
+    "max_abs_endpoint_drift_allowed": 0.005,
+    "observed_b24_endpoint_drift": "@UNROUNDED_RATIO@",
+    "observed_b28_endpoint_drift": "@UNROUNDED_RATIO@",
+    "b24_nps": "@UNROUNDED_NPS@",
+    "b28_nps": "@UNROUNDED_NPS@",
+    "correctness_status": "passed",
+    "telemetry_status": "passed",
+    "stability_status": "passed",
+    "equivalence_status": "@NOT_REQUIRED_OR_PASSED@",
+    "source_commit": "@GIT_SHA1@",
+    "executable_b24_sha256": "@SHA256@",
+    "executable_b28_sha256": "@SHA256@",
+    "binary_pair_diff_audit_sha256": "@SAME_BINARY_OR_SHA256@",
+    "model_sha256": "@SHA256@",
+    "benchmark_config_sha256": "@SHA256@",
+    "runtime_environment_sha256": "@SHA256@",
+    "raw_report_sha256": "@SHA256@",
+    "raw_logs_archive_sha256": "@SHA256@",
+    "equivalence_manifest_sha256": "@NOT_REQUIRED_OR_SHA256@"
+  },
+  "target": {
+    "platform": "linux-x86_64",
+    "compute_capability": "sm_120",
+    "dtype": "fp16",
+    "layout": "nhwc",
+    "board": [15, 15],
+    "sequence": 225,
+    "channels": 384,
+    "heads": 12,
+    "head_dim": 32,
+    "ffn_channels": 1024,
+    "attention_blocks": 36,
+    "ffn_blocks": 36
+  },
+  "abi": {
+    "exact_registry": 2,
+    "packed_fa4_registry": 2,
+    "native_packed_fa4_proof": 2,
+    "exact_portable_packed_fa4_proof": 1,
+    "ffn_down_registry": 1,
+    "ffn_down_native": 1
+  },
+  "decisions": {
+    "int8": false,
+    "out_projection_aot": false,
+    "fixed_batch_only": true,
+    "tail_policy": "pre-enqueue-generic-fallback"
+  },
+  "evidence": {
+    "batch_selection_report_sha256": "@SHA256@",
+    "combined_36_report_sha256": "@SHA256@",
+    "full_engine_activation_sha256": "@SHA256@",
+    "full_engine_correctness_sha256": "@SHA256@",
+    "full_engine_long_gate_sha256": "@SHA256@",
+    "full_engine_s2_abba_sha256": "@SHA256@"
+  },
+  "files": [
+    {
+      "path": "@REPOSITORY_RELATIVE_PATH@",
+      "role": "@ROLE@",
+      "sha256": "@SHA256@"
+    }
+  ]
+}
