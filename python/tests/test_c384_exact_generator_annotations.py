@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import functools
 from pathlib import Path
 import sys
 import unittest
@@ -21,19 +22,40 @@ class C384ExactGeneratorAnnotationTest(unittest.TestCase):
             class CUstream:
                 pass
 
-        def local_launch(stream: "cuda.CUstream"):
+        def implementation(stream: "cuda.CUstream"):
             del stream
 
-        # Use the exact deferred spelling produced by the real launch nested
-        # in main(). No module-global ``cuda`` exists, so Python 3.12 fails.
+        @functools.wraps(implementation)
+        def local_launch(*args, **kwargs):
+            return implementation(*args, **kwargs)
+
+        # CuTe's decorator returns a function whose public wrapper and
+        # __wrapped__ implementation both retain the deferred local spelling.
+        # No module-global ``cuda`` exists, so Python 3.12 fails at either one.
         local_launch.__annotations__["stream"] = "cuda.CUstream"
+        implementation.__annotations__["stream"] = "cuda.CUstream"
         with self.assertRaises(NameError):
-            inspect.get_annotations(local_launch, eval_str=True)
+            inspect.signature(local_launch, eval_str=True)
         bind_local_stream_annotation(local_launch,FakeCuda.CUstream)
+        for function in (local_launch,local_launch.__wrapped__):
+            self.assertIs(
+                inspect.get_annotations(function, eval_str=True)["stream"],
+                FakeCuda.CUstream,
+            )
         self.assertIs(
-            inspect.get_annotations(local_launch, eval_str=True)["stream"],
+            inspect.signature(local_launch, eval_str=True)
+              .parameters["stream"].annotation,
             FakeCuda.CUstream,
         )
+
+    def test_wrapped_annotation_cycle_fails_closed(self) -> None:
+        def launch(stream: "cuda.CUstream"):
+            del stream
+
+        launch.__annotations__["stream"] = "cuda.CUstream"
+        launch.__wrapped__ = launch
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            bind_local_stream_annotation(launch,object)
 
 
 if __name__ == "__main__":

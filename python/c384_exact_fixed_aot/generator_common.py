@@ -147,12 +147,25 @@ def bind_local_stream_annotation(function, stream_type):
     would make compilation fail with ``NameError: cuda``. Binding the concrete
     type preserves lazy imports and gives the compiler an inspectable callable.
     """
-    annotations = dict(getattr(function, "__annotations__", {}))
-    require("stream" in annotations, "generated launch lacks stream annotation")
-    annotations["stream"] = stream_type
-    function.__annotations__ = annotations
-    require(inspect.get_annotations(function, eval_str=True).get("stream") is stream_type,
-            "generated launch stream annotation did not bind")
+    current = function
+    depth = 0
+    seen: set[int] = set()
+    while current is not None:
+        require(id(current) not in seen,
+                "generated launch __wrapped__ chain contains a cycle")
+        seen.add(id(current))
+        annotations = dict(getattr(current, "__annotations__", {}))
+        require("stream" in annotations,
+                f"generated launch wrapper depth {depth} lacks stream annotation")
+        annotations["stream"] = stream_type
+        current.__annotations__ = annotations
+        require(inspect.get_annotations(current, eval_str=True).get("stream") is stream_type,
+                f"generated launch stream annotation did not bind at depth {depth}")
+        current = getattr(current, "__wrapped__", None)
+        depth += 1
+    require(inspect.signature(function, eval_str=True).parameters["stream"].annotation
+            is stream_type,
+            "generated launch signature did not expose the bound stream type")
     return function
 
 
