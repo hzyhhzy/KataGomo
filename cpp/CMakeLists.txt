@@ -739,6 +739,7 @@ if(USE_BACKEND STREQUAL "CUDA")
       "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}")
     if(KATAGO_C384_H12_FA4_INCLUDE_DIRS)
       target_include_directories(katago PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
         ${KATAGO_C384_H12_FA4_INCLUDE_DIRS})
     endif()
     target_link_libraries(katago

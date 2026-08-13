@@ -713,6 +713,18 @@ katago_c384_exact_validate_cuda_version()
             "hashes must cover exactly "
             "registry+headers+metadata+bridges+objects+promotion", source,
         )
+        # The generated FA4 registry lives outside cpp/ and includes the
+        # public provider header as "neuralnet/...". Package-on builds must
+        # therefore add cpp/ itself to the final katago target, while stub
+        # builds should not gain a broad unconditional include path.
+        fa4_final_include = (
+            "if(KATAGO_C384_H12_FA4_INCLUDE_DIRS)\n"
+            "      target_include_directories(katago PRIVATE\n"
+            "        \"${CMAKE_CURRENT_SOURCE_DIR}\"\n"
+            "        ${KATAGO_C384_H12_FA4_INCLUDE_DIRS})\n"
+            "    endif()"
+        )
+        self.assertIn(fa4_final_include, source)
 
     @unittest.skipUnless(shutil.which("cmake"), "cmake is required")
     def test_external_object_requires_explicit_final_link_item(self) -> None:
