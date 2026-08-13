@@ -169,8 +169,56 @@ def bind_local_stream_annotation(function, stream_type):
     return function
 
 
-def package_version(name: str) -> str:
-    return importlib.metadata.version(name)
+def _canonical_version(value: object) -> str:
+    # Python package versions are case-insensitive and may use '_' in local
+    # build labels. This intentionally does not collapse distinct releases.
+    return str(value).strip().lower().replace("_", "-")
+
+
+def imported_module_provenance(
+    module, distribution_name: str, *, version_module=None,
+) -> dict:
+    """Describe the code actually imported, with optional dist-info audit.
+
+    A staged generator may import a pinned source tree without installing its
+    wheel metadata. The imported module/version and entry-file hash are the
+    authority. If dist-info is visible it must describe that exact version;
+    metadata from another environment is never substituted.
+    """
+    module_name = str(getattr(module, "__name__", ""))
+    version_authority = module if version_module is None else version_module
+    module_version = str(getattr(version_authority, "__version__", "")).strip()
+    module_file_value = getattr(module, "__file__", None)
+    require(module_name != "", "imported provenance module has no name")
+    require(module_version != "",
+            f"imported {getattr(version_authority, '__name__', module_name)} "
+            "module has no __version__")
+    require(module_file_value is not None,
+            f"imported {module_name} module has no source file")
+    module_file = Path(module_file_value).resolve()
+    require(module_file.is_file(),
+            f"imported {module_name} source file is missing: {module_file}")
+    try:
+        distribution_version = importlib.metadata.version(distribution_name)
+    except importlib.metadata.PackageNotFoundError:
+        metadata_status = "absent"
+        distribution_version = None
+    else:
+        metadata_status = "present-matching"
+        require(_canonical_version(distribution_version) ==
+                _canonical_version(module_version),
+                f"{distribution_name} dist-info version {distribution_version} "
+                f"does not match imported {module_name} {module_version}")
+    return {
+        "module": module_name,
+        "version": module_version,
+        "version_module": str(getattr(version_authority, "__name__", "")),
+        "module_file": str(module_file),
+        "module_file_sha256": sha256_file(module_file),
+        "distribution": distribution_name,
+        "metadata_status": metadata_status,
+        "distribution_version": distribution_version,
+    }
 
 
 def artifact_metadata(
@@ -182,6 +230,9 @@ def artifact_metadata(
     output_dir: Path,
     bridge_path: Path,
     cutlass_commit: str,
+    cutlass_module,
+    cuda_module,
+    cuda_version_module,
     extra: dict,
 ) -> dict:
     base = output_dir / task.artifact_stem
@@ -223,8 +274,11 @@ def artifact_metadata(
             "dense_gemm_sha256": sha256_file(dense_path),
             "patched_dense_gemm_sha256": sha256_file(patched_dense_path),
             "python": sys.version.split()[0],
-            "nvidia_cutlass_dsl": package_version("nvidia-cutlass-dsl"),
-            "cuda_python": package_version("cuda-python"),
+            "nvidia_cutlass_dsl": imported_module_provenance(
+                cutlass_module,"nvidia-cutlass-dsl"),
+            "cuda_bindings": imported_module_provenance(
+                cuda_module,"cuda-bindings",
+                version_module=cuda_version_module),
             "nvcc": subprocess.run(
                 ["nvcc", "--version"], check=True, text=True,
                 capture_output=True,

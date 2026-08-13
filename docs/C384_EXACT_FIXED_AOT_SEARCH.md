@@ -11,13 +11,12 @@ existing prepared generic/dynamic paths and their markers and fingerprints.
 Runtime batch and model depth are separate quantities. The model has 36
 attention and 36 FFN descriptors. The portable selector retains the earlier
 runtime coordinates below. The current bounded generator emits objects only
-for B28 and B24; B40 has no generated entry and stays fail-closed.
+for B28 and B24. B40 is not a selector coordinate and stays fail-closed.
 
 | priority | physical batch | exact token rows (`B * 225`) |
 | ---: | ---: | ---: |
 | 1 | 28 | 6300 |
 | 2 | 24 | 5400 |
-| 3 (selector/future only) | 40 | 9000 |
 
 The selector validates a coherent alternating transformer structure and marks
 36 attention + 36 FFN blocks as the primary target. Model depth is not a kernel
@@ -67,18 +66,36 @@ registry provider. By default it uses the checked-in empty provider:
 cpp/neuralnet/c384_exact_fixed_aot_registry_stub.cu
 ```
 
-A generated search build supplies the hash-bound manifest emitted by
-`python/c384_exact_fixed_aot/emit_registry.py`:
+A generated build is either `search-pair` or `production`. In both modes it
+contains exactly one QKV+RoPE artifact and one dual-FFN artifact for the same
+fixed batch. A bounded search therefore builds each QKV/dual coordinate pair
+separately; it does not link a fat registry and choose heuristically at
+runtime. Emit a search pair with:
 
 ```text
+python python/c384_exact_fixed_aot/emit_registry.py \
+  --mode search-pair \
+  --metadata /path/qkv.json --qkv-id <qkv-id> \
+  --metadata /path/dual.json --dual-id <dual-id> \
+  --output-dir /path/generated-pair
+
 -DKATAGO_C384_EXACT_AOT_GENERATED_MANIFEST=/absolute/path/c384_exact_generated_manifest.cmake
 ```
 
-The generated source must define both provider functions declared by
-`c384_exact_fixed_aot_kernels.h`. It may return an empty family while searching
-the other family. Records are keyed by exact batch and explicit candidate ID;
-duplicates and artifact manifests are validated by the generator workflow,
-not selected heuristically at runtime.
+The manifest is the source of truth for selected IDs. The cache variables
+`KATAGO_C384_EXACT_QKV_TACTIC_ID` and
+`KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID` are optional expectations: when omitted,
+CMake derives the effective compile definitions from the manifest; when set,
+they must match it exactly. Family-specific ID lists, selected batch, two
+headers, two objects, two bridges, two metadata files, and every SHA-256 are
+validated before the target is created.
+
+`production` mode additionally requires a hash-bound promotion JSON with
+`activation`, `long_gate`, and `accuracy` gates all marked `PASSED`, and must be
+paired with a same-batch FA4 `PRODUCTION` package. Search pairs require a FA4
+`BATCH_SEARCH` package. Any exact manifest, selected-ID expectation, or FA4
+package supplied to a non-CUDA backend, or while the SM120 winner is disabled,
+is a configure-time error rather than a silent fallback.
 
 Current bounded geometry (at B28 and B24):
 

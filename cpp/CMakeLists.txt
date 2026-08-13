@@ -45,6 +45,17 @@ set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 set(KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST "" CACHE FILEPATH
   "Optional generated CMake manifest containing audited C384 exact-AOT bridges and external objects")
+set(KATAGO_C384_EXACT_QKV_TACTIC_ID "" CACHE STRING
+  "Exact generated QKV+RoPE candidate ID selected at construction; empty disables the family")
+set(KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID "" CACHE STRING
+  "Exact generated dual-FFN candidate ID selected at construction; empty disables the family")
+set(KATAGO_C384_H12_FA4_PACKAGE_CMAKE "" CACHE FILEPATH
+  "Optional SHA-locked C384/H12 exact-FA4 packed-token package")
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/C384ExactAotPolicy.cmake")
+katago_c384_exact_validate_request_policy()
+set(KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID "")
+set(KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID "")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -53,6 +64,7 @@ if(USE_BACKEND STREQUAL "CUDA")
   message(STATUS "-DUSE_BACKEND=CUDA, using CUDA backend.")
 
   enable_language(CUDA)
+  katago_c384_exact_validate_cuda_version()
 
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -72,6 +84,21 @@ if(USE_BACKEND STREQUAL "CUDA")
     endif()
   endif()
 
+  if((NOT KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST STREQUAL "" OR
+      NOT KATAGO_C384_H12_FA4_PACKAGE_CMAKE STREQUAL "") AND
+     NOT KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
+    message(FATAL_ERROR
+      "C384 exact-AOT/FA4 packages require the SM120 winner and CUDA 13+")
+  endif()
+
+  foreach(KATAGO_C384_EXACT_ID IN ITEMS
+      "${KATAGO_C384_EXACT_QKV_TACTIC_ID}"
+      "${KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID}")
+    if(NOT KATAGO_C384_EXACT_ID STREQUAL "" AND
+       NOT KATAGO_C384_EXACT_ID MATCHES "^[a-z0-9][a-z0-9-]*$")
+      message(FATAL_ERROR "Unsafe C384 exact-AOT candidate ID: ${KATAGO_C384_EXACT_ID}")
+    endif()
+  endforeach()
   if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT AND
      NOT KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
     message(FATAL_ERROR
@@ -134,13 +161,149 @@ if(USE_BACKEND STREQUAL "CUDA")
         "Bundled SM120 FA4 artifacts failed the clean generation SHA256 contract")
     endif()
 
+    set(KATAGO_C384_H12_FA4_ENABLED 0)
+    set(KATAGO_C384_H12_FA4_BRIDGES "")
+    set(KATAGO_C384_H12_FA4_OBJECTS "")
+    set(KATAGO_C384_H12_FA4_INCLUDE_DIRS "")
+    set(KATAGO_C384_H12_FA4_RUNTIME "")
+    if(KATAGO_C384_H12_FA4_PACKAGE_CMAKE STREQUAL "")
+      set(KATAGO_C384_H12_FA4_REGISTRY_PROVIDER
+        neuralnet/c384_h12_fa4_registry_stub.cpp)
+    else()
+      get_filename_component(KATAGO_C384_H12_FA4_PACKAGE_CMAKE
+        "${KATAGO_C384_H12_FA4_PACKAGE_CMAKE}" ABSOLUTE)
+      if(NOT EXISTS "${KATAGO_C384_H12_FA4_PACKAGE_CMAKE}")
+        message(FATAL_ERROR
+          "KATAGO_C384_H12_FA4_PACKAGE_CMAKE does not exist: ${KATAGO_C384_H12_FA4_PACKAGE_CMAKE}")
+      endif()
+      include("${KATAGO_C384_H12_FA4_PACKAGE_CMAKE}")
+      if(NOT KATAGO_C384_H12_FA4_PACKAGE_SCHEMA STREQUAL "1")
+        message(FATAL_ERROR "C384/H12 FA4 package schema must be 1")
+      endif()
+      if(NOT KATAGO_C384_H12_FA4_PACKAGE_MODE STREQUAL "BATCH_SEARCH" AND
+         NOT KATAGO_C384_H12_FA4_PACKAGE_MODE STREQUAL "PRODUCTION")
+        message(FATAL_ERROR
+          "C384/H12 FA4 package mode must be BATCH_SEARCH or PRODUCTION")
+      endif()
+      list(LENGTH KATAGO_C384_H12_FA4_BATCHES KATAGO_C384_H12_FA4_BATCH_COUNT)
+      set(KATAGO_C384_H12_FA4_SORTED_BATCHES ${KATAGO_C384_H12_FA4_BATCHES})
+      list(SORT KATAGO_C384_H12_FA4_SORTED_BATCHES COMPARE NATURAL ORDER ASCENDING)
+      if(KATAGO_C384_H12_FA4_PACKAGE_MODE STREQUAL "BATCH_SEARCH")
+        if(NOT KATAGO_C384_H12_FA4_BATCH_COUNT EQUAL 2 OR
+           NOT KATAGO_C384_H12_FA4_SORTED_BATCHES STREQUAL "24;28")
+          message(FATAL_ERROR
+            "C384/H12 FA4 batch search must contain exactly B24 and B28")
+        endif()
+      elseif(NOT KATAGO_C384_H12_FA4_BATCH_COUNT EQUAL 1 OR
+             (NOT KATAGO_C384_H12_FA4_SORTED_BATCHES STREQUAL "24" AND
+              NOT KATAGO_C384_H12_FA4_SORTED_BATCHES STREQUAL "28"))
+        message(FATAL_ERROR
+          "C384/H12 FA4 production package must collapse to B24 or B28")
+      endif()
+      foreach(KATAGO_C384_H12_FA4_LIST HEADERS OBJECTS BRIDGES METADATA)
+        list(LENGTH KATAGO_C384_H12_FA4_${KATAGO_C384_H12_FA4_LIST}
+          KATAGO_C384_H12_FA4_${KATAGO_C384_H12_FA4_LIST}_COUNT)
+        if(NOT KATAGO_C384_H12_FA4_${KATAGO_C384_H12_FA4_LIST}_COUNT EQUAL
+               KATAGO_C384_H12_FA4_BATCH_COUNT)
+          message(FATAL_ERROR
+            "C384/H12 FA4 ${KATAGO_C384_H12_FA4_LIST} count does not match batches")
+        endif()
+      endforeach()
+      list(LENGTH KATAGO_C384_H12_FA4_ASSETS KATAGO_C384_H12_FA4_ASSET_COUNT)
+      list(LENGTH KATAGO_C384_H12_FA4_ASSET_SHAS KATAGO_C384_H12_FA4_SHA_COUNT)
+      if(NOT KATAGO_C384_H12_FA4_ASSET_COUNT EQUAL KATAGO_C384_H12_FA4_SHA_COUNT OR
+         KATAGO_C384_H12_FA4_ASSET_COUNT EQUAL 0)
+        message(FATAL_ERROR "C384/H12 FA4 package asset/SHA lists are invalid")
+      endif()
+      set(KATAGO_C384_H12_FA4_EXPECTED_ASSETS
+        ${KATAGO_C384_H12_FA4_HEADERS}
+        ${KATAGO_C384_H12_FA4_OBJECTS}
+        ${KATAGO_C384_H12_FA4_BRIDGES}
+        ${KATAGO_C384_H12_FA4_METADATA})
+      set(KATAGO_C384_H12_FA4_SORTED_ASSETS ${KATAGO_C384_H12_FA4_ASSETS})
+      list(SORT KATAGO_C384_H12_FA4_SORTED_ASSETS)
+      list(SORT KATAGO_C384_H12_FA4_EXPECTED_ASSETS)
+      if(NOT KATAGO_C384_H12_FA4_SORTED_ASSETS STREQUAL
+             KATAGO_C384_H12_FA4_EXPECTED_ASSETS)
+        message(FATAL_ERROR
+          "C384/H12 FA4 ASSETS must equal headers+objects+bridges+metadata")
+      endif()
+      math(EXPR KATAGO_C384_H12_FA4_LAST_ASSET
+        "${KATAGO_C384_H12_FA4_ASSET_COUNT} - 1")
+      foreach(KATAGO_C384_H12_FA4_INDEX RANGE 0 ${KATAGO_C384_H12_FA4_LAST_ASSET})
+        list(GET KATAGO_C384_H12_FA4_ASSETS ${KATAGO_C384_H12_FA4_INDEX}
+          KATAGO_C384_H12_FA4_ASSET)
+        list(GET KATAGO_C384_H12_FA4_ASSET_SHAS ${KATAGO_C384_H12_FA4_INDEX}
+          KATAGO_C384_H12_FA4_EXPECTED_SHA)
+        if(NOT EXISTS "${KATAGO_C384_H12_FA4_ASSET}")
+          message(FATAL_ERROR "Missing C384/H12 FA4 asset: ${KATAGO_C384_H12_FA4_ASSET}")
+        endif()
+        file(SHA256 "${KATAGO_C384_H12_FA4_ASSET}"
+          KATAGO_C384_H12_FA4_ACTUAL_SHA)
+        if(KATAGO_C384_H12_FA4_EXPECTED_SHA STREQUAL "" OR
+           NOT KATAGO_C384_H12_FA4_ACTUAL_SHA STREQUAL
+             KATAGO_C384_H12_FA4_EXPECTED_SHA)
+          message(FATAL_ERROR
+            "C384/H12 FA4 asset SHA256 mismatch: ${KATAGO_C384_H12_FA4_ASSET}")
+        endif()
+      endforeach()
+      foreach(KATAGO_C384_H12_FA4_SINGLE REGISTRY RUNTIME)
+        if(NOT EXISTS "${KATAGO_C384_H12_FA4_${KATAGO_C384_H12_FA4_SINGLE}}")
+          message(FATAL_ERROR
+            "Missing C384/H12 FA4 ${KATAGO_C384_H12_FA4_SINGLE}")
+        endif()
+        file(SHA256 "${KATAGO_C384_H12_FA4_${KATAGO_C384_H12_FA4_SINGLE}}"
+          KATAGO_C384_H12_FA4_SINGLE_ACTUAL_SHA)
+        if(NOT KATAGO_C384_H12_FA4_SINGLE_ACTUAL_SHA STREQUAL
+             KATAGO_C384_H12_FA4_${KATAGO_C384_H12_FA4_SINGLE}_SHA)
+          message(FATAL_ERROR
+            "C384/H12 FA4 ${KATAGO_C384_H12_FA4_SINGLE} SHA256 mismatch")
+        endif()
+      endforeach()
+      set(KATAGO_C384_H12_FA4_REGISTRY_PROVIDER
+        "${KATAGO_C384_H12_FA4_REGISTRY}")
+      foreach(KATAGO_C384_H12_FA4_HEADER IN LISTS KATAGO_C384_H12_FA4_HEADERS)
+        get_filename_component(KATAGO_C384_H12_FA4_HEADER_DIR
+          "${KATAGO_C384_H12_FA4_HEADER}" DIRECTORY)
+        list(APPEND KATAGO_C384_H12_FA4_INCLUDE_DIRS
+          "${KATAGO_C384_H12_FA4_HEADER_DIR}")
+      endforeach()
+      list(REMOVE_DUPLICATES KATAGO_C384_H12_FA4_INCLUDE_DIRS)
+      set(KATAGO_C384_H12_FA4_ENABLED 1)
+      message(STATUS
+        "C384/H12 FA4 package mode=${KATAGO_C384_H12_FA4_PACKAGE_MODE} batches=${KATAGO_C384_H12_FA4_BATCHES} registry_sha=${KATAGO_C384_H12_FA4_REGISTRY_SHA}")
+    endif()
+
     # The ordinary backend stays a fat CUDA build. Only the source-specialized
     # winner kernels form this SM120 object island.
-    set(KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES "")
-    set(KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS "")
-    set(KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR "")
-    set(KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256 "")
+    foreach(KATAGO_C384_EXACT_AOT_MANIFEST_VALUE IN ITEMS
+        KATAGO_C384_EXACT_AOT_PACKAGE_SCHEMA
+        KATAGO_C384_EXACT_AOT_PACKAGE_MODE
+        KATAGO_C384_EXACT_AOT_SELECTED_BATCH
+        KATAGO_C384_EXACT_AOT_SELECTED_QKV_ID
+        KATAGO_C384_EXACT_AOT_SELECTED_DUAL_FFN_ID
+        KATAGO_C384_EXACT_AOT_SELECTED_FAMILIES
+        KATAGO_C384_EXACT_AOT_QKV_ROPE_IDS
+        KATAGO_C384_EXACT_AOT_DUAL_FFN_IDS
+        KATAGO_C384_EXACT_AOT_PROMOTION_EVIDENCE
+        KATAGO_C384_EXACT_AOT_PROMOTION_EVIDENCE_SHA256
+        KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER
+        KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR
+        KATAGO_C384_EXACT_AOT_GENERATED_HEADERS
+        KATAGO_C384_EXACT_AOT_GENERATED_METADATA
+        KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES
+        KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS
+        KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256)
+      set(${KATAGO_C384_EXACT_AOT_MANIFEST_VALUE} "")
+    endforeach()
     if(NOT KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST STREQUAL "")
+      # Preserve optional user expectations before including generated CMake.
+      # The manifest selects the effective IDs; it may not rewrite the values
+      # against which it is checked.
+      set(KATAGO_C384_EXACT_REQUESTED_QKV_TACTIC_ID
+        "${KATAGO_C384_EXACT_QKV_TACTIC_ID}")
+      set(KATAGO_C384_EXACT_REQUESTED_DUAL_FFN_TACTIC_ID
+        "${KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID}")
       get_filename_component(KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST
         "${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}" ABSOLUTE)
       if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}")
@@ -148,7 +311,10 @@ if(USE_BACKEND STREQUAL "CUDA")
           "KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST does not exist: ${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}")
       endif()
       include("${KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST}")
+      katago_c384_exact_resolve_manifest_policy()
       foreach(KATAGO_C384_EXACT_AOT_FILE IN LISTS
+          KATAGO_C384_EXACT_AOT_GENERATED_HEADERS
+          KATAGO_C384_EXACT_AOT_GENERATED_METADATA
           KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES
           KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS)
         if(NOT EXISTS "${KATAGO_C384_EXACT_AOT_FILE}")
@@ -202,7 +368,8 @@ if(USE_BACKEND STREQUAL "CUDA")
       neuralnet/renju15_qkv_rope_gemm_sm120.cu
       neuralnet/c384_exact_fixed_aot_registry.cu
       ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}
-      ${KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES})
+      ${KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES}
+      ${KATAGO_C384_H12_FA4_BRIDGES})
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
         neuralnet/renju15_int8_fused_sm120.cu)
@@ -233,6 +400,10 @@ if(USE_BACKEND STREQUAL "CUDA")
       target_include_directories(katago_sm120_transformer_winner PRIVATE
         "${KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR}")
     endif()
+    if(KATAGO_C384_H12_FA4_INCLUDE_DIRS)
+      target_include_directories(katago_sm120_transformer_winner PRIVATE
+        ${KATAGO_C384_H12_FA4_INCLUDE_DIRS})
+    endif()
     target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
@@ -258,6 +429,8 @@ if(USE_BACKEND STREQUAL "CUDA")
     endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
       neuralnet/renju15_fa4_sm120.cpp
+      neuralnet/c384_h12_fa4_sm120.cpp
+      ${KATAGO_C384_H12_FA4_REGISTRY_PROVIDER}
       $<TARGET_OBJECTS:katago_sm120_transformer_winner>)
   endif()
 # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
@@ -503,6 +676,15 @@ if(USE_BACKEND STREQUAL "CUDA")
   target_compile_definitions(katago PRIVATE USE_CUDA_BACKEND)
   target_compile_definitions(katago PRIVATE CUDA_TARGET_VERSION=${CMAKE_CUDA_COMPILER_VERSION})
   find_package(CUDAToolkit REQUIRED)
+  # Standalone ABI/dispatch contract: intentionally links no generated
+  # package. The test supplies a synthetic registry and exercises B24/B28,
+  # packed/planar and current-device proof ownership.
+  add_executable(c384_h12_fa4_registry_contract EXCLUDE_FROM_ALL
+    tests/c384_h12_fa4_registry_contract.cpp
+    neuralnet/c384_h12_fa4_sm120.cpp)
+  target_include_directories(c384_h12_fa4_registry_contract PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(c384_h12_fa4_registry_contract PRIVATE CUDA::cudart)
   find_path(CUDNN_INCLUDE_DIR cudnn.h HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES include)
   if((NOT CUDNN_INCLUDE_DIR))
     message(FATAL_ERROR "${ColorBoldRed} cudnn.h was NOT found, specify CUDNN_INCLUDE_DIR to indicate where it is. ${ColorReset}")
@@ -531,16 +713,30 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_DUAL_FFN_SM120=1
       KATAGO_ENABLE_RENJU15_GEMM_TACTICS_SM120=1
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1
-      KATAGO_ENABLE_RENJU15_FA4_SM120=1)
+      KATAGO_ENABLE_RENJU15_FA4_SM120=1
+      KATAGO_ENABLE_C384_EXACT_FIXED_AOT=1
+      "KATAGO_C384_EXACT_QKV_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID}\""
+      "KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}\"")
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       target_compile_definitions(katago PRIVATE
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
     endif()
     target_include_directories(katago PRIVATE
       "${KATAGO_RENJU15_FA4_B36_AOT_ROOT}")
+    if(KATAGO_C384_H12_FA4_INCLUDE_DIRS)
+      target_include_directories(katago PRIVATE
+        ${KATAGO_C384_H12_FA4_INCLUDE_DIRS})
+    endif()
     target_link_libraries(katago
       "${KATAGO_RENJU15_FA4_B36_OBJECT}"
       "${KATAGO_RENJU15_FA4_CUTE_RUNTIME}")
+    if(KATAGO_C384_H12_FA4_ENABLED)
+      target_link_libraries(katago
+        ${KATAGO_C384_H12_FA4_OBJECTS}
+        "${KATAGO_C384_H12_FA4_RUNTIME}")
+    endif()
+    message(STATUS
+      "C384 exact selection qkv='${KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID}' dual='${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}'")
   endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)

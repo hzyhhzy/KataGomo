@@ -91,6 +91,7 @@ def main() -> int:
     import cutlass
     import cutlass.cute as cute
     import cutlass.pipeline as pipeline
+    from cuda.bindings import _version as cuda_bindings_version
     from cuda.bindings import driver as cuda
     from cutlass.cute.runtime import from_dlpack
 
@@ -170,7 +171,7 @@ def main() -> int:
     bridge_path.write_text(render_dual_ffn_bridge(task), encoding="utf-8")
     metadata = common.artifact_metadata(
         task, space, Path(__file__), dense_path, patched_path, output_dir,
-        bridge_path, cutlass_commit,
+        bridge_path,cutlass_commit,cutlass,cuda,cuda_bindings_version,
         {
             "tile": list(task.tile),
             "effective_output_tile": list(task.effective_output_tile or ()),

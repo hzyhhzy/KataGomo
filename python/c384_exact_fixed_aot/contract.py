@@ -23,6 +23,9 @@ DEFAULT_SPACE = HERE / "search_space.json"
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 CANDIDATE_ID = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 FAMILIES = ("qkv_rope", "dual_ffn")
+PACKAGE_MODES = ("SEARCH_PAIR", "PRODUCTION")
+PINNED_CUTLASS_COMMIT = "dcf215af68a2d08d305076c152a06f201728cd53"
+HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def require(condition: bool, message: str) -> None:
@@ -264,6 +267,9 @@ def verify_artifact(space: dict, metadata_path: Path) -> VerifiedArtifact:
             "artifact generation is not complete")
     require(value.get("verified_on_target") is False,
             "search generator must not claim target verification")
+    require(value.get("compute_capability") == "sm_120",
+            "artifact must be generated for sm_120")
+    require(value.get("dtype") == "fp16", "artifact dtype must be fp16")
     require(value.get("search_space_sha256") == canonical_json_sha256(space),
             "artifact search-space hash mismatch")
     task = find_task(
@@ -278,17 +284,75 @@ def verify_artifact(space: dict, metadata_path: Path) -> VerifiedArtifact:
             "artifact stem mismatch")
     require(value.get("max_active_clusters") == task.max_active_clusters,
             "artifact scheduler grid mismatch")
+    require(value.get("shape") == {
+        "sequence": 225, "channels": 384, "heads": 12,
+        "kv_heads": 12, "head_dim": 32, "ffn_channels": 1024,
+    }, "artifact fixed shape mismatch")
+    provenance = value.get("provenance", {})
+    generator = HERE / (
+        "generate_qkv_rope.py" if task.family == "qkv_rope"
+        else "generate_dual_ffn.py"
+    )
+    require(provenance.get("generator_sha256") == sha256_file(generator),
+            "artifact generator provenance mismatch")
+    require(provenance.get("cutlass_commit") == PINNED_CUTLASS_COMMIT,
+            "artifact CUTLASS provenance mismatch")
+    for label in ("dense_gemm_sha256", "patched_dense_gemm_sha256"):
+        require(HEX_SHA256.fullmatch(str(provenance.get(label, ""))) is not None,
+                f"artifact {label} is invalid")
+    require(provenance.get("gpu_kernel_executed") is False,
+            "generation provenance must remain CPU-only")
+    require(re.search(r"release 13(?:\.|,)", str(provenance.get("nvcc", "")),
+                      re.IGNORECASE) is not None,
+            "artifact must be generated with CUDA 13.x")
+    expected_coordinate = {
+        "tile": list(task.tile),
+        "atom_layout": list(task.atom_layout),
+        "input": [task.token_rows, 384],
+        "output": [task.token_rows, 1024],
+    }
+    coordinate = value.get("coordinate", {})
+    for label, expected in expected_coordinate.items():
+        if label == "output" and task.family == "qkv_rope":
+            continue
+        require(coordinate.get(label) == expected,
+                f"artifact coordinate {label} mismatch")
+    if task.family == "qkv_rope":
+        require(coordinate.get("packed_weights") == [384, 1152] and
+                coordinate.get("packed_output") == [task.token_rows, 1152] and
+                coordinate.get("rope_table_half2") == [225, 192],
+                "QKV artifact coordinate/layout mismatch")
+    else:
+        require(coordinate.get("paired_weights") == [384, 2048] and
+                coordinate.get("effective_output_tile") ==
+                  list(task.effective_output_tile or ()) and
+                coordinate.get("epilogue") == "silu-linear-times-gate",
+                "dual-FFN artifact coordinate/layout mismatch")
     require(value.get("symbols") == {
         "prepare": task.prepare_symbol, "launch": task.launch_symbol,
     }, "artifact exported symbols mismatch")
     files = value.get("files", {})
-    return VerifiedArtifact(
+    verified = VerifiedArtifact(
         task=task,
         metadata_path=metadata_path,
         header=_resolve_artifact_file(metadata_path, files.get("header"), "header"),
         object_file=_resolve_artifact_file(metadata_path, files.get("object"), "object"),
         bridge=_resolve_artifact_file(metadata_path, files.get("bridge"), "bridge"),
     )
+    object_bytes = verified.object_file.read_bytes()
+    require(object_bytes.startswith(b"\x7fELF"),
+            "generated object is not an ELF object")
+    wrapper = f"cute_dsl_{task.artifact_stem}_wrapper".encode("ascii")
+    require(wrapper in object_bytes,
+            "generated object lacks the expected unique wrapper symbol")
+    bridge_text = verified.bridge.read_text(encoding="utf-8")
+    require(task.prepare_symbol in bridge_text and task.launch_symbol in bridge_text and
+            wrapper.decode("ascii") in bridge_text,
+            "generated bridge lacks the selected ABI symbols")
+    require("MaxPreparedDevices" in bridge_text and
+            "cudaPeekAtLastError" in bridge_text,
+            "generated bridge lacks per-device eager preparation")
+    return verified
 
 
 def verify_complete_artifact_set(
@@ -304,6 +368,44 @@ def verify_complete_artifact_set(
     order = {(t.family, t.batch, t.candidate_id): i for i, t in enumerate(wanted)}
     return sorted(artifacts, key=lambda a: order[
         (a.task.family, a.task.batch, a.task.candidate_id)])
+
+
+def normalize_package_mode(mode: str) -> str:
+    normalized = mode.upper().replace("-", "_")
+    require(normalized in PACKAGE_MODES,
+            "exact-AOT package mode must be SEARCH_PAIR or PRODUCTION")
+    return normalized
+
+
+def verify_production_promotion(
+    path: Path, qkv: VerifiedArtifact, dual: VerifiedArtifact,
+) -> dict:
+    path = path.resolve()
+    require(path.is_file(), f"missing production promotion evidence: {path}")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    require(value.get("schema") == 1,
+            "unsupported production promotion schema")
+    require(value.get("kind") ==
+            "katago-c384-exact-aot-production-promotion",
+            "unexpected production promotion kind")
+    require(value.get("status") == "PASSED",
+            "production promotion did not pass")
+    require(value.get("selected") == {
+        "batch": qkv.task.batch,
+        "qkv_rope": qkv.task.candidate_id,
+        "dual_ffn": dual.task.candidate_id,
+    }, "production promotion selected pair mismatch")
+    gates = value.get("gates", {})
+    require(set(gates) == {"activation", "long_gate", "accuracy"},
+            "production promotion must contain all required gates")
+    for name in ("activation", "long_gate", "accuracy"):
+        gate = gates.get(name, {})
+        require(gate.get("status") == "PASSED",
+                f"production promotion {name} gate did not pass")
+        require(HEX_SHA256.fullmatch(
+            str(gate.get("evidence_sha256", ""))) is not None,
+            f"production promotion {name} evidence hash is invalid")
+    return value
 
 
 def render_registry(artifacts: list[VerifiedArtifact]) -> str:
@@ -370,24 +472,76 @@ def _cmake_path(path: Path) -> str:
 
 
 def render_cmake_manifest(
-    registry_path: Path, artifacts: list[VerifiedArtifact],
+    registry_path: Path,
+    artifacts: list[VerifiedArtifact],
+    *,
+    mode: str = "SEARCH_PAIR",
+    promotion_evidence: Path | None = None,
 ) -> str:
+    mode = normalize_package_mode(mode)
+    qkv = [a for a in artifacts if a.task.family == "qkv_rope"]
+    dual = [a for a in artifacts if a.task.family == "dual_ffn"]
+    require(len(artifacts) == 2 and len(qkv) == 1 and len(dual) == 1,
+            "one build manifest must select exactly one QKV and one dual artifact")
+    require(qkv[0].task.batch == dual[0].task.batch,
+            "selected QKV and dual artifacts must bind the same fixed batch")
+    if mode == "SEARCH_PAIR":
+        require(promotion_evidence is None,
+                "SEARCH_PAIR must not claim production promotion evidence")
+        promotion_path = None
+    else:
+        require(promotion_evidence is not None,
+                "PRODUCTION requires promotion evidence")
+        promotion_path = promotion_evidence.resolve()
+        verify_production_promotion(promotion_path, qkv[0], dual[0])
     dirs = {a.metadata_path.parent.resolve() for a in artifacts}
     require(len(dirs) == 1, "all generated artifacts must share one directory")
     include_dir = next(iter(dirs))
+    registry_path = registry_path.resolve()
+    require(registry_path.is_file(), "generated registry does not exist")
+    headers = [a.header for a in artifacts]
     bridges = [a.bridge for a in artifacts]
     objects = [a.object_file for a in artifacts]
-    hashed_files = [registry_path.resolve()]
+    metadata = [a.metadata_path for a in artifacts]
+    hashed_files = [registry_path]
     for artifact in artifacts:
-        hashed_files.extend((artifact.header, artifact.object_file, artifact.bridge))
+        hashed_files.extend((
+            artifact.header, artifact.object_file, artifact.bridge,
+            artifact.metadata_path,
+        ))
+    if promotion_path is not None:
+        hashed_files.append(promotion_path)
     require(len(hashed_files) == len(set(hashed_files)),
             "generated manifest contains duplicate files")
     lines = [
         "# Generated by emit_registry.py; all paths were hash-verified.",
+        'set(KATAGO_C384_EXACT_AOT_PACKAGE_SCHEMA "1")',
+        f'set(KATAGO_C384_EXACT_AOT_PACKAGE_MODE "{mode}")',
+        f'set(KATAGO_C384_EXACT_AOT_SELECTED_BATCH "{qkv[0].task.batch}")',
+        f'set(KATAGO_C384_EXACT_AOT_SELECTED_QKV_ID "{qkv[0].task.candidate_id}")',
+        f'set(KATAGO_C384_EXACT_AOT_SELECTED_DUAL_FFN_ID "{dual[0].task.candidate_id}")',
+        'set(KATAGO_C384_EXACT_AOT_SELECTED_FAMILIES "QKV_ROPE;DUAL_FFN")',
+        f'set(KATAGO_C384_EXACT_AOT_QKV_ROPE_IDS "{qkv[0].task.candidate_id}")',
+        f'set(KATAGO_C384_EXACT_AOT_DUAL_FFN_IDS "{dual[0].task.candidate_id}")',
+        'set(KATAGO_C384_EXACT_AOT_PROMOTION_EVIDENCE "{}")'.format(
+            _cmake_path(promotion_path) if promotion_path is not None else ""
+        ),
+        'set(KATAGO_C384_EXACT_AOT_PROMOTION_EVIDENCE_SHA256 "{}")'.format(
+            sha256_file(promotion_path) if promotion_path is not None else ""
+        ),
         f'set(KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER "{_cmake_path(registry_path)}")',
         f'set(KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR "{_cmake_path(include_dir)}")',
-        "set(KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES",
+        "set(KATAGO_C384_EXACT_AOT_GENERATED_HEADERS",
     ]
+    lines.extend(f'  "{_cmake_path(path)}"' for path in headers)
+    lines.extend([
+        ")", "set(KATAGO_C384_EXACT_AOT_GENERATED_METADATA",
+    ])
+    lines.extend(f'  "{_cmake_path(path)}"' for path in metadata)
+    lines.extend([
+        ")",
+        "set(KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES",
+    ])
     lines.extend(f'  "{_cmake_path(path)}"' for path in bridges)
     lines.extend([
         ")", "set(KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS",
