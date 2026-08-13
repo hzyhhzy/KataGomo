@@ -796,6 +796,13 @@ void Tests::runTransformerProductionPlanTests() {
     testAssert(candidateBatchPriority(24) == 1);
     testAssert(candidateBatchPriority(40) == -1);
     testAssert(candidateBatchPriority(36) == -1);
+    // B24 remains searchable diagnostic evidence, but production is locked to
+    // exact B28/M6300 and must reject every tail or neighboring batch.
+    testAssert(kProductionBatch == 28);
+    testAssert(kProductionTokenRows == 6300);
+    testAssert(productionBatchEligible(28,6300));
+    testAssert(!productionBatchEligible(24,5400));
+    testAssert(!productionBatchEligible(28,6299));
 
     Selection selected = select(
       shape,registry,"qkv-rope-b28-test","dual-b28-grid170-test",&fa4);

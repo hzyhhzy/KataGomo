@@ -60,6 +60,10 @@ int tokenRowsForBatch(int batchSize) {
   return candidateBatchPriority(batchSize) >= 0 ? batchSize * kSequenceLength : 0;
 }
 
+bool productionBatchEligible(int batchSize, int tokenRows) {
+  return batchSize == kProductionBatch && tokenRows == kProductionTokenRows;
+}
+
 namespace {
 
 bool commonShapeEligible(const RuntimeShape& shape) {

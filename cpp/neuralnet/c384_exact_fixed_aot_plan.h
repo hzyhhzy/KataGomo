@@ -17,6 +17,10 @@ constexpr int kHeadDim = 32;
 constexpr int kFfnChannels = 1024;
 constexpr int kRopePairsTotal = 192;
 constexpr uint32_t kComputeCapability = 120;
+// Search tooling may still compare historical B24 assets, but the production
+// engine route is deliberately fixed to B28 by user direction.
+constexpr int kProductionBatch = 28;
+constexpr int kProductionTokenRows = kProductionBatch * kSequenceLength;
 constexpr uint32_t kRegistryAbiVersion = 2;
 constexpr uint32_t kPackedFa4ProofAbiVersion = 1;
 constexpr uint32_t kQkvRopeNativeAbiVersion = 1;
@@ -28,6 +32,7 @@ constexpr uint32_t kDualFfnNativeAbiVersion = 1;
 const int* candidateBatches(std::size_t& count);
 int candidateBatchPriority(int batchSize);
 int tokenRowsForBatch(int batchSize);
+bool productionBatchEligible(int batchSize, int tokenRows);
 
 enum class Family : uint32_t {
   QkvRope = 1,

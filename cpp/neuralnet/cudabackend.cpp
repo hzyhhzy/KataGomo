@@ -20,6 +20,7 @@
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
 #include "../neuralnet/c384_exact_fixed_aot_kernels.h"
 #include "../neuralnet/c384_exact_fixed_aot_weights.h"
+#include "../neuralnet/c384_exact_ffn_down_aot.h"
 #include "../neuralnet/c384_h12_fa4_sm120.h"
 #endif
 #include "../neuralnet/cudaopregistry.h"
@@ -66,6 +67,9 @@
 #endif
 #ifndef KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID
 #define KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID ""
+#endif
+#ifndef KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID
+#define KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID ""
 #endif
 #endif
 
@@ -517,14 +521,20 @@ struct CudaHandles {
   bool loggedWinner;
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
   bool c384ExactModelEligible;
-  bool c384ExactQkvFa4Enabled;
-  bool c384ExactDualFfnEnabled;
+  // QKV+FA4, dual FFN, and FFN-down publish as one all-or-nothing B28 plan.
+  bool c384ExactTransactionEnabled;
   int c384ExactBatchSize;
   int c384ExactDeviceOrdinal;
   int preparedC384ExactQkvFa4;
   int preparedC384ExactDualFfn;
+  int preparedC384ExactFfnDown;
+  int activeC384ExactQkvFa4;
+  int activeC384ExactDualFfn;
+  int activeC384ExactFfnDown;
   bool loggedC384ExactQkvFa4;
   bool loggedC384ExactDualFfn;
+  bool loggedC384ExactFfnDown;
+  bool loggedC384ExactTransactionActive;
 #endif
 #if KATAGO_CUDA_HAS_SDPA
   std::unordered_set<SDPAGraphKey,SDPAGraphKeyHash> loggedSdpaKeys;
@@ -592,14 +602,19 @@ struct CudaHandles {
       loggedWinner(false),
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
       c384ExactModelEligible(false),
-      c384ExactQkvFa4Enabled(false),
-      c384ExactDualFfnEnabled(false),
+      c384ExactTransactionEnabled(false),
       c384ExactBatchSize(0),
       c384ExactDeviceOrdinal(-1),
       preparedC384ExactQkvFa4(0),
       preparedC384ExactDualFfn(0),
+      preparedC384ExactFfnDown(0),
+      activeC384ExactQkvFa4(0),
+      activeC384ExactDualFfn(0),
+      activeC384ExactFfnDown(0),
       loggedC384ExactQkvFa4(false),
       loggedC384ExactDualFfn(false),
+      loggedC384ExactFfnDown(false),
+      loggedC384ExactTransactionActive(false),
 #endif
 #if KATAGO_CUDA_HAS_SDPA
       loggedSdpaKeys(),
@@ -786,7 +801,9 @@ struct CudaHandles {
     c384ExactModelEligible = false;
     c384ExactBatchSize = 0;
     c384ExactDeviceOrdinal = -1;
-    if((physicalBatchSize != 24 && physicalBatchSize != 28) ||
+    if(!C384ExactFixedAot::productionBatchEligible(
+         physicalBatchSize,
+         physicalBatchSize * C384ExactFixedAot::kSequenceLength) ||
        boardX != C384ExactFixedAot::kBoardX ||
        boardY != C384ExactFixedAot::kBoardY || !usingFp16 || !usingNhwc ||
        !exactNoMask || majorComputeCapability != 12 || minorComputeCapability != 0)
@@ -874,20 +891,60 @@ struct CudaHandles {
     return shape;
   }
 
+  C384ExactFfnDownAot::RuntimeShape c384ExactFfnDownRuntimeShape() const noexcept {
+    C384ExactFfnDownAot::RuntimeShape shape;
+    shape.modelDepth = 36;
+    shape.attentionBlockCount = 36;
+    shape.ffnBlockCount = 36;
+    shape.alternatingAttentionFfn = true;
+    shape.batchSize = c384ExactBatchSize;
+    shape.tokenRows = c384ExactBatchSize * C384ExactFfnDownAot::kSequenceLength;
+    shape.boardX = C384ExactFfnDownAot::kBoardX;
+    shape.boardY = C384ExactFfnDownAot::kBoardY;
+    shape.sequenceLength = C384ExactFfnDownAot::kSequenceLength;
+    shape.channels = C384ExactFfnDownAot::kChannels;
+    shape.ffnChannels = C384ExactFfnDownAot::kInputChannels;
+    shape.deviceOrdinal = c384ExactDeviceOrdinal;
+    shape.computeCapability = C384ExactFfnDownAot::kComputeCapability;
+    shape.usingFp16 = true;
+    shape.usingNhwc = true;
+    shape.exactNoMask = true;
+    shape.swiglu = true;
+    return shape;
+  }
+
   void commitC384ExactFixedAot() {
-    c384ExactQkvFa4Enabled = c384ExactModelEligible &&
-      preparedC384ExactQkvFa4 == 36;
-    c384ExactDualFfnEnabled = c384ExactModelEligible &&
-      preparedC384ExactDualFfn == 36;
+    c384ExactTransactionEnabled = c384ExactModelEligible &&
+      c384ExactBatchSize == C384ExactFixedAot::kProductionBatch &&
+      preparedC384ExactQkvFa4 == 36 &&
+      preparedC384ExactDualFfn == 36 &&
+      preparedC384ExactFfnDown == 36;
     if(logger != NULL && c384ExactModelEligible) {
       logger->write(
         string("KATAGO_C384_EXACT_FIXED_PREPARED batch=") +
         Global::intToString(c384ExactBatchSize) + " qkv_fa4=" +
-        (c384ExactQkvFa4Enabled ? "36/36" :
-          Global::intToString(preparedC384ExactQkvFa4) + "/36-fallback") +
-        " dual_ffn=" +
-        (c384ExactDualFfnEnabled ? "36/36" :
-          Global::intToString(preparedC384ExactDualFfn) + "/36-fallback"));
+        Global::intToString(preparedC384ExactQkvFa4) + "/36 dual_ffn=" +
+        Global::intToString(preparedC384ExactDualFfn) + "/36 ffn_down=" +
+        Global::intToString(preparedC384ExactFfnDown) + "/36 transaction=" +
+        (c384ExactTransactionEnabled ? "active" : "fallback") +
+        " fallback=pre-enqueue-generic");
+    }
+  }
+
+  void noteC384ExactLaunch(bool& blockCounted, int& activeCount) {
+    if(!c384ExactTransactionEnabled || blockCounted)
+      return;
+    blockCounted = true;
+    activeCount++;
+    if(!loggedC384ExactTransactionActive && logger != NULL &&
+       activeC384ExactQkvFa4 == 36 && activeC384ExactDualFfn == 36 &&
+       activeC384ExactFfnDown == 36) {
+      logger->write(
+        string("KATAGO_C384_EXACT_FIXED_ACTIVE batch=") +
+        Global::intToString(c384ExactBatchSize) +
+        " qkv_fa4=36/36 dual_ffn=36/36 ffn_down=36/36 "
+        "out_projection=cublas-hgemm-beta1 transaction=active");
+      loggedC384ExactTransactionActive = true;
     }
   }
 #endif
@@ -2721,6 +2778,7 @@ struct TransformerAttentionBlock {
   C384H12Fa4Sm120::PreparedProof c384ExactFa4Proof;
   UniqueExactCudaDeviceBuffer c384ExactQkvWeights;
   UniqueExactCudaDeviceBuffer c384ExactRopeTable;
+  mutable bool countedC384ExactQkvFa4;
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   UniqueCudaDeviceBuffer int8QkWeightBuf;
@@ -2808,6 +2866,7 @@ struct TransformerAttentionBlock {
     c384ExactFa4Proof(),
     c384ExactQkvWeights(nullptr),
     c384ExactRopeTable(nullptr),
+    countedC384ExactQkvFa4(false),
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     int8QkWeightBuf(nullptr),
@@ -3124,7 +3183,7 @@ struct TransformerAttentionBlock {
     bool usedC384ExactPackedQkv = false;
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     const bool c384ExactPackedEligible =
-      cudaHandles->c384ExactQkvFa4Enabled &&
+      cudaHandles->c384ExactTransactionEnabled &&
       c384ExactSelection.qkvRope != nullptr &&
       c384ExactSelection.packedFa4 == &c384ExactPortableFa4Proof &&
       c384ExactQkvWeights != nullptr && c384ExactRopeTable != nullptr &&
@@ -3276,6 +3335,8 @@ struct TransformerAttentionBlock {
         CUDA_ERR(name.c_str(),cudaErrorInvalidValue);
       CUDA_ERR(name.c_str(),result.status);
       usedSDPA = true;
+      cudaHandles->noteC384ExactLaunch(
+        countedC384ExactQkvFa4,cudaHandles->activeC384ExactQkvFa4);
       if(!cudaHandles->loggedC384ExactQkvFa4 && cudaHandles->logger != NULL) {
         cudaHandles->logger->write(
           string("KATAGO_C384_EXACT_QKV_FA4_ACTIVE batch=") +
@@ -3450,7 +3511,10 @@ struct TransformerFFNBlock {
   void* downProjectionKernel;
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
   C384ExactFixedAot::PreparedCudaSelection c384ExactSelection;
+  C384ExactFfnDownAot::PreparedSelection c384ExactFfnDownSelection;
   UniqueExactCudaDeviceBuffer c384ExactDualWeights;
+  mutable bool countedC384ExactDualFfn;
+  mutable bool countedC384ExactFfnDown;
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
   UniqueCudaDeviceBuffer int8UpWeightBuf;
@@ -3476,6 +3540,7 @@ struct TransformerFFNBlock {
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
   void discardC384ExactPrepared() noexcept {
     c384ExactSelection = C384ExactFixedAot::PreparedCudaSelection{};
+    c384ExactFfnDownSelection = C384ExactFfnDownAot::PreparedSelection{};
     c384ExactDualWeights.reset();
   }
 #endif
@@ -3518,7 +3583,10 @@ struct TransformerFFNBlock {
     downProjectionKernel(nullptr),
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     c384ExactSelection(),
+    c384ExactFfnDownSelection(),
     c384ExactDualWeights(nullptr),
+    countedC384ExactDualFfn(false),
+    countedC384ExactFfnDown(false),
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     int8UpWeightBuf(nullptr),
@@ -3544,7 +3612,8 @@ struct TransformerFFNBlock {
       numChannels == 384 && ffnChannels == 1024 &&
       desc->linear1.inChannels == 384 && desc->linear1.outChannels == 1024 &&
       desc->linearGate.inChannels == 384 &&
-      desc->linearGate.outChannels == 1024;
+      desc->linearGate.outChannels == 1024 &&
+      desc->linear2.inChannels == 1024 && desc->linear2.outChannels == 384;
     if(exactFfnShape) {
       try {
         const C384ExactFixedAot::PreparedCudaSelection selection =
@@ -3554,20 +3623,34 @@ struct TransformerFFNBlock {
         if(selection.dualFfnReason ==
              C384ExactFixedAot::RejectReason::PreparationFailed)
           (void)cudaGetLastError();
-        if(selection.dualFfn != nullptr) {
+        const C384ExactFfnDownAot::PreparedSelection downSelection =
+          C384ExactFfnDownAot::prepareSelection(
+            cudaHandles->c384ExactFfnDownRuntimeShape(),
+            KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID);
+        if(downSelection.reason ==
+             C384ExactFfnDownAot::RejectReason::QueryFailed ||
+           downSelection.reason ==
+             C384ExactFfnDownAot::RejectReason::PreparationFailed)
+          (void)cudaGetLastError();
+        // Publish both FFN tactics together. A missing/mismatched down tactic
+        // prevents dual FFN from becoming reachable in this block.
+        if(selection.dualFfn != nullptr && downSelection.selected()) {
           UniqueExactCudaDeviceBuffer dualWeights;
           uploadExactFp16Weights(
             name + ":c384ExactDual",
             C384ExactFixedAot::packDualFfnWeights(
               desc->linear1.weights,desc->linearGate.weights),dualWeights);
           c384ExactSelection = selection;
+          c384ExactFfnDownSelection = downSelection;
           c384ExactDualWeights = std::move(dualWeights);
           cudaHandles->preparedC384ExactDualFfn++;
+          cudaHandles->preparedC384ExactFfnDown++;
         }
       }
       catch(...) {
         (void)cudaGetLastError();
         c384ExactSelection = C384ExactFixedAot::PreparedCudaSelection{};
+        c384ExactFfnDownSelection = C384ExactFfnDownAot::PreparedSelection{};
         c384ExactDualWeights.reset();
       }
     }
@@ -3752,9 +3835,28 @@ struct TransformerFFNBlock {
 #endif
 
     // Step 2-3: dual projection + SwiGLU. A failed handle or launch-shape
-    // capability check falls back before any work is enqueued.
+    // capability check falls back before exact dual/down work is enqueued.
     SizedBuf<void*> ffnBuf(scratch->allocator, (size_t)ffnChannels * matBatchSize * bytesPerElt);
     bool usedDualFfn = false;
+#if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
+    bool usedC384ExactDualFfn = false;
+    C384ExactFfnDownAot::RuntimeShape actualDownShape =
+      cudaHandles->c384ExactFfnDownRuntimeShape();
+    actualDownShape.batchSize = batchSize;
+    actualDownShape.tokenRows = matBatchSize;
+    actualDownShape.usingFp16 = usingFP16;
+    actualDownShape.usingNhwc = usingNHWC;
+    actualDownShape.exactNoMask = maskBuf == nullptr;
+    const bool c384ExactFfnTransactionEligible =
+      cudaHandles->c384ExactTransactionEnabled &&
+      c384ExactSelection.dualFfn != nullptr &&
+      c384ExactDualWeights != nullptr &&
+      batchSize == cudaHandles->c384ExactBatchSize &&
+      matBatchSize == c384ExactSelection.dualFfn->key.tokenRows &&
+      C384ExactFfnDownAot::supports(
+        c384ExactFfnDownSelection,actualDownShape,ffnBuf.buf,
+        linear2.matBuf,trunkBuf);
+#endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     if(useInt8DualFfn) {
       CUDA_ERR(name.c_str(),katago_renju15_int8_dual_ffn_sm120_launch(
@@ -3772,16 +3874,15 @@ struct TransformerFFNBlock {
     }
 #endif
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
-    if(!usedDualFfn && cudaHandles->c384ExactDualFfnEnabled &&
-       c384ExactSelection.dualFfn != nullptr && c384ExactDualWeights != nullptr &&
-       batchSize == cudaHandles->c384ExactBatchSize && maskBuf == nullptr &&
-       matBatchSize == c384ExactSelection.dualFfn->key.tokenRows &&
-       usingFP16 && usingNHWC) {
+    if(!usedDualFfn && c384ExactFfnTransactionEligible) {
       CUDA_ERR(name.c_str(),c384ExactSelection.dualFfn->launch(
         (const half*)trunkScratchBuf,
         (const half*)c384ExactDualWeights.get(),nullptr,(half*)ffnBuf.buf,
         matBatchSize,cudaHandles->c384ExactDeviceOrdinal,cudaHandles->stream));
       usedDualFfn = true;
+      usedC384ExactDualFfn = true;
+      cudaHandles->noteC384ExactLaunch(
+        countedC384ExactDualFfn,cudaHandles->activeC384ExactDualFfn);
       if(!cudaHandles->loggedC384ExactDualFfn && cudaHandles->logger != NULL) {
         cudaHandles->logger->write(
           string("KATAGO_C384_EXACT_DUAL_FFN_ACTIVE batch=") +
@@ -3856,10 +3957,32 @@ struct TransformerFFNBlock {
         Sm120C384F1024M128N64K32S3Sw4 &&
       recipe.downProjection ==
         CudaTransformerWinner::ResidualTactic::CublasHgemmBetaOne;
-    const bool usedPreparedResidual = linear2.applyPreparedResidual(
-      cudaHandles,recipe.downProjection,downProjectionKernel,matBatchSize,
-      ffnBuf.buf,trunkBuf,maskBuf,c384MeasuredGenericResidual,
-      true,usedSpecializedResidual);
+    bool usedPreparedResidual = false;
+#if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
+    if(usedC384ExactDualFfn) {
+      // The shared preflight above ran before dual FFN enqueued. Once dual has
+      // launched, down failure is fatal and must never retry cuBLAS.
+      CUDA_ERR(name.c_str(),c384ExactFfnDownSelection.tactic->launch(
+        (const half*)ffnBuf.buf,(const half*)linear2.matBuf,(half*)trunkBuf,
+        matBatchSize,cudaHandles->c384ExactDeviceOrdinal,cudaHandles->stream));
+      usedPreparedResidual = true;
+      usedSpecializedResidual = true;
+      cudaHandles->noteC384ExactLaunch(
+        countedC384ExactFfnDown,cudaHandles->activeC384ExactFfnDown);
+      if(!cudaHandles->loggedC384ExactFfnDown && cudaHandles->logger != NULL) {
+        cudaHandles->logger->write(
+          string("KATAGO_C384_EXACT_FFN_DOWN_ACTIVE batch=") +
+          Global::intToString(batchSize) + " marker=" +
+          c384ExactFfnDownSelection.tactic->id);
+        cudaHandles->loggedC384ExactFfnDown = true;
+      }
+    }
+#endif
+    if(!usedPreparedResidual)
+      usedPreparedResidual = linear2.applyPreparedResidual(
+        cudaHandles,recipe.downProjection,downProjectionKernel,matBatchSize,
+        ffnBuf.buf,trunkBuf,maskBuf,c384MeasuredGenericResidual,
+        true,usedSpecializedResidual);
     if(usedSpecializedResidual && recipe.downProjection ==
          CudaTransformerWinner::ResidualTactic::Sm120M128N128K32S3Sw1)
       cudaHandles->noteWinnerLaunch(
@@ -5167,12 +5290,13 @@ struct ComputeHandle {
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
     cudaHandles->commitC384ExactFixedAot();
     model->discardIncompleteC384Exact(
-      cudaHandles->c384ExactQkvFa4Enabled,
-      cudaHandles->c384ExactDualFfnEnabled);
-    if(!cudaHandles->c384ExactQkvFa4Enabled)
+      cudaHandles->c384ExactTransactionEnabled,
+      cudaHandles->c384ExactTransactionEnabled);
+    if(!cudaHandles->c384ExactTransactionEnabled) {
       cudaHandles->preparedC384ExactQkvFa4 = 0;
-    if(!cudaHandles->c384ExactDualFfnEnabled)
       cudaHandles->preparedC384ExactDualFfn = 0;
+      cudaHandles->preparedC384ExactFfnDown = 0;
+    }
 #endif
 #if defined(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT) && KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT
     cudaHandles->finishEmbeddedInt8MetadataConsumption();
@@ -5201,15 +5325,17 @@ struct ComputeHandle {
       }
 #endif
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
-      if(cudaHandles->c384ExactQkvFa4Enabled ||
-         cudaHandles->c384ExactDualFfnEnabled) {
+      if(cudaHandles->c384ExactTransactionEnabled) {
         buffers.reset();
         scratch.reset();
-        cudaHandles->c384ExactQkvFa4Enabled = false;
-        cudaHandles->c384ExactDualFfnEnabled = false;
+        cudaHandles->c384ExactTransactionEnabled = false;
         model->discardIncompleteC384Exact(false,false);
         cudaHandles->preparedC384ExactQkvFa4 = 0;
         cudaHandles->preparedC384ExactDualFfn = 0;
+        cudaHandles->preparedC384ExactFfnDown = 0;
+        cudaHandles->activeC384ExactQkvFa4 = 0;
+        cudaHandles->activeC384ExactDualFfn = 0;
+        cudaHandles->activeC384ExactFfnDown = 0;
         (void)cudaGetLastError();
         if(cudaHandles->logger != NULL)
           cudaHandles->logger->write(

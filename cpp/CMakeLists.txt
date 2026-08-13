@@ -51,11 +51,18 @@ set(KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID "" CACHE STRING
   "Exact generated dual-FFN candidate ID selected at construction; empty disables the family")
 set(KATAGO_C384_H12_FA4_PACKAGE_CMAKE "" CACHE FILEPATH
   "Optional SHA-locked C384/H12 exact-FA4 packed-token package")
+set(KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE "" CACHE FILEPATH
+  "Optional generated CMake package for the typed B28 FFN-down residual tactic")
+set(KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID "" CACHE STRING
+  "Exact generated B28 FFN-down candidate ID; empty selects the empty provider")
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/C384ExactAotPolicy.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/C384ExactFfnDownAotPolicy.cmake")
 katago_c384_exact_validate_request_policy()
+katago_c384_ffn_down_validate_request_policy()
 set(KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID "")
 set(KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID "")
+set(KATAGO_C384_EXACT_EFFECTIVE_FFN_DOWN_TACTIC_ID "")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -65,6 +72,7 @@ if(USE_BACKEND STREQUAL "CUDA")
 
   enable_language(CUDA)
   katago_c384_exact_validate_cuda_version()
+  katago_c384_ffn_down_validate_cuda_version()
 
   set(CMAKE_CUDA_STANDARD 17)
   set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -85,7 +93,8 @@ if(USE_BACKEND STREQUAL "CUDA")
   endif()
 
   if((NOT KATAGO_C384_EXACT_AOT_GENERATED_MANIFEST STREQUAL "" OR
-      NOT KATAGO_C384_H12_FA4_PACKAGE_CMAKE STREQUAL "") AND
+      NOT KATAGO_C384_H12_FA4_PACKAGE_CMAKE STREQUAL "" OR
+      NOT KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE STREQUAL "") AND
      NOT KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
     message(FATAL_ERROR
       "C384 exact-AOT/FA4 packages require the SM120 winner and CUDA 13+")
@@ -93,7 +102,8 @@ if(USE_BACKEND STREQUAL "CUDA")
 
   foreach(KATAGO_C384_EXACT_ID IN ITEMS
       "${KATAGO_C384_EXACT_QKV_TACTIC_ID}"
-      "${KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID}")
+      "${KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID}"
+      "${KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID}")
     if(NOT KATAGO_C384_EXACT_ID STREQUAL "" AND
        NOT KATAGO_C384_EXACT_ID MATCHES "^[a-z0-9][a-z0-9-]*$")
       message(FATAL_ERROR "Unsafe C384 exact-AOT candidate ID: ${KATAGO_C384_EXACT_ID}")
@@ -381,14 +391,121 @@ if(USE_BACKEND STREQUAL "CUDA")
         neuralnet/c384_exact_fixed_aot_registry_stub.cu)
     endif()
 
+    set(KATAGO_C384_FFN_DOWN_EFFECTIVE_REGISTRY_PROVIDER
+      neuralnet/c384_exact_ffn_down_aot_registry_stub.cu)
+    set(KATAGO_C384_FFN_DOWN_BRIDGES "")
+    set(KATAGO_C384_FFN_DOWN_OBJECTS "")
+    set(KATAGO_C384_FFN_DOWN_INCLUDE_DIR "")
+    foreach(KATAGO_C384_FFN_DOWN_MANIFEST_VALUE IN ITEMS
+        KATAGO_C384_FFN_DOWN_PACKAGE_SCHEMA
+        KATAGO_C384_FFN_DOWN_PACKAGE_MODE
+        KATAGO_C384_FFN_DOWN_SELECTED_BATCH
+        KATAGO_C384_FFN_DOWN_SELECTED_ID
+        KATAGO_C384_FFN_DOWN_TACTIC_IDS
+        KATAGO_C384_FFN_DOWN_REGISTRY_PROVIDER
+        KATAGO_C384_FFN_DOWN_GENERATED_INCLUDE_DIR
+        KATAGO_C384_FFN_DOWN_GENERATED_HEADERS
+        KATAGO_C384_FFN_DOWN_GENERATED_METADATA
+        KATAGO_C384_FFN_DOWN_GENERATED_BRIDGES
+        KATAGO_C384_FFN_DOWN_GENERATED_OBJECTS
+        KATAGO_C384_FFN_DOWN_GENERATED_FILE_SHA256)
+      set(${KATAGO_C384_FFN_DOWN_MANIFEST_VALUE} "")
+    endforeach()
+    if(NOT KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE STREQUAL "")
+      set(KATAGO_C384_EXACT_FFN_DOWN_REQUESTED_ID
+        "${KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID}")
+      get_filename_component(KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE
+        "${KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE}" ABSOLUTE)
+      if(NOT EXISTS "${KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE}")
+        message(FATAL_ERROR
+          "C384 FFN-down package does not exist: ${KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE}")
+      endif()
+      include("${KATAGO_C384_EXACT_FFN_DOWN_PACKAGE_CMAKE}")
+      katago_c384_ffn_down_resolve_manifest_policy()
+      foreach(KATAGO_C384_FFN_DOWN_FILE IN LISTS
+          KATAGO_C384_FFN_DOWN_GENERATED_HEADERS
+          KATAGO_C384_FFN_DOWN_GENERATED_METADATA
+          KATAGO_C384_FFN_DOWN_GENERATED_BRIDGES
+          KATAGO_C384_FFN_DOWN_GENERATED_OBJECTS)
+        if(NOT EXISTS "${KATAGO_C384_FFN_DOWN_FILE}")
+          message(FATAL_ERROR
+            "Generated C384 FFN-down file is missing: ${KATAGO_C384_FFN_DOWN_FILE}")
+        endif()
+      endforeach()
+      if(NOT EXISTS "${KATAGO_C384_FFN_DOWN_REGISTRY_PROVIDER}" OR
+         NOT IS_DIRECTORY "${KATAGO_C384_FFN_DOWN_GENERATED_INCLUDE_DIR}")
+        message(FATAL_ERROR "Generated C384 FFN-down package is incomplete")
+      endif()
+      list(LENGTH KATAGO_C384_FFN_DOWN_GENERATED_FILE_SHA256
+        KATAGO_C384_FFN_DOWN_HASH_LENGTH)
+      math(EXPR KATAGO_C384_FFN_DOWN_HASH_REMAINDER
+        "${KATAGO_C384_FFN_DOWN_HASH_LENGTH} % 2")
+      if(KATAGO_C384_FFN_DOWN_HASH_LENGTH EQUAL 0 OR
+         NOT KATAGO_C384_FFN_DOWN_HASH_REMAINDER EQUAL 0)
+        message(FATAL_ERROR "C384 FFN-down SHA256 list is malformed")
+      endif()
+      math(EXPR KATAGO_C384_FFN_DOWN_HASH_LAST
+        "${KATAGO_C384_FFN_DOWN_HASH_LENGTH} - 2")
+      set(KATAGO_C384_FFN_DOWN_HASHED_FILES "")
+      foreach(KATAGO_C384_FFN_DOWN_HASH_INDEX RANGE
+          0 ${KATAGO_C384_FFN_DOWN_HASH_LAST} 2)
+        math(EXPR KATAGO_C384_FFN_DOWN_HASH_VALUE_INDEX
+          "${KATAGO_C384_FFN_DOWN_HASH_INDEX} + 1")
+        list(GET KATAGO_C384_FFN_DOWN_GENERATED_FILE_SHA256
+          ${KATAGO_C384_FFN_DOWN_HASH_INDEX} KATAGO_C384_FFN_DOWN_HASH_FILE)
+        list(GET KATAGO_C384_FFN_DOWN_GENERATED_FILE_SHA256
+          ${KATAGO_C384_FFN_DOWN_HASH_VALUE_INDEX} KATAGO_C384_FFN_DOWN_HASH_WANTED)
+        if(NOT EXISTS "${KATAGO_C384_FFN_DOWN_HASH_FILE}")
+          message(FATAL_ERROR
+            "C384 FFN-down hashed file is missing: ${KATAGO_C384_FFN_DOWN_HASH_FILE}")
+        endif()
+        file(SHA256 "${KATAGO_C384_FFN_DOWN_HASH_FILE}"
+          KATAGO_C384_FFN_DOWN_HASH_ACTUAL)
+        if(KATAGO_C384_FFN_DOWN_HASH_WANTED STREQUAL "" OR
+           NOT KATAGO_C384_FFN_DOWN_HASH_ACTUAL STREQUAL
+             KATAGO_C384_FFN_DOWN_HASH_WANTED)
+          message(FATAL_ERROR
+            "C384 FFN-down SHA256 mismatch: ${KATAGO_C384_FFN_DOWN_HASH_FILE}")
+        endif()
+        list(APPEND KATAGO_C384_FFN_DOWN_HASHED_FILES
+          "${KATAGO_C384_FFN_DOWN_HASH_FILE}")
+      endforeach()
+      set(KATAGO_C384_FFN_DOWN_EXPECTED_HASHED_FILES
+        "${KATAGO_C384_FFN_DOWN_REGISTRY_PROVIDER}"
+        ${KATAGO_C384_FFN_DOWN_GENERATED_HEADERS}
+        ${KATAGO_C384_FFN_DOWN_GENERATED_METADATA}
+        ${KATAGO_C384_FFN_DOWN_GENERATED_BRIDGES}
+        ${KATAGO_C384_FFN_DOWN_GENERATED_OBJECTS})
+      list(SORT KATAGO_C384_FFN_DOWN_HASHED_FILES)
+      list(SORT KATAGO_C384_FFN_DOWN_EXPECTED_HASHED_FILES)
+      if(NOT KATAGO_C384_FFN_DOWN_HASHED_FILES STREQUAL
+             KATAGO_C384_FFN_DOWN_EXPECTED_HASHED_FILES)
+        message(FATAL_ERROR
+          "C384 FFN-down hashes must cover registry+header+metadata+bridge+object exactly")
+      endif()
+      set(KATAGO_C384_FFN_DOWN_BRIDGES
+        ${KATAGO_C384_FFN_DOWN_GENERATED_BRIDGES})
+      set(KATAGO_C384_FFN_DOWN_OBJECTS
+        ${KATAGO_C384_FFN_DOWN_GENERATED_OBJECTS})
+      set(KATAGO_C384_FFN_DOWN_INCLUDE_DIR
+        "${KATAGO_C384_FFN_DOWN_GENERATED_INCLUDE_DIR}")
+      set(KATAGO_C384_FFN_DOWN_EFFECTIVE_REGISTRY_PROVIDER
+        "${KATAGO_C384_FFN_DOWN_REGISTRY_PROVIDER}")
+    endif()
+
+    katago_c384_validate_b28_production_bundle_policy()
+
     set(KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
       neuralnet/cudabackend_sm120_renju15_kernels.cu
       neuralnet/renju15_dual_ffn_sm120.cu
       neuralnet/renju15_residual_gemm_sm120.cu
       neuralnet/renju15_qkv_rope_gemm_sm120.cu
       neuralnet/c384_exact_fixed_aot_registry.cu
+      neuralnet/c384_exact_ffn_down_aot_registry.cu
       ${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}
       ${KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES}
+      ${KATAGO_C384_FFN_DOWN_EFFECTIVE_REGISTRY_PROVIDER}
+      ${KATAGO_C384_FFN_DOWN_BRIDGES}
       ${KATAGO_C384_H12_FA4_BRIDGES})
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       list(APPEND KATAGO_SM120_TRANSFORMER_WINNER_SOURCES
@@ -415,7 +532,10 @@ if(USE_BACKEND STREQUAL "CUDA")
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
     endif()
     target_include_directories(katago_sm120_transformer_winner PRIVATE
-      "${CMAKE_CURRENT_SOURCE_DIR}")
+      "${CMAKE_CURRENT_SOURCE_DIR}"
+      # Generated residual bridges include the repository-owned raw ABI by
+      # basename. The package carries only its candidate header.
+      "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet")
     if(NOT KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR STREQUAL "")
       target_include_directories(katago_sm120_transformer_winner PRIVATE
         "${KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR}")
@@ -423,6 +543,10 @@ if(USE_BACKEND STREQUAL "CUDA")
     if(KATAGO_C384_H12_FA4_INCLUDE_DIRS)
       target_include_directories(katago_sm120_transformer_winner PRIVATE
         ${KATAGO_C384_H12_FA4_INCLUDE_DIRS})
+    endif()
+    if(NOT KATAGO_C384_FFN_DOWN_INCLUDE_DIR STREQUAL "")
+      target_include_directories(katago_sm120_transformer_winner PRIVATE
+        "${KATAGO_C384_FFN_DOWN_INCLUDE_DIR}")
     endif()
     target_include_directories(katago_sm120_transformer_winner SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
@@ -443,6 +567,7 @@ if(USE_BACKEND STREQUAL "CUDA")
     endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
       neuralnet/renju15_fa4_sm120.cpp
+      neuralnet/c384_exact_ffn_down_aot.cpp
       neuralnet/c384_h12_fa4_sm120.cpp
       ${KATAGO_C384_H12_FA4_REGISTRY_PROVIDER}
       $<TARGET_OBJECTS:katago_sm120_transformer_winner>)
@@ -699,6 +824,32 @@ if(USE_BACKEND STREQUAL "CUDA")
   target_include_directories(c384_h12_fa4_registry_contract PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(c384_h12_fa4_registry_contract PRIVATE CUDA::cudart)
+  add_executable(c384_exact_ffn_down_contract EXCLUDE_FROM_ALL
+    tests/c384_exact_ffn_down_contract.cpp
+    neuralnet/c384_exact_fixed_aot_plan.cpp
+    neuralnet/c384_exact_ffn_down_aot.cpp
+    neuralnet/c384_exact_ffn_down_aot_registry.cu
+    neuralnet/c384_exact_ffn_down_aot_registry_stub.cu)
+  set_target_properties(c384_exact_ffn_down_contract PROPERTIES
+    CUDA_ARCHITECTURES "120"
+    CUDA_STANDARD 17
+    CUDA_STANDARD_REQUIRED ON)
+  target_include_directories(c384_exact_ffn_down_contract PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(c384_exact_ffn_down_contract PRIVATE CUDA::cudart)
+  add_executable(c384_exact_ffn_down_generated_provider_contract EXCLUDE_FROM_ALL
+    tests/c384_exact_ffn_down_generated_provider_contract.cpp
+    tests/c384_exact_ffn_down_generated_provider_fixture.cu
+    neuralnet/c384_exact_ffn_down_aot.cpp
+    neuralnet/c384_exact_ffn_down_aot_registry.cu)
+  set_target_properties(c384_exact_ffn_down_generated_provider_contract PROPERTIES
+    CUDA_ARCHITECTURES "120"
+    CUDA_STANDARD 17
+    CUDA_STANDARD_REQUIRED ON)
+  target_include_directories(c384_exact_ffn_down_generated_provider_contract PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet")
+  target_link_libraries(c384_exact_ffn_down_generated_provider_contract PRIVATE
+    CUDA::cudart)
   find_path(CUDNN_INCLUDE_DIR cudnn.h HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES include)
   if((NOT CUDNN_INCLUDE_DIR))
     message(FATAL_ERROR "${ColorBoldRed} cudnn.h was NOT found, specify CUDNN_INCLUDE_DIR to indicate where it is. ${ColorReset}")
@@ -730,7 +881,8 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_FA4_SM120=1
       KATAGO_ENABLE_C384_EXACT_FIXED_AOT=1
       "KATAGO_C384_EXACT_QKV_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID}\""
-      "KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}\"")
+      "KATAGO_C384_EXACT_DUAL_FFN_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}\""
+      "KATAGO_C384_EXACT_FFN_DOWN_TACTIC_ID=\"${KATAGO_C384_EXACT_EFFECTIVE_FFN_DOWN_TACTIC_ID}\"")
     if(KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT)
       target_compile_definitions(katago PRIVATE
         KATAGO_ENABLE_RENJU15_INT8_EXPERIMENT=1)
@@ -741,6 +893,10 @@ if(USE_BACKEND STREQUAL "CUDA")
       target_include_directories(katago PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
         ${KATAGO_C384_H12_FA4_INCLUDE_DIRS})
+    endif()
+    if(NOT KATAGO_C384_FFN_DOWN_INCLUDE_DIR STREQUAL "")
+      target_include_directories(katago PRIVATE
+        "${KATAGO_C384_FFN_DOWN_INCLUDE_DIR}")
     endif()
     target_link_libraries(katago
       "${KATAGO_RENJU15_FA4_B36_OBJECT}"
@@ -753,13 +909,16 @@ if(USE_BACKEND STREQUAL "CUDA")
       target_link_libraries(katago
         ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS})
     endif()
+    if(KATAGO_C384_FFN_DOWN_OBJECTS)
+      target_link_libraries(katago ${KATAGO_C384_FFN_DOWN_OBJECTS})
+    endif()
     if(KATAGO_C384_H12_FA4_ENABLED)
       target_link_libraries(katago
         ${KATAGO_C384_H12_FA4_OBJECTS}
         "${KATAGO_C384_H12_FA4_RUNTIME}")
     endif()
     message(STATUS
-      "C384 exact selection qkv='${KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID}' dual='${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}'")
+      "C384 B28 exact selection qkv='${KATAGO_C384_EXACT_EFFECTIVE_QKV_TACTIC_ID}' dual='${KATAGO_C384_EXACT_EFFECTIVE_DUAL_FFN_TACTIC_ID}' down='${KATAGO_C384_EXACT_EFFECTIVE_FFN_DOWN_TACTIC_ID}'")
   endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)

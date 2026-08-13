@@ -13,6 +13,7 @@ cpp/build_cuda
 cpp/build_opencl
 cpp/build_eigen
 cpp/out
+cpp/build-*/
 
 
 
@@ -24,6 +25,7 @@ cpp/out
 *.exe
 *~
 __pycache__
+python/tests/c384-b28-policy-*/
 *.h5
 *.log
 *.cbp
