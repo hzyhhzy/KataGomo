@@ -56,11 +56,12 @@ enum class DualFfnOutputMode : uint32_t {
   Int8Product = 2,
 };
 
-// The production/default path retains the incumbent RNE implementation. The
-// exact branchless alternative is an independent prepared-handle tactic, so a
-// single CUDA binary can exercise both real dual-GEMM epilogues. It is only
-// admissible for the exact clip=7/productMax=49 INT8 D2 specialization.
+// The config default retains the incumbent RNE implementation. Auto resolves
+// per prepared layer to the exact branchless implementation only for the
+// clip=7/productMax=49 INT8 D2 specialization, and otherwise to incumbent.
+// Explicit modes keep both real dual-GEMM epilogues available for A/B tests.
 enum class DualFfnDivide127Tactic : uint32_t {
+  Auto = 0,
   Incumbent = 1,
   ExactBranchless = 2,
 };
@@ -233,6 +234,7 @@ cudaError_t launchDualFfnInt8(
 // Reports the immutable product requantization path selected at preparation.
 // This is evidence/diagnostics only and is never consulted by dispatch.
 const char* dualFfnProductQuantPath(const void* opaque) noexcept;
+const char* dualFfnDivide127Path(const void* opaque) noexcept;
 
 // True only when the dual producer and down consumer were prepared from the
 // exact same serialized per-layer productQuantMaxAbs value. Engine wiring

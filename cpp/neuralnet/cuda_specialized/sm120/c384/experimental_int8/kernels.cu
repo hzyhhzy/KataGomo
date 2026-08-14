@@ -1828,6 +1828,8 @@ cudaError_t launchProjectionQknormRope(
 }
 
 void* createDualFfn(const DualFfnConfig& config) {
+  const bool autoDivide =
+    config.divide127Tactic == DualFfnDivide127Tactic::Auto;
   const bool incumbentDivide =
     config.divide127Tactic == DualFfnDivide127Tactic::Incumbent;
   const bool exactBranchlessDivide =
@@ -1851,7 +1853,7 @@ void* createDualFfn(const DualFfnConfig& config) {
      !finitePositive(config.productQuantMaxAbs) ||
      (config.outputMode != DualFfnOutputMode::Fp16Product &&
       config.outputMode != DualFfnOutputMode::Int8Product) ||
-     (!incumbentDivide && !exactBranchlessDivide) ||
+     (!autoDivide && !incumbentDivide && !exactBranchlessDivide) ||
      (!autoProductPath && !forceFullyAdjustable) ||
      !knownTactic ||
      (interleavedTactic &&
@@ -1859,7 +1861,7 @@ void* createDualFfn(const DualFfnConfig& config) {
        !incumbentDivide || !autoProductPath || config.swigluClip != 7.0f)) ||
      (forceFullyAdjustable &&
       (config.outputMode != DualFfnOutputMode::Int8Product ||
-       !incumbentDivide)) ||
+       exactBranchlessDivide)) ||
      (exactBranchlessDivide &&
       (config.outputMode != DualFfnOutputMode::Int8Product ||
        config.tactic != DualFfnTactic::M128N64K64S3Sw4 ||
@@ -1870,6 +1872,19 @@ void* createDualFfn(const DualFfnConfig& config) {
       (config.swigluClip != 7.0f || !autoProductPath)) ||
      !isSm120Compatible())
     return nullptr;
+  const bool exactBranchlessEligible =
+    config.outputMode == DualFfnOutputMode::Int8Product &&
+    config.tactic == DualFfnTactic::M128N64K64S3Sw4 &&
+    config.swigluClip == 7.0f &&
+    config.productQuantMaxAbs == 49.0f &&
+    autoProductPath;
+  DualFfnConfig resolvedConfig = config;
+  if(autoDivide)
+    resolvedConfig.divide127Tactic = exactBranchlessEligible ?
+      DualFfnDivide127Tactic::ExactBranchless :
+      DualFfnDivide127Tactic::Incumbent;
+  const bool useExactBranchless = resolvedConfig.divide127Tactic ==
+    DualFfnDivide127Tactic::ExactBranchless;
   const ProductQuantPath productQuantPath =
     config.outputMode == DualFfnOutputMode::Fp16Product ?
       ProductQuantPath::Fp16 :
@@ -1887,7 +1902,7 @@ void* createDualFfn(const DualFfnConfig& config) {
   if(!finitePositive(factorQuantMultiplier) ||
      !finitePositive(productQuantMultiplier))
     return nullptr;
-  DualFfnHandle handle{config,
+  DualFfnHandle handle{resolvedConfig,
     kNormActivationScale * config.upWeightScale,
     kNormActivationScale * config.gateWeightScale,
     factorQuantMultiplier,productQuantMultiplier,productQuantPath,nullptr};
@@ -1912,7 +1927,7 @@ void* createDualFfn(const DualFfnConfig& config) {
     case DualFfnTactic::M128N64K64S3Sw1:
       status = prepareDualTyped<DualInt8S3Sw1>(handle); break;
     case DualFfnTactic::M128N64K64S3Sw4:
-      status = exactBranchlessDivide ?
+      status = useExactBranchless ?
         prepareDualTyped<DualInt8S3Sw4ExactBranchless>(handle) :
         prepareDualTyped<DualInt8S3Sw4>(handle);
       break;
@@ -2087,6 +2102,21 @@ const char* dualFfnProductQuantPath(const void* opaque) noexcept {
     return "clip7-fixed-factor-v105-product-float-rne-v1";
   case ProductQuantPath::AdjustableFloat:
     return "v105-per-layer-float-rne-v1";
+  }
+  return "invalid";
+}
+
+const char* dualFfnDivide127Path(const void* opaque) noexcept {
+  const DualFfnHandle* handle = static_cast<const DualFfnHandle*>(opaque);
+  if(handle == nullptr)
+    return "invalid";
+  switch(handle->config.divide127Tactic) {
+  case DualFfnDivide127Tactic::Auto:
+    return "invalid-unresolved-auto";
+  case DualFfnDivide127Tactic::Incumbent:
+    return "incumbent";
+  case DualFfnDivide127Tactic::ExactBranchless:
+    return "exact-branchless";
   }
   return "invalid";
 }

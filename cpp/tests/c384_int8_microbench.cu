@@ -97,13 +97,15 @@ Options parseOptions(int argc, char** argv) {
     }
     else if(arg == "--divide127") {
       const std::string value = requireValue();
-      if(value == "incumbent")
+      if(value == "auto")
+        options.divide127 = DualFfnDivide127Tactic::Auto;
+      else if(value == "incumbent")
         options.divide127 = DualFfnDivide127Tactic::Incumbent;
       else if(value == "exact-branchless")
         options.divide127 = DualFfnDivide127Tactic::ExactBranchless;
       else
         throw std::runtime_error(
-          "--divide127 must be incumbent or exact-branchless");
+          "--divide127 must be auto, incumbent, or exact-branchless");
     }
     else if(arg == "--down-tactic") {
       const int value = parsePositive(requireValue(),"down tactic");
@@ -124,7 +126,7 @@ Options parseOptions(int argc, char** argv) {
         << "c384_int8_microbench [--variant conservative|aggressive] "
         << "[--streams 1|2] [--rows 6300] [--projection-tactic 1..3] "
         << "[--dual-tactic 1..4] [--down-tactic 1..3] "
-        << "[--divide127 incumbent|exact-branchless] "
+        << "[--divide127 auto|incumbent|exact-branchless] "
         << "[--attention-out-tactic 1..3] "
         << "[--warmup N] [--iterations N] [--contracts-only]\n";
       std::exit(0);
@@ -146,6 +148,7 @@ Options parseOptions(int argc, char** argv) {
 
 const char* divide127TacticName(DualFfnDivide127Tactic tactic) {
   switch(tactic) {
+  case DualFfnDivide127Tactic::Auto: return "auto";
   case DualFfnDivide127Tactic::Incumbent: return "incumbent";
   case DualFfnDivide127Tactic::ExactBranchless: return "exact-branchless";
   }
@@ -1604,7 +1607,8 @@ void checkDivide127GpuContract(
   const HostData& host,
   const DeviceWeights& weights
 ) {
-  if(options.divide127 != DualFfnDivide127Tactic::ExactBranchless)
+  if(options.divide127 != DualFfnDivide127Tactic::ExactBranchless &&
+     options.divide127 != DualFfnDivide127Tactic::Auto)
     return;
   static_assert(kTokenRows == 6300,"production M contract changed");
   static_assert(kTokenRows % 128 == 28,"production D2 tail contract changed");
@@ -1621,8 +1625,7 @@ void checkDivide127GpuContract(
   referenceConfig.swigluClip = 7.0f;
   referenceConfig.productQuantMaxAbs = 49.0f;
   DualFfnConfig candidateConfig = referenceConfig;
-  candidateConfig.divide127Tactic =
-    DualFfnDivide127Tactic::ExactBranchless;
+  candidateConfig.divide127Tactic = options.divide127;
   DualHandle reference{createDualFfn(referenceConfig)};
   DualHandle candidate{createDualFfn(candidateConfig)};
   if(reference == nullptr || candidate == nullptr)
@@ -1631,6 +1634,10 @@ void checkDivide127GpuContract(
        dualFfnProductQuantPath(candidate.get()),
        "clip-squared-exact-int-v1") != 0)
     throw std::runtime_error("divide127 candidate left exact clip7/49 path");
+  if(std::strcmp(
+       dualFfnDivide127Path(candidate.get()),"exact-branchless") != 0)
+    throw std::runtime_error(
+      "divide127 candidate did not resolve to exact fast path");
 
   const auto requireCandidateRejected = [&](const DualFfnConfig& config,
                                              const char* drift) {
@@ -1639,31 +1646,35 @@ void checkDivide127GpuContract(
       throw std::runtime_error(
         std::string("exact-branchless divide127 accepted ") + drift);
   };
-  DualFfnConfig drift = candidateConfig;
+  DualFfnConfig explicitCandidateConfig = candidateConfig;
+  explicitCandidateConfig.divide127Tactic =
+    DualFfnDivide127Tactic::ExactBranchless;
+  DualFfnConfig drift = explicitCandidateConfig;
   drift.outputMode = DualFfnOutputMode::Fp16Product;
   requireCandidateRejected(drift,"FP16 output");
-  drift = candidateConfig;
+  drift = explicitCandidateConfig;
   drift.tactic = DualFfnTactic::M128N64K64S3Sw1;
   requireCandidateRejected(drift,"non-D2 tactic");
-  drift = candidateConfig;
+  drift = explicitCandidateConfig;
   drift.swigluClip = 6.0f;
   requireCandidateRejected(drift,"dynamic clip");
-  drift = candidateConfig;
+  drift = explicitCandidateConfig;
   drift.productQuantMaxAbs = 73.4171f;
   requireCandidateRejected(drift,"dynamic productMax");
 
   // Prove that rejecting the candidate does not reject the dynamic-scale
   // implementation itself; fixed clip7 must use the orthogonal hybrid path.
   DualFfnConfig dynamicConfig = candidateConfig;
-  dynamicConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+  dynamicConfig.divide127Tactic = options.divide127;
   dynamicConfig.productQuantMaxAbs = 73.4171f;
   DualHandle dynamic{createDualFfn(dynamicConfig)};
   if(dynamic == nullptr ||
      std::strcmp(
        dualFfnProductQuantPath(dynamic.get()),
-       "clip7-fixed-factor-v105-product-float-rne-v1") != 0)
+       "clip7-fixed-factor-v105-product-float-rne-v1") != 0 ||
+     std::strcmp(dualFfnDivide127Path(dynamic.get()),"incumbent") != 0)
     throw std::runtime_error(
-      "incumbent dynamic scale did not select clip7 hybrid path");
+      "dynamic scale did not select incumbent clip7 hybrid path");
 
   constexpr std::array<int,3> rowCases{{1,kTokenRows % 128,kTokenRows}};
   std::size_t totalElements = 0;
@@ -1716,11 +1727,13 @@ void checkDivide127GpuContract(
   weights.gate.requireCanary("divide127 GPU contract gate weights");
   std::cout
     << "KATAGO_C384_INT8_DIV127_GPU_CONTRACT_PASS"
-    << " reference=incumbent candidate=exact-branchless"
+    << " reference=incumbent selection="
+    << divide127TacticName(options.divide127)
+    << " candidate=exact-branchless"
     << " geometry=D2 M=1,28,6300 production_M6300_tail28=1"
     << " strict_gate=int8,d2,clip7,product49"
     << " dynamic_scale_candidate_rejected=1"
-    << " dynamic_scale_incumbent_clip7_hybrid=1"
+    << " dynamic_scale_resolves_incumbent_clip7_hybrid=1"
     << " elements=" << totalElements
     << " mismatches=0 no_neg128=1 canary=1 timed_path=0\n";
 }

@@ -201,12 +201,14 @@ const char* c384Int8DynamicProductPathName(
 C384Int8Experiment::DualFfnDivide127Tactic
 parseC384Int8Divide127Tactic(const char* value) {
   if(value == nullptr || value[0] == '\0' ||
-     std::strcmp(value,"incumbent") == 0)
+     std::strcmp(value,"auto") == 0)
+    return C384Int8Experiment::DualFfnDivide127Tactic::Auto;
+  if(std::strcmp(value,"incumbent") == 0)
     return C384Int8Experiment::DualFfnDivide127Tactic::Incumbent;
   if(std::strcmp(value,"exact-branchless") == 0)
     return C384Int8Experiment::DualFfnDivide127Tactic::ExactBranchless;
   throw StringError(
-    "KATAGO_C384_INT8_DIVIDE127 must be exactly incumbent or "
+    "KATAGO_C384_INT8_DIVIDE127 must be exactly auto, incumbent, or "
     "exact-branchless");
 }
 
@@ -214,6 +216,8 @@ const char* c384Int8Divide127TacticName(
   C384Int8Experiment::DualFfnDivide127Tactic tactic
 ) noexcept {
   switch(tactic) {
+  case C384Int8Experiment::DualFfnDivide127Tactic::Auto:
+    return "auto";
   case C384Int8Experiment::DualFfnDivide127Tactic::Incumbent:
     return "incumbent";
   case C384Int8Experiment::DualFfnDivide127Tactic::ExactBranchless:
@@ -799,7 +803,7 @@ struct CudaHandles {
       c384Int8DynamicProductPathTactic(
         C384Int8Experiment::DualFfnProductPathTactic::Auto),
       c384Int8Divide127Tactic(
-        C384Int8Experiment::DualFfnDivide127Tactic::Incumbent),
+        C384Int8Experiment::DualFfnDivide127Tactic::Auto),
       c384Int8CandidateEligible(false),
       c384Int8TransactionEnabled(false),
       expectedC384Int8Attention(0),
@@ -5049,11 +5053,16 @@ struct TransformerFFNBlock {
              C384Int8Experiment::EngineMode::Aggressive ?
              c384Int8DynamicProductPathName(
                cudaHandles->c384Int8DynamicProductPathTactic) : "none") +
-          " divide127=" +
+          " divide127_selection=" +
           (cudaHandles->c384Int8Mode ==
              C384Int8Experiment::EngineMode::Aggressive ?
              c384Int8Divide127TacticName(
                cudaHandles->c384Int8Divide127Tactic) : "none") +
+          " divide127=" +
+          (cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive ?
+             C384Int8Experiment::dualFfnDivide127Path(c384Int8Dual.get()) :
+             "none") +
           " clip=" + Global::floatToString(swigluClip) +
           " product_max=" + Global::floatToString(productQuantMaxAbs));
         cudaHandles->loggedC384Int8Ffn = true;
