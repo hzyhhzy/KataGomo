@@ -13,6 +13,14 @@ FIXED_REGISTRY_HEADER = (
     ROOT / "cpp" / "neuralnet" / "cuda_specialized" / "sm120" /
     "c384" / "fixed_batch" / "kernels.h"
 )
+INT8_KERNELS_HEADER = (
+    ROOT / "cpp" / "neuralnet" / "cuda_specialized" / "sm120" /
+    "c384" / "experimental_int8" / "kernels.h"
+)
+INT8_ENGINE_STATE = (
+    ROOT / "cpp" / "neuralnet" / "cuda_specialized" / "sm120" /
+    "c384" / "experimental_int8" / "engine_state.inc"
+)
 CUDA_BACKEND = ROOT / "cpp" / "neuralnet" / "cudabackend.cpp"
 CUDA_HELPERS = ROOT / "cpp" / "neuralnet" / "cudahelpers.cu"
 NEURALNET = ROOT / "cpp" / "neuralnet"
@@ -83,6 +91,35 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
             "#ifndef KATAGO_C384_INT8_DUAL_TACTIC", 1,
         )[1].split("#endif", 1)[0]
         self.assertIn("#define KATAGO_C384_INT8_DUAL_TACTIC 4", fallback)
+
+        kernels = INT8_KERNELS_HEADER.read_text(encoding="utf-8")
+        low_level_config = kernels.split("struct DualFfnConfig", 1)[1]
+        low_level_config = low_level_config.split("};", 1)[0]
+        self.assertIn(
+            "DualFfnTactic tactic = DualFfnTactic::M128N64K64S3Sw4",
+            low_level_config,
+        )
+
+        engine_selector = backend.split(
+            "c384Int8EngineDualTactic(", 1,
+        )[1].split("void uploadC384Int8Weights", 1)[0]
+        self.assertIn("EngineMode::Conservative", engine_selector)
+        self.assertIn("KATAGO_C384_INT8_DUAL_TACTIC", engine_selector)
+        self.assertIn(
+            "DualFfnTactic::M128N128K64S3Sw4Interleaved",
+            engine_selector,
+        )
+        self.assertIn(
+            "DualFfnTactic::M128N64K64S3Sw4", engine_selector,
+        )
+
+        engine_state = INT8_ENGINE_STATE.read_text(encoding="utf-8")
+        self.assertIn(
+            "c384Int8EngineDualTactic(c384Int8Mode)", engine_state,
+        )
+        self.assertNotIn(
+            "KATAGO_C384_INT8_DUAL_TACTIC", engine_state,
+        )
 
     def test_exact_transaction_markers_report_typed_dynamic_depth(self) -> None:
         source = CUDA_BACKEND.read_text(encoding="utf-8")

@@ -149,7 +149,7 @@ if(USE_BACKEND STREQUAL "CUDA")
   endforeach()
   if(NOT KATAGO_C384_INT8_DUAL_TACTIC MATCHES "^[1234]$")
     message(FATAL_ERROR
-      "C384 INT8 dual-FFN tactic must be one of 1, 2, 3, or experimental 4")
+      "C384 INT8 dual-FFN tactic must be one of 1, 2, 3, or 4")
   endif()
 
   if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)

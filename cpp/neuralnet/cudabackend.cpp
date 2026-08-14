@@ -226,6 +226,20 @@ const char* c384Int8Divide127TacticName(
   return "invalid";
 }
 
+C384Int8Experiment::DualFfnTactic c384Int8EngineDualTactic(
+  C384Int8Experiment::EngineMode mode
+) noexcept {
+  // D4 is an aggressive INT8-product kernel. Conservative mode preserves the
+  // incumbent D2 FP16-product ABI only when the build requests D4. Explicit
+  // D1/D2/D3 conservative screening configurations remain selectable.
+  const auto requested = static_cast<C384Int8Experiment::DualFfnTactic>(
+    KATAGO_C384_INT8_DUAL_TACTIC);
+  return mode == C384Int8Experiment::EngineMode::Conservative &&
+      requested ==
+        C384Int8Experiment::DualFfnTactic::M128N128K64S3Sw4Interleaved ?
+    C384Int8Experiment::DualFfnTactic::M128N64K64S3Sw4 : requested;
+}
+
 void uploadC384Int8Weights(
   const string& name,
   const vector<int8_t>& packed,
@@ -4528,8 +4542,8 @@ struct TransformerFFNBlock {
         uploadC384Int8Weights(
           name + ":c384Int8Gate",gate.values,gateWeights);
         C384Int8Experiment::DualFfnConfig dualConfig;
-        dualConfig.tactic = static_cast<C384Int8Experiment::DualFfnTactic>(
-          KATAGO_C384_INT8_DUAL_TACTIC);
+        dualConfig.tactic = c384Int8EngineDualTactic(
+          cudaHandles->c384Int8Mode);
         dualConfig.outputMode = cudaHandles->c384Int8Mode ==
             C384Int8Experiment::EngineMode::Aggressive ?
           C384Int8Experiment::DualFfnOutputMode::Int8Product :
@@ -5066,8 +5080,8 @@ struct TransformerFFNBlock {
           " clip=" + Global::floatToString(swigluClip) +
           " product_max=" + Global::floatToString(productQuantMaxAbs) +
           " dual_requested=" + C384Int8Experiment::dualFfnTacticName(
-            static_cast<C384Int8Experiment::DualFfnTactic>(
-              KATAGO_C384_INT8_DUAL_TACTIC)) + " dual_actual=" +
+            c384Int8EngineDualTactic(cudaHandles->c384Int8Mode)) +
+          " dual_actual=" +
           C384Int8Experiment::dualFfnActualTactic(c384Int8Dual.get()));
         cudaHandles->loggedC384Int8Ffn = true;
       }

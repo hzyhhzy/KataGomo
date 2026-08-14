@@ -41,7 +41,8 @@ enum class DualFfnTactic : uint32_t {
   M128N64K64S4Sw1 = 3,
   // Experimental single-GEMM form. Up/gate output channels are interleaved
   // in one K384xN2048 B tensor and paired by the canonical epilogue thread
-  // map. The production/default tactic remains M128N64K64S3Sw4.
+  // map. Production CMake selects this qualified winner; the low-level config
+  // default remains M128N64K64S3Sw4 so it can serve as the reference oracle.
   M128N128K64S3Sw4Interleaved = 4,
 };
 

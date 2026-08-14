@@ -151,8 +151,7 @@
     if(complete && !loggedC384Int8TransactionActive && logger != NULL) {
       const auto p = static_cast<C384Int8Experiment::ProjectionTactic>(
         KATAGO_C384_INT8_PROJECTION_TACTIC);
-      const auto d = static_cast<C384Int8Experiment::DualFfnTactic>(
-        KATAGO_C384_INT8_DUAL_TACTIC);
+      const auto d = c384Int8EngineDualTactic(c384Int8Mode);
       const auto w = static_cast<C384Int8Experiment::DownTactic>(
         KATAGO_C384_INT8_DOWN_TACTIC);
       const auto o = static_cast<C384Int8Experiment::AttentionOutTactic>(
