@@ -175,6 +175,29 @@ using UniqueC384Int8Down = std::unique_ptr<void,C384Int8DownDeleter>;
 using UniqueC384Int8AttentionOut =
   std::unique_ptr<void,C384Int8AttentionOutDeleter>;
 
+C384Int8Experiment::DualFfnProductPathTactic
+parseC384Int8DynamicProductPath(const char* value) {
+  if(value == nullptr || value[0] == '\0' || std::strcmp(value,"auto") == 0)
+    return C384Int8Experiment::DualFfnProductPathTactic::Auto;
+  if(std::strcmp(value,"fully-adjustable") == 0)
+    return C384Int8Experiment::DualFfnProductPathTactic::FullyAdjustableFloat;
+  throw StringError(
+    "KATAGO_C384_INT8_DYNAMIC_PRODUCT_PATH must be exactly auto or "
+    "fully-adjustable");
+}
+
+const char* c384Int8DynamicProductPathName(
+  C384Int8Experiment::DualFfnProductPathTactic tactic
+) noexcept {
+  switch(tactic) {
+  case C384Int8Experiment::DualFfnProductPathTactic::Auto:
+    return "auto";
+  case C384Int8Experiment::DualFfnProductPathTactic::FullyAdjustableFloat:
+    return "fully-adjustable";
+  }
+  return "invalid";
+}
+
 void uploadC384Int8Weights(
   const string& name,
   const vector<int8_t>& packed,
@@ -640,6 +663,8 @@ struct CudaHandles {
 #endif
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
   C384Int8Experiment::EngineMode c384Int8Mode;
+  C384Int8Experiment::DualFfnProductPathTactic
+    c384Int8DynamicProductPathTactic;
   bool c384Int8CandidateEligible;
   bool c384Int8TransactionEnabled;
   int expectedC384Int8Attention;
@@ -746,6 +771,8 @@ struct CudaHandles {
 #endif
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
       c384Int8Mode(C384Int8Experiment::EngineMode::Off),
+      c384Int8DynamicProductPathTactic(
+        C384Int8Experiment::DualFfnProductPathTactic::Auto),
       c384Int8CandidateEligible(false),
       c384Int8TransactionEnabled(false),
       expectedC384Int8Attention(0),
@@ -4476,6 +4503,10 @@ struct TransformerFFNBlock {
             C384Int8Experiment::EngineMode::Aggressive ?
           C384Int8Experiment::DualFfnOutputMode::Int8Product :
           C384Int8Experiment::DualFfnOutputMode::Fp16Product;
+        if(cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive)
+          dualConfig.productPathTactic =
+            cudaHandles->c384Int8DynamicProductPathTactic;
         dualConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
         dualConfig.packedUpWeights = (const int8_t*)upWeights.get();
         dualConfig.packedGateWeights = (const int8_t*)gateWeights.get();
@@ -4983,7 +5014,12 @@ struct TransformerFFNBlock {
           (cudaHandles->c384Int8Mode ==
              C384Int8Experiment::EngineMode::Aggressive ?
              C384Int8Experiment::dualFfnProductQuantPath(c384Int8Dual.get()) :
-             "none") + " clip=" + Global::floatToString(swigluClip) +
+             "none") + " dynamic_product_path=" +
+          (cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive ?
+             c384Int8DynamicProductPathName(
+               cudaHandles->c384Int8DynamicProductPathTactic) : "none") +
+          " clip=" + Global::floatToString(swigluClip) +
           " product_max=" + Global::floatToString(productQuantMaxAbs));
         cudaHandles->loggedC384Int8Ffn = true;
       }
@@ -6289,6 +6325,11 @@ struct ComputeHandle {
 #if defined(KATAGO_ENABLE_C384_INT8_EXPERIMENT) && KATAGO_ENABLE_C384_INT8_EXPERIMENT
       cudaHandles->configureC384Int8Experiment(
         context->useINT8,loadedModel->modelDesc);
+      if(cudaHandles->c384Int8Mode ==
+           C384Int8Experiment::EngineMode::Aggressive)
+        cudaHandles->c384Int8DynamicProductPathTactic =
+          parseC384Int8DynamicProductPath(
+            std::getenv("KATAGO_C384_INT8_DYNAMIC_PRODUCT_PATH"));
 #endif
     }
     model = std::make_unique<Model>(
