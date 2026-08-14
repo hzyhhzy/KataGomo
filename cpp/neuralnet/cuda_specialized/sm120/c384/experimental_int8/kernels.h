@@ -61,13 +61,12 @@ enum class DualFfnDivide127Tactic : uint32_t {
   ExactBranchless = 2,
 };
 
-// Production always selects the product path from the immutable v105
-// semantics. The second value exists only so the GPU contract can run the
-// general implementation as a bit-exact control for the clip7 hybrid; engine
-// wiring must leave this at Auto.
+// Selects how clip7 with a non-square calibrated product domain is evaluated.
+// Auto retains the optimized fixed-factor candidate. FullyAdjustableFloat is
+// the reference implementation and may be selected for an engine-level A/B.
 enum class DualFfnProductPathTactic : uint32_t {
   Auto = 0,
-  ForceFullyAdjustableFloatForTesting = 1,
+  FullyAdjustableFloat = 1,
 };
 
 enum class DownTactic : uint32_t {

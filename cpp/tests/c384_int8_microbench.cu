@@ -165,6 +165,10 @@ public:
     checkCuda(cudaMalloc(&raw_,bytes_ + 2 * kGuardBytes),"cudaMalloc guarded");
     checkCuda(cudaMemset(raw_,kCanary,bytes_ + 2 * kGuardBytes),
       "cudaMemset guarded");
+    // Contract kernels run on cudaStreamNonBlocking streams. A legacy-default
+    // stream memset has no ordering relationship with such a stream, so make
+    // initialization complete before exposing the guarded payload.
+    checkCuda(cudaDeviceSynchronize(),"sync guarded initialization");
     payload_ = static_cast<unsigned char*>(raw_) + kGuardBytes;
   }
 
@@ -175,6 +179,7 @@ public:
 
   void zeroPayload() {
     checkCuda(cudaMemset(payload_,0,bytes_),"cudaMemset payload");
+    checkCuda(cudaDeviceSynchronize(),"sync guarded payload memset");
   }
 
   template<typename T>
@@ -1065,7 +1070,7 @@ void checkClip7HybridGpuContract(
     hybridConfig.productQuantMaxAbs = productMax;
     DualFfnConfig fullConfig = hybridConfig;
     fullConfig.productPathTactic =
-      DualFfnProductPathTactic::ForceFullyAdjustableFloatForTesting;
+      DualFfnProductPathTactic::FullyAdjustableFloat;
 
     DualHandle hybrid{createDualFfn(hybridConfig)};
     DualHandle full{createDualFfn(fullConfig)};
@@ -1120,15 +1125,73 @@ void checkClip7HybridGpuContract(
       const std::vector<int8_t> hybridBytes =
         hybridOutput.download<int8_t>();
       const std::vector<int8_t> fullBytes = fullOutput.download<int8_t>();
-      if(hybridBytes != fullBytes)
-        throw std::runtime_error(
-          "clip7 hybrid differs from fully-adjustable GPU control");
-      if(std::find(hybridBytes.begin(),hybridBytes.end(),int8_t(-128)) !=
-           hybridBytes.end())
-        throw std::runtime_error("clip7 hybrid GPU contract emitted -128");
+      std::size_t mismatchCount = 0;
+      std::size_t firstMismatch = outputElements;
+      for(std::size_t i = 0; i < outputElements; i++) {
+        if(hybridBytes[i] != fullBytes[i]) {
+          if(firstMismatch == outputElements)
+            firstMismatch = i;
+          mismatchCount++;
+        }
+      }
+      const std::size_t hybridNeg128 = std::count(
+        hybridBytes.begin(),hybridBytes.end(),int8_t(-128));
+      const std::size_t fullNeg128 = std::count(
+        fullBytes.begin(),fullBytes.end(),int8_t(-128));
       activationDevice.requireCanary("clip7 hybrid GPU contract activation");
       hybridOutput.requireCanary("clip7 hybrid GPU contract output");
       fullOutput.requireCanary("fully-adjustable GPU control output");
+      if(mismatchCount != 0) {
+        const int firstRow = int(firstMismatch / kFfnChannels);
+        const int firstChannel = int(firstMismatch % kFfnChannels);
+        const int32_t upAccum = dot(
+          activation,firstRow,kChannels,host.upWeights,firstChannel);
+        const int32_t gateAccum = dot(
+          activation,firstRow,kChannels,host.gateWeights,firstChannel);
+        const float up = float(upAccum) * kNormActivationScale *
+          host.upWeightScale;
+        const float gate = float(gateAccum) * kNormActivationScale *
+          host.gateWeightScale;
+        const float silu = up / (1.0f + std::exp(-up));
+        const int upFactor = quantize(silu,7.0f);
+        const int gateFactor = quantize(gate,7.0f);
+        const int oracle = adjustableProductOracle(
+          up,gate,7.0f,productMax);
+        std::cout
+          << std::setprecision(9)
+          << "KATAGO_C384_INT8_CLIP7_HYBRID_GPU_CONTRACT_DIAGNOSTIC"
+          << " product_max=" << productMax
+          << " rows=" << rows
+          << " mismatches=" << mismatchCount
+          << " first_index=" << firstMismatch
+          << " first_row=" << firstRow
+          << " first_channel=" << firstChannel
+          << " hybrid=" << int(hybridBytes[firstMismatch])
+          << " full=" << int(fullBytes[firstMismatch])
+          << " oracle=" << oracle
+          << " hybrid_matches_oracle="
+          << (int(hybridBytes[firstMismatch]) == oracle ? 1 : 0)
+          << " full_matches_oracle="
+          << (int(fullBytes[firstMismatch]) == oracle ? 1 : 0)
+          << " up_accum=" << upAccum
+          << " gate_accum=" << gateAccum
+          << " up=" << up
+          << " silu_up=" << silu
+          << " gate=" << gate
+          << " up_factor_oracle=" << upFactor
+          << " gate_factor_oracle=" << gateFactor
+          << " factor_product=" << upFactor * gateFactor
+          << " hybrid_neg128=" << hybridNeg128
+          << " full_neg128=" << fullNeg128
+          << " canary=1\n";
+        throw std::runtime_error(
+          "clip7 hybrid differs from fully-adjustable GPU control: " +
+          std::to_string(mismatchCount) + " mismatches, first=" +
+          std::to_string(firstMismatch));
+      }
+      if(std::find(hybridBytes.begin(),hybridBytes.end(),int8_t(-128)) !=
+           hybridBytes.end())
+        throw std::runtime_error("clip7 hybrid GPU contract emitted -128");
       comparedElements += outputElements;
     }
   }

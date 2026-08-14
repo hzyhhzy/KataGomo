@@ -104,9 +104,8 @@ int main() {
       "exact branchless divide127 tactic ABI changed");
     static_assert(int(DualFfnProductPathTactic::Auto) == 0,
       "automatic product path tactic ABI changed");
-    static_assert(int(
-      DualFfnProductPathTactic::ForceFullyAdjustableFloatForTesting) == 1,
-      "test-only fully-adjustable product path tactic ABI changed");
+    static_assert(int(DualFfnProductPathTactic::FullyAdjustableFloat) == 1,
+      "fully-adjustable product path tactic ABI changed");
     using RmsInt8OnlyFn = cudaError_t (*)(
       const half*,int8_t*,const half*,int,float,cudaStream_t);
     static_assert(std::is_same_v<decltype(&launchRmsNormInt8),RmsInt8OnlyFn>,

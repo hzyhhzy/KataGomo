@@ -1485,8 +1485,8 @@ void* createDualFfn(const DualFfnConfig& config) {
     config.divide127Tactic == DualFfnDivide127Tactic::ExactBranchless;
   const bool autoProductPath =
     config.productPathTactic == DualFfnProductPathTactic::Auto;
-  const bool forceFullyAdjustableForTesting = config.productPathTactic ==
-    DualFfnProductPathTactic::ForceFullyAdjustableFloatForTesting;
+  const bool forceFullyAdjustable = config.productPathTactic ==
+    DualFfnProductPathTactic::FullyAdjustableFloat;
   if(config.maxTokenRows <= 0 || config.maxTokenRows > kMaxTokenRows ||
      config.packedUpWeights == nullptr || config.packedGateWeights == nullptr ||
      !aligned16(config.packedUpWeights) || !aligned16(config.packedGateWeights) ||
@@ -1497,8 +1497,8 @@ void* createDualFfn(const DualFfnConfig& config) {
      (config.outputMode != DualFfnOutputMode::Fp16Product &&
       config.outputMode != DualFfnOutputMode::Int8Product) ||
      (!incumbentDivide && !exactBranchlessDivide) ||
-     (!autoProductPath && !forceFullyAdjustableForTesting) ||
-     (forceFullyAdjustableForTesting &&
+     (!autoProductPath && !forceFullyAdjustable) ||
+     (forceFullyAdjustable &&
       (config.outputMode != DualFfnOutputMode::Int8Product ||
        !incumbentDivide)) ||
      (exactBranchlessDivide &&
@@ -1514,7 +1514,7 @@ void* createDualFfn(const DualFfnConfig& config) {
   const ProductQuantPath productQuantPath =
     config.outputMode == DualFfnOutputMode::Fp16Product ?
       ProductQuantPath::Fp16 :
-    forceFullyAdjustableForTesting ? ProductQuantPath::AdjustableFloat :
+    forceFullyAdjustable ? ProductQuantPath::AdjustableFloat :
     (config.swigluClip == 7.0f && config.productQuantMaxAbs == 49.0f ?
       ProductQuantPath::Clip7SquaredExact :
      config.swigluClip == 7.0f ?
