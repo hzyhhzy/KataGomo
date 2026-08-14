@@ -39,6 +39,10 @@ enum class DualFfnTactic : uint32_t {
   M128N64K64S3Sw1 = 1,
   M128N64K64S3Sw4 = 2,
   M128N64K64S4Sw1 = 3,
+  // Experimental single-GEMM form. Up/gate output channels are interleaved
+  // in one K384xN2048 B tensor and paired by the canonical epilogue thread
+  // map. The production/default tactic remains M128N64K64S3Sw4.
+  M128N128K64S3Sw4Interleaved = 4,
 };
 
 // The conservative engine keeps the existing FP16 down-projection ABI. The
@@ -236,6 +240,21 @@ const char* dualFfnProductQuantPath(const void* opaque) noexcept;
 bool dualFfnDownProductQuantizationMatches(
   const void* dualOpaque,
   const void* downOpaque
+) noexcept;
+
+// Runtime resource evidence for the isolated interleaved candidate. Returns
+// false for every incumbent dual-GEMM tactic, so production code cannot use
+// this diagnostic as a dispatch decision.
+struct InterleavedDualFfnKernelResources {
+  int registersPerThread = 0;
+  int staticSharedBytes = 0;
+  int dynamicSharedBytes = 0;
+  int threadsPerBlock = 0;
+};
+
+bool interleavedDualFfnKernelResources(
+  const void* opaque,
+  InterleavedDualFfnKernelResources& resources
 ) noexcept;
 
 // Aggressive-engine RMSNorm. It preserves the same FP16 rounding boundary,

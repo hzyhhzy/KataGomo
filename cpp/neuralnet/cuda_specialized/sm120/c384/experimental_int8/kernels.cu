@@ -612,6 +612,249 @@ using AdjustableUpFactorToInt8 = AdjustableFactorToInt8<true,8>;
 using AdjustableGateFactorToInt8 = AdjustableFactorToInt8<false,8>;
 using AdjustableProductToInt8 = AdjustableFactorMul<8>;
 
+// Structural single-GEMM experiment. B is K384xN2048 with columns packed as
+// [up(c),gate(c)]. A normal N128 CUTLASS epilogue presents each thread with a
+// canonical contiguous 16-column INT32 fragment, so all eight up/gate pairs
+// can be transformed and compressed without warp exchange or a second
+// accumulator source. The first eight output bytes are the Mx1024 product;
+// bytes 8..15 are intentionally ignored by PairCompressOutputTileIterator.
+template<int Count>
+class InterleavedClip7Product {
+public:
+  using ElementOutput = Int8;
+  using ElementAccumulator = Accum;
+  using ElementCompute = float;
+  static int const kCount = Count;
+  static_assert(Count == 16,
+    "interleaved dual requires one 16-column INT8 epilogue access");
+
+  using FragmentOutput = cutlass::Array<ElementOutput,Count>;
+  using FragmentAccumulator = cutlass::Array<ElementAccumulator,Count>;
+  using FragmentSource = cutlass::Array<ElementOutput,Count>;
+
+  struct Params {
+    float upAlpha;
+    float gateAlpha;
+    float productQuantMultiplier;
+
+    CUTLASS_HOST_DEVICE
+    Params(
+      float upAlphaValue = 1.0f,
+      float gateAlphaValue = 1.0f,
+      float productQuantMultiplierValue = 1.0f / 127.0f
+    ) :
+      upAlpha(upAlphaValue),
+      gateAlpha(gateAlphaValue),
+      productQuantMultiplier(productQuantMultiplierValue) {}
+  };
+
+private:
+  float upAlpha_;
+  float gateAlpha_;
+  float productQuantMultiplier_;
+
+  CUTLASS_HOST_DEVICE
+  static float clip7(float value) {
+    return value < -7.0f ? -7.0f : (value > 7.0f ? 7.0f : value);
+  }
+
+  CUTLASS_HOST_DEVICE
+  static Int8 quantizeFactor(float value) {
+    value = clip7(value) * (127.0f / 7.0f);
+    value = value < -127.0f ? -127.0f :
+      (value > 127.0f ? 127.0f : value);
+    cutlass::NumericConverter<
+      Int8,float,cutlass::FloatRoundStyle::round_to_nearest> convert;
+    return convert(value);
+  }
+
+public:
+  CUTLASS_HOST_DEVICE
+  explicit InterleavedClip7Product(Params const& params) :
+    upAlpha_(params.upAlpha),
+    gateAlpha_(params.gateAlpha),
+    productQuantMultiplier_(params.productQuantMultiplier) {}
+
+  CUTLASS_HOST_DEVICE bool is_source_needed() const { return false; }
+  CUTLASS_HOST_DEVICE void set_k_partition(int, int) { assert(false); }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(FragmentAccumulator const& accumulator) const {
+    FragmentOutput output;
+    output.clear();
+    cutlass::epilogue::thread::SiLu<float> silu;
+    cutlass::NumericConverter<
+      Int8,float,cutlass::FloatRoundStyle::round_to_nearest> convert;
+    CUTLASS_PRAGMA_UNROLL
+    for(int pair = 0; pair < Count / 2; pair++) {
+      const Int8 up = quantizeFactor(
+        silu(float(accumulator[2 * pair]) * upAlpha_));
+      const Int8 gate = quantizeFactor(
+        float(accumulator[2 * pair + 1]) * gateAlpha_);
+      float product = float(int(up) * int(gate)) * productQuantMultiplier_;
+      product = product < -127.0f ? -127.0f :
+        (product > 127.0f ? 127.0f : product);
+      output[pair] = convert(product);
+    }
+    return output;
+  }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(
+    FragmentAccumulator const& accumulator,
+    FragmentSource const&
+  ) const {
+    return (*this)(accumulator);
+  }
+};
+
+using InterleavedProductOutputOp = InterleavedClip7Product<16>;
+
+template<typename BaseIterator>
+class PairCompressOutputTileIterator : public BaseIterator {
+public:
+  using Base = BaseIterator;
+  using ThreadMap = typename Base::ThreadMap;
+  using Element = typename Base::Element;
+  using Layout = typename Base::Layout;
+  using TensorRef = typename Base::TensorRef;
+  using ConstTensorRef = typename Base::ConstTensorRef;
+  using TensorCoord = typename Base::TensorCoord;
+  using LongIndex = typename Base::LongIndex;
+  using Fragment = typename Base::Fragment;
+  using AccessType = typename Base::AccessType;
+  using Mask = typename Base::Mask;
+
+  static int const kElementsPerAccess = Base::kElementsPerAccess;
+  static int const kIterations = Base::kIterations;
+  static_assert(kElementsPerAccess == 16,
+    "interleaved dual requires 16 adjacent canonical accumulator columns");
+  static_assert((ThreadMap::Delta::kColumn % 2) == 0,
+    "every epilogue access must begin on an up/gate pair boundary");
+
+  using BaseParams = typename Base::Params;
+  struct Params : public BaseParams {
+    LongIndex compressedStride;
+
+    CUTLASS_HOST_DEVICE
+    Params() : BaseParams(), compressedStride(0) {}
+
+    CUTLASS_HOST_DEVICE
+    explicit Params(Layout const& layout) :
+      BaseParams(layout), compressedStride(layout.stride(0)) {}
+  };
+
+private:
+  Element* output_;
+  LongIndex compressedStride_;
+  int extentRows_;
+  int extentColumns_;
+
+public:
+  CUTLASS_DEVICE
+  PairCompressOutputTileIterator(
+    Params const& params,
+    Element* pointer,
+    TensorCoord extent,
+    int threadIdx,
+    TensorCoord threadblockOffset = TensorCoord(),
+    int const* indices = nullptr
+  ) :
+    Base(params,pointer,extent,threadIdx,threadblockOffset,indices),
+    output_(pointer),
+    compressedStride_(params.compressedStride),
+    extentRows_(extent.row()),
+    extentColumns_(extent.column()) {}
+
+  CUTLASS_DEVICE
+  void store_with_byte_offset(Fragment const& fragment, int64_t byteOffset) const {
+    using CompressedAccess = cutlass::AlignedArray<Element,8>;
+    AccessType const* accesses = reinterpret_cast<AccessType const*>(&fragment);
+    CUTLASS_PRAGMA_UNROLL
+    for(int cluster = 0; cluster < ThreadMap::Iterations::kCluster; cluster++) {
+      CUTLASS_PRAGMA_UNROLL
+      for(int group = 0; group < ThreadMap::Iterations::kGroup; group++) {
+        CUTLASS_PRAGMA_UNROLL
+        for(int row = 0; row < ThreadMap::Iterations::kRow; row++) {
+          const int fragmentRow = row + ThreadMap::Iterations::kRow *
+            (group + ThreadMap::Iterations::kGroup * cluster);
+          const int outputRow = Base::thread_start_row() +
+            row * ThreadMap::Delta::kRow +
+            group * ThreadMap::Delta::kGroup +
+            cluster * ThreadMap::Delta::kCluster;
+          CUTLASS_PRAGMA_UNROLL
+          for(int column = 0; column < ThreadMap::Iterations::kColumn; column++) {
+            const int interleavedColumn = Base::thread_start_column() +
+              column * ThreadMap::Delta::kColumn;
+            const bool guard = output_ != nullptr &&
+              outputRow < extentRows_ &&
+              interleavedColumn + kElementsPerAccess <= extentColumns_;
+            CompressedAccess compressed;
+            CUTLASS_PRAGMA_UNROLL
+            for(int element = 0; element < 8; element++)
+              compressed[element] = accesses[
+                fragmentRow * ThreadMap::Iterations::kColumn + column][element];
+            Element* destination = output_ +
+              LongIndex(outputRow) * compressedStride_ + interleavedColumn / 2;
+            cutlass::arch::global_store<CompressedAccess,sizeof(CompressedAccess)>(
+              compressed,
+              reinterpret_cast<void*>(
+                reinterpret_cast<uint8_t*>(destination) + byteOffset),
+              guard);
+          }
+        }
+      }
+    }
+  }
+
+  CUTLASS_DEVICE
+  void store(Fragment const& fragment) const {
+    store_with_byte_offset(fragment,0);
+  }
+};
+
+template<int SwizzleFactor>
+struct InterleavedDualFfnBundle {
+  using DeviceGemm = cutlass::gemm::device::Gemm<
+    Int8,LayoutA,
+    Int8,LayoutB,
+    Int8,LayoutOutput,
+    Accum,
+    cutlass::arch::OpClassTensorOp,cutlass::arch::Sm80,
+    cutlass::gemm::GemmShape<128,128,64>,
+    cutlass::gemm::GemmShape<64,64,64>,
+    cutlass::gemm::GemmShape<16,8,32>,
+    InterleavedProductOutputOp,
+    cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<SwizzleFactor>,
+    3,16,16,false,cutlass::arch::OpMultiplyAddSaturate>;
+  using DefaultKernel = typename DeviceGemm::GemmKernel;
+  using Mma = typename DefaultKernel::Mma;
+  using DefaultEpilogue = typename DefaultKernel::Epilogue;
+  using DefaultIterator = typename DefaultEpilogue::OutputTileIterator;
+  using OutputIterator = PairCompressOutputTileIterator<DefaultIterator>;
+  using Epilogue = cutlass::epilogue::threadblock::Epilogue<
+    typename DefaultEpilogue::Shape,
+    typename DefaultEpilogue::WarpMmaOperator,
+    DefaultEpilogue::kPartitionsK,
+    OutputIterator,
+    typename DefaultEpilogue::AccumulatorFragmentIterator,
+    typename DefaultEpilogue::WarpTileIterator,
+    typename DefaultEpilogue::SharedLoadIterator,
+    typename DefaultEpilogue::OutputOp,
+    typename DefaultEpilogue::Padding,
+    DefaultEpilogue::Base::kFragmentsPerIteration>;
+  using Swizzle = typename DeviceGemm::ThreadblockSwizzle;
+  using Kernel = cutlass::gemm::kernel::Gemm<Mma,Epilogue,Swizzle,false>;
+
+  static_assert(OutputIterator::ThreadMap::kThreads == 128,
+    "interleaved dual must retain the incumbent 128-thread CTA");
+  static_assert(OutputIterator::ThreadMap::Iterations::kColumn == 1,
+    "one thread must own each complete 16-column pair group");
+  static_assert(OutputIterator::ThreadMap::Shape::kColumn == 128 &&
+                OutputIterator::ThreadMap::Delta::kColumn == 128,
+    "interleaved dual canonical N128 epilogue map changed");
+};
+
 template<int Stages, int Swizzle>
 using DualFfnGemm = cutlass::gemm::device::DualGemm<
   Int8,LayoutA,
@@ -693,6 +936,7 @@ using Clip7AdjustableProductDualInt8S4Sw1 = DualFfnInt8Gemm<
 using AdjustableDualInt8S3Sw1 = AdjustableDualFfnInt8Gemm<3,1>;
 using AdjustableDualInt8S3Sw4 = AdjustableDualFfnInt8Gemm<3,4>;
 using AdjustableDualInt8S4Sw1 = AdjustableDualFfnInt8Gemm<4,1>;
+using InterleavedDualInt8S3Sw4 = InterleavedDualFfnBundle<4>;
 using ResidualS2Sw1 = ResidualInt8Gemm<2,1>;
 using ResidualS3Sw1 = ResidualInt8Gemm<3,1>;
 using ResidualS3Sw2 = ResidualInt8Gemm<3,2>;
@@ -725,6 +969,9 @@ static_assert(
   sizeof(typename AdjustableDualInt8S3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
   sizeof(typename AdjustableDualInt8S4Sw1::DualGemmKernel::SharedStorage) <= 101376,
   "an adjustable-scale C384 INT8 dual-FFN exceeds RTX 5090 opt-in shared memory");
+static_assert(
+  sizeof(typename InterleavedDualInt8S3Sw4::Kernel::SharedStorage) <= 101376,
+  "the interleaved single-GEMM C384 INT8 FFN exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename ResidualS3Sw1::GemmKernel::SharedStorage) <= 101376,
   "C384 INT8 residual projection exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename ResidualS2Sw1::GemmKernel::SharedStorage) <= 101376 &&
@@ -790,6 +1037,7 @@ struct DualFfnHandle {
   float factorQuantMultiplier;
   float productQuantMultiplier;
   ProductQuantPath productQuantPath;
+  Int8* packedInterleavedWeights;
 };
 
 struct DownHandle {
@@ -1082,6 +1330,107 @@ cudaError_t launchDualTyped(
   cutlass::Kernel<Kernel><<<
     Swizzle::get_grid_shape(tiled),dim3(threads,1,1),sharedBytes,stream>>>(params);
   return cudaPeekAtLastError();
+}
+
+template<typename Bundle>
+cudaError_t prepareInterleavedDualTyped(const DualFfnHandle& handle) {
+  using Kernel = typename Bundle::Kernel;
+  cudaError_t status = setDynamicSharedAttribute<Kernel>();
+  if(status != cudaSuccess)
+    return status;
+  typename Kernel::Mma::IteratorA::TensorRef a(
+    handle.packedInterleavedWeights,LayoutA(kChannels));
+  typename Kernel::Mma::IteratorB::TensorRef b(
+    handle.packedInterleavedWeights,LayoutB(kChannels));
+  typename Bundle::OutputIterator::TensorRef c(
+    nullptr,LayoutOutput(kFfnChannels));
+  typename Bundle::OutputIterator::TensorRef d(
+    handle.packedInterleavedWeights,LayoutOutput(kFfnChannels));
+  const auto supportsRows = [&](int rows) {
+    return Kernel::can_implement(
+      {rows,2 * kFfnChannels,kChannels},a,b,c,d) ==
+      cutlass::Status::kSuccess;
+  };
+  return supportsRows(1) && supportsRows(handle.config.maxTokenRows) ?
+    cudaSuccess : cudaErrorNotSupported;
+}
+
+template<typename Bundle>
+cudaError_t launchInterleavedDualTyped(
+  const DualFfnHandle& handle,
+  int rows,
+  const Int8* activation,
+  Int8* output,
+  cudaStream_t stream
+) {
+  using Kernel = typename Bundle::Kernel;
+  using Swizzle = typename Bundle::Swizzle;
+  using Iterator = typename Bundle::OutputIterator;
+  const cutlass::gemm::GemmCoord problem(
+    rows,2 * kFfnChannels,kChannels);
+  const cutlass::gemm::GemmCoord tiled = Swizzle::get_tiled_shape(
+    problem,{Bundle::DeviceGemm::ThreadblockShape::kM,
+             Bundle::DeviceGemm::ThreadblockShape::kN,
+             Bundle::DeviceGemm::ThreadblockShape::kK},1);
+  typename Kernel::Mma::IteratorA::TensorRef a(
+    const_cast<Int8*>(activation),LayoutA(kChannels));
+  typename Kernel::Mma::IteratorB::TensorRef b(
+    handle.packedInterleavedWeights,LayoutB(kChannels));
+  typename Iterator::TensorRef c(nullptr,LayoutOutput(kFfnChannels));
+  typename Iterator::TensorRef d(output,LayoutOutput(kFfnChannels));
+  typename Kernel::Params params(
+    problem,tiled,a,b,c,d,
+    typename InterleavedProductOutputOp::Params(
+      handle.upAlpha,handle.gateAlpha,handle.productQuantMultiplier),
+    nullptr);
+  constexpr int threads = Kernel::kThreadCount;
+  constexpr int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
+  cutlass::Kernel<Kernel><<<
+    Swizzle::get_grid_shape(tiled),dim3(threads,1,1),sharedBytes,stream>>>(params);
+  return cudaPeekAtLastError();
+}
+
+__global__ void packInterleavedDualWeightsKernel(
+  const uint4* __restrict__ up,
+  const uint4* __restrict__ gate,
+  uint4* __restrict__ interleaved
+) {
+  constexpr int vectorsPerColumn = kChannels * int(sizeof(Int8)) /
+    int(sizeof(uint4));
+  constexpr int totalVectors = kFfnChannels * vectorsPerColumn;
+  for(int index = int(blockIdx.x) * blockDim.x + threadIdx.x;
+      index < totalVectors;
+      index += int(gridDim.x) * blockDim.x) {
+    const int column = index / vectorsPerColumn;
+    const int vector = index - column * vectorsPerColumn;
+    interleaved[(2 * column) * vectorsPerColumn + vector] = up[index];
+    interleaved[(2 * column + 1) * vectorsPerColumn + vector] = gate[index];
+  }
+}
+
+cudaError_t packInterleavedDualWeights(DualFfnHandle& handle) {
+  constexpr std::size_t bytes =
+    std::size_t(2) * kFfnChannels * kChannels * sizeof(Int8);
+  void* allocation = nullptr;
+  cudaError_t status = cudaMalloc(&allocation,bytes);
+  if(status != cudaSuccess)
+    return status;
+  handle.packedInterleavedWeights = static_cast<Int8*>(allocation);
+  constexpr int threads = 256;
+  constexpr int vectors = kFfnChannels * kChannels * int(sizeof(Int8)) /
+    int(sizeof(uint4));
+  packInterleavedDualWeightsKernel<<<(vectors + threads - 1) / threads,threads>>>(
+    reinterpret_cast<const uint4*>(handle.config.packedUpWeights),
+    reinterpret_cast<const uint4*>(handle.config.packedGateWeights),
+    reinterpret_cast<uint4*>(handle.packedInterleavedWeights));
+  status = cudaPeekAtLastError();
+  if(status == cudaSuccess)
+    status = cudaDeviceSynchronize();
+  if(status != cudaSuccess) {
+    (void)cudaFree(handle.packedInterleavedWeights);
+    handle.packedInterleavedWeights = nullptr;
+  }
+  return status;
 }
 
 template<typename Gemm>
@@ -1487,6 +1836,12 @@ void* createDualFfn(const DualFfnConfig& config) {
     config.productPathTactic == DualFfnProductPathTactic::Auto;
   const bool forceFullyAdjustable = config.productPathTactic ==
     DualFfnProductPathTactic::FullyAdjustableFloat;
+  const bool interleavedTactic = config.tactic ==
+    DualFfnTactic::M128N128K64S3Sw4Interleaved;
+  const bool knownTactic = interleavedTactic ||
+    config.tactic == DualFfnTactic::M128N64K64S3Sw1 ||
+    config.tactic == DualFfnTactic::M128N64K64S3Sw4 ||
+    config.tactic == DualFfnTactic::M128N64K64S4Sw1;
   if(config.maxTokenRows <= 0 || config.maxTokenRows > kMaxTokenRows ||
      config.packedUpWeights == nullptr || config.packedGateWeights == nullptr ||
      !aligned16(config.packedUpWeights) || !aligned16(config.packedGateWeights) ||
@@ -1498,6 +1853,10 @@ void* createDualFfn(const DualFfnConfig& config) {
       config.outputMode != DualFfnOutputMode::Int8Product) ||
      (!incumbentDivide && !exactBranchlessDivide) ||
      (!autoProductPath && !forceFullyAdjustable) ||
+     !knownTactic ||
+     (interleavedTactic &&
+      (config.outputMode != DualFfnOutputMode::Int8Product ||
+       !incumbentDivide || !autoProductPath || config.swigluClip != 7.0f)) ||
      (forceFullyAdjustable &&
       (config.outputMode != DualFfnOutputMode::Int8Product ||
        !incumbentDivide)) ||
@@ -1531,9 +1890,14 @@ void* createDualFfn(const DualFfnConfig& config) {
   DualFfnHandle handle{config,
     kNormActivationScale * config.upWeightScale,
     kNormActivationScale * config.gateWeightScale,
-    factorQuantMultiplier,productQuantMultiplier,productQuantPath};
+    factorQuantMultiplier,productQuantMultiplier,productQuantPath,nullptr};
   cudaError_t status = cudaErrorNotSupported;
-  if(config.outputMode == DualFfnOutputMode::Fp16Product) {
+  if(interleavedTactic) {
+    status = packInterleavedDualWeights(handle);
+    if(status == cudaSuccess)
+      status = prepareInterleavedDualTyped<InterleavedDualInt8S3Sw4>(handle);
+  }
+  else if(config.outputMode == DualFfnOutputMode::Fp16Product) {
     switch(config.tactic) {
     case DualFfnTactic::M128N64K64S3Sw1:
       status = prepareDualTyped<DualS3Sw1>(handle); break;
@@ -1580,13 +1944,22 @@ void* createDualFfn(const DualFfnConfig& config) {
       status = prepareDualTyped<AdjustableDualInt8S4Sw1>(handle); break;
     }
   }
-  if(status != cudaSuccess)
+  if(status != cudaSuccess) {
+    if(handle.packedInterleavedWeights != nullptr)
+      (void)cudaFree(handle.packedInterleavedWeights);
     return nullptr;
-  return new(std::nothrow) DualFfnHandle(handle);
+  }
+  DualFfnHandle* result = new(std::nothrow) DualFfnHandle(handle);
+  if(result == nullptr && handle.packedInterleavedWeights != nullptr)
+    (void)cudaFree(handle.packedInterleavedWeights);
+  return result;
 }
 
 void destroyDualFfn(void* opaque) noexcept {
-  delete static_cast<DualFfnHandle*>(opaque);
+  DualFfnHandle* handle = static_cast<DualFfnHandle*>(opaque);
+  if(handle != nullptr && handle->packedInterleavedWeights != nullptr)
+    (void)cudaFree(handle->packedInterleavedWeights);
+  delete handle;
 }
 
 bool dualFfnSupports(
@@ -1624,6 +1997,8 @@ cudaError_t launchDualFfnHalf(
   case DualFfnTactic::M128N64K64S4Sw1:
     return launchDualTyped<DualS4Sw1>(
       *handle,tokenRows,activation,output,stream);
+  case DualFfnTactic::M128N128K64S3Sw4Interleaved:
+    return cudaErrorNotSupported;
   }
   return cudaErrorNotSupported;
 }
@@ -1640,6 +2015,16 @@ cudaError_t launchDualFfnInt8(
      !dualFfnSupports(handle,DualFfnOutputMode::Int8Product,tokenRows) ||
      !aligned16(activation) || !aligned16(productInt8))
     return cudaErrorInvalidValue;
+  if(handle->config.tactic ==
+     DualFfnTactic::M128N128K64S3Sw4Interleaved) {
+    if(handle->packedInterleavedWeights == nullptr ||
+       handle->config.swigluClip != 7.0f ||
+       handle->config.divide127Tactic != DualFfnDivide127Tactic::Incumbent ||
+       handle->config.productPathTactic != DualFfnProductPathTactic::Auto)
+      return cudaErrorNotSupported;
+    return launchInterleavedDualTyped<InterleavedDualInt8S3Sw4>(
+      *handle,tokenRows,activation,productInt8,stream);
+  }
   if(handle->productQuantPath ==
      ProductQuantPath::Clip7AdjustableProductFloat) {
     switch(handle->config.tactic) {
@@ -1715,6 +2100,27 @@ bool dualFfnDownProductQuantizationMatches(
   return dual != nullptr && down != nullptr &&
     dual->config.outputMode == DualFfnOutputMode::Int8Product &&
     dual->config.productQuantMaxAbs == down->config.productQuantMaxAbs;
+}
+
+bool interleavedDualFfnKernelResources(
+  const void* opaque,
+  InterleavedDualFfnKernelResources& resources
+) noexcept {
+  resources = InterleavedDualFfnKernelResources{};
+  const DualFfnHandle* handle = static_cast<const DualFfnHandle*>(opaque);
+  if(handle == nullptr || handle->config.tactic !=
+       DualFfnTactic::M128N128K64S3Sw4Interleaved ||
+     handle->packedInterleavedWeights == nullptr)
+    return false;
+  using Kernel = typename InterleavedDualInt8S3Sw4::Kernel;
+  cudaFuncAttributes attributes{};
+  if(cudaFuncGetAttributes(&attributes,cutlass::Kernel<Kernel>) != cudaSuccess)
+    return false;
+  resources.registersPerThread = attributes.numRegs;
+  resources.staticSharedBytes = int(attributes.sharedSizeBytes);
+  resources.dynamicSharedBytes = int(sizeof(typename Kernel::SharedStorage));
+  resources.threadsPerBlock = Kernel::kThreadCount;
+  return true;
 }
 
 cudaError_t launchQuantizeClip7Product(
@@ -1947,6 +2353,8 @@ const char* dualFfnTacticName(DualFfnTactic tactic) noexcept {
     return "int8-dual-clip7-m128n64k64-s3-sw4";
   case DualFfnTactic::M128N64K64S4Sw1:
     return "int8-dual-clip7-m128n64k64-s4-sw1";
+  case DualFfnTactic::M128N128K64S3Sw4Interleaved:
+    return "int8-interleaved-clip7-m128n128k64-s3-sw4";
   }
   return "invalid";
 }

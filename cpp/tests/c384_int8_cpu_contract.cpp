@@ -11,6 +11,7 @@
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
+#include <vector>
 
 namespace {
 
@@ -106,6 +107,11 @@ int main() {
       "automatic product path tactic ABI changed");
     static_assert(int(DualFfnProductPathTactic::FullyAdjustableFloat) == 1,
       "fully-adjustable product path tactic ABI changed");
+    static_assert(
+      int(DualFfnTactic::M128N128K64S3Sw4Interleaved) == 4,
+      "interleaved single-GEMM tactic ABI changed");
+    require(DualFfnConfig{}.tactic == DualFfnTactic::M128N64K64S3Sw4,
+            "interleaved experiment changed the production D2 default");
     using RmsInt8OnlyFn = cudaError_t (*)(
       const half*,int8_t*,const half*,int,float,cudaStream_t);
     static_assert(std::is_same_v<decltype(&launchRmsNormInt8),RmsInt8OnlyFn>,
@@ -150,6 +156,7 @@ int main() {
             int(fusedFactorProduct(1,64)) == 1,
             "fused product RNE boundary changed");
     int exhaustiveFactorPairs = 0;
+    int interleavedExactFactorPairs = 0;
     for(int lhs = -127; lhs <= 127; lhs++) {
       for(int rhs = -127; rhs <= 127; rhs++) {
         const int numerator = lhs * rhs;
@@ -159,11 +166,59 @@ int main() {
                 "branchless divide127 differs from incumbent RNE");
         require(candidate >= -127 && candidate <= 127,
                 "branchless divide127 escaped signed-symmetric INT8 range");
+        require(int(clip7HybridFactorProduct(lhs,rhs,49.0f)) == incumbent,
+                "interleaved float product differs from exact clip7/49 RNE");
         exhaustiveFactorPairs++;
+        interleavedExactFactorPairs++;
       }
     }
     require(exhaustiveFactorPairs == 255 * 255,
             "branchless divide127 exhaustive domain changed");
+    require(interleavedExactFactorPairs == 255 * 255,
+            "interleaved exact clip7/49 exhaustive domain changed");
+
+    const std::size_t planarWeightElements =
+      std::size_t(kFfnChannels) * kChannels;
+    std::vector<int8_t> upWeights(planarWeightElements);
+    std::vector<int8_t> gateWeights(planarWeightElements);
+    std::vector<int8_t> interleavedWeights(
+      2 * planarWeightElements,int8_t(-128));
+    for(std::size_t index = 0; index < planarWeightElements; index++) {
+      upWeights[index] =
+        static_cast<int8_t>(int((index * 17 + 3) % 255) - 127);
+      gateWeights[index] =
+        static_cast<int8_t>(int((index * 29 + 11) % 255) - 127);
+    }
+    for(int outputChannel = 0; outputChannel < kFfnChannels; outputChannel++) {
+      for(int inputChannel = 0; inputChannel < kChannels; inputChannel++) {
+        const std::size_t source =
+          std::size_t(outputChannel) * kChannels + inputChannel;
+        interleavedWeights[
+          std::size_t(2 * outputChannel) * kChannels + inputChannel] =
+          upWeights[source];
+        interleavedWeights[
+          std::size_t(2 * outputChannel + 1) * kChannels + inputChannel] =
+          gateWeights[source];
+      }
+    }
+    std::size_t interleavedPackElements = 0;
+    for(int outputChannel = 0; outputChannel < kFfnChannels; outputChannel++) {
+      for(int inputChannel = 0; inputChannel < kChannels; inputChannel++) {
+        const std::size_t source =
+          std::size_t(outputChannel) * kChannels + inputChannel;
+        require(interleavedWeights[
+          std::size_t(2 * outputChannel) * kChannels + inputChannel] ==
+            upWeights[source],
+          "interleaved up-weight K-contiguous packing changed");
+        require(interleavedWeights[
+          std::size_t(2 * outputChannel + 1) * kChannels + inputChannel] ==
+            gateWeights[source],
+          "interleaved gate-weight K-contiguous packing changed");
+        interleavedPackElements += 2;
+      }
+    }
+    require(interleavedPackElements == 2 * planarWeightElements,
+            "interleaved weight packing domain changed");
     const int clippedWitness = int(fusedFactorProduct(127,54));
     const int missingClampWitness = int(quantizeNoNeg128(
       10.0f * (54.0f * 7.0f / 127.0f),
@@ -297,6 +352,10 @@ int main() {
               << " product_scale=" << kClip7ProductScale
               << " divide127_exhaustive_factor_pairs=" << exhaustiveFactorPairs
               << " divide127_tactics=incumbent,exact-branchless"
+              << " interleaved_exact_factor_pairs="
+              << interleavedExactFactorPairs
+              << " interleaved_pack_elements=" << interleavedPackElements
+              << " interleaved_layout=up-gate-adjacent-k384"
               << " fused_product_quant=fused-dual-epilogue-v2"
               << " attention_out_pack=k384-n384-output-major"
               << " rms_int8_only_api=explicit"
@@ -304,6 +363,7 @@ int main() {
               << " adjustable_product_cases=3"
               << " clip7_hybrid_equivalent_factor_pairs="
               << hybridEquivalentFactorPairs
+              << " dual_default=D2 interleaved_default=off"
               << " engine_default=off"
               << '\n';
     return 0;

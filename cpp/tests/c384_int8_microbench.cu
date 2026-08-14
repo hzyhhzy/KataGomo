@@ -91,8 +91,8 @@ Options parseOptions(int argc, char** argv) {
     }
     else if(arg == "--dual-tactic") {
       const int value = parsePositive(requireValue(),"dual tactic");
-      if(value < 1 || value > 3)
-        throw std::runtime_error("dual tactic must be 1..3");
+      if(value < 1 || value > 4)
+        throw std::runtime_error("dual tactic must be 1..4");
       options.dual = static_cast<DualFfnTactic>(value);
     }
     else if(arg == "--divide127") {
@@ -123,7 +123,7 @@ Options parseOptions(int argc, char** argv) {
       std::cout
         << "c384_int8_microbench [--variant conservative|aggressive] "
         << "[--streams 1|2] [--rows 6300] [--projection-tactic 1..3] "
-        << "[--dual-tactic 1..3] [--down-tactic 1..3] "
+        << "[--dual-tactic 1..4] [--down-tactic 1..3] "
         << "[--divide127 incumbent|exact-branchless] "
         << "[--attention-out-tactic 1..3] "
         << "[--warmup N] [--iterations N] [--contracts-only]\n";
@@ -137,6 +137,10 @@ Options parseOptions(int argc, char** argv) {
       options.dual != DualFfnTactic::M128N64K64S3Sw4))
     throw std::runtime_error(
       "exact-branchless divide127 requires aggressive variant and D2");
+  if(options.dual == DualFfnTactic::M128N128K64S3Sw4Interleaved &&
+     options.mode != ProjectionMode::AggressiveQkv)
+    throw std::runtime_error(
+      "interleaved single-GEMM dual tactic is aggressive-only");
   return options;
 }
 
@@ -421,6 +425,11 @@ void prepareLane(
 
   if(options.mode == ProjectionMode::AggressiveQkv) {
     DualFfnConfig legacyConfig = dualConfig;
+    // The interleaved candidate intentionally has no FP16 ABI. Keep the
+    // unrelated legacy half-product timing control on the incumbent D2.
+    if(legacyConfig.tactic ==
+       DualFfnTactic::M128N128K64S3Sw4Interleaved)
+      legacyConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
     legacyConfig.outputMode = DualFfnOutputMode::Fp16Product;
     legacyConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
     lane.legacyHalfDual.reset(createDualFfn(legacyConfig));
@@ -873,7 +882,10 @@ void checkAdjustableProductScaleContracts(
     productDevice.zeroPayload();
 
     DualFfnConfig dualConfig;
-    dualConfig.tactic = options.dual;
+    // Keep the general clip6/full-adjustable coverage on the incumbent.
+    // The interleaved tactic is deliberately clip7-only and has its own
+    // candidate-vs-D2 contract below.
+    dualConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
     dualConfig.outputMode = DualFfnOutputMode::Int8Product;
     dualConfig.maxTokenRows = rows;
     dualConfig.packedUpWeights = upDevice.data<int8_t>();
@@ -1204,6 +1216,167 @@ void checkClip7HybridGpuContract(
     << " reference=fully-adjustable candidate=clip7-fixed-factor"
     << " elements=" << comparedElements
     << " mismatches=0 no_neg128=1 canary=1 divide127_orthogonal=1"
+    << " timed_path=0\n";
+}
+
+// Real-kernel contract for tactic 4. It compares the packed single-GEMM
+// producer against the current D2 dual-GEMM oracle at the two smallest/tail
+// boundaries and the exact production M. Both the exact clip7/49 domain and
+// adjustable per-layer product domains must remain byte-identical.
+void checkInterleavedDualGpuContract(
+  Lane& lane,
+  const Options& options,
+  const HostData& host,
+  const DeviceWeights& weights
+) {
+  if(options.mode != ProjectionMode::AggressiveQkv ||
+     options.dual != DualFfnTactic::M128N128K64S3Sw4Interleaved)
+    return;
+
+  constexpr std::array<float,3> productMaxCases{{
+    49.0f,73.4171f,47.7371f,
+  }};
+  constexpr std::array<int,3> rowCases{{1,28,kTokenRows}};
+  static_assert(kTokenRows == 6300,"production M contract changed");
+  static_assert(kTokenRows % 128 == 28,
+    "production interleaved tail contract changed");
+
+  DualFfnConfig candidateBase;
+  candidateBase.tactic =
+    DualFfnTactic::M128N128K64S3Sw4Interleaved;
+  candidateBase.outputMode = DualFfnOutputMode::Int8Product;
+  candidateBase.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+  candidateBase.productPathTactic = DualFfnProductPathTactic::Auto;
+  candidateBase.maxTokenRows = kTokenRows;
+  candidateBase.packedUpWeights = weights.up.data<int8_t>();
+  candidateBase.packedGateWeights = weights.gate.data<int8_t>();
+  candidateBase.upWeightScale = host.upWeightScale;
+  candidateBase.gateWeightScale = host.gateWeightScale;
+  candidateBase.swigluClip = 7.0f;
+  candidateBase.productQuantMaxAbs = 49.0f;
+
+  const auto requireRejected = [&](const DualFfnConfig& config,
+                                   const char* label) {
+    DualHandle unexpected{createDualFfn(config)};
+    if(unexpected != nullptr)
+      throw std::runtime_error(
+        std::string("interleaved candidate accepted ") + label);
+  };
+  DualFfnConfig forbidden = candidateBase;
+  forbidden.outputMode = DualFfnOutputMode::Fp16Product;
+  requireRejected(forbidden,"FP16 output");
+  forbidden = candidateBase;
+  forbidden.divide127Tactic = DualFfnDivide127Tactic::ExactBranchless;
+  requireRejected(forbidden,"independent divide127 tactic");
+  forbidden = candidateBase;
+  forbidden.productPathTactic =
+    DualFfnProductPathTactic::FullyAdjustableFloat;
+  requireRejected(forbidden,"fully-adjustable factor path");
+  forbidden = candidateBase;
+  forbidden.swigluClip = 6.0f;
+  requireRejected(forbidden,"non-clip7 factor domain");
+
+  InterleavedDualFfnKernelResources resources;
+  if(!interleavedDualFfnKernelResources(lane.dual.get(),resources) ||
+     resources.registersPerThread <= 0 ||
+     resources.dynamicSharedBytes <= 0 ||
+     resources.threadsPerBlock != 128)
+    throw std::runtime_error(
+      "interleaved kernel resource query failed closed");
+
+  std::size_t comparedElements = 0;
+  for(const float productMax: productMaxCases) {
+    DualFfnConfig referenceConfig = candidateBase;
+    referenceConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
+    referenceConfig.productQuantMaxAbs = productMax;
+    DualFfnConfig candidateConfig = candidateBase;
+    candidateConfig.productQuantMaxAbs = productMax;
+    DualHandle reference{createDualFfn(referenceConfig)};
+    DualHandle candidate{createDualFfn(candidateConfig)};
+    if(reference == nullptr || candidate == nullptr)
+      throw std::runtime_error(
+        "interleaved candidate/D2 oracle handle preparation failed");
+    const char* expectedMarker = productMax == 49.0f ?
+      "clip-squared-exact-int-v1" :
+      "clip7-fixed-factor-v105-product-float-rne-v1";
+    if(std::strcmp(dualFfnProductQuantPath(reference.get()),expectedMarker) != 0 ||
+       std::strcmp(dualFfnProductQuantPath(candidate.get()),expectedMarker) != 0)
+      throw std::runtime_error(
+        "interleaved candidate/D2 product marker mismatch");
+
+    for(const int rows: rowCases) {
+      const std::size_t activationElements =
+        std::size_t(rows) * kChannels;
+      const std::size_t outputElements =
+        std::size_t(rows) * kFfnChannels;
+      std::vector<int8_t> activation(activationElements);
+      for(int row = 0; row < rows; row++) {
+        for(int channel = 0; channel < kChannels; channel++) {
+          const int code =
+            (row * 53 + channel * 37 + row * channel * 5 + 23) % 255 - 127;
+          activation[std::size_t(row) * kChannels + channel] =
+            static_cast<int8_t>(code);
+        }
+      }
+      GuardedBuffer activationDevice(activationElements);
+      GuardedBuffer referenceOutput(outputElements);
+      GuardedBuffer candidateOutput(outputElements);
+      activationDevice.upload(activation);
+      referenceOutput.zeroPayload();
+      candidateOutput.zeroPayload();
+      checkCuda(launchDualFfnInt8(
+        reference.get(),rows,activationDevice.data<int8_t>(),
+        referenceOutput.data<int8_t>(),lane.stream),
+        "launch D2 oracle for interleaved contract");
+      checkCuda(launchDualFfnInt8(
+        candidate.get(),rows,activationDevice.data<int8_t>(),
+        candidateOutput.data<int8_t>(),lane.stream),
+        "launch interleaved single-GEMM contract");
+      checkCuda(cudaStreamSynchronize(lane.stream),
+        "interleaved candidate/D2 contract sync");
+      const std::vector<int8_t> referenceBytes =
+        referenceOutput.download<int8_t>();
+      const std::vector<int8_t> candidateBytes =
+        candidateOutput.download<int8_t>();
+      const auto mismatch = std::mismatch(
+        referenceBytes.begin(),referenceBytes.end(),candidateBytes.begin());
+      if(mismatch.first != referenceBytes.end()) {
+        const std::size_t index =
+          std::size_t(mismatch.first - referenceBytes.begin());
+        throw std::runtime_error(
+          "interleaved candidate differs from D2 oracle product_max=" +
+          std::to_string(productMax) + " rows=" + std::to_string(rows) +
+          " index=" + std::to_string(index) + " reference=" +
+          std::to_string(int(*mismatch.first)) + " candidate=" +
+          std::to_string(int(candidateBytes[index])));
+      }
+      if(std::find(candidateBytes.begin(),candidateBytes.end(),int8_t(-128)) !=
+           candidateBytes.end())
+        throw std::runtime_error(
+          "interleaved single-GEMM emitted forbidden -128");
+      activationDevice.requireCanary(
+        "interleaved contract activation");
+      referenceOutput.requireCanary(
+        "interleaved contract D2 output");
+      candidateOutput.requireCanary(
+        "interleaved contract candidate output");
+      comparedElements += outputElements;
+    }
+  }
+  weights.up.requireCanary("interleaved contract up weights");
+  weights.gate.requireCanary("interleaved contract gate weights");
+  std::cout
+    << "KATAGO_C384_INT8_INTERLEAVED_DUAL_GPU_CONTRACT_PASS"
+    << " tactic=" << dualFfnTacticName(candidateBase.tactic)
+    << " product_max=49,73.4171,47.7371"
+    << " geometry=M1,M28,M6300 production_M6300_tail28=1"
+    << " reference=current-D2 candidate=single-gemm-interleaved"
+    << " elements=" << comparedElements
+    << " mismatches=0 bitexact=1 no_neg128=1 canary=1"
+    << " registers_per_thread=" << resources.registersPerThread
+    << " static_shared_bytes=" << resources.staticSharedBytes
+    << " dynamic_shared_bytes=" << resources.dynamicSharedBytes
+    << " threads_per_block=" << resources.threadsPerBlock
     << " timed_path=0\n";
 }
 
@@ -1809,6 +1982,7 @@ int main(int argc, char** argv) {
     for(auto& lane: lanes)
       checkContracts(*lane,options,host,weights);
     checkClip7HybridGpuContract(*lanes.front(),options,host,weights);
+    checkInterleavedDualGpuContract(*lanes.front(),options,host,weights);
     checkDivide127GpuContract(*lanes.front(),options,host,weights);
     for(auto& lane: lanes)
       checkFusedProjectionQknormRopeContract(*lane,options);
@@ -1900,7 +2074,10 @@ int main(int argc, char** argv) {
         downTacticName(options.down) : "none") << "\""
       << ",\"product_quantization\":\""
       << (options.mode == ProjectionMode::AggressiveQkv ?
-        "fused-dual-epilogue-v2" : "none") << "\""
+        (options.dual ==
+           DualFfnTactic::M128N128K64S3Sw4Interleaved ?
+          "fused-interleaved-single-gemm-epilogue-v1" :
+          "fused-dual-epilogue-v2") : "none") << "\""
       << ",\"legacy_product_quantization_control\":\""
       << (options.mode == ProjectionMode::AggressiveQkv ?
         "timed-separately-not-connected" : "none") << "\""

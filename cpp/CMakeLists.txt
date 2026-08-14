@@ -49,7 +49,7 @@ set(KATAGO_ENABLE_C384_INT8_EXPERIMENT
 set(KATAGO_C384_INT8_PROJECTION_TACTIC 3 CACHE STRING
   "C384 INT8 projection tactic (1..3); remote component winner is P3")
 set(KATAGO_C384_INT8_DUAL_TACTIC 2 CACHE STRING
-  "C384 INT8 dual-FFN tactic (1..3); remote component winner is D2")
+  "C384 INT8 dual-FFN tactic (1..4); D4 is the default-off interleaved experiment and D2 remains the winner")
 set(KATAGO_C384_INT8_DOWN_TACTIC 3 CACHE STRING
   "C384 INT8 down tactic (1..3); remote component winner is W3")
 set(KATAGO_C384_INT8_ATTENTION_OUT_TACTIC 3 CACHE STRING
@@ -140,13 +140,17 @@ if(USE_BACKEND STREQUAL "CUDA")
   endif()
   foreach(KATAGO_C384_INT8_TACTIC IN ITEMS
       "${KATAGO_C384_INT8_PROJECTION_TACTIC}"
-      "${KATAGO_C384_INT8_DUAL_TACTIC}"
       "${KATAGO_C384_INT8_DOWN_TACTIC}"
       "${KATAGO_C384_INT8_ATTENTION_OUT_TACTIC}")
     if(NOT KATAGO_C384_INT8_TACTIC MATCHES "^[123]$")
-      message(FATAL_ERROR "C384 INT8 tactics must be one of 1, 2, or 3")
+      message(FATAL_ERROR
+        "C384 INT8 projection/down/attention-out tactics must be one of 1, 2, or 3")
     endif()
   endforeach()
+  if(NOT KATAGO_C384_INT8_DUAL_TACTIC MATCHES "^[1234]$")
+    message(FATAL_ERROR
+      "C384 INT8 dual-FFN tactic must be one of 1, 2, 3, or experimental 4")
+  endif()
 
   if(KATAGO_ENABLE_SM120_TRANSFORMER_WINNER)
     set(KATAGO_PINNED_CUTLASS_COMMIT
