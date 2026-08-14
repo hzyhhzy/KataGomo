@@ -198,6 +198,30 @@ const char* c384Int8DynamicProductPathName(
   return "invalid";
 }
 
+C384Int8Experiment::DualFfnDivide127Tactic
+parseC384Int8Divide127Tactic(const char* value) {
+  if(value == nullptr || value[0] == '\0' ||
+     std::strcmp(value,"incumbent") == 0)
+    return C384Int8Experiment::DualFfnDivide127Tactic::Incumbent;
+  if(std::strcmp(value,"exact-branchless") == 0)
+    return C384Int8Experiment::DualFfnDivide127Tactic::ExactBranchless;
+  throw StringError(
+    "KATAGO_C384_INT8_DIVIDE127 must be exactly incumbent or "
+    "exact-branchless");
+}
+
+const char* c384Int8Divide127TacticName(
+  C384Int8Experiment::DualFfnDivide127Tactic tactic
+) noexcept {
+  switch(tactic) {
+  case C384Int8Experiment::DualFfnDivide127Tactic::Incumbent:
+    return "incumbent";
+  case C384Int8Experiment::DualFfnDivide127Tactic::ExactBranchless:
+    return "exact-branchless";
+  }
+  return "invalid";
+}
+
 void uploadC384Int8Weights(
   const string& name,
   const vector<int8_t>& packed,
@@ -665,6 +689,7 @@ struct CudaHandles {
   C384Int8Experiment::EngineMode c384Int8Mode;
   C384Int8Experiment::DualFfnProductPathTactic
     c384Int8DynamicProductPathTactic;
+  C384Int8Experiment::DualFfnDivide127Tactic c384Int8Divide127Tactic;
   bool c384Int8CandidateEligible;
   bool c384Int8TransactionEnabled;
   int expectedC384Int8Attention;
@@ -773,6 +798,8 @@ struct CudaHandles {
       c384Int8Mode(C384Int8Experiment::EngineMode::Off),
       c384Int8DynamicProductPathTactic(
         C384Int8Experiment::DualFfnProductPathTactic::Auto),
+      c384Int8Divide127Tactic(
+        C384Int8Experiment::DualFfnDivide127Tactic::Incumbent),
       c384Int8CandidateEligible(false),
       c384Int8TransactionEnabled(false),
       expectedC384Int8Attention(0),
@@ -4504,9 +4531,12 @@ struct TransformerFFNBlock {
           C384Int8Experiment::DualFfnOutputMode::Int8Product :
           C384Int8Experiment::DualFfnOutputMode::Fp16Product;
         if(cudaHandles->c384Int8Mode ==
-             C384Int8Experiment::EngineMode::Aggressive)
+             C384Int8Experiment::EngineMode::Aggressive) {
+          dualConfig.divide127Tactic =
+            cudaHandles->c384Int8Divide127Tactic;
           dualConfig.productPathTactic =
             cudaHandles->c384Int8DynamicProductPathTactic;
+        }
         dualConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
         dualConfig.packedUpWeights = (const int8_t*)upWeights.get();
         dualConfig.packedGateWeights = (const int8_t*)gateWeights.get();
@@ -5019,6 +5049,11 @@ struct TransformerFFNBlock {
              C384Int8Experiment::EngineMode::Aggressive ?
              c384Int8DynamicProductPathName(
                cudaHandles->c384Int8DynamicProductPathTactic) : "none") +
+          " divide127=" +
+          (cudaHandles->c384Int8Mode ==
+             C384Int8Experiment::EngineMode::Aggressive ?
+             c384Int8Divide127TacticName(
+               cudaHandles->c384Int8Divide127Tactic) : "none") +
           " clip=" + Global::floatToString(swigluClip) +
           " product_max=" + Global::floatToString(productQuantMaxAbs));
         cudaHandles->loggedC384Int8Ffn = true;
@@ -6326,10 +6361,13 @@ struct ComputeHandle {
       cudaHandles->configureC384Int8Experiment(
         context->useINT8,loadedModel->modelDesc);
       if(cudaHandles->c384Int8Mode ==
-           C384Int8Experiment::EngineMode::Aggressive)
+           C384Int8Experiment::EngineMode::Aggressive) {
         cudaHandles->c384Int8DynamicProductPathTactic =
           parseC384Int8DynamicProductPath(
             std::getenv("KATAGO_C384_INT8_DYNAMIC_PRODUCT_PATH"));
+        cudaHandles->c384Int8Divide127Tactic = parseC384Int8Divide127Tactic(
+          std::getenv("KATAGO_C384_INT8_DIVIDE127"));
+      }
 #endif
     }
     model = std::make_unique<Model>(
