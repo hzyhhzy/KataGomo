@@ -69,6 +69,21 @@ class C384B28ProductionPolicyTests(unittest.TestCase):
         self.assertIn("\n  0 CACHE BOOL", declaration)
         self.assertNotIn("${KATAGO_ENABLE_SM120_TRANSFORMER_WINNER}", declaration)
 
+    def test_c384_int8_production_defaults_to_interleaved_d4(self) -> None:
+        cmake = CMAKE_LISTS.read_text(encoding="utf-8")
+        self.assertIn(
+            "set(KATAGO_C384_INT8_DUAL_TACTIC 4 CACHE STRING\n"
+            "  \"C384 INT8 dual-FFN tactic (1..4); D4 is the qualified "
+            "interleaved winner\")",
+            cmake,
+        )
+
+        backend = CUDA_BACKEND.read_text(encoding="utf-8")
+        fallback = backend.split(
+            "#ifndef KATAGO_C384_INT8_DUAL_TACTIC", 1,
+        )[1].split("#endif", 1)[0]
+        self.assertIn("#define KATAGO_C384_INT8_DUAL_TACTIC 4", fallback)
+
     def test_exact_transaction_markers_report_typed_dynamic_depth(self) -> None:
         source = CUDA_BACKEND.read_text(encoding="utf-8")
         transaction = source.split("void configureC384ExactFixedAot", 1)[1]

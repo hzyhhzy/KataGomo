@@ -48,8 +48,8 @@ set(KATAGO_ENABLE_C384_INT8_EXPERIMENT
   "Build the default-off C384 v105 INT8 engine experiment, microbenchmark, and contracts")
 set(KATAGO_C384_INT8_PROJECTION_TACTIC 3 CACHE STRING
   "C384 INT8 projection tactic (1..3); remote component winner is P3")
-set(KATAGO_C384_INT8_DUAL_TACTIC 2 CACHE STRING
-  "C384 INT8 dual-FFN tactic (1..4); D4 is the default-off interleaved experiment and D2 remains the winner")
+set(KATAGO_C384_INT8_DUAL_TACTIC 4 CACHE STRING
+  "C384 INT8 dual-FFN tactic (1..4); D4 is the qualified interleaved winner")
 set(KATAGO_C384_INT8_DOWN_TACTIC 3 CACHE STRING
   "C384 INT8 down tactic (1..3); remote component winner is W3")
 set(KATAGO_C384_INT8_ATTENTION_OUT_TACTIC 3 CACHE STRING
