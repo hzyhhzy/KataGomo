@@ -49,16 +49,17 @@ enum class DualFfnTactic : uint32_t {
 // aggressive engine instead asks the dual GEMM epilogue to quantize its final
 // per-layer clipped product directly into the serialized calibrated INT8
 // domain. Keeping this choice on the prepared handle makes an accidental
-// half/INT8 pointer mismatch fail closed; clip7/productMax49 remains the exact
-// integer fast path.
+// half/INT8 pointer mismatch fail closed; clip4/productMax16 and
+// clip7/productMax49 retain exact integer fast paths.
 enum class DualFfnOutputMode : uint32_t {
   Fp16Product = 1,
   Int8Product = 2,
 };
 
 // The config default retains the incumbent RNE implementation. Auto resolves
-// per prepared layer to the exact branchless implementation only for the
-// clip=7/productMax=49 INT8 D2 specialization, and otherwise to incumbent.
+// per prepared layer to the exact branchless implementation only for a D2
+// fixed-factor clip4/clip7 layer whose product domain is exactly clip^2, and
+// otherwise to incumbent. D4 always resolves Auto to incumbent.
 // Explicit modes keep both real dual-GEMM epilogues available for A/B tests.
 enum class DualFfnDivide127Tactic : uint32_t {
   Auto = 0,
@@ -66,9 +67,10 @@ enum class DualFfnDivide127Tactic : uint32_t {
   ExactBranchless = 2,
 };
 
-// Selects how clip7 with a non-square calibrated product domain is evaluated.
-// Auto retains the optimized fixed-factor candidate. FullyAdjustableFloat is
-// the reference implementation and may be selected for an engine-level A/B.
+// Selects how clip4/clip7 with a non-square calibrated product domain is
+// evaluated. Auto retains the optimized fixed-factor candidate.
+// FullyAdjustableFloat is the reference implementation and may be selected
+// for an engine-level A/B.
 enum class DualFfnProductPathTactic : uint32_t {
   Auto = 0,
   FullyAdjustableFloat = 1,
@@ -221,8 +223,9 @@ cudaError_t launchDualFfnHalf(
 // registers to symmetric signed INT8 factors, multiplied, then requantized
 // directly to productQuantMaxAbs/127. Zero point is 0, conversion is
 // round-to-nearest-even, and saturation is [-127,127] (never -128). No FP16
-// product tensor is materialized. The clip=7/productMax=49 contract retains
-// a dedicated exact integer fast path.
+// product tensor is materialized. D2 retains a dedicated exact integer fast
+// path when productQuantMaxAbs is bit-identical to clip^2. D4 supports fixed
+// clip4/clip7 and falls back per layer to D2 fully-adjustable for other clips.
 cudaError_t launchDualFfnInt8(
   void* opaque,
   int tokenRows,
@@ -235,6 +238,10 @@ cudaError_t launchDualFfnInt8(
 // This is evidence/diagnostics only and is never consulted by dispatch.
 const char* dualFfnProductQuantPath(const void* opaque) noexcept;
 const char* dualFfnDivide127Path(const void* opaque) noexcept;
+// Reports the tactic that was actually prepared. It differs from the requested
+// D4 tactic when one layer uses an unsupported clip and therefore resolves to
+// the D2 fully-adjustable implementation.
+const char* dualFfnActualTactic(const void* opaque) noexcept;
 
 // True only when the dual producer and down consumer were prepared from the
 // exact same serialized per-layer productQuantMaxAbs value. Engine wiring
@@ -244,9 +251,9 @@ bool dualFfnDownProductQuantizationMatches(
   const void* downOpaque
 ) noexcept;
 
-// Runtime resource evidence for the isolated interleaved candidate. Returns
-// false for every incumbent dual-GEMM tactic, so production code cannot use
-// this diagnostic as a dispatch decision.
+// Runtime resource evidence for the isolated clip4/clip7 interleaved
+// candidates. Returns false for every actual D2 handle, including a requested
+// D4 layer that resolved to the fully-adjustable fallback.
 struct InterleavedDualFfnKernelResources {
   int registersPerThread = 0;
   int staticSharedBytes = 0;

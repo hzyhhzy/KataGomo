@@ -848,7 +848,10 @@ void checkAdjustableProductScaleContracts(
     const char* label;
     const char* expectedPath;
   };
-  constexpr std::array<ScaleCase,3> cases{{
+  constexpr std::array<ScaleCase,5> cases{{
+    {4.0f,16.0f,"clip4-product16","clip4-squared-exact-int-v1"},
+    {4.0f,23.5f,"clip4-product23.5",
+     "clip4-fixed-factor-v105-product-float-rne-v1"},
     {7.0f,73.4171f,"clip7-product73.4171",
      "clip7-fixed-factor-v105-product-float-rne-v1"},
     {7.0f,47.7371f,"clip7-product47.7371",
@@ -885,9 +888,8 @@ void checkAdjustableProductScaleContracts(
     productDevice.zeroPayload();
 
     DualFfnConfig dualConfig;
-    // Keep the general clip6/full-adjustable coverage on the incumbent.
-    // The interleaved tactic is deliberately clip7-only and has its own
-    // candidate-vs-D2 contract below.
+    // Keep this direct factorwise oracle on D2. D4 has its own candidate-vs-D2
+    // contract, including clip4/clip7 and its per-layer clip6 fallback.
     dualConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
     dualConfig.outputMode = DualFfnOutputMode::Int8Product;
     dualConfig.maxTokenRows = rows;
@@ -1050,12 +1052,12 @@ void checkAdjustableProductScaleContracts(
   }
 }
 
-// Real-kernel equivalence proof for the production clip7/per-layer-product
-// hybrid. Auto uses fixed clip7 factor epilogues and a dynamic product
+// Real-kernel equivalence proof for the production fixed-factor paths. Auto
+// uses compile-time clip4/clip7 factor epilogues and a dynamic product
 // multiplier; the test-only control forces the former fully-adjustable
 // factor epilogues. They must produce identical bytes at all important D2
 // boundaries, including both production M and its 28-row tile tail.
-void checkClip7HybridGpuContract(
+void checkFixedFactorHybridGpuContract(
   Lane& lane,
   const Options& options,
   const HostData& host,
@@ -1064,25 +1066,32 @@ void checkClip7HybridGpuContract(
   if(options.mode != ProjectionMode::AggressiveQkv)
     return;
 
-  constexpr std::array<float,2> productMaxCases{{73.4171f,47.7371f}};
+  struct FixedCase { float clip; float productMax; const char* marker; };
+  constexpr std::array<FixedCase,5> fixedCases{{
+    {4.0f,16.0f,"clip4-squared-exact-int-v1"},
+    {4.0f,23.5f,"clip4-fixed-factor-v105-product-float-rne-v1"},
+    {7.0f,49.0f,"clip-squared-exact-int-v1"},
+    {7.0f,73.4171f,"clip7-fixed-factor-v105-product-float-rne-v1"},
+    {7.0f,47.7371f,"clip7-fixed-factor-v105-product-float-rne-v1"},
+  }};
   constexpr std::array<int,4> rowCases{{1,28,29,kTokenRows}};
   static_assert(kTokenRows == 6300,"production M contract changed");
   static_assert(kTokenRows % 128 == 28,"production D2 tail contract changed");
 
   std::size_t comparedElements = 0;
-  for(const float productMax: productMaxCases) {
+  for(const FixedCase& fixed: fixedCases) {
     DualFfnConfig hybridConfig;
     hybridConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
     hybridConfig.outputMode = DualFfnOutputMode::Int8Product;
-    hybridConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+    hybridConfig.divide127Tactic = DualFfnDivide127Tactic::Auto;
     hybridConfig.productPathTactic = DualFfnProductPathTactic::Auto;
     hybridConfig.maxTokenRows = kTokenRows;
     hybridConfig.packedUpWeights = weights.up.data<int8_t>();
     hybridConfig.packedGateWeights = weights.gate.data<int8_t>();
     hybridConfig.upWeightScale = host.upWeightScale;
     hybridConfig.gateWeightScale = host.gateWeightScale;
-    hybridConfig.swigluClip = 7.0f;
-    hybridConfig.productQuantMaxAbs = productMax;
+    hybridConfig.swigluClip = fixed.clip;
+    hybridConfig.productQuantMaxAbs = fixed.productMax;
     DualFfnConfig fullConfig = hybridConfig;
     fullConfig.productPathTactic =
       DualFfnProductPathTactic::FullyAdjustableFloat;
@@ -1091,14 +1100,18 @@ void checkClip7HybridGpuContract(
     DualHandle full{createDualFfn(fullConfig)};
     if(hybrid == nullptr || full == nullptr)
       throw std::runtime_error(
-        "clip7 hybrid/full GPU A/B handle preparation failed");
+        "fixed-factor hybrid/full GPU A/B handle preparation failed");
     if(std::strcmp(
          dualFfnProductQuantPath(hybrid.get()),
-         "clip7-fixed-factor-v105-product-float-rne-v1") != 0 ||
+         fixed.marker) != 0 ||
        std::strcmp(
          dualFfnProductQuantPath(full.get()),
          "v105-per-layer-float-rne-v1") != 0)
-      throw std::runtime_error("clip7 hybrid/full GPU A/B marker mismatch");
+      throw std::runtime_error("fixed-factor hybrid/full GPU A/B marker mismatch");
+    const bool squared = fixed.productMax == fixed.clip * fixed.clip;
+    if(std::strcmp(dualFfnDivide127Path(hybrid.get()),
+         squared ? "exact-branchless" : "incumbent") != 0)
+      throw std::runtime_error("fixed-factor D2 Auto divide path mismatch");
 
     DualFfnConfig forbidden = fullConfig;
     forbidden.divide127Tactic = DualFfnDivide127Tactic::ExactBranchless;
@@ -1130,13 +1143,13 @@ void checkClip7HybridGpuContract(
       checkCuda(launchDualFfnInt8(
         hybrid.get(),rows,activationDevice.data<int8_t>(),
         hybridOutput.data<int8_t>(),lane.stream),
-        "launch clip7 hybrid GPU contract");
+        "launch fixed-factor hybrid GPU contract");
       checkCuda(launchDualFfnInt8(
         full.get(),rows,activationDevice.data<int8_t>(),
         fullOutput.data<int8_t>(),lane.stream),
         "launch fully-adjustable GPU control");
       checkCuda(cudaStreamSynchronize(lane.stream),
-        "clip7 hybrid/full GPU A/B sync");
+        "fixed-factor hybrid/full GPU A/B sync");
       const std::vector<int8_t> hybridBytes =
         hybridOutput.download<int8_t>();
       const std::vector<int8_t> fullBytes = fullOutput.download<int8_t>();
@@ -1153,8 +1166,8 @@ void checkClip7HybridGpuContract(
         hybridBytes.begin(),hybridBytes.end(),int8_t(-128));
       const std::size_t fullNeg128 = std::count(
         fullBytes.begin(),fullBytes.end(),int8_t(-128));
-      activationDevice.requireCanary("clip7 hybrid GPU contract activation");
-      hybridOutput.requireCanary("clip7 hybrid GPU contract output");
+      activationDevice.requireCanary("fixed-factor hybrid GPU contract activation");
+      hybridOutput.requireCanary("fixed-factor hybrid GPU contract output");
       fullOutput.requireCanary("fully-adjustable GPU control output");
       if(mismatchCount != 0) {
         const int firstRow = int(firstMismatch / kFfnChannels);
@@ -1168,14 +1181,15 @@ void checkClip7HybridGpuContract(
         const float gate = float(gateAccum) * kNormActivationScale *
           host.gateWeightScale;
         const float silu = up / (1.0f + std::exp(-up));
-        const int upFactor = quantize(silu,7.0f);
-        const int gateFactor = quantize(gate,7.0f);
+        const int upFactor = quantize(silu,fixed.clip);
+        const int gateFactor = quantize(gate,fixed.clip);
         const int oracle = adjustableProductOracle(
-          up,gate,7.0f,productMax);
+          up,gate,fixed.clip,fixed.productMax);
         std::cout
           << std::setprecision(9)
-          << "KATAGO_C384_INT8_CLIP7_HYBRID_GPU_CONTRACT_DIAGNOSTIC"
-          << " product_max=" << productMax
+          << "KATAGO_C384_INT8_FIXED_FACTOR_GPU_CONTRACT_DIAGNOSTIC"
+          << " clip=" << fixed.clip
+          << " product_max=" << fixed.productMax
           << " rows=" << rows
           << " mismatches=" << mismatchCount
           << " first_index=" << firstMismatch
@@ -1200,32 +1214,33 @@ void checkClip7HybridGpuContract(
           << " full_neg128=" << fullNeg128
           << " canary=1\n";
         throw std::runtime_error(
-          "clip7 hybrid differs from fully-adjustable GPU control: " +
+          "fixed-factor hybrid differs from fully-adjustable GPU control: " +
           std::to_string(mismatchCount) + " mismatches, first=" +
           std::to_string(firstMismatch));
       }
       if(std::find(hybridBytes.begin(),hybridBytes.end(),int8_t(-128)) !=
            hybridBytes.end())
-        throw std::runtime_error("clip7 hybrid GPU contract emitted -128");
+        throw std::runtime_error("fixed-factor hybrid GPU contract emitted -128");
       comparedElements += outputElements;
     }
   }
-  weights.up.requireCanary("clip7 hybrid GPU contract up weights");
-  weights.gate.requireCanary("clip7 hybrid GPU contract gate weights");
+  weights.up.requireCanary("fixed-factor hybrid GPU contract up weights");
+  weights.gate.requireCanary("fixed-factor hybrid GPU contract gate weights");
   std::cout
-    << "KATAGO_C384_INT8_CLIP7_HYBRID_GPU_CONTRACT_PASS"
-    << " product_max=73.4171,47.7371"
+    << "KATAGO_C384_INT8_FIXED_FACTOR_GPU_CONTRACT_PASS"
+    << " clips=4,7 product_max=16,23.5,49,73.4171,47.7371"
     << " geometry=D2 M=1,28,29,6300 production_M6300_tail28=1"
-    << " reference=fully-adjustable candidate=clip7-fixed-factor"
+    << " reference=fully-adjustable candidate=fixed-factor"
     << " elements=" << comparedElements
     << " mismatches=0 no_neg128=1 canary=1 divide127_orthogonal=1"
     << " timed_path=0\n";
 }
 
 // Real-kernel contract for tactic 4. It compares the packed single-GEMM
-// producer against the current D2 dual-GEMM oracle at the two smallest/tail
-// boundaries and the exact production M. Both the exact clip7/49 domain and
-// adjustable per-layer product domains must remain byte-identical.
+// clip4/clip7 producer against the current D2 dual-GEMM oracle at the two
+// smallest/tail boundaries and the exact production M. Product calibration
+// is independent of the factor clip. A non-fixed clip resolves only that
+// layer to D2 fully-adjustable without aborting a mixed-layer transaction.
 void checkInterleavedDualGpuContract(
   Lane& lane,
   const Options& options,
@@ -1236,8 +1251,31 @@ void checkInterleavedDualGpuContract(
      options.dual != DualFfnTactic::M128N128K64S3Sw4Interleaved)
     return;
 
-  constexpr std::array<float,3> productMaxCases{{
-    49.0f,73.4171f,47.7371f,
+  struct InterleavedCase {
+    float clip;
+    float productMax;
+    const char* referenceMarker;
+    const char* candidateMarker;
+    const char* actualTactic;
+  };
+  constexpr std::array<InterleavedCase,6> productCases{{
+    {4.0f,16.0f,"clip4-squared-exact-int-v1",
+     "clip4-fixed-factor-v105-product-float-rne-v1",
+     "int8-interleaved-clip4or7-m128n128k64-s3-sw4"},
+    {4.0f,23.5f,"clip4-fixed-factor-v105-product-float-rne-v1",
+     "clip4-fixed-factor-v105-product-float-rne-v1",
+     "int8-interleaved-clip4or7-m128n128k64-s3-sw4"},
+    {7.0f,49.0f,"clip-squared-exact-int-v1",
+     "clip7-fixed-factor-v105-product-float-rne-v1",
+     "int8-interleaved-clip4or7-m128n128k64-s3-sw4"},
+    {7.0f,73.4171f,"clip7-fixed-factor-v105-product-float-rne-v1",
+     "clip7-fixed-factor-v105-product-float-rne-v1",
+     "int8-interleaved-clip4or7-m128n128k64-s3-sw4"},
+    {7.0f,47.7371f,"clip7-fixed-factor-v105-product-float-rne-v1",
+     "clip7-fixed-factor-v105-product-float-rne-v1",
+     "int8-interleaved-clip4or7-m128n128k64-s3-sw4"},
+    {6.0f,48.0f,"v105-per-layer-float-rne-v1",
+     "v105-per-layer-float-rne-v1","int8-dual-clip7-m128n64k64-s3-sw4"},
   }};
   constexpr std::array<int,3> rowCases{{1,28,kTokenRows}};
   static_assert(kTokenRows == 6300,"production M contract changed");
@@ -1248,7 +1286,7 @@ void checkInterleavedDualGpuContract(
   candidateBase.tactic =
     DualFfnTactic::M128N128K64S3Sw4Interleaved;
   candidateBase.outputMode = DualFfnOutputMode::Int8Product;
-  candidateBase.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+  candidateBase.divide127Tactic = DualFfnDivide127Tactic::Auto;
   candidateBase.productPathTactic = DualFfnProductPathTactic::Auto;
   candidateBase.maxTokenRows = kTokenRows;
   candidateBase.packedUpWeights = weights.up.data<int8_t>();
@@ -1271,13 +1309,37 @@ void checkInterleavedDualGpuContract(
   forbidden = candidateBase;
   forbidden.divide127Tactic = DualFfnDivide127Tactic::ExactBranchless;
   requireRejected(forbidden,"independent divide127 tactic");
+
+  // Fully-adjustable and non-fixed clips do not reject the transaction. They
+  // resolve this one requested-D4 handle to the production D2 implementation.
   forbidden = candidateBase;
   forbidden.productPathTactic =
     DualFfnProductPathTactic::FullyAdjustableFloat;
-  requireRejected(forbidden,"fully-adjustable factor path");
+  DualHandle fullyAdjustableFallback{createDualFfn(forbidden)};
+  if(fullyAdjustableFallback == nullptr ||
+     std::strcmp(dualFfnActualTactic(fullyAdjustableFallback.get()),
+       "int8-dual-clip7-m128n64k64-s3-sw4") != 0 ||
+     std::strcmp(dualFfnProductQuantPath(fullyAdjustableFallback.get()),
+       "v105-per-layer-float-rne-v1") != 0 ||
+     std::strcmp(dualFfnDivide127Path(fullyAdjustableFallback.get()),
+       "incumbent") != 0)
+    throw std::runtime_error(
+      "D4 fully-adjustable layer did not resolve to D2 incumbent");
   forbidden = candidateBase;
   forbidden.swigluClip = 6.0f;
-  requireRejected(forbidden,"non-clip7 factor domain");
+  forbidden.productQuantMaxAbs = 48.0f;
+  DualHandle clip6Fallback{createDualFfn(forbidden)};
+  InterleavedDualFfnKernelResources fallbackResources;
+  if(clip6Fallback == nullptr ||
+     std::strcmp(dualFfnActualTactic(clip6Fallback.get()),
+       "int8-dual-clip7-m128n64k64-s3-sw4") != 0 ||
+     std::strcmp(dualFfnProductQuantPath(clip6Fallback.get()),
+       "v105-per-layer-float-rne-v1") != 0 ||
+     std::strcmp(dualFfnDivide127Path(clip6Fallback.get()),"incumbent") != 0 ||
+     interleavedDualFfnKernelResources(
+       clip6Fallback.get(),fallbackResources))
+    throw std::runtime_error(
+      "D4 clip6 layer did not resolve to D2 fully-adjustable incumbent");
 
   InterleavedDualFfnKernelResources resources;
   if(!interleavedDualFfnKernelResources(lane.dual.get(),resources) ||
@@ -1288,24 +1350,28 @@ void checkInterleavedDualGpuContract(
       "interleaved kernel resource query failed closed");
 
   std::size_t comparedElements = 0;
-  for(const float productMax: productMaxCases) {
+  for(const InterleavedCase& product: productCases) {
     DualFfnConfig referenceConfig = candidateBase;
     referenceConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
-    referenceConfig.productQuantMaxAbs = productMax;
+    referenceConfig.swigluClip = product.clip;
+    referenceConfig.productQuantMaxAbs = product.productMax;
     DualFfnConfig candidateConfig = candidateBase;
-    candidateConfig.productQuantMaxAbs = productMax;
+    candidateConfig.swigluClip = product.clip;
+    candidateConfig.productQuantMaxAbs = product.productMax;
     DualHandle reference{createDualFfn(referenceConfig)};
     DualHandle candidate{createDualFfn(candidateConfig)};
     if(reference == nullptr || candidate == nullptr)
       throw std::runtime_error(
         "interleaved candidate/D2 oracle handle preparation failed");
-    const char* expectedMarker = productMax == 49.0f ?
-      "clip-squared-exact-int-v1" :
-      "clip7-fixed-factor-v105-product-float-rne-v1";
-    if(std::strcmp(dualFfnProductQuantPath(reference.get()),expectedMarker) != 0 ||
-       std::strcmp(dualFfnProductQuantPath(candidate.get()),expectedMarker) != 0)
+    if(std::strcmp(dualFfnProductQuantPath(reference.get()),
+         product.referenceMarker) != 0 ||
+       std::strcmp(dualFfnProductQuantPath(candidate.get()),
+         product.candidateMarker) != 0 ||
+       std::strcmp(dualFfnActualTactic(candidate.get()),
+         product.actualTactic) != 0 ||
+       std::strcmp(dualFfnDivide127Path(candidate.get()),"incumbent") != 0)
       throw std::runtime_error(
-        "interleaved candidate/D2 product marker mismatch");
+        "interleaved candidate/D2 path resolution mismatch");
 
     for(const int rows: rowCases) {
       const std::size_t activationElements =
@@ -1347,8 +1413,9 @@ void checkInterleavedDualGpuContract(
         const std::size_t index =
           std::size_t(mismatch.first - referenceBytes.begin());
         throw std::runtime_error(
-          "interleaved candidate differs from D2 oracle product_max=" +
-          std::to_string(productMax) + " rows=" + std::to_string(rows) +
+          "interleaved candidate differs from D2 oracle clip=" +
+          std::to_string(product.clip) + " product_max=" +
+          std::to_string(product.productMax) + " rows=" + std::to_string(rows) +
           " index=" + std::to_string(index) + " reference=" +
           std::to_string(int(*mismatch.first)) + " candidate=" +
           std::to_string(int(candidateBytes[index])));
@@ -1366,14 +1433,37 @@ void checkInterleavedDualGpuContract(
       comparedElements += outputElements;
     }
   }
+
+  // Focused all-or-nothing preparation witness for a realistic mixed model.
+  DualFfnConfig clip4Config = candidateBase;
+  clip4Config.swigluClip = 4.0f;
+  clip4Config.productQuantMaxAbs = 23.5f;
+  DualFfnConfig clip7Config = candidateBase;
+  clip7Config.swigluClip = 7.0f;
+  clip7Config.productQuantMaxAbs = 73.4171f;
+  DualFfnConfig clip6Config = candidateBase;
+  clip6Config.swigluClip = 6.0f;
+  clip6Config.productQuantMaxAbs = 48.0f;
+  DualHandle mixedClip4{createDualFfn(clip4Config)};
+  DualHandle mixedClip7{createDualFfn(clip7Config)};
+  DualHandle mixedClip6{createDualFfn(clip6Config)};
+  if(mixedClip4 == nullptr || mixedClip7 == nullptr || mixedClip6 == nullptr ||
+     std::strcmp(dualFfnActualTactic(mixedClip4.get()),
+       "int8-interleaved-clip4or7-m128n128k64-s3-sw4") != 0 ||
+     std::strcmp(dualFfnActualTactic(mixedClip7.get()),
+       "int8-interleaved-clip4or7-m128n128k64-s3-sw4") != 0 ||
+     std::strcmp(dualFfnActualTactic(mixedClip6.get()),
+       "int8-dual-clip7-m128n64k64-s3-sw4") != 0)
+    throw std::runtime_error("mixed clip4/clip7/clip6 transaction failed");
   weights.up.requireCanary("interleaved contract up weights");
   weights.gate.requireCanary("interleaved contract gate weights");
   std::cout
     << "KATAGO_C384_INT8_INTERLEAVED_DUAL_GPU_CONTRACT_PASS"
     << " tactic=" << dualFfnTacticName(candidateBase.tactic)
-    << " product_max=49,73.4171,47.7371"
+    << " clips=4,7,6 product_max=16,23.5,49,73.4171,47.7371,48"
     << " geometry=M1,M28,M6300 production_M6300_tail28=1"
     << " reference=current-D2 candidate=single-gemm-interleaved"
+    << " auto_divide127=incumbent mixed_actual=D4,D4,D2"
     << " elements=" << comparedElements
     << " mismatches=0 bitexact=1 no_neg128=1 canary=1"
     << " registers_per_thread=" << resources.registersPerThread
@@ -1590,11 +1680,15 @@ void checkContracts(
   weights.input.requireCanary("input");
   weights.residual.requireCanary("residual");
   checkClip7SaturationContract(lane,options,normInt8);
-  if(options.mode == ProjectionMode::AggressiveQkv &&
-     std::strcmp(
-       dualFfnProductQuantPath(lane.dual.get()),
-       "clip-squared-exact-int-v1") != 0)
-    throw std::runtime_error("default timed lane left exact clip7/49 path");
+  if(options.mode == ProjectionMode::AggressiveQkv) {
+    const char* expectedTimedPath = options.dual ==
+        DualFfnTactic::M128N128K64S3Sw4Interleaved ?
+      "clip7-fixed-factor-v105-product-float-rne-v1" :
+      "clip-squared-exact-int-v1";
+    if(std::strcmp(
+         dualFfnProductQuantPath(lane.dual.get()),expectedTimedPath) != 0)
+      throw std::runtime_error("default timed lane product path mismatch");
+  }
   checkAdjustableProductScaleContracts(lane,options);
 }
 
@@ -1994,7 +2088,7 @@ int main(int argc, char** argv) {
 
     for(auto& lane: lanes)
       checkContracts(*lane,options,host,weights);
-    checkClip7HybridGpuContract(*lanes.front(),options,host,weights);
+    checkFixedFactorHybridGpuContract(*lanes.front(),options,host,weights);
     checkInterleavedDualGpuContract(*lanes.front(),options,host,weights);
     checkDivide127GpuContract(*lanes.front(),options,host,weights);
     for(auto& lane: lanes)

@@ -44,13 +44,15 @@ int8_t adjustableFactorProduct(
   return static_cast<int8_t>(rounded);
 }
 
-int8_t clip7HybridFactorProduct(
+int8_t fixedFactorProduct(
   int lhs,
   int rhs,
+  float clip,
   float productQuantMaxAbs
 ) {
   const float multiplier = float(
-    49.0 / (127.0 * double(productQuantMaxAbs)));
+    double(clip) * double(clip) /
+    (127.0 * double(productQuantMaxAbs)));
   long rounded = std::lrint(float(lhs * rhs) * multiplier);
   rounded = std::max(-127L,std::min(127L,rounded));
   return static_cast<int8_t>(rounded);
@@ -166,7 +168,7 @@ int main() {
                 "branchless divide127 differs from incumbent RNE");
         require(candidate >= -127 && candidate <= 127,
                 "branchless divide127 escaped signed-symmetric INT8 range");
-        require(int(clip7HybridFactorProduct(lhs,rhs,49.0f)) == incumbent,
+        require(int(fixedFactorProduct(lhs,rhs,7.0f,49.0f)) == incumbent,
                 "interleaved float product differs from exact clip7/49 RNE");
         exhaustiveFactorPairs++;
         interleavedExactFactorPairs++;
@@ -227,12 +229,15 @@ int main() {
             "fused contract cannot detect a missing clip7 clamp");
 
     struct AdjustableCase { float clip; float productMax; };
-    const std::array<AdjustableCase,3> adjustableCases{{
+    const std::array<AdjustableCase,5> adjustableCases{{
+      {4.0f,16.0f},
+      {4.0f,23.5f},
       {7.0f,73.4171f},
       {7.0f,47.7371f},
       {6.0f,48.0f},
     }};
-    int hybridEquivalentFactorPairs = 0;
+    int fixedEquivalentFactorPairs = 0;
+    int clip4EquivalentFactorPairs = 0;
     for(const AdjustableCase& adjustable : adjustableCases) {
       for(int lhs = -127; lhs <= 127; lhs++) {
         for(int rhs = -127; rhs <= 127; rhs++) {
@@ -240,17 +245,25 @@ int main() {
             lhs,rhs,adjustable.clip,adjustable.productMax));
           require(q >= -127 && q <= 127,
                   "adjustable product quantizer emitted -128 or overflow");
-          if(adjustable.clip == 7.0f) {
-            require(q == int(clip7HybridFactorProduct(
-              lhs,rhs,adjustable.productMax)),
-              "clip7 hybrid differs from fully-adjustable product RNE");
-            hybridEquivalentFactorPairs++;
+          if(adjustable.clip == 4.0f || adjustable.clip == 7.0f) {
+            require(q == int(fixedFactorProduct(
+              lhs,rhs,adjustable.clip,adjustable.productMax)),
+              "fixed-factor hybrid differs from fully-adjustable product RNE");
+            fixedEquivalentFactorPairs++;
+            if(adjustable.clip == 4.0f)
+              clip4EquivalentFactorPairs++;
           }
         }
       }
     }
-    require(hybridEquivalentFactorPairs == 2 * 255 * 255,
-            "clip7 hybrid exhaustive domain changed");
+    require(fixedEquivalentFactorPairs == 4 * 255 * 255,
+            "fixed-factor hybrid exhaustive domain changed");
+    require(clip4EquivalentFactorPairs == 2 * 255 * 255,
+            "clip4 fixed-factor exhaustive domain changed");
+    require(int(adjustableFactorProduct(127,127,4.0f,16.0f)) == 127,
+            "clip4 squared-domain endpoint changed");
+    require(int(adjustableFactorProduct(127,-127,4.0f,23.5f)) == -86,
+            "clip4 calibrated product endpoint changed");
     require(int(adjustableFactorProduct(127,127,7.0f,73.4171f)) == 85,
             "adjustable wide-range product endpoint changed");
     require(int(adjustableFactorProduct(127,127,7.0f,47.7371f)) == 127,
@@ -360,9 +373,11 @@ int main() {
               << " attention_out_pack=k384-n384-output-major"
               << " rms_int8_only_api=explicit"
               << " endpoints_plus49_minus49=1 rne=1 no_neg128=1"
-              << " adjustable_product_cases=3"
-              << " clip7_hybrid_equivalent_factor_pairs="
-              << hybridEquivalentFactorPairs
+              << " adjustable_product_cases=5"
+              << " fixed_hybrid_equivalent_factor_pairs="
+              << fixedEquivalentFactorPairs
+              << " clip4_hybrid_equivalent_factor_pairs="
+              << clip4EquivalentFactorPairs
               << " dual_default=D2 interleaved_default=off"
               << " engine_default=off"
               << '\n';

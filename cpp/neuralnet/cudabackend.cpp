@@ -5036,9 +5036,9 @@ struct TransformerFFNBlock {
         cudaHandles->logger->write(
           string("KATAGO_C384_SM120_INT8_FFN_ACTIVE mode=") +
           C384Int8Experiment::engineModeName(cudaHandles->c384Int8Mode) +
-          " dual=" + C384Int8Experiment::dualFfnTacticName(
-            static_cast<C384Int8Experiment::DualFfnTactic>(
-              KATAGO_C384_INT8_DUAL_TACTIC)) + " down=" +
+          " dual=" +
+          C384Int8Experiment::dualFfnActualTactic(c384Int8Dual.get()) +
+          " down=" +
           (cudaHandles->c384Int8Mode ==
              C384Int8Experiment::EngineMode::Aggressive ?
              C384Int8Experiment::downTacticName(
@@ -5064,7 +5064,11 @@ struct TransformerFFNBlock {
              C384Int8Experiment::dualFfnDivide127Path(c384Int8Dual.get()) :
              "none") +
           " clip=" + Global::floatToString(swigluClip) +
-          " product_max=" + Global::floatToString(productQuantMaxAbs));
+          " product_max=" + Global::floatToString(productQuantMaxAbs) +
+          " dual_requested=" + C384Int8Experiment::dualFfnTacticName(
+            static_cast<C384Int8Experiment::DualFfnTactic>(
+              KATAGO_C384_INT8_DUAL_TACTIC)) + " dual_actual=" +
+          C384Int8Experiment::dualFfnActualTactic(c384Int8Dual.get()));
         cudaHandles->loggedC384Int8Ffn = true;
       }
     }
