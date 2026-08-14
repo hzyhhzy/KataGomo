@@ -43,11 +43,31 @@ enum class DualFfnTactic : uint32_t {
 
 // The conservative engine keeps the existing FP16 down-projection ABI. The
 // aggressive engine instead asks the dual GEMM epilogue to quantize its final
-// clip7 product directly to signed INT8. Keeping this choice on the prepared
-// handle makes an accidental half/INT8 pointer mismatch fail closed.
+// per-layer clipped product directly into the serialized calibrated INT8
+// domain. Keeping this choice on the prepared handle makes an accidental
+// half/INT8 pointer mismatch fail closed; clip7/productMax49 remains the exact
+// integer fast path.
 enum class DualFfnOutputMode : uint32_t {
   Fp16Product = 1,
   Int8Product = 2,
+};
+
+// The production/default path retains the incumbent RNE implementation. The
+// exact branchless alternative is an independent prepared-handle tactic, so a
+// single CUDA binary can exercise both real dual-GEMM epilogues. It is only
+// admissible for the exact clip=7/productMax=49 INT8 D2 specialization.
+enum class DualFfnDivide127Tactic : uint32_t {
+  Incumbent = 1,
+  ExactBranchless = 2,
+};
+
+// Production always selects the product path from the immutable v105
+// semantics. The second value exists only so the GPU contract can run the
+// general implementation as a bit-exact control for the clip7 hybrid; engine
+// wiring must leave this at Auto.
+enum class DualFfnProductPathTactic : uint32_t {
+  Auto = 0,
+  ForceFullyAdjustableFloatForTesting = 1,
 };
 
 enum class DownTactic : uint32_t {
@@ -58,7 +78,8 @@ enum class DownTactic : uint32_t {
 
 // Kept distinct from DownTactic even though the initial candidates share the
 // same CUTLASS tile family. Attention out is K=384,N=384 and consumes clip4
-// activations; FFN down is K=1024,N=384 and consumes clip7 products.
+// activations; FFN down is K=1024,N=384 and consumes the per-layer calibrated
+// product domain (with clip7/productMax49 as its exact fast-path case).
 enum class AttentionOutTactic : uint32_t {
   M128N128K64S2Sw1 = 1,
   M128N128K64S3Sw1 = 2,
@@ -156,11 +177,21 @@ cudaError_t launchPackPlanarV(
 struct DualFfnConfig {
   DualFfnTactic tactic = DualFfnTactic::M128N64K64S3Sw4;
   DualFfnOutputMode outputMode = DualFfnOutputMode::Fp16Product;
+  DualFfnDivide127Tactic divide127Tactic =
+    DualFfnDivide127Tactic::Incumbent;
+  DualFfnProductPathTactic productPathTactic =
+    DualFfnProductPathTactic::Auto;
   int maxTokenRows = 0;
   const int8_t* packedUpWeights = nullptr;
   const int8_t* packedGateWeights = nullptr;
   float upWeightScale = 0.0f;
   float gateWeightScale = 0.0f;
+  // Serialized v105 FFN semantics. The aggressive path quantizes each
+  // clipped factor with swigluClip/127, then requantizes their product with
+  // productQuantMaxAbs/127. Keeping both values on the prepared handle makes
+  // per-layer calibration immutable and stream-safe.
+  float swigluClip = 7.0f;
+  float productQuantMaxAbs = 49.0f;
 };
 
 void* createDualFfn(const DualFfnConfig& config);
@@ -182,11 +213,12 @@ cudaError_t launchDualFfnHalf(
 );
 
 // Aggressive shared-A dual epilogue. Up and gate are dequantized in FP32,
-// transformed as clamp(SiLU(up),+-7) and clamp(gate,+-7), quantized in
-// registers to symmetric signed INT8 factors, multiplied, then written
-// directly as the final product tensor. Product scale is exactly 49/127,
-// zero point is 0, conversion is round-to-nearest-even, and saturation is
-// [-127,127] (never -128). No FP16 product tensor is materialized.
+// transformed as clamp(SiLU(up),+-clip) and clamp(gate,+-clip), quantized in
+// registers to symmetric signed INT8 factors, multiplied, then requantized
+// directly to productQuantMaxAbs/127. Zero point is 0, conversion is
+// round-to-nearest-even, and saturation is [-127,127] (never -128). No FP16
+// product tensor is materialized. The clip=7/productMax=49 contract retains
+// a dedicated exact integer fast path.
 cudaError_t launchDualFfnInt8(
   void* opaque,
   int tokenRows,
@@ -194,6 +226,18 @@ cudaError_t launchDualFfnInt8(
   int8_t* productInt8,
   cudaStream_t stream
 );
+
+// Reports the immutable product requantization path selected at preparation.
+// This is evidence/diagnostics only and is never consulted by dispatch.
+const char* dualFfnProductQuantPath(const void* opaque) noexcept;
+
+// True only when the dual producer and down consumer were prepared from the
+// exact same serialized per-layer productQuantMaxAbs value. Engine wiring
+// checks this before publishing the all-or-nothing INT8 transaction.
+bool dualFfnDownProductQuantizationMatches(
+  const void* dualOpaque,
+  const void* downOpaque
+) noexcept;
 
 // Aggressive-engine RMSNorm. It preserves the same FP16 rounding boundary,
 // clip4, RNE, and [-127,127] quantization contract as
@@ -232,6 +276,9 @@ struct DownConfig {
   // Output-major K-contiguous signed-INT8 [1024,384].
   const int8_t* packedWeights = nullptr;
   float weightScale = 0.0f;
+  // Real max represented by signed INT8 input value 127. This must match the
+  // paired dual-FFN handle from the same serialized v105 block.
+  float productQuantMaxAbs = 49.0f;
 };
 
 void* createDown(const DownConfig& config);
@@ -239,7 +286,8 @@ void destroyDown(void* opaque) noexcept;
 bool downSupports(const void* opaque, int tokenRows) noexcept;
 
 // Computes half(alpha * S8[M,1024] * S8[1024,384] + residual), with
-// alpha=(49/127)*weightScale and beta=1 in the CUTLASS epilogue.
+// alpha=(productQuantMaxAbs/127)*weightScale and beta=1 in the CUTLASS
+// epilogue.
 cudaError_t launchDownResidual(
   void* opaque,
   int tokenRows,

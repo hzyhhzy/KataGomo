@@ -389,7 +389,7 @@ public:
   }
 };
 
-template<int Count>
+template<int Count, bool ExactBranchless>
 class QuantizedClip7FactorMul {
 public:
   using ElementOutput = Int8;
@@ -406,17 +406,28 @@ public:
 
   CUTLASS_HOST_DEVICE
   static int divide127Rne(int numerator) {
-    const bool negative = numerator < 0;
-    const int magnitude = negative ? -numerator : numerator;
-    int quotient = magnitude / 127;
-    const int remainder = magnitude - quotient * 127;
-    const int twiceRemainder = 2 * remainder;
-    if(twiceRemainder > 127 ||
-       (twiceRemainder == 127 && (quotient & 1) != 0))
-      quotient++;
-    int rounded = negative ? -quotient : quotient;
-    rounded = rounded < -127 ? -127 : (rounded > 127 ? 127 : rounded);
-    return rounded;
+    if constexpr(ExactBranchless) {
+      // Factors are in [-127,127], hence |numerator| <= 127*127. Because 127
+      // is odd, division can never land exactly halfway between integers:
+      // RNE is floor((|x|+63)/127), and its quotient is already <= 127.
+      const int signMask = -int(numerator < 0);
+      const int magnitude = (numerator ^ signMask) - signMask;
+      const int quotient = int((unsigned(magnitude) + 63u) / 127u);
+      return (quotient ^ signMask) - signMask;
+    }
+    else {
+      const bool negative = numerator < 0;
+      const int magnitude = negative ? -numerator : numerator;
+      int quotient = magnitude / 127;
+      const int remainder = magnitude - quotient * 127;
+      const int twiceRemainder = 2 * remainder;
+      if(twiceRemainder > 127 ||
+         (twiceRemainder == 127 && (quotient & 1) != 0))
+        quotient++;
+      int rounded = negative ? -quotient : quotient;
+      rounded = rounded < -127 ? -127 : (rounded > 127 ? 127 : rounded);
+      return rounded;
+    }
   }
 
   CUTLASS_HOST_DEVICE
@@ -443,7 +454,163 @@ public:
 
 using Clip7UpFactorToInt8 = Clip7FactorToInt8<true,8>;
 using Clip7GateFactorToInt8 = Clip7FactorToInt8<false,8>;
-using Clip7ProductToInt8 = QuantizedClip7FactorMul<8>;
+using Clip7ProductToInt8Incumbent = QuantizedClip7FactorMul<8,false>;
+using Clip7ProductToInt8ExactBranchless = QuantizedClip7FactorMul<8,true>;
+
+// General v105 per-layer path. The two projection epilogues preserve the
+// current FP32 SiLU/clamp boundary, but take the factor clip and its INT8
+// multiplier from the immutable prepared handle. The final epilogue then
+// requantizes the integer factor product to the independently calibrated
+// productQuantMaxAbs domain.
+template<bool ApplySiLU, int Count>
+class AdjustableFactorToInt8 {
+public:
+  using ElementOutput = Int8;
+  using ElementSource = Int8;
+  using ElementAccumulator = Accum;
+  using ElementCompute = float;
+  static int const kCount = Count;
+  using FragmentOutput = cutlass::Array<ElementOutput,kCount>;
+  using FragmentSource = cutlass::Array<ElementSource,kCount>;
+  using FragmentAccumulator = cutlass::Array<ElementAccumulator,kCount>;
+  using FragmentCompute = cutlass::Array<ElementCompute,kCount>;
+
+  struct Params {
+    float alpha;
+    float clip;
+    float quantMultiplier;
+    CUTLASS_HOST_DEVICE Params(
+      float alphaValue = 1.0f,
+      float clipValue = 7.0f,
+      float quantMultiplierValue = 127.0f / 7.0f
+    ) :
+      alpha(alphaValue),
+      clip(clipValue),
+      quantMultiplier(quantMultiplierValue) {}
+  };
+
+private:
+  float alpha_;
+  float clip_;
+  float quantMultiplier_;
+
+public:
+  CUTLASS_HOST_DEVICE explicit AdjustableFactorToInt8(Params const& params) :
+    alpha_(params.alpha),
+    clip_(params.clip),
+    quantMultiplier_(params.quantMultiplier) {}
+
+  CUTLASS_HOST_DEVICE bool is_source_needed() const { return false; }
+  CUTLASS_HOST_DEVICE void set_k_partition(int, int) { assert(false); }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(
+    FragmentAccumulator const& accumulator,
+    FragmentSource const&
+  ) const {
+    cutlass::NumericArrayConverter<
+      ElementCompute,ElementAccumulator,kCount,
+      cutlass::FloatRoundStyle::round_to_nearest> toCompute;
+    cutlass::NumericArrayConverter<
+      ElementOutput,ElementCompute,kCount,
+      cutlass::FloatRoundStyle::round_to_nearest> toOutput;
+    FragmentCompute values = toCompute(accumulator);
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++)
+      values[i] *= alpha_;
+    if(ApplySiLU) {
+      cutlass::epilogue::thread::SiLu<FragmentCompute> silu;
+      values = silu(values);
+    }
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++) {
+      const float clipped = values[i] < -clip_ ? -clip_ :
+        (values[i] > clip_ ? clip_ : values[i]);
+      const float scaled = clipped * quantMultiplier_;
+      values[i] = scaled < -127.0f ? -127.0f :
+        (scaled > 127.0f ? 127.0f : scaled);
+    }
+    return toOutput(values);
+  }
+
+  CUTLASS_HOST_DEVICE
+  ElementOutput operator()(
+    ElementAccumulator const& accumulator,
+    ElementSource const&
+  ) const {
+    float value = float(accumulator) * alpha_;
+    if(ApplySiLU) {
+      cutlass::epilogue::thread::SiLu<float> silu;
+      value = silu(value);
+    }
+    value = value < -clip_ ? -clip_ : (value > clip_ ? clip_ : value);
+    const float scaled = value * quantMultiplier_;
+    value = scaled < -127.0f ? -127.0f :
+      (scaled > 127.0f ? 127.0f : scaled);
+    cutlass::NumericConverter<
+      ElementOutput,float,cutlass::FloatRoundStyle::round_to_nearest> convert;
+    return convert(value);
+  }
+};
+
+template<int Count>
+class AdjustableFactorMul {
+public:
+  using ElementOutput = Int8;
+  using ElementAccumulator = Int8;
+  static int const kCount = Count;
+  using FragmentOutput = cutlass::Array<ElementOutput,kCount>;
+  using FragmentAccumulator = cutlass::Array<ElementAccumulator,kCount>;
+
+  struct Params {
+    float multiplier;
+    CUTLASS_HOST_DEVICE explicit Params(float value = 1.0f / 127.0f) :
+      multiplier(value) {}
+  };
+
+private:
+  float multiplier_;
+
+  CUTLASS_HOST_DEVICE int requantize(int product) const {
+    float scaled = float(product) * multiplier_;
+    scaled = scaled < -127.0f ? -127.0f :
+      (scaled > 127.0f ? 127.0f : scaled);
+    cutlass::NumericConverter<
+      Int8,float,cutlass::FloatRoundStyle::round_to_nearest> convert;
+    return int(convert(scaled));
+  }
+
+public:
+  CUTLASS_HOST_DEVICE explicit AdjustableFactorMul(Params const& params) :
+    multiplier_(params.multiplier) {}
+  CUTLASS_HOST_DEVICE bool is_source_needed() const { return true; }
+  CUTLASS_HOST_DEVICE void set_k_partition(int, int) { assert(false); }
+
+  CUTLASS_HOST_DEVICE
+  FragmentOutput operator()(
+    FragmentAccumulator const& lhs,
+    FragmentAccumulator const& rhs
+  ) const {
+    FragmentOutput output;
+    CUTLASS_PRAGMA_UNROLL
+    for(int i = 0; i < kCount; i++)
+      output[i] = static_cast<Int8>(
+        requantize(int(lhs[i]) * int(rhs[i])));
+    return output;
+  }
+
+  CUTLASS_HOST_DEVICE
+  ElementOutput operator()(
+    ElementAccumulator const& lhs,
+    ElementAccumulator const& rhs
+  ) const {
+    return static_cast<Int8>(requantize(int(lhs) * int(rhs)));
+  }
+};
+
+using AdjustableUpFactorToInt8 = AdjustableFactorToInt8<true,8>;
+using AdjustableGateFactorToInt8 = AdjustableFactorToInt8<false,8>;
+using AdjustableProductToInt8 = AdjustableFactorMul<8>;
 
 template<int Stages, int Swizzle>
 using DualFfnGemm = cutlass::gemm::device::DualGemm<
@@ -460,7 +627,10 @@ using DualFfnGemm = cutlass::gemm::device::DualGemm<
   Stages,false,false,false,16,16,
   cutlass::arch::OpMultiplyAddSaturate>;
 
-template<int Stages, int Swizzle>
+template<
+  int Stages, int Swizzle,
+  typename ProductOutputOp = Clip7ProductToInt8Incumbent
+>
 using DualFfnInt8Gemm = cutlass::gemm::device::DualGemm<
   Int8,LayoutA,
   Int8,LayoutB,LayoutB,
@@ -470,7 +640,23 @@ using DualFfnInt8Gemm = cutlass::gemm::device::DualGemm<
   cutlass::gemm::GemmShape<128,64,64>,
   cutlass::gemm::GemmShape<64,32,64>,
   cutlass::gemm::GemmShape<16,8,32>,
-  Clip7UpFactorToInt8,Clip7GateFactorToInt8,Clip7ProductToInt8,
+  Clip7UpFactorToInt8,Clip7GateFactorToInt8,ProductOutputOp,
+  cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<Swizzle>,
+  Stages,false,false,false,16,16,
+  cutlass::arch::OpMultiplyAddSaturate>;
+
+template<int Stages, int Swizzle>
+using AdjustableDualFfnInt8Gemm = cutlass::gemm::device::DualGemm<
+  Int8,LayoutA,
+  Int8,LayoutB,LayoutB,
+  Int8,LayoutOutput,
+  Accum,
+  cutlass::arch::OpClassTensorOp,cutlass::arch::Sm80,
+  cutlass::gemm::GemmShape<128,64,64>,
+  cutlass::gemm::GemmShape<64,32,64>,
+  cutlass::gemm::GemmShape<16,8,32>,
+  AdjustableUpFactorToInt8,AdjustableGateFactorToInt8,
+  AdjustableProductToInt8,
   cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<Swizzle>,
   Stages,false,false,false,16,16,
   cutlass::arch::OpMultiplyAddSaturate>;
@@ -495,7 +681,18 @@ using DualS3Sw4 = DualFfnGemm<3,4>;
 using DualS4Sw1 = DualFfnGemm<4,1>;
 using DualInt8S3Sw1 = DualFfnInt8Gemm<3,1>;
 using DualInt8S3Sw4 = DualFfnInt8Gemm<3,4>;
+using DualInt8S3Sw4ExactBranchless = DualFfnInt8Gemm<
+  3,4,Clip7ProductToInt8ExactBranchless>;
 using DualInt8S4Sw1 = DualFfnInt8Gemm<4,1>;
+using Clip7AdjustableProductDualInt8S3Sw1 = DualFfnInt8Gemm<
+  3,1,AdjustableProductToInt8>;
+using Clip7AdjustableProductDualInt8S3Sw4 = DualFfnInt8Gemm<
+  3,4,AdjustableProductToInt8>;
+using Clip7AdjustableProductDualInt8S4Sw1 = DualFfnInt8Gemm<
+  4,1,AdjustableProductToInt8>;
+using AdjustableDualInt8S3Sw1 = AdjustableDualFfnInt8Gemm<3,1>;
+using AdjustableDualInt8S3Sw4 = AdjustableDualFfnInt8Gemm<3,4>;
+using AdjustableDualInt8S4Sw1 = AdjustableDualFfnInt8Gemm<4,1>;
 using ResidualS2Sw1 = ResidualInt8Gemm<2,1>;
 using ResidualS3Sw1 = ResidualInt8Gemm<3,1>;
 using ResidualS3Sw2 = ResidualInt8Gemm<3,2>;
@@ -515,8 +712,19 @@ static_assert(sizeof(typename DualS3Sw4::DualGemmKernel::SharedStorage) <= 10137
   "a C384 INT8 dual-FFN candidate exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename DualInt8S3Sw1::DualGemmKernel::SharedStorage) <= 101376 &&
               sizeof(typename DualInt8S3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
+              sizeof(typename DualInt8S3Sw4ExactBranchless::DualGemmKernel::SharedStorage) <= 101376 &&
               sizeof(typename DualInt8S4Sw1::DualGemmKernel::SharedStorage) <= 101376,
   "a fused-output C384 INT8 dual-FFN exceeds RTX 5090 opt-in shared memory");
+static_assert(
+  sizeof(typename Clip7AdjustableProductDualInt8S3Sw1::DualGemmKernel::SharedStorage) <= 101376 &&
+  sizeof(typename Clip7AdjustableProductDualInt8S3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
+  sizeof(typename Clip7AdjustableProductDualInt8S4Sw1::DualGemmKernel::SharedStorage) <= 101376,
+  "a clip7 adjustable-product C384 INT8 dual-FFN exceeds RTX 5090 opt-in shared memory");
+static_assert(
+  sizeof(typename AdjustableDualInt8S3Sw1::DualGemmKernel::SharedStorage) <= 101376 &&
+  sizeof(typename AdjustableDualInt8S3Sw4::DualGemmKernel::SharedStorage) <= 101376 &&
+  sizeof(typename AdjustableDualInt8S4Sw1::DualGemmKernel::SharedStorage) <= 101376,
+  "an adjustable-scale C384 INT8 dual-FFN exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename ResidualS3Sw1::GemmKernel::SharedStorage) <= 101376,
   "C384 INT8 residual projection exceeds RTX 5090 opt-in shared memory");
 static_assert(sizeof(typename ResidualS2Sw1::GemmKernel::SharedStorage) <= 101376 &&
@@ -568,10 +776,20 @@ struct ProjectionHandle {
   bool fusedQknormRopePrepared;
 };
 
+enum class ProductQuantPath : uint32_t {
+  Fp16 = 0,
+  Clip7SquaredExact = 1,
+  Clip7AdjustableProductFloat = 2,
+  AdjustableFloat = 3,
+};
+
 struct DualFfnHandle {
   DualFfnConfig config;
   float upAlpha;
   float gateAlpha;
+  float factorQuantMultiplier;
+  float productQuantMultiplier;
+  ProductQuantPath productQuantPath;
 };
 
 struct DownHandle {
@@ -582,6 +800,46 @@ struct DownHandle {
 struct AttentionOutHandle {
   AttentionOutConfig config;
   float alpha;
+};
+
+template<typename OutputOp>
+struct DualEpilogueParamBuilder {
+  static typename OutputOp::Params factor(
+    float alpha,
+    float,
+    float
+  ) {
+    return typename OutputOp::Params(alpha);
+  }
+  static typename OutputOp::Params product(float) {
+    return typename OutputOp::Params();
+  }
+};
+
+template<bool ApplySiLU, int Count>
+struct DualEpilogueParamBuilder<AdjustableFactorToInt8<ApplySiLU,Count>> {
+  using OutputOp = AdjustableFactorToInt8<ApplySiLU,Count>;
+  static typename OutputOp::Params factor(
+    float alpha,
+    float clip,
+    float quantMultiplier
+  ) {
+    return typename OutputOp::Params(alpha,clip,quantMultiplier);
+  }
+  static typename OutputOp::Params product(float) {
+    return typename OutputOp::Params();
+  }
+};
+
+template<int Count>
+struct DualEpilogueParamBuilder<AdjustableFactorMul<Count>> {
+  using OutputOp = AdjustableFactorMul<Count>;
+  static typename OutputOp::Params factor(float, float, float) {
+    return typename OutputOp::Params();
+  }
+  static typename OutputOp::Params product(float multiplier) {
+    return typename OutputOp::Params(multiplier);
+  }
 };
 
 template<typename Gemm>
@@ -735,7 +993,10 @@ typename Gemm::Arguments makeDualArguments(
   const Int8* gateWeights,
   typename Gemm::ElementC* output,
   float upAlpha,
-  float gateAlpha
+  float gateAlpha,
+  float factorClip,
+  float factorQuantMultiplier,
+  float productQuantMultiplier
 ) {
   typename Gemm::TensorRefC nullC;
   typename Gemm::TensorRefD nullD;
@@ -748,9 +1009,12 @@ typename Gemm::Arguments makeDualArguments(
     {const_cast<Int8*>(gateWeights),LayoutB(kChannels)},
     nullC,nullD,
     {output,LayoutOutput(kFfnChannels)},
-    typename Gemm::EpilogueOutputOp0::Params(upAlpha),
-    typename Gemm::EpilogueOutputOp1::Params(gateAlpha),
-    typename Gemm::EpilogueOutputOp2::Params(),1,
+    DualEpilogueParamBuilder<typename Gemm::EpilogueOutputOp0>::factor(
+      upAlpha,factorClip,factorQuantMultiplier),
+    DualEpilogueParamBuilder<typename Gemm::EpilogueOutputOp1>::factor(
+      gateAlpha,factorClip,factorQuantMultiplier),
+    DualEpilogueParamBuilder<typename Gemm::EpilogueOutputOp2>::product(
+      productQuantMultiplier),1,
   };
 }
 
@@ -765,11 +1029,14 @@ cudaError_t prepareDualTyped(const DualFfnHandle& handle) {
     const_cast<Int8*>(handle.config.packedUpWeights));
   const auto first = makeDualArguments<Gemm>(
     1,handle.config.packedUpWeights,handle.config.packedUpWeights,
-    handle.config.packedGateWeights,fakeOutput,handle.upAlpha,handle.gateAlpha);
+    handle.config.packedGateWeights,fakeOutput,handle.upAlpha,handle.gateAlpha,
+    handle.config.swigluClip,handle.factorQuantMultiplier,
+    handle.productQuantMultiplier);
   const auto last = makeDualArguments<Gemm>(
     handle.config.maxTokenRows,handle.config.packedUpWeights,
     handle.config.packedUpWeights,handle.config.packedGateWeights,
-    fakeOutput,handle.upAlpha,handle.gateAlpha);
+    fakeOutput,handle.upAlpha,handle.gateAlpha,handle.config.swigluClip,
+    handle.factorQuantMultiplier,handle.productQuantMultiplier);
   return Gemm::can_implement(first) == cutlass::Status::kSuccess &&
          Gemm::can_implement(last) == cutlass::Status::kSuccess ?
     cudaSuccess : cudaErrorNotSupported;
@@ -802,9 +1069,14 @@ cudaError_t launchDualTyped(
   typename Kernel::Params params(
     cutlass::gemm::DualGemmMode::kGemm,problem,tiled,
     a,b0,nullTensor,nullTensor,b1,nullTensor,nullTensor,d2,
-    typename Gemm::EpilogueOutputOp0::Params(handle.upAlpha),
-    typename Gemm::EpilogueOutputOp1::Params(handle.gateAlpha),
-    typename Gemm::EpilogueOutputOp2::Params(),nullptr);
+    DualEpilogueParamBuilder<typename Gemm::EpilogueOutputOp0>::factor(
+      handle.upAlpha,handle.config.swigluClip,
+      handle.factorQuantMultiplier),
+    DualEpilogueParamBuilder<typename Gemm::EpilogueOutputOp1>::factor(
+      handle.gateAlpha,handle.config.swigluClip,
+      handle.factorQuantMultiplier),
+    DualEpilogueParamBuilder<typename Gemm::EpilogueOutputOp2>::product(
+      handle.productQuantMultiplier),nullptr);
   constexpr int threads = Kernel::kThreadCount;
   constexpr int sharedBytes = int(sizeof(typename Kernel::SharedStorage));
   cutlass::Kernel<Kernel><<<
@@ -1207,18 +1479,59 @@ cudaError_t launchProjectionQknormRope(
 }
 
 void* createDualFfn(const DualFfnConfig& config) {
+  const bool incumbentDivide =
+    config.divide127Tactic == DualFfnDivide127Tactic::Incumbent;
+  const bool exactBranchlessDivide =
+    config.divide127Tactic == DualFfnDivide127Tactic::ExactBranchless;
+  const bool autoProductPath =
+    config.productPathTactic == DualFfnProductPathTactic::Auto;
+  const bool forceFullyAdjustableForTesting = config.productPathTactic ==
+    DualFfnProductPathTactic::ForceFullyAdjustableFloatForTesting;
   if(config.maxTokenRows <= 0 || config.maxTokenRows > kMaxTokenRows ||
      config.packedUpWeights == nullptr || config.packedGateWeights == nullptr ||
      !aligned16(config.packedUpWeights) || !aligned16(config.packedGateWeights) ||
      !finitePositive(config.upWeightScale) ||
      !finitePositive(config.gateWeightScale) ||
+     !finitePositive(config.swigluClip) ||
+     !finitePositive(config.productQuantMaxAbs) ||
      (config.outputMode != DualFfnOutputMode::Fp16Product &&
       config.outputMode != DualFfnOutputMode::Int8Product) ||
+     (!incumbentDivide && !exactBranchlessDivide) ||
+     (!autoProductPath && !forceFullyAdjustableForTesting) ||
+     (forceFullyAdjustableForTesting &&
+      (config.outputMode != DualFfnOutputMode::Int8Product ||
+       !incumbentDivide)) ||
+     (exactBranchlessDivide &&
+      (config.outputMode != DualFfnOutputMode::Int8Product ||
+       config.tactic != DualFfnTactic::M128N64K64S3Sw4 ||
+       config.swigluClip != 7.0f ||
+       config.productQuantMaxAbs != 49.0f ||
+       !autoProductPath)) ||
+     (config.outputMode == DualFfnOutputMode::Fp16Product &&
+      (config.swigluClip != 7.0f || !autoProductPath)) ||
      !isSm120Compatible())
+    return nullptr;
+  const ProductQuantPath productQuantPath =
+    config.outputMode == DualFfnOutputMode::Fp16Product ?
+      ProductQuantPath::Fp16 :
+    forceFullyAdjustableForTesting ? ProductQuantPath::AdjustableFloat :
+    (config.swigluClip == 7.0f && config.productQuantMaxAbs == 49.0f ?
+      ProductQuantPath::Clip7SquaredExact :
+     config.swigluClip == 7.0f ?
+      ProductQuantPath::Clip7AdjustableProductFloat :
+      ProductQuantPath::AdjustableFloat);
+  const float factorQuantMultiplier = 127.0f / config.swigluClip;
+  const double productQuantMultiplierDouble =
+    double(config.swigluClip) * double(config.swigluClip) /
+    (127.0 * double(config.productQuantMaxAbs));
+  const float productQuantMultiplier = float(productQuantMultiplierDouble);
+  if(!finitePositive(factorQuantMultiplier) ||
+     !finitePositive(productQuantMultiplier))
     return nullptr;
   DualFfnHandle handle{config,
     kNormActivationScale * config.upWeightScale,
-    kNormActivationScale * config.gateWeightScale};
+    kNormActivationScale * config.gateWeightScale,
+    factorQuantMultiplier,productQuantMultiplier,productQuantPath};
   cudaError_t status = cudaErrorNotSupported;
   if(config.outputMode == DualFfnOutputMode::Fp16Product) {
     switch(config.tactic) {
@@ -1230,14 +1543,41 @@ void* createDualFfn(const DualFfnConfig& config) {
       status = prepareDualTyped<DualS4Sw1>(handle); break;
     }
   }
-  else {
+  else if(productQuantPath == ProductQuantPath::Clip7SquaredExact) {
     switch(config.tactic) {
     case DualFfnTactic::M128N64K64S3Sw1:
       status = prepareDualTyped<DualInt8S3Sw1>(handle); break;
     case DualFfnTactic::M128N64K64S3Sw4:
-      status = prepareDualTyped<DualInt8S3Sw4>(handle); break;
+      status = exactBranchlessDivide ?
+        prepareDualTyped<DualInt8S3Sw4ExactBranchless>(handle) :
+        prepareDualTyped<DualInt8S3Sw4>(handle);
+      break;
     case DualFfnTactic::M128N64K64S4Sw1:
       status = prepareDualTyped<DualInt8S4Sw1>(handle); break;
+    }
+  }
+  else if(productQuantPath ==
+          ProductQuantPath::Clip7AdjustableProductFloat) {
+    switch(config.tactic) {
+    case DualFfnTactic::M128N64K64S3Sw1:
+      status = prepareDualTyped<Clip7AdjustableProductDualInt8S3Sw1>(
+        handle); break;
+    case DualFfnTactic::M128N64K64S3Sw4:
+      status = prepareDualTyped<Clip7AdjustableProductDualInt8S3Sw4>(
+        handle); break;
+    case DualFfnTactic::M128N64K64S4Sw1:
+      status = prepareDualTyped<Clip7AdjustableProductDualInt8S4Sw1>(
+        handle); break;
+    }
+  }
+  else {
+    switch(config.tactic) {
+    case DualFfnTactic::M128N64K64S3Sw1:
+      status = prepareDualTyped<AdjustableDualInt8S3Sw1>(handle); break;
+    case DualFfnTactic::M128N64K64S3Sw4:
+      status = prepareDualTyped<AdjustableDualInt8S3Sw4>(handle); break;
+    case DualFfnTactic::M128N64K64S4Sw1:
+      status = prepareDualTyped<AdjustableDualInt8S4Sw1>(handle); break;
     }
   }
   if(status != cudaSuccess)
@@ -1300,11 +1640,46 @@ cudaError_t launchDualFfnInt8(
      !dualFfnSupports(handle,DualFfnOutputMode::Int8Product,tokenRows) ||
      !aligned16(activation) || !aligned16(productInt8))
     return cudaErrorInvalidValue;
+  if(handle->productQuantPath ==
+     ProductQuantPath::Clip7AdjustableProductFloat) {
+    switch(handle->config.tactic) {
+    case DualFfnTactic::M128N64K64S3Sw1:
+      return launchDualTyped<Clip7AdjustableProductDualInt8S3Sw1>(
+        *handle,tokenRows,activation,productInt8,stream);
+    case DualFfnTactic::M128N64K64S3Sw4:
+      return launchDualTyped<Clip7AdjustableProductDualInt8S3Sw4>(
+        *handle,tokenRows,activation,productInt8,stream);
+    case DualFfnTactic::M128N64K64S4Sw1:
+      return launchDualTyped<Clip7AdjustableProductDualInt8S4Sw1>(
+        *handle,tokenRows,activation,productInt8,stream);
+    }
+    return cudaErrorNotSupported;
+  }
+  if(handle->productQuantPath == ProductQuantPath::AdjustableFloat) {
+    switch(handle->config.tactic) {
+    case DualFfnTactic::M128N64K64S3Sw1:
+      return launchDualTyped<AdjustableDualInt8S3Sw1>(
+        *handle,tokenRows,activation,productInt8,stream);
+    case DualFfnTactic::M128N64K64S3Sw4:
+      return launchDualTyped<AdjustableDualInt8S3Sw4>(
+        *handle,tokenRows,activation,productInt8,stream);
+    case DualFfnTactic::M128N64K64S4Sw1:
+      return launchDualTyped<AdjustableDualInt8S4Sw1>(
+        *handle,tokenRows,activation,productInt8,stream);
+    }
+    return cudaErrorNotSupported;
+  }
+  if(handle->productQuantPath != ProductQuantPath::Clip7SquaredExact)
+    return cudaErrorNotSupported;
   switch(handle->config.tactic) {
   case DualFfnTactic::M128N64K64S3Sw1:
     return launchDualTyped<DualInt8S3Sw1>(
       *handle,tokenRows,activation,productInt8,stream);
   case DualFfnTactic::M128N64K64S3Sw4:
+    if(handle->config.divide127Tactic ==
+       DualFfnDivide127Tactic::ExactBranchless)
+      return launchDualTyped<DualInt8S3Sw4ExactBranchless>(
+        *handle,tokenRows,activation,productInt8,stream);
     return launchDualTyped<DualInt8S3Sw4>(
       *handle,tokenRows,activation,productInt8,stream);
   case DualFfnTactic::M128N64K64S4Sw1:
@@ -1312,6 +1687,34 @@ cudaError_t launchDualFfnInt8(
       *handle,tokenRows,activation,productInt8,stream);
   }
   return cudaErrorNotSupported;
+}
+
+const char* dualFfnProductQuantPath(const void* opaque) noexcept {
+  const DualFfnHandle* handle = static_cast<const DualFfnHandle*>(opaque);
+  if(handle == nullptr)
+    return "invalid";
+  switch(handle->productQuantPath) {
+  case ProductQuantPath::Fp16:
+    return "fp16";
+  case ProductQuantPath::Clip7SquaredExact:
+    return "clip-squared-exact-int-v1";
+  case ProductQuantPath::Clip7AdjustableProductFloat:
+    return "clip7-fixed-factor-v105-product-float-rne-v1";
+  case ProductQuantPath::AdjustableFloat:
+    return "v105-per-layer-float-rne-v1";
+  }
+  return "invalid";
+}
+
+bool dualFfnDownProductQuantizationMatches(
+  const void* dualOpaque,
+  const void* downOpaque
+) noexcept {
+  const DualFfnHandle* dual = static_cast<const DualFfnHandle*>(dualOpaque);
+  const DownHandle* down = static_cast<const DownHandle*>(downOpaque);
+  return dual != nullptr && down != nullptr &&
+    dual->config.outputMode == DualFfnOutputMode::Int8Product &&
+    dual->config.productQuantMaxAbs == down->config.productQuantMaxAbs;
 }
 
 cudaError_t launchQuantizeClip7Product(
@@ -1384,9 +1787,14 @@ cudaError_t launchPackPlanarV(
 void* createDown(const DownConfig& config) {
   if(config.maxTokenRows <= 0 || config.maxTokenRows > kMaxTokenRows ||
      config.packedWeights == nullptr || !aligned16(config.packedWeights) ||
-     !finitePositive(config.weightScale) || !isSm120Compatible())
+     !finitePositive(config.weightScale) ||
+     !finitePositive(config.productQuantMaxAbs) || !isSm120Compatible())
     return nullptr;
-  DownHandle handle{config,kClip7ProductScale * config.weightScale};
+  const float alpha =
+    (config.productQuantMaxAbs / 127.0f) * config.weightScale;
+  if(!finitePositive(alpha))
+    return nullptr;
+  DownHandle handle{config,alpha};
   cudaError_t status = cudaErrorNotSupported;
   switch(config.tactic) {
   case DownTactic::M128N128K64S2Sw1:

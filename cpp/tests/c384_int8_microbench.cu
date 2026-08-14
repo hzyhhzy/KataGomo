@@ -13,6 +13,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,7 @@ struct Options {
   ProjectionMode mode = ProjectionMode::AggressiveQkv;
   ProjectionTactic projection = ProjectionTactic::M128N128K64S3Sw2;
   DualFfnTactic dual = DualFfnTactic::M128N64K64S3Sw4;
+  DualFfnDivide127Tactic divide127 = DualFfnDivide127Tactic::Incumbent;
   DownTactic down = DownTactic::M128N128K64S3Sw2;
   AttentionOutTactic attentionOut =
     AttentionOutTactic::M128N128K64S3Sw2;
@@ -93,6 +95,16 @@ Options parseOptions(int argc, char** argv) {
         throw std::runtime_error("dual tactic must be 1..3");
       options.dual = static_cast<DualFfnTactic>(value);
     }
+    else if(arg == "--divide127") {
+      const std::string value = requireValue();
+      if(value == "incumbent")
+        options.divide127 = DualFfnDivide127Tactic::Incumbent;
+      else if(value == "exact-branchless")
+        options.divide127 = DualFfnDivide127Tactic::ExactBranchless;
+      else
+        throw std::runtime_error(
+          "--divide127 must be incumbent or exact-branchless");
+    }
     else if(arg == "--down-tactic") {
       const int value = parsePositive(requireValue(),"down tactic");
       if(value < 1 || value > 3)
@@ -112,6 +124,7 @@ Options parseOptions(int argc, char** argv) {
         << "c384_int8_microbench [--variant conservative|aggressive] "
         << "[--streams 1|2] [--rows 6300] [--projection-tactic 1..3] "
         << "[--dual-tactic 1..3] [--down-tactic 1..3] "
+        << "[--divide127 incumbent|exact-branchless] "
         << "[--attention-out-tactic 1..3] "
         << "[--warmup N] [--iterations N] [--contracts-only]\n";
       std::exit(0);
@@ -119,7 +132,20 @@ Options parseOptions(int argc, char** argv) {
     else
       throw std::runtime_error("unknown argument: " + arg);
   }
+  if(options.divide127 == DualFfnDivide127Tactic::ExactBranchless &&
+     (options.mode != ProjectionMode::AggressiveQkv ||
+      options.dual != DualFfnTactic::M128N64K64S3Sw4))
+    throw std::runtime_error(
+      "exact-branchless divide127 requires aggressive variant and D2");
   return options;
+}
+
+const char* divide127TacticName(DualFfnDivide127Tactic tactic) {
+  switch(tactic) {
+  case DualFfnDivide127Tactic::Incumbent: return "incumbent";
+  case DualFfnDivide127Tactic::ExactBranchless: return "exact-branchless";
+  }
+  return "invalid";
 }
 
 class GuardedBuffer {
@@ -378,6 +404,7 @@ void prepareLane(
   dualConfig.tactic = options.dual;
   dualConfig.outputMode = options.mode == ProjectionMode::AggressiveQkv ?
     DualFfnOutputMode::Int8Product : DualFfnOutputMode::Fp16Product;
+  dualConfig.divide127Tactic = options.divide127;
   dualConfig.maxTokenRows = kTokenRows;
   dualConfig.packedUpWeights = weights.up.data<int8_t>();
   dualConfig.packedGateWeights = weights.gate.data<int8_t>();
@@ -390,6 +417,7 @@ void prepareLane(
   if(options.mode == ProjectionMode::AggressiveQkv) {
     DualFfnConfig legacyConfig = dualConfig;
     legacyConfig.outputMode = DualFfnOutputMode::Fp16Product;
+    legacyConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
     lane.legacyHalfDual.reset(createDualFfn(legacyConfig));
     if(lane.legacyHalfDual == nullptr)
       throw std::runtime_error("legacy half-dual control preparation failed");
@@ -584,6 +612,25 @@ int fusedClip7ProductOracle(float up, float gate) {
   return int(product);
 }
 
+int adjustableProductOracle(
+  float up,
+  float gate,
+  float swigluClip,
+  float productQuantMaxAbs
+) {
+  const float silu = up / (1.0f + std::exp(-up));
+  const int upFactor = quantize(silu,swigluClip);
+  const int gateFactor = quantize(gate,swigluClip);
+  // Match createDualFfn's immutable FP32 epilogue parameter, including its
+  // deliberate double-precision construction followed by one FP32 rounding.
+  const float productMultiplier = float(
+    double(swigluClip) * double(swigluClip) /
+    (127.0 * double(productQuantMaxAbs)));
+  long product = std::lrint(float(upFactor * gateFactor) * productMultiplier);
+  product = std::max(-127L,std::min(127L,product));
+  return int(product);
+}
+
 void requireFinite(const std::vector<half>& values, const char* name) {
   for(std::size_t i = 0; i < values.size(); i++) {
     if(!std::isfinite(toFloat(values[i])))
@@ -699,6 +746,7 @@ void checkClip7SaturationContract(
   config.tactic = options.dual;
   config.outputMode = options.mode == ProjectionMode::AggressiveQkv ?
     DualFfnOutputMode::Int8Product : DualFfnOutputMode::Fp16Product;
+  config.divide127Tactic = options.divide127;
   config.maxTokenRows = 1;
   config.packedUpWeights = upDevice.data<int8_t>();
   config.packedGateWeights = gateDevice.data<int8_t>();
@@ -761,6 +809,339 @@ void checkClip7SaturationContract(
     throw std::runtime_error("clip7 fixture cannot distinguish a missing clamp");
   upDevice.requireCanary("clip7 fixture up weights");
   gateDevice.requireCanary("clip7 fixture gate weights");
+}
+
+// Per-layer v105 calibration contract. This is intentionally a small M=29
+// tail fixture and is called only from checkContracts(), never from any timed
+// benchmark family. The ordinary lane above therefore remains the exact
+// clip=7/productMax=49 production control.
+void checkAdjustableProductScaleContracts(
+  Lane& lane,
+  const Options& options
+) {
+  if(options.mode != ProjectionMode::AggressiveQkv)
+    return;
+
+  constexpr int rows = 29;
+  constexpr float upWeightScale = 0.25f;
+  constexpr float gateWeightScale = 0.25f;
+  struct ScaleCase {
+    float swigluClip;
+    float productQuantMaxAbs;
+    const char* label;
+    const char* expectedPath;
+  };
+  constexpr std::array<ScaleCase,3> cases{{
+    {7.0f,73.4171f,"clip7-product73.4171",
+     "clip7-fixed-factor-v105-product-float-rne-v1"},
+    {7.0f,47.7371f,"clip7-product47.7371",
+     "clip7-fixed-factor-v105-product-float-rne-v1"},
+    {6.0f,48.0f,"clip6-product48","v105-per-layer-float-rne-v1"},
+  }};
+
+  std::vector<int8_t> activation(std::size_t(rows) * kChannels,0);
+  std::vector<int8_t> upWeights(std::size_t(kFfnChannels) * kChannels,0);
+  std::vector<int8_t> gateWeights(std::size_t(kFfnChannels) * kChannels,0);
+  for(int row = 0; row < rows; row++) {
+    // The final row is deliberately distinct so a missing M=29 tail cannot
+    // accidentally agree with an earlier row.
+    activation[std::size_t(row) * kChannels] =
+      static_cast<int8_t>(31 + (row * 37) % 97);
+  }
+  for(int channel = 0; channel < kFfnChannels; channel++) {
+    upWeights[std::size_t(channel) * kChannels] =
+      static_cast<int8_t>((channel * 7 + 3) % 19 - 9);
+    gateWeights[std::size_t(channel) * kChannels] =
+      static_cast<int8_t>((channel * 11 + 5) % 23 - 11);
+  }
+
+  GuardedBuffer activationDevice(activation.size());
+  GuardedBuffer upDevice(upWeights.size());
+  GuardedBuffer gateDevice(gateWeights.size());
+  activationDevice.upload(activation);
+  upDevice.upload(upWeights);
+  gateDevice.upload(gateWeights);
+
+  for(std::size_t caseIndex = 0; caseIndex < cases.size(); caseIndex++) {
+    const ScaleCase& scale = cases[caseIndex];
+    GuardedBuffer productDevice(std::size_t(rows) * kFfnChannels);
+    productDevice.zeroPayload();
+
+    DualFfnConfig dualConfig;
+    dualConfig.tactic = options.dual;
+    dualConfig.outputMode = DualFfnOutputMode::Int8Product;
+    dualConfig.maxTokenRows = rows;
+    dualConfig.packedUpWeights = upDevice.data<int8_t>();
+    dualConfig.packedGateWeights = gateDevice.data<int8_t>();
+    dualConfig.upWeightScale = upWeightScale;
+    dualConfig.gateWeightScale = gateWeightScale;
+    dualConfig.swigluClip = scale.swigluClip;
+    dualConfig.productQuantMaxAbs = scale.productQuantMaxAbs;
+    DualHandle dual{createDualFfn(dualConfig)};
+    if(dual == nullptr)
+      throw std::runtime_error(
+        std::string(scale.label) + ": dynamic dual preparation failed");
+    if(std::strcmp(
+         dualFfnProductQuantPath(dual.get()),
+         scale.expectedPath) != 0)
+      throw std::runtime_error(
+        std::string(scale.label) + ": wrong dynamic product path marker");
+    if(!dualFfnSupports(
+         dual.get(),DualFfnOutputMode::Int8Product,rows) ||
+       dualFfnSupports(
+         dual.get(),DualFfnOutputMode::Int8Product,rows + 1))
+      throw std::runtime_error(
+        std::string(scale.label) + ": M=29 tail support gate mismatch");
+
+    checkCuda(launchDualFfnInt8(
+      dual.get(),rows,activationDevice.data<int8_t>(),
+      productDevice.data<int8_t>(),lane.stream),
+      "launch adjustable-scale M=29 dual fixture");
+    checkCuda(cudaStreamSynchronize(lane.stream),
+      "adjustable-scale M=29 dual fixture sync");
+    const std::vector<int8_t> product = productDevice.download<int8_t>();
+    if(std::find(product.begin(),product.end(),int8_t(-128)) != product.end())
+      throw std::runtime_error(
+        std::string(scale.label) + ": emitted forbidden -128");
+
+    for(int row = 0; row < rows; row++) {
+      for(int channel = 0; channel < kFfnChannels; channel++) {
+        const int32_t upAccum = dot(
+          activation,row,kChannels,upWeights,channel);
+        const int32_t gateAccum = dot(
+          activation,row,kChannels,gateWeights,channel);
+        const float up = float(upAccum) * kNormActivationScale *
+          upWeightScale;
+        const float gate = float(gateAccum) * kNormActivationScale *
+          gateWeightScale;
+        const int expected = adjustableProductOracle(
+          up,gate,scale.swigluClip,scale.productQuantMaxAbs);
+        const std::size_t index =
+          std::size_t(row) * kFfnChannels + channel;
+        if(int(product[index]) != expected) {
+          throw std::runtime_error(
+            std::string(scale.label) +
+            ": factorwise oracle mismatch at row=" +
+            std::to_string(row) + " channel=" + std::to_string(channel) +
+            " actual=" + std::to_string(int(product[index])) +
+            " expected=" + std::to_string(expected));
+        }
+      }
+    }
+
+    // One calibrated producer is also connected to a paired beta=1 down
+    // consumer. A second prepared consumer differs only in productMax and
+    // must be rejected by the explicit producer/consumer contract.
+    if(caseIndex == 0) {
+      constexpr float downWeightScale = 1.0f / 64.0f;
+      std::vector<int8_t> downWeights(
+        std::size_t(kChannels) * kFfnChannels,0);
+      std::vector<half> residual(std::size_t(rows) * kChannels);
+      for(int channel = 0; channel < kChannels; channel++) {
+        downWeights[std::size_t(channel) * kFfnChannels] =
+          static_cast<int8_t>((channel * 3) % 9 - 4);
+        downWeights[std::size_t(channel) * kFfnChannels + 1] =
+          static_cast<int8_t>((channel * 5 + 1) % 9 - 4);
+      }
+      for(int row = 0; row < rows; row++) {
+        for(int channel = 0; channel < kChannels; channel++) {
+          const int code = (row * 13 + channel * 7 + 2) % 25 - 12;
+          residual[std::size_t(row) * kChannels + channel] =
+            toHalf(float(code) / 64.0f);
+        }
+      }
+
+      GuardedBuffer downWeightsDevice(downWeights.size());
+      GuardedBuffer residualDevice(residual.size() * sizeof(half));
+      GuardedBuffer downOutputDevice(residual.size() * sizeof(half));
+      downWeightsDevice.upload(downWeights);
+      residualDevice.upload(residual);
+      downOutputDevice.zeroPayload();
+
+      DownConfig downConfig;
+      downConfig.tactic = options.down;
+      downConfig.maxTokenRows = rows;
+      downConfig.packedWeights = downWeightsDevice.data<int8_t>();
+      downConfig.weightScale = downWeightScale;
+      downConfig.productQuantMaxAbs = scale.productQuantMaxAbs;
+      DownHandle pairedDown{createDown(downConfig)};
+      if(pairedDown == nullptr)
+        throw std::runtime_error(
+          "adjustable-scale paired down preparation failed");
+      DownConfig mismatchedConfig = downConfig;
+      mismatchedConfig.productQuantMaxAbs =
+        scale.productQuantMaxAbs + 0.125f;
+      DownHandle mismatchedDown{createDown(mismatchedConfig)};
+      if(mismatchedDown == nullptr)
+        throw std::runtime_error(
+          "adjustable-scale mismatched down preparation failed");
+      DownConfig overflowingConfig = downConfig;
+      overflowingConfig.weightScale = std::numeric_limits<float>::max();
+      overflowingConfig.productQuantMaxAbs =
+        std::numeric_limits<float>::max();
+      DownHandle overflowingDown{createDown(overflowingConfig)};
+      if(overflowingDown != nullptr)
+        throw std::runtime_error(
+          "adjustable-scale down accepted non-finite derived alpha");
+      if(!dualFfnDownProductQuantizationMatches(
+           dual.get(),pairedDown.get()) ||
+         dualFfnDownProductQuantizationMatches(
+           dual.get(),mismatchedDown.get()))
+        throw std::runtime_error(
+          "adjustable-scale dual/down product domain match gate failed");
+
+      checkCuda(launchDownResidual(
+        pairedDown.get(),rows,productDevice.data<int8_t>(),
+        residualDevice.data<half>(),downOutputDevice.data<half>(),lane.stream),
+        "launch adjustable-scale paired down fixture");
+      checkCuda(cudaStreamSynchronize(lane.stream),
+        "adjustable-scale paired down fixture sync");
+      const std::vector<half> downOutput =
+        downOutputDevice.download<half>();
+      requireFinite(downOutput,"adjustable-scale paired down output");
+      const float alpha =
+        (scale.productQuantMaxAbs / 127.0f) * downWeightScale;
+      for(int row = 0; row < rows; row++) {
+        for(int channel = 0; channel < kChannels; channel++) {
+          const int32_t accum = dot(
+            product,row,kFfnChannels,downWeights,channel);
+          const std::size_t index =
+            std::size_t(row) * kChannels + channel;
+          const float expected =
+            float(accum) * alpha + toFloat(residual[index]);
+          requireNear(toFloat(downOutput[index]),expected,0.02f,
+            "adjustable-scale down beta1 oracle");
+        }
+      }
+      productDevice.requireCanary(
+        "adjustable-scale paired down product input");
+      downWeightsDevice.requireCanary(
+        "adjustable-scale paired down weights");
+      residualDevice.requireCanary(
+        "adjustable-scale paired down residual");
+      downOutputDevice.requireCanary(
+        "adjustable-scale paired down output");
+    }
+
+    activationDevice.requireCanary("adjustable-scale dual input");
+    upDevice.requireCanary("adjustable-scale dual up weights");
+    gateDevice.requireCanary("adjustable-scale dual gate weights");
+    productDevice.requireCanary("adjustable-scale dual output");
+  }
+}
+
+// Real-kernel equivalence proof for the production clip7/per-layer-product
+// hybrid. Auto uses fixed clip7 factor epilogues and a dynamic product
+// multiplier; the test-only control forces the former fully-adjustable
+// factor epilogues. They must produce identical bytes at all important D2
+// boundaries, including both production M and its 28-row tile tail.
+void checkClip7HybridGpuContract(
+  Lane& lane,
+  const Options& options,
+  const HostData& host,
+  const DeviceWeights& weights
+) {
+  if(options.mode != ProjectionMode::AggressiveQkv)
+    return;
+
+  constexpr std::array<float,2> productMaxCases{{73.4171f,47.7371f}};
+  constexpr std::array<int,4> rowCases{{1,28,29,kTokenRows}};
+  static_assert(kTokenRows == 6300,"production M contract changed");
+  static_assert(kTokenRows % 128 == 28,"production D2 tail contract changed");
+
+  std::size_t comparedElements = 0;
+  for(const float productMax: productMaxCases) {
+    DualFfnConfig hybridConfig;
+    hybridConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
+    hybridConfig.outputMode = DualFfnOutputMode::Int8Product;
+    hybridConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+    hybridConfig.productPathTactic = DualFfnProductPathTactic::Auto;
+    hybridConfig.maxTokenRows = kTokenRows;
+    hybridConfig.packedUpWeights = weights.up.data<int8_t>();
+    hybridConfig.packedGateWeights = weights.gate.data<int8_t>();
+    hybridConfig.upWeightScale = host.upWeightScale;
+    hybridConfig.gateWeightScale = host.gateWeightScale;
+    hybridConfig.swigluClip = 7.0f;
+    hybridConfig.productQuantMaxAbs = productMax;
+    DualFfnConfig fullConfig = hybridConfig;
+    fullConfig.productPathTactic =
+      DualFfnProductPathTactic::ForceFullyAdjustableFloatForTesting;
+
+    DualHandle hybrid{createDualFfn(hybridConfig)};
+    DualHandle full{createDualFfn(fullConfig)};
+    if(hybrid == nullptr || full == nullptr)
+      throw std::runtime_error(
+        "clip7 hybrid/full GPU A/B handle preparation failed");
+    if(std::strcmp(
+         dualFfnProductQuantPath(hybrid.get()),
+         "clip7-fixed-factor-v105-product-float-rne-v1") != 0 ||
+       std::strcmp(
+         dualFfnProductQuantPath(full.get()),
+         "v105-per-layer-float-rne-v1") != 0)
+      throw std::runtime_error("clip7 hybrid/full GPU A/B marker mismatch");
+
+    DualFfnConfig forbidden = fullConfig;
+    forbidden.divide127Tactic = DualFfnDivide127Tactic::ExactBranchless;
+    DualHandle unexpected{createDualFfn(forbidden)};
+    if(unexpected != nullptr)
+      throw std::runtime_error(
+        "test-only fully-adjustable path reused divide127 tactic");
+
+    for(const int rows: rowCases) {
+      const std::size_t activationElements =
+        std::size_t(rows) * kChannels;
+      const std::size_t outputElements =
+        std::size_t(rows) * kFfnChannels;
+      std::vector<int8_t> activation(activationElements);
+      for(int row = 0; row < rows; row++) {
+        for(int channel = 0; channel < kChannels; channel++) {
+          const int code =
+            (row * 47 + channel * 31 + row * channel * 3 + 19) % 255 - 127;
+          activation[std::size_t(row) * kChannels + channel] =
+            static_cast<int8_t>(code);
+        }
+      }
+      GuardedBuffer activationDevice(activationElements);
+      GuardedBuffer hybridOutput(outputElements);
+      GuardedBuffer fullOutput(outputElements);
+      activationDevice.upload(activation);
+      hybridOutput.zeroPayload();
+      fullOutput.zeroPayload();
+      checkCuda(launchDualFfnInt8(
+        hybrid.get(),rows,activationDevice.data<int8_t>(),
+        hybridOutput.data<int8_t>(),lane.stream),
+        "launch clip7 hybrid GPU contract");
+      checkCuda(launchDualFfnInt8(
+        full.get(),rows,activationDevice.data<int8_t>(),
+        fullOutput.data<int8_t>(),lane.stream),
+        "launch fully-adjustable GPU control");
+      checkCuda(cudaStreamSynchronize(lane.stream),
+        "clip7 hybrid/full GPU A/B sync");
+      const std::vector<int8_t> hybridBytes =
+        hybridOutput.download<int8_t>();
+      const std::vector<int8_t> fullBytes = fullOutput.download<int8_t>();
+      if(hybridBytes != fullBytes)
+        throw std::runtime_error(
+          "clip7 hybrid differs from fully-adjustable GPU control");
+      if(std::find(hybridBytes.begin(),hybridBytes.end(),int8_t(-128)) !=
+           hybridBytes.end())
+        throw std::runtime_error("clip7 hybrid GPU contract emitted -128");
+      activationDevice.requireCanary("clip7 hybrid GPU contract activation");
+      hybridOutput.requireCanary("clip7 hybrid GPU contract output");
+      fullOutput.requireCanary("fully-adjustable GPU control output");
+      comparedElements += outputElements;
+    }
+  }
+  weights.up.requireCanary("clip7 hybrid GPU contract up weights");
+  weights.gate.requireCanary("clip7 hybrid GPU contract gate weights");
+  std::cout
+    << "KATAGO_C384_INT8_CLIP7_HYBRID_GPU_CONTRACT_PASS"
+    << " product_max=73.4171,47.7371"
+    << " geometry=D2 M=1,28,29,6300 production_M6300_tail28=1"
+    << " reference=fully-adjustable candidate=clip7-fixed-factor"
+    << " elements=" << comparedElements
+    << " mismatches=0 no_neg128=1 canary=1 divide127_orthogonal=1"
+    << " timed_path=0\n";
 }
 
 void checkContracts(
@@ -970,6 +1351,142 @@ void checkContracts(
   weights.input.requireCanary("input");
   weights.residual.requireCanary("residual");
   checkClip7SaturationContract(lane,options,normInt8);
+  if(options.mode == ProjectionMode::AggressiveQkv &&
+     std::strcmp(
+       dualFfnProductQuantPath(lane.dual.get()),
+       "clip-squared-exact-int-v1") != 0)
+    throw std::runtime_error("default timed lane left exact clip7/49 path");
+  checkAdjustableProductScaleContracts(lane,options);
+}
+
+// Real-kernel A/B for the optional exact divide-by-127 epilogue. The
+// candidate is deliberately unavailable to every per-layer adjustable-scale
+// configuration: only Int8 + D2 + clip7/productMax49 reaches it.
+void checkDivide127GpuContract(
+  Lane& lane,
+  const Options& options,
+  const HostData& host,
+  const DeviceWeights& weights
+) {
+  if(options.divide127 != DualFfnDivide127Tactic::ExactBranchless)
+    return;
+  static_assert(kTokenRows == 6300,"production M contract changed");
+  static_assert(kTokenRows % 128 == 28,"production D2 tail contract changed");
+
+  DualFfnConfig referenceConfig;
+  referenceConfig.tactic = DualFfnTactic::M128N64K64S3Sw4;
+  referenceConfig.outputMode = DualFfnOutputMode::Int8Product;
+  referenceConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+  referenceConfig.maxTokenRows = kTokenRows;
+  referenceConfig.packedUpWeights = weights.up.data<int8_t>();
+  referenceConfig.packedGateWeights = weights.gate.data<int8_t>();
+  referenceConfig.upWeightScale = host.upWeightScale;
+  referenceConfig.gateWeightScale = host.gateWeightScale;
+  referenceConfig.swigluClip = 7.0f;
+  referenceConfig.productQuantMaxAbs = 49.0f;
+  DualFfnConfig candidateConfig = referenceConfig;
+  candidateConfig.divide127Tactic =
+    DualFfnDivide127Tactic::ExactBranchless;
+  DualHandle reference{createDualFfn(referenceConfig)};
+  DualHandle candidate{createDualFfn(candidateConfig)};
+  if(reference == nullptr || candidate == nullptr)
+    throw std::runtime_error("divide127 GPU A/B handle preparation failed");
+  if(std::strcmp(
+       dualFfnProductQuantPath(candidate.get()),
+       "clip-squared-exact-int-v1") != 0)
+    throw std::runtime_error("divide127 candidate left exact clip7/49 path");
+
+  const auto requireCandidateRejected = [&](const DualFfnConfig& config,
+                                             const char* drift) {
+    DualHandle unexpected{createDualFfn(config)};
+    if(unexpected != nullptr)
+      throw std::runtime_error(
+        std::string("exact-branchless divide127 accepted ") + drift);
+  };
+  DualFfnConfig drift = candidateConfig;
+  drift.outputMode = DualFfnOutputMode::Fp16Product;
+  requireCandidateRejected(drift,"FP16 output");
+  drift = candidateConfig;
+  drift.tactic = DualFfnTactic::M128N64K64S3Sw1;
+  requireCandidateRejected(drift,"non-D2 tactic");
+  drift = candidateConfig;
+  drift.swigluClip = 6.0f;
+  requireCandidateRejected(drift,"dynamic clip");
+  drift = candidateConfig;
+  drift.productQuantMaxAbs = 73.4171f;
+  requireCandidateRejected(drift,"dynamic productMax");
+
+  // Prove that rejecting the candidate does not reject the dynamic-scale
+  // implementation itself; fixed clip7 must use the orthogonal hybrid path.
+  DualFfnConfig dynamicConfig = candidateConfig;
+  dynamicConfig.divide127Tactic = DualFfnDivide127Tactic::Incumbent;
+  dynamicConfig.productQuantMaxAbs = 73.4171f;
+  DualHandle dynamic{createDualFfn(dynamicConfig)};
+  if(dynamic == nullptr ||
+     std::strcmp(
+       dualFfnProductQuantPath(dynamic.get()),
+       "clip7-fixed-factor-v105-product-float-rne-v1") != 0)
+    throw std::runtime_error(
+      "incumbent dynamic scale did not select clip7 hybrid path");
+
+  constexpr std::array<int,3> rowCases{{1,kTokenRows % 128,kTokenRows}};
+  std::size_t totalElements = 0;
+  for(const int rows: rowCases) {
+    const std::size_t activationElements =
+      std::size_t(rows) * kChannels;
+    const std::size_t outputElements =
+      std::size_t(rows) * kFfnChannels;
+    std::vector<int8_t> activation(activationElements);
+    for(int row = 0; row < rows; row++) {
+      for(int channel = 0; channel < kChannels; channel++) {
+        const int code =
+          (row * 47 + channel * 31 + row * channel * 3 + 19) % 255 - 127;
+        activation[std::size_t(row) * kChannels + channel] =
+          static_cast<int8_t>(code);
+      }
+    }
+    GuardedBuffer activationDevice(activationElements);
+    GuardedBuffer referenceOutput(outputElements);
+    GuardedBuffer candidateOutput(outputElements);
+    activationDevice.upload(activation);
+    referenceOutput.zeroPayload();
+    candidateOutput.zeroPayload();
+    checkCuda(launchDualFfnInt8(
+      reference.get(),rows,activationDevice.data<int8_t>(),
+      referenceOutput.data<int8_t>(),lane.stream),
+      "launch incumbent divide127 GPU contract");
+    checkCuda(launchDualFfnInt8(
+      candidate.get(),rows,activationDevice.data<int8_t>(),
+      candidateOutput.data<int8_t>(),lane.stream),
+      "launch exact-branchless divide127 GPU contract");
+    checkCuda(cudaStreamSynchronize(lane.stream),
+      "divide127 GPU A/B contract sync");
+    const std::vector<int8_t> incumbent =
+      referenceOutput.download<int8_t>();
+    const std::vector<int8_t> exact = candidateOutput.download<int8_t>();
+    if(exact != incumbent)
+      throw std::runtime_error(
+        "exact-branchless divide127 GPU output is not bit-exact");
+    if(std::find(incumbent.begin(),incumbent.end(),int8_t(-128)) !=
+         incumbent.end() ||
+       std::find(exact.begin(),exact.end(),int8_t(-128)) != exact.end())
+      throw std::runtime_error("divide127 GPU A/B emitted forbidden -128");
+    activationDevice.requireCanary("divide127 GPU contract activation");
+    referenceOutput.requireCanary("divide127 GPU contract incumbent output");
+    candidateOutput.requireCanary("divide127 GPU contract candidate output");
+    totalElements += outputElements;
+  }
+  weights.up.requireCanary("divide127 GPU contract up weights");
+  weights.gate.requireCanary("divide127 GPU contract gate weights");
+  std::cout
+    << "KATAGO_C384_INT8_DIV127_GPU_CONTRACT_PASS"
+    << " reference=incumbent candidate=exact-branchless"
+    << " geometry=D2 M=1,28,6300 production_M6300_tail28=1"
+    << " strict_gate=int8,d2,clip7,product49"
+    << " dynamic_scale_candidate_rejected=1"
+    << " dynamic_scale_incumbent_clip7_hybrid=1"
+    << " elements=" << totalElements
+    << " mismatches=0 no_neg128=1 canary=1 timed_path=0\n";
 }
 
 void checkFusedProjectionQknormRopeContract(
@@ -1228,6 +1745,8 @@ int main(int argc, char** argv) {
 
     for(auto& lane: lanes)
       checkContracts(*lane,options,host,weights);
+    checkClip7HybridGpuContract(*lanes.front(),options,host,weights);
+    checkDivide127GpuContract(*lanes.front(),options,host,weights);
     for(auto& lane: lanes)
       checkFusedProjectionQknormRopeContract(*lane,options);
     std::cout
@@ -1241,6 +1760,7 @@ int main(int argc, char** argv) {
       << " M=" << kTokenRows
       << " projection=" << projectionTacticName(options.projection)
       << " dual=" << dualFfnTacticName(options.dual)
+      << " divide127=" << divide127TacticName(options.divide127)
       << " down=" << (options.mode == ProjectionMode::AggressiveQkv ?
         downTacticName(options.down) : "none")
       << " attention_out=" << (options.mode == ProjectionMode::AggressiveQkv ?
@@ -1311,6 +1831,7 @@ int main(int argc, char** argv) {
       << ",\"iterations\":" << options.iterations
       << ",\"projection\":\"" << projectionTacticName(options.projection)
       << "\",\"dual\":\"" << dualFfnTacticName(options.dual)
+      << "\",\"divide127\":\"" << divide127TacticName(options.divide127)
       << "\",\"down\":\""
       << (options.mode == ProjectionMode::AggressiveQkv ?
         downTacticName(options.down) : "none") << "\""

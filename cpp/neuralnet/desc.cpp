@@ -579,7 +579,11 @@ void TransformerAttentionDesc::computeRopeCosSin(
 //-----------------------------------------------------------------------------
 
 TransformerFFNDesc::TransformerFFNDesc()
-  : numChannels(0), ffnChannels(0), useSwiGLU(false), swigluClip(0.0f) {}
+  : numChannels(0),
+    ffnChannels(0),
+    useSwiGLU(false),
+    swigluClip(0.0f),
+    productQuantMaxAbs(0.0f) {}
 
 TransformerFFNDesc::TransformerFFNDesc(
   istream& in,
@@ -595,12 +599,18 @@ TransformerFFNDesc::TransformerFFNDesc(
     throw StringError(name + ": transformer ffn useSwiGLU flag must be 0 or 1");
   useSwiGLU = useSwiGLUInt != 0;
   swigluClip = 0.0f;
+  productQuantMaxAbs = 0.0f;
   if(modelVersion >= 105) {
     in >> swigluClip;
     if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
       throw StringError(name + ": transformer ffn swigluClip must be finite and nonnegative");
     if(swigluClip > 0.0f && !useSwiGLU)
       throw StringError(name + ": transformer ffn swigluClip requires SwiGLU");
+    in >> productQuantMaxAbs;
+    if(in.fail() || !isfinite(productQuantMaxAbs) || productQuantMaxAbs <= 0.0f)
+      throw StringError(name + ": transformer ffn productQuantMaxAbs must be finite and positive");
+    if(!useSwiGLU)
+      throw StringError(name + ": transformer ffn productQuantMaxAbs requires SwiGLU");
   }
   if(in.fail())
     throw StringError(name + ": transformer ffn block failed to parse header");
@@ -636,6 +646,7 @@ TransformerFFNDesc& TransformerFFNDesc::operator=(TransformerFFNDesc&& other) {
   ffnChannels = other.ffnChannels;
   useSwiGLU = other.useSwiGLU;
   swigluClip = other.swigluClip;
+  productQuantMaxAbs = other.productQuantMaxAbs;
   preLN = std::move(other.preLN);
   linear1 = std::move(other.linear1);
   linearGate = std::move(other.linearGate);

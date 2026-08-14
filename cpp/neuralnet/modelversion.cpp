@@ -18,7 +18,8 @@
 //11 = V7 features, supports mish activations by desc actually reading the activations
 //101-103 = transformer-era feature/model formats
 //104 = V101 features with an explicit native INT8 trailer
-//105 = V101 features with native transformer QK RMSNorm and SwiGLU clipping descriptors
+//105 = V101 features with native transformer QK RMSNorm plus mandatory
+//      per-FFN SwiGLU clipping and product INT8 range descriptors
 
 static void fail(int modelVersion) {
   throw StringError("NNModelVersion: Model version not currently implemented or supported: " + Global::intToString(modelVersion));

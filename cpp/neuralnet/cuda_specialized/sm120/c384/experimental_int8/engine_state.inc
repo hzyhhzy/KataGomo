@@ -36,7 +36,7 @@
     shape.exactNoMask = true;
     shape.learnedRope = true;
     shape.qkNorm = c384ExactQkNormModel;
-    shape.swigluClipBits = c384ExactSwigluClipBits;
+    shape.calibratedFfnProduct = c384ExactInt8FfnSemanticsEligible;
     const bool requested =
       c384Int8Mode == C384Int8Experiment::EngineMode::Conservative ||
       c384Int8Mode == C384Int8Experiment::EngineMode::Aggressive;
@@ -164,13 +164,13 @@
         "/36 dual=" + Global::intToString(activeC384Int8Ffn) +
         "/36 down=" + (expectedC384Int8Down == 0 ? string("fp16") :
           Global::intToString(activeC384Int8Down) + "/36") +
-        " qknorm=1 clip=7 weights=v105-load-time-quant projection=" +
+        " qknorm=1 clip=per-layer-v105 weights=v105-load-time-quant projection=" +
         C384Int8Experiment::projectionTacticName(p) + " dual_tactic=" +
         C384Int8Experiment::dualFfnTacticName(d) + " down_tactic=" +
         (expectedC384Int8Down == 0 ? string("fp16") :
           C384Int8Experiment::downTacticName(w)) +
         " product_quant=" + (expectedC384Int8Down == 0 ?
-          string("none") : string("fused-dual-epilogue-v2")) +
+          string("none") : string("per-layer-v105")) +
         " rms=" + (expectedC384Int8Down == 0 ?
           string("fp16+int8-x2") : string("int8-only-x2")) +
         " attention_out=" + (expectedC384Int8Down == 0 ?

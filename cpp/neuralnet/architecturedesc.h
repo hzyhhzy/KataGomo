@@ -92,8 +92,9 @@ struct ArchitectureOpDesc {
   int32_t vHeadDim;
 
   // Exact IEEE-754 bit patterns for semantic scalars such as epsilon, a fixed
-  // RoPE theta, or a clipping threshold. Learned tensors are weights and are
-  // never included. Attention uses slots 2 and 3 for q/k norm epsilon.
+  // RoPE theta, a clipping threshold, or an inference quantization range.
+  // Learned tensors are weights and are never included. Attention uses slots
+  // 2 and 3 for q/k norm epsilon; FFN uses slot 2 for productQuantMaxAbs.
   uint32_t semanticScalar0Bits;
   uint32_t semanticScalar1Bits;
   uint32_t semanticScalar2Bits;

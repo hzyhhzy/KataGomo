@@ -29,6 +29,53 @@ int8_t fusedFactorProduct(int lhs, int rhs) {
   return static_cast<int8_t>(rounded);
 }
 
+int8_t adjustableFactorProduct(
+  int lhs,
+  int rhs,
+  float clip,
+  float productQuantMaxAbs
+) {
+  const float multiplier = float(
+    double(clip) * double(clip) /
+    (127.0 * double(productQuantMaxAbs)));
+  long rounded = std::lrint(float(lhs * rhs) * multiplier);
+  rounded = std::max(-127L,std::min(127L,rounded));
+  return static_cast<int8_t>(rounded);
+}
+
+int8_t clip7HybridFactorProduct(
+  int lhs,
+  int rhs,
+  float productQuantMaxAbs
+) {
+  const float multiplier = float(
+    49.0 / (127.0 * double(productQuantMaxAbs)));
+  long rounded = std::lrint(float(lhs * rhs) * multiplier);
+  rounded = std::max(-127L,std::min(127L,rounded));
+  return static_cast<int8_t>(rounded);
+}
+
+int divide127RneIncumbent(int numerator) {
+  const bool negative = numerator < 0;
+  const int magnitude = negative ? -numerator : numerator;
+  int quotient = magnitude / 127;
+  const int remainder = magnitude - quotient * 127;
+  const int twiceRemainder = 2 * remainder;
+  if(twiceRemainder > 127 ||
+     (twiceRemainder == 127 && (quotient & 1) != 0))
+    quotient++;
+  int rounded = negative ? -quotient : quotient;
+  rounded = rounded < -127 ? -127 : (rounded > 127 ? 127 : rounded);
+  return rounded;
+}
+
+int divide127RneExactBranchless(int numerator) {
+  const int signMask = -int(numerator < 0);
+  const int magnitude = (numerator ^ signMask) - signMask;
+  const int quotient = int((unsigned(magnitude) + 63u) / 127u);
+  return (quotient ^ signMask) - signMask;
+}
+
 void require(bool condition, const char* message) {
   if(!condition)
     throw std::runtime_error(message);
@@ -51,6 +98,15 @@ int main() {
       "dual FP16 output ABI changed");
     static_assert(int(DualFfnOutputMode::Int8Product) == 2,
       "dual INT8 output ABI changed");
+    static_assert(int(DualFfnDivide127Tactic::Incumbent) == 1,
+      "incumbent divide127 tactic ABI changed");
+    static_assert(int(DualFfnDivide127Tactic::ExactBranchless) == 2,
+      "exact branchless divide127 tactic ABI changed");
+    static_assert(int(DualFfnProductPathTactic::Auto) == 0,
+      "automatic product path tactic ABI changed");
+    static_assert(int(
+      DualFfnProductPathTactic::ForceFullyAdjustableFloatForTesting) == 1,
+      "test-only fully-adjustable product path tactic ABI changed");
     using RmsInt8OnlyFn = cudaError_t (*)(
       const half*,int8_t*,const half*,int,float,cudaStream_t);
     static_assert(std::is_same_v<decltype(&launchRmsNormInt8),RmsInt8OnlyFn>,
@@ -94,12 +150,59 @@ int main() {
     require(int(fusedFactorProduct(1,63)) == 0 &&
             int(fusedFactorProduct(1,64)) == 1,
             "fused product RNE boundary changed");
+    int exhaustiveFactorPairs = 0;
+    for(int lhs = -127; lhs <= 127; lhs++) {
+      for(int rhs = -127; rhs <= 127; rhs++) {
+        const int numerator = lhs * rhs;
+        const int incumbent = divide127RneIncumbent(numerator);
+        const int candidate = divide127RneExactBranchless(numerator);
+        require(candidate == incumbent,
+                "branchless divide127 differs from incumbent RNE");
+        require(candidate >= -127 && candidate <= 127,
+                "branchless divide127 escaped signed-symmetric INT8 range");
+        exhaustiveFactorPairs++;
+      }
+    }
+    require(exhaustiveFactorPairs == 255 * 255,
+            "branchless divide127 exhaustive domain changed");
     const int clippedWitness = int(fusedFactorProduct(127,54));
     const int missingClampWitness = int(quantizeNoNeg128(
       10.0f * (54.0f * 7.0f / 127.0f),
       kClip7ProductClip,kClip7ProductScale));
     require(clippedWitness != missingClampWitness,
             "fused contract cannot detect a missing clip7 clamp");
+
+    struct AdjustableCase { float clip; float productMax; };
+    const std::array<AdjustableCase,3> adjustableCases{{
+      {7.0f,73.4171f},
+      {7.0f,47.7371f},
+      {6.0f,48.0f},
+    }};
+    int hybridEquivalentFactorPairs = 0;
+    for(const AdjustableCase& adjustable : adjustableCases) {
+      for(int lhs = -127; lhs <= 127; lhs++) {
+        for(int rhs = -127; rhs <= 127; rhs++) {
+          const int q = int(adjustableFactorProduct(
+            lhs,rhs,adjustable.clip,adjustable.productMax));
+          require(q >= -127 && q <= 127,
+                  "adjustable product quantizer emitted -128 or overflow");
+          if(adjustable.clip == 7.0f) {
+            require(q == int(clip7HybridFactorProduct(
+              lhs,rhs,adjustable.productMax)),
+              "clip7 hybrid differs from fully-adjustable product RNE");
+            hybridEquivalentFactorPairs++;
+          }
+        }
+      }
+    }
+    require(hybridEquivalentFactorPairs == 2 * 255 * 255,
+            "clip7 hybrid exhaustive domain changed");
+    require(int(adjustableFactorProduct(127,127,7.0f,73.4171f)) == 85,
+            "adjustable wide-range product endpoint changed");
+    require(int(adjustableFactorProduct(127,127,7.0f,47.7371f)) == 127,
+            "adjustable narrow-range product saturation changed");
+    require(int(adjustableFactorProduct(127,-127,6.0f,48.0f)) == -95,
+            "adjustable negative product endpoint changed");
 
     require(parseEngineMode(nullptr) == EngineMode::Off,
             "unset C384 INT8 mode must default off");
@@ -129,13 +232,17 @@ int main() {
     eligible.exactNoMask = true;
     eligible.learnedRope = true;
     eligible.qkNorm = true;
-    eligible.swigluClipBits = kClip7Bits;
+    eligible.calibratedFfnProduct = true;
     require(engineShapeEligible(eligible),"exact v105 C384 engine shape was rejected");
     eligible.modelDepth = 35;
     require(!engineShapeEligible(eligible),"non-b36 engine shape was accepted");
     eligible.modelDepth = 36;
     eligible.qkNorm = false;
     require(!engineShapeEligible(eligible),"non-QKN engine shape was accepted");
+    eligible.qkNorm = true;
+    eligible.calibratedFfnProduct = false;
+    require(!engineShapeEligible(eligible),
+            "engine shape without calibrated FFN product metadata was accepted");
 
     std::vector<float> q(std::size_t(kChannels) * kChannels,0.0f);
     std::vector<float> k(q.size(),0.0f);
@@ -189,10 +296,15 @@ int main() {
               << " F=" << kFfnChannels
               << " norm_scale=" << kNormActivationScale
               << " product_scale=" << kClip7ProductScale
+              << " divide127_exhaustive_factor_pairs=" << exhaustiveFactorPairs
+              << " divide127_tactics=incumbent,exact-branchless"
               << " fused_product_quant=fused-dual-epilogue-v2"
               << " attention_out_pack=k384-n384-output-major"
               << " rms_int8_only_api=explicit"
               << " endpoints_plus49_minus49=1 rne=1 no_neg128=1"
+              << " adjustable_product_cases=3"
+              << " clip7_hybrid_equivalent_factor_pairs="
+              << hybridEquivalentFactorPairs
               << " engine_default=off"
               << '\n';
     return 0;

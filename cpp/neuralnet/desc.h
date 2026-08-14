@@ -167,6 +167,11 @@ struct TransformerFFNDesc {
   // Zero disables clipping. A positive value clips the activated linear
   // branch and gate branch independently before their SwiGLU product.
   float swigluClip;
+  // Native v105 stores this mandatory, positive per-FFN calibration value
+  // immediately after swigluClip. It is the real-valued absolute range used
+  // when requantizing the SwiGLU product for an INT8 down projection. Legacy
+  // model versions have no such field and leave it at zero.
+  float productQuantMaxAbs;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc linear1;

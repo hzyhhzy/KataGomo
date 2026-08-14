@@ -52,10 +52,8 @@ struct EngineEligibility {
   bool exactNoMask = false;
   bool learnedRope = false;
   bool qkNorm = false;
-  uint32_t swigluClipBits = 0;
+  bool calibratedFfnProduct = false;
 };
-
-constexpr uint32_t kClip7Bits = 0x40E00000u;
 
 inline bool engineShapeEligible(const EngineEligibility& shape) noexcept {
   return shape.modelVersion == 105 && shape.batchSize == 28 &&
@@ -65,8 +63,7 @@ inline bool engineShapeEligible(const EngineEligibility& shape) noexcept {
     shape.channels == 384 && shape.heads == 12 && shape.headDim == 32 &&
     shape.ffnChannels == 1024 && shape.computeCapability == 120 &&
     shape.usingFp16 && shape.usingNhwc && shape.exactNoMask &&
-    shape.learnedRope && shape.qkNorm &&
-    shape.swigluClipBits == kClip7Bits;
+    shape.learnedRope && shape.qkNorm && shape.calibratedFfnProduct;
 }
 
 }  // namespace C384Int8Experiment

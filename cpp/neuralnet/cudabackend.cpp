@@ -617,6 +617,7 @@ struct CudaHandles {
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
   bool c384ExactModelEligible;
   bool c384ExactQkNormModel;
+  bool c384ExactInt8FfnSemanticsEligible;
   uint32_t c384ExactSwigluClipBits;
   // QKV+FA4, dual FFN, and FFN-down publish as one all-or-nothing B28 plan.
   bool c384ExactTransactionEnabled;
@@ -723,6 +724,7 @@ struct CudaHandles {
 #if defined(KATAGO_ENABLE_C384_EXACT_FIXED_AOT) && KATAGO_ENABLE_C384_EXACT_FIXED_AOT
       c384ExactModelEligible(false),
       c384ExactQkNormModel(false),
+      c384ExactInt8FfnSemanticsEligible(false),
       c384ExactSwigluClipBits(0),
       c384ExactTransactionEnabled(false),
       c384ExactBatchSize(0),
@@ -945,6 +947,7 @@ struct CudaHandles {
   ) noexcept {
     c384ExactModelEligible = false;
     c384ExactQkNormModel = false;
+    c384ExactInt8FfnSemanticsEligible = false;
     c384ExactSwigluClipBits = 0;
     c384ExactBatchSize = 0;
     c384ExactDeviceOrdinal = -1;
@@ -967,6 +970,7 @@ struct CudaHandles {
     bool foundAttention = false;
     bool foundFfn = false;
     bool modelQkNorm = false;
+    bool allInt8FfnSemanticsEligible = true;
     uint32_t modelSwigluClipBits = 0;
     constexpr uint32_t RMS_EPSILON_1E6_BITS = 0x358637BDu;
     for(const NeuralNetArchitecture::ArchitectureOpDesc& operation:
@@ -1008,14 +1012,19 @@ struct CudaHandles {
           modelSwigluClipBits = operationClipBits;
           foundFfn = true;
         }
-        else if(modelSwigluClipBits != operationClipBits)
-          allLocalShapesEligible = false;
+        const uint32_t productBits = operation.semanticScalar2Bits;
+        const bool positiveFiniteClip = operationClipBits != 0 &&
+          (operationClipBits & 0x80000000u) == 0 &&
+          (operationClipBits & 0x7f800000u) != 0x7f800000u;
+        const bool positiveFiniteProduct = productBits != 0 &&
+          (productBits & 0x80000000u) == 0 &&
+          (productBits & 0x7f800000u) != 0x7f800000u;
+        allInt8FfnSemanticsEligible = allInt8FfnSemanticsEligible &&
+          positiveFiniteClip && positiveFiniteProduct;
         allLocalShapesEligible = allLocalShapesEligible &&
           operation.inChannels == 384 &&
           operation.outChannels == 384 && operation.auxiliaryChannels == 1024 &&
-          (operation.flags & NeuralNetArchitecture::OP_FLAG_USE_SWIGLU) != 0 &&
-          (operationClipBits == 0 ||
-           operationClipBits == C384ExactFixedAot::kSwiGluClip7Bits);
+          (operation.flags & NeuralNetArchitecture::OP_FLAG_USE_SWIGLU) != 0;
       }
     }
     if(!allLocalShapesEligible || !foundAttention || !foundFfn)
@@ -1027,6 +1036,7 @@ struct CudaHandles {
     }
     c384ExactModelEligible = true;
     c384ExactQkNormModel = modelQkNorm;
+    c384ExactInt8FfnSemanticsEligible = allInt8FfnSemanticsEligible;
     c384ExactSwigluClipBits = modelSwigluClipBits;
     c384ExactBatchSize = physicalBatchSize;
     c384ExactDeviceOrdinal = deviceOrdinal;
@@ -4167,6 +4177,7 @@ struct TransformerFFNBlock {
   const int ffnChannels;
   const bool useSwiGLU;
   const float swigluClip;
+  const float productQuantMaxAbs;
 
   const int nnXLen;
   const int nnYLen;
@@ -4264,6 +4275,7 @@ struct TransformerFFNBlock {
     ffnChannels(desc->ffnChannels),
     useSwiGLU(desc->useSwiGLU),
     swigluClip(desc->swigluClip),
+    productQuantMaxAbs(desc->productQuantMaxAbs),
     nnXLen(nnX),
     nnYLen(nnY),
     usingFP16(useFP16),
@@ -4469,6 +4481,8 @@ struct TransformerFFNBlock {
         dualConfig.packedGateWeights = (const int8_t*)gateWeights.get();
         dualConfig.upWeightScale = up.scale;
         dualConfig.gateWeightScale = gate.scale;
+        dualConfig.swigluClip = swigluClip;
+        dualConfig.productQuantMaxAbs = productQuantMaxAbs;
         UniqueC384Int8Dual dual(
           C384Int8Experiment::createDualFfn(dualConfig));
         if(dual == nullptr)
@@ -4488,9 +4502,14 @@ struct TransformerFFNBlock {
           downConfig.maxTokenRows = fixedBatchSize * nnXLen * nnYLen;
           downConfig.packedWeights = (const int8_t*)downWeights.get();
           downConfig.weightScale = packedDown.scale;
+          downConfig.productQuantMaxAbs = productQuantMaxAbs;
           down.reset(C384Int8Experiment::createDown(downConfig));
           if(down == nullptr)
             throw StringError(name + ": C384 INT8 down preparation failed");
+          if(!C384Int8Experiment::dualFfnDownProductQuantizationMatches(
+               dual.get(),down.get()))
+            throw StringError(
+              name + ": C384 INT8 dual/down product scale mismatch");
         }
         c384Int8UpWeights = std::move(upWeights);
         c384Int8GateWeights = std::move(gateWeights);
@@ -4963,7 +4982,9 @@ struct TransformerFFNBlock {
           " product_quant=" +
           (cudaHandles->c384Int8Mode ==
              C384Int8Experiment::EngineMode::Aggressive ?
-             "fused-dual-epilogue-v2" : "none"));
+             C384Int8Experiment::dualFfnProductQuantPath(c384Int8Dual.get()) :
+             "none") + " clip=" + Global::floatToString(swigluClip) +
+          " product_max=" + Global::floatToString(productQuantMaxAbs));
         cudaHandles->loggedC384Int8Ffn = true;
       }
     }

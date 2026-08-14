@@ -219,6 +219,7 @@ static void enableQkNormAndSwiGluClip(ModelDesc& model, float clip) {
       TransformerFFNDesc* ffn =
         (TransformerFFNDesc*)model.trunk.blocks[i].second.get();
       ffn->swigluClip = clip;
+      ffn->productQuantMaxAbs = 49.0f;
     }
   }
 }

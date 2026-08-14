@@ -1,5 +1,6 @@
 #include "../tests/tests.h"
 
+#include <cmath>
 #include <limits>
 #include <type_traits>
 
@@ -108,11 +109,19 @@ static string attentionWireFixture(int modelVersion, bool useQKNorm) {
   return out.str();
 }
 
-static string ffnWireFixture(int modelVersion, float swigluClip) {
+static string ffnWireFixture(
+  int modelVersion,
+  float swigluClip,
+  float productQuantMaxAbs,
+  bool includeProductQuantMaxAbs = true
+) {
   ostringstream out;
   out << "ffn\n8\n16\n1\n";
-  if(modelVersion >= 105)
+  if(modelVersion >= 105) {
     out << swigluClip << "\n";
+    if(includeProductQuantMaxAbs)
+      out << productQuantMaxAbs << "\n";
+  }
   appendTextRMSNorm(out,"ffn.norm",8,1e-6f);
   appendTextMatMul(out,"ffn.up",8,16);
   appendTextMatMul(out,"ffn.gate",8,16);
@@ -230,7 +239,8 @@ static void enableQKNormAndClip(
   ModelDesc& model,
   float qEpsilon,
   float kEpsilon,
-  float swigluClip
+  float swigluClip,
+  float productQuantMaxAbs
 ) {
   model.version = 105;
   model.trunk.version = 105;
@@ -252,6 +262,7 @@ static void enableQKNormAndClip(
     else if(entry.first == TRANSFORMER_FFN_BLOCK_KIND) {
       TransformerFFNDesc* desc = (TransformerFFNDesc*)entry.second.get();
       desc->swigluClip = swigluClip;
+      desc->productQuantMaxAbs = productQuantMaxAbs;
     }
   }
 }
@@ -347,9 +358,10 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
     attentionV102In >> ws;
     testAssert(attentionV102In.peek() == EOF);
 
-    istringstream ffnV102In(ffnWireFixture(102,0.0f));
+    istringstream ffnV102In(ffnWireFixture(102,0.0f,0.0f));
     TransformerFFNDesc ffnV102(ffnV102In,102,false);
     testAssert(ffnV102.swigluClip == 0.0f);
+    testAssert(ffnV102.productQuantMaxAbs == 0.0f);
     ffnV102In >> ws;
     testAssert(ffnV102In.peek() == EOF);
 
@@ -363,11 +375,50 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
     attentionV105In >> ws;
     testAssert(attentionV105In.peek() == EOF);
 
-    istringstream ffnV105In(ffnWireFixture(105,7.0f));
+    istringstream ffnV105In(ffnWireFixture(105,7.0f,49.0f));
     TransformerFFNDesc ffnV105(ffnV105In,105,false);
     testAssert(ffnV105.swigluClip == 7.0f);
+    testAssert(ffnV105.productQuantMaxAbs == 49.0f);
     ffnV105In >> ws;
     testAssert(ffnV105In.peek() == EOF);
+
+    // productQuantMaxAbs is serialized per FFN in wire order. Verify that a
+    // heterogeneous sequence is neither shifted nor accidentally broadcast.
+    const float mixedProductRanges[] = {47.7371f,73.4171f,48.0f};
+    string mixedWire;
+    for(const float range: mixedProductRanges)
+      mixedWire += ffnWireFixture(105,7.0f,range);
+    istringstream mixedV105In(mixedWire);
+    for(const float expectedRange: mixedProductRanges) {
+      TransformerFFNDesc mixedFFN(mixedV105In,105,false);
+      testAssert(getFloatBits(mixedFFN.productQuantMaxAbs) ==
+        getFloatBits(expectedRange));
+    }
+    mixedV105In >> ws;
+    testAssert(mixedV105In.peek() == EOF);
+
+    // A pre-upgrade v105 stream has preLN immediately after swigluClip. The
+    // new parser must consume no such stream accidentally: trying to parse the
+    // norm name as the mandatory product range fails closed.
+    bool rejectedOldV105 = false;
+    try {
+      istringstream oldV105In(ffnWireFixture(105,7.0f,49.0f,false));
+      (void)TransformerFFNDesc(oldV105In,105,false);
+    }
+    catch(const StringError&) {
+      rejectedOldV105 = true;
+    }
+    testAssert(rejectedOldV105);
+
+    bool rejectedZeroProductRange = false;
+    try {
+      istringstream zeroProductIn(ffnWireFixture(105,7.0f,0.0f));
+      (void)TransformerFFNDesc(zeroProductIn,105,false);
+    }
+    catch(const StringError&) {
+      rejectedZeroProductRange = true;
+    }
+    testAssert(rejectedZeroProductRange);
   }
 
   ModelDesc modelA = makeModel(2,256,768,8,32,0.1f);
@@ -424,9 +475,10 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   testAssert(attention.semanticScalar3Bits == 0);
   testAssert((ffn.flags & OP_FLAG_USE_SWIGLU_CLIP) == 0);
   testAssert(ffn.semanticScalar1Bits == 0);
+  testAssert(ffn.semanticScalar2Bits == 0);
 
   ModelDesc qknClipModel = makeModel(2,384,1024,12,32,0.2f);
-  enableQKNormAndClip(qknClipModel,1e-6f,2e-6f,7.0f);
+  enableQKNormAndClip(qknClipModel,1e-6f,2e-6f,7.0f,49.0f);
   ArchitectureDesc qknClipArchitecture = buildArchitectureDesc(qknClipModel);
   testAssert(qknClipArchitecture.signature != architectureA.signature);
   const ArchitectureOpDesc& qknAttentionOp = findOp(
@@ -442,6 +494,7 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
   testAssert(qknAttention.semanticScalar3Bits == getFloatBits(2e-6f));
   testAssert((clippedFFN.flags & OP_FLAG_USE_SWIGLU_CLIP) != 0);
   testAssert(clippedFFN.semanticScalar1Bits == getFloatBits(7.0f));
+  testAssert(clippedFFN.semanticScalar2Bits == getFloatBits(49.0f));
 
   // Gamma tensors are trained weights and deliberately do not affect either
   // identity, while each semantic scalar must invalidate tactic reuse.
@@ -457,8 +510,17 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
     findOp(changedQKNArchitecture,ArchitectureOpKind::TransformerAttention),
     baseRuntime
   ) != qknAttention);
+  firstQKN->qNorm.epsilon = 1e-6f;
   TransformerFFNDesc* firstClippedFFN = (TransformerFFNDesc*)
     qknClipModel.trunk.blocks[1].second.get();
+  firstClippedFFN->productQuantMaxAbs = 48.0f;
+  ArchitectureDesc changedProductRangeArchitecture = buildArchitectureDesc(qknClipModel);
+  testAssert(changedProductRangeArchitecture.signature != qknSignature);
+  testAssert(makeCapabilityKey(
+    findOp(changedProductRangeArchitecture,ArchitectureOpKind::TransformerFFN),
+    baseRuntime
+  ) != clippedFFN);
+  firstClippedFFN->productQuantMaxAbs = 49.0f;
   firstClippedFFN->swigluClip = 6.0f;
   ArchitectureDesc changedClipArchitecture = buildArchitectureDesc(qknClipModel);
   testAssert(makeCapabilityKey(
@@ -537,6 +599,18 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
     rejectedClipWithoutSwiGLU = true;
   }
   testAssert(rejectedClipWithoutSwiGLU);
+  firstClippedFFN->useSwiGLU = true;
+
+  bool rejectedMissingV105ProductRange = false;
+  firstClippedFFN->productQuantMaxAbs = 0.0f;
+  try {
+    (void)buildArchitectureDesc(qknClipModel);
+  }
+  catch(const StringError&) {
+    rejectedMissingV105ProductRange = true;
+  }
+  testAssert(rejectedMissingV105ProductRange);
+  firstClippedFFN->productQuantMaxAbs = 49.0f;
 
   vector<OpRequest> requests = buildOpRequests(architectureB,baseRuntime);
   OpRequest ffnRequest{};
@@ -822,6 +896,8 @@ void Tests::runArchitectureDescTests(const string& nativeModelFile) {
             (const TransformerFFNDesc*)entry.second.get();
           if(desc->swigluClip > 0.0f) {
             testAssert(desc->swigluClip == 7.0f);
+            testAssert(std::isfinite(desc->productQuantMaxAbs));
+            testAssert(desc->productQuantMaxAbs > 0.0f);
             clippedFFNCount++;
           }
         }

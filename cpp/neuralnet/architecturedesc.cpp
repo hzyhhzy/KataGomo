@@ -28,6 +28,7 @@ enum class EncodingTag : uint32_t {
   TransformerFFN = 13,
   QKNorm = 14,
   SwiGLUClip = 15,
+  FFNProductQuantMaxAbs = 16,
 };
 
 class CanonicalWriter {
@@ -287,7 +288,8 @@ ArchitectureOpDesc describeTransformerAttentionOpImpl(const TransformerAttention
 static void encodeFFN(
   CanonicalWriter& out,
   const TransformerFFNDesc& desc,
-  ArchitectureDesc& result
+  ArchitectureDesc& result,
+  int modelVersion
 ) {
   requirePositive(desc.numChannels,"ffn.numChannels");
   requirePositive(desc.ffnChannels,"ffn.ffnChannels");
@@ -302,6 +304,23 @@ static void encodeFFN(
       throw StringError("Invalid architecture descriptor: ffn.swigluClip requires SwiGLU");
     out.tag(EncodingTag::SwiGLUClip);
     out.u32(getFloatBits(desc.swigluClip));
+  }
+  if(!isfinite(desc.productQuantMaxAbs) || desc.productQuantMaxAbs < 0.0f)
+    throw StringError(
+      "Invalid architecture descriptor: ffn.productQuantMaxAbs must be finite and nonnegative");
+  if(modelVersion >= 105) {
+    if(desc.productQuantMaxAbs <= 0.0f)
+      throw StringError(
+        "Invalid architecture descriptor: v105 ffn.productQuantMaxAbs must be positive");
+    if(!desc.useSwiGLU)
+      throw StringError(
+        "Invalid architecture descriptor: ffn.productQuantMaxAbs requires SwiGLU");
+    out.tag(EncodingTag::FFNProductQuantMaxAbs);
+    out.u32(getFloatBits(desc.productQuantMaxAbs));
+  }
+  else if(desc.productQuantMaxAbs != 0.0f) {
+    throw StringError(
+      "Invalid architecture descriptor: ffn.productQuantMaxAbs requires model v105 or newer");
   }
   encodeRMSNorm(out,desc.preLN);
   encodeMatMul(out,desc.linear1,result,false);
@@ -329,18 +348,27 @@ ArchitectureOpDesc describeTransformerFFNOpImpl(const TransformerFFNDesc& desc) 
       throw StringError("Invalid architecture descriptor: ffn.swigluClip requires SwiGLU");
     op.flags |= OP_FLAG_USE_SWIGLU_CLIP;
   }
+  if(!isfinite(desc.productQuantMaxAbs) || desc.productQuantMaxAbs < 0.0f)
+    throw StringError(
+      "Invalid architecture descriptor: ffn.productQuantMaxAbs must be finite and nonnegative");
+  if(desc.productQuantMaxAbs > 0.0f && !desc.useSwiGLU)
+    throw StringError(
+      "Invalid architecture descriptor: ffn.productQuantMaxAbs requires SwiGLU");
   op.inChannels = desc.numChannels;
   op.outChannels = desc.numChannels;
   op.auxiliaryChannels = desc.ffnChannels;
   op.semanticScalar0Bits = getFloatBits(desc.preLN.epsilon);
   op.semanticScalar1Bits = desc.swigluClip > 0.0f ? getFloatBits(desc.swigluClip) : 0;
+  op.semanticScalar2Bits = desc.productQuantMaxAbs > 0.0f ?
+    getFloatBits(desc.productQuantMaxAbs) : 0;
   return op;
 }
 
 static void encodeBlockStack(
   CanonicalWriter& out,
   const vector<pair<int,unique_ptr_void>>& blocks,
-  ArchitectureDesc& result
+  ArchitectureDesc& result,
+  int modelVersion
 );
 
 static void encodeResidualBlock(
@@ -372,13 +400,14 @@ static void encodeGPoolBlock(
 static void encodeNestedBlock(
   CanonicalWriter& out,
   const NestedBottleneckResidualBlockDesc& desc,
-  ArchitectureDesc& result
+  ArchitectureDesc& result,
+  int modelVersion
 ) {
   out.i32(desc.numBlocks);
   out.u32((uint32_t)desc.blocks.size());
   encodeBatchNormActivation(out,desc.preBN,desc.preActivation,result);
   encodeConv(out,desc.preConv,result,true);
-  encodeBlockStack(out,desc.blocks,result);
+  encodeBlockStack(out,desc.blocks,result,modelVersion);
   encodeBatchNormActivation(out,desc.postBN,desc.postActivation,result);
   encodeConv(out,desc.postConv,result,true);
 }
@@ -386,7 +415,8 @@ static void encodeNestedBlock(
 static void encodeBlockStack(
   CanonicalWriter& out,
   const vector<pair<int,unique_ptr_void>>& blocks,
-  ArchitectureDesc& result
+  ArchitectureDesc& result,
+  int modelVersion
 ) {
   for(const auto& entry: blocks) {
     out.tag(EncodingTag::Block);
@@ -398,11 +428,12 @@ static void encodeBlockStack(
     else if(entry.first == GLOBAL_POOLING_BLOCK_KIND)
       encodeGPoolBlock(out,*((const GlobalPoolingResidualBlockDesc*)entry.second.get()),result);
     else if(entry.first == NESTED_BOTTLENECK_BLOCK_KIND)
-      encodeNestedBlock(out,*((const NestedBottleneckResidualBlockDesc*)entry.second.get()),result);
+      encodeNestedBlock(
+        out,*((const NestedBottleneckResidualBlockDesc*)entry.second.get()),result,modelVersion);
     else if(entry.first == TRANSFORMER_ATTENTION_BLOCK_KIND)
       encodeAttention(out,*((const TransformerAttentionDesc*)entry.second.get()),result);
     else if(entry.first == TRANSFORMER_FFN_BLOCK_KIND)
-      encodeFFN(out,*((const TransformerFFNDesc*)entry.second.get()),result);
+      encodeFFN(out,*((const TransformerFFNDesc*)entry.second.get()),result,modelVersion);
     else
       throw StringError("Invalid architecture descriptor: unknown block kind");
   }
@@ -529,7 +560,7 @@ ArchitectureDesc buildArchitectureDesc(const ModelDesc& model) {
   out.i32(trunk.gpoolNumChannels);
   encodeConv(out,trunk.initialConv,result,true);
   encodeMatMul(out,trunk.initialMatMul,result,true);
-  encodeBlockStack(out,trunk.blocks,result);
+  encodeBlockStack(out,trunk.blocks,result,model.version);
   encodeBatchNormActivation(out,trunk.trunkTipBN,trunk.trunkTipActivation,result);
 
   const PolicyHeadDesc& policy = model.policyHead;
