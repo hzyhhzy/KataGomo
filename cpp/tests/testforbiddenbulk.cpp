@@ -151,6 +151,31 @@ void Tests::runForbiddenBulkTests() {
       checker[y * BOARD_LEN + x] = ((x + y) & 1) == 0 ? C_BLACK : C_WHITE;
   corpus.push_back(checker);
 
+  Position overline{};
+  for(int x : {3, 4, 5, 6, 8})
+    overline[7 * BOARD_LEN + x] = C_BLACK;
+  corpus.push_back(overline);
+
+  Position doubleFour{};
+  Position doubleThree{};
+  for(int distance : {-3, -2, -1}) {
+    doubleFour[7 * BOARD_LEN + 7 + distance] = C_BLACK;
+    doubleFour[(7 + distance) * BOARD_LEN + 7] = C_BLACK;
+  }
+  for(int distance : {-1, 1}) {
+    doubleThree[7 * BOARD_LEN + 7 + distance] = C_BLACK;
+    doubleThree[(7 + distance) * BOARD_LEN + 7] = C_BLACK;
+  }
+  corpus.push_back(doubleFour);
+  corpus.push_back(doubleThree);
+
+  Position exactFiveCrossOverline{};
+  for(int distance : {-2, -1, 1, 2})
+    exactFiveCrossOverline[7 * BOARD_LEN + 7 + distance] = C_BLACK;
+  for(int distance : {-2, -1, 1, 2, 3})
+    exactFiveCrossOverline[(7 + distance) * BOARD_LEN + 7] = C_BLACK;
+  corpus.push_back(exactFiveCrossOverline);
+
   DeterministicRng rng(UINT64_C(0x16f11fe89b0d677c));
   static constexpr int moveCounts[] = {0, 1, 2, 3, 8, 16, 32, 64, 96, 128, 160, 192, 224};
   constexpr size_t randomBoards = 512;

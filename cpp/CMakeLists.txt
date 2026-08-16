@@ -9,6 +9,11 @@ add_executable(forbidden_bulk_map_contract EXCLUDE_FROM_ALL
   forbiddenPoint/ForbiddenPointFinderBulk.cpp)
 target_include_directories(forbidden_bulk_map_contract PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(forbidden_bulk_map_contract PRIVATE
+  KATAGO_FORBIDDEN_BULK_TEST_HELPERS=1)
+if(USE_BIGGER_BOARDS_EXPENSIVE)
+  target_compile_definitions(forbidden_bulk_map_contract PRIVATE COMPILE_MAX_BOARD_LEN=29)
+endif()
 
 include_directories(external)
 include_directories(external/tclap-1.2.2/include)
