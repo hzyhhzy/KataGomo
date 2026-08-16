@@ -23,6 +23,9 @@ namespace Tests {
   // testbatchawaredispatch.cpp
   void runBatchAwareDispatchTests();
 
+  // testforbiddenbulk.cpp
+  void runForbiddenBulkTests();
+
   // testnnevalcanary.cpp
   void runCanaryTests(NNEvaluator* nnEval, int symmetry, bool print);
   bool runFP16Test(

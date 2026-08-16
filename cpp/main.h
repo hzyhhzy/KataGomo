@@ -20,6 +20,7 @@ namespace MainCmds {
   int testarchitecturedesc(const std::vector<std::string>& args);
   int testtransformerproductionplan(const std::vector<std::string>& args);
   int testbatchawaredispatch(const std::vector<std::string>& args);
+  int testforbiddenbulk(const std::vector<std::string>& args);
 
 
   int samplesgfs(const std::vector<std::string>& args);

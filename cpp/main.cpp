@@ -52,6 +52,7 @@ evalsgf : Utility/debug tool, analyze a single position of a game from an SGF fi
 testgpuerror : Print the average error of the neural net between current config and fp32 config.
 testtransformerproductionplan : CPU-only production-plan identity and fallback contract tests.
 testbatchawaredispatch : CPU-only fixed-batch dispatch, padding, and device-isolation tests.
+testforbiddenbulk : CPU-only legacy-oracle tests for bulk Renju forbidden features.
 
 
 )%%" << endl;
@@ -95,6 +96,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::testtransformerproductionplan(subArgs);
   else if(subcommand == "testbatchawaredispatch")
     return MainCmds::testbatchawaredispatch(subArgs);
+  else if(subcommand == "testforbiddenbulk")
+    return MainCmds::testforbiddenbulk(subArgs);
   else if(subcommand == "samplesgfs")
     return MainCmds::samplesgfs(subArgs);
   else if(subcommand == "dataminesgfs")
