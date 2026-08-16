@@ -23,3 +23,9 @@
 using namespace std;
 
 
+int MainCmds::testforbiddenbulk(const vector<string>& args) {
+  if(args.size() != 1 || args[0] != "testforbiddenbulk")
+    throw StringError("testforbiddenbulk takes no arguments");
+  Tests::runForbiddenBulkTests();
+  return 0;
+}

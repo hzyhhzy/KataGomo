@@ -593,11 +593,13 @@ void NNInputs::fillRowV7(
   rowGlobal[6] = hasForbiddenFeature;
 
   CForbiddenPointFinder fpf(board.x_size);
+  uint8_t forbiddenMap[NNPos::MAX_BOARD_AREA] = {};
   if(hasForbiddenFeature) {
     for(int x = 0; x < board.x_size; x++)
       for(int y = 0; y < board.y_size; y++) {
         fpf.SetStone(x, y, board.colors[Location::getLoc(x, y, board.x_size)]);
       }
+    fpf.fillForbiddenMap(forbiddenMap);
   }
 
   for(int y = 0; y < ySize; y++) {
@@ -618,10 +620,10 @@ void NNInputs::fillRowV7(
 
       if(hasForbiddenFeature) {
         if(pla == C_BLACK) {
-          if(fpf.isForbidden(x, y))
+          if(forbiddenMap[y * xSize + x] != 0)
             setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
         } else if(pla == C_WHITE) {
-          if(fpf.isForbidden(x, y))
+          if(forbiddenMap[y * xSize + x] != 0)
             setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
         }
       }
@@ -771,11 +773,13 @@ void NNInputs::fillRowV101(
   bool hasForbiddenFeature = nnInputParams.useForbiddenInput && hist.rules.basicRule == Rules::BASICRULE_RENJU;
 
   CForbiddenPointFinder fpf(board.x_size);
+  uint8_t forbiddenMap[NNPos::MAX_BOARD_AREA] = {};
   if(hasForbiddenFeature) {
     for(int x = 0; x < board.x_size; x++)
       for(int y = 0; y < board.y_size; y++) {
         fpf.SetStone(x, y, board.colors[Location::getLoc(x, y, board.x_size)]);
       }
+    fpf.fillForbiddenMap(forbiddenMap);
   }
 
   for(int y = 0; y < ySize; y++) {
@@ -796,10 +800,10 @@ void NNInputs::fillRowV101(
 
       if(hasForbiddenFeature) {
         if(pla == C_BLACK) {
-          if(fpf.isForbidden(x, y))
+          if(forbiddenMap[y * xSize + x] != 0)
             setRowBin(rowBin, pos, 3, 1.0f, posStride, featureStride);
         } else if(pla == C_WHITE) {
-          if(fpf.isForbidden(x, y))
+          if(forbiddenMap[y * xSize + x] != 0)
             setRowBin(rowBin, pos, 4, 1.0f, posStride, featureStride);
         }
       }

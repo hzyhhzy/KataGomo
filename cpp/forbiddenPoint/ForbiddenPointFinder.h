@@ -31,6 +31,9 @@ public:
 	int  AddStone(int x, int y, char cStone);
 	bool isForbidden(int x, int y);
 	bool isForbiddenNoNearbyCheck(int x, int y);
+	// Fills y-major [y * f_boardsize + x] bytes with 0 or 1.
+	// The board must already have been loaded with SetStone.
+	void fillForbiddenMap(uint8_t* forbiddenMap);
 	void SetStone(int x, int y, char cStone);
 	//void SetStone(int x, int y, char cStone);
 	bool IsFive(int x, int y, int nColor);

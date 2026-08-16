@@ -3,6 +3,13 @@ project(katago)
 
 set(CMAKE_CXX_STANDARD 17)
 
+add_executable(forbidden_bulk_map_contract EXCLUDE_FROM_ALL
+  tests/forbidden_bulk_map_contract.cpp
+  forbiddenPoint/ForbiddenPointFinder.cpp
+  forbiddenPoint/ForbiddenPointFinderBulk.cpp)
+target_include_directories(forbidden_bulk_map_contract PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}")
+
 include_directories(external)
 include_directories(external/tclap-1.2.2/include)
 include_directories(SYSTEM external/filesystem-1.5.8/include) #SYSTEM suppresses a few warnings
@@ -248,6 +255,7 @@ add_executable(katago
   program/selfplaymanager.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testcommon.cpp
+  tests/testforbiddenbulk.cpp
   tests/testnnevalcanary.cpp
   distributed/client.cpp
   command/commandline.cpp
@@ -269,6 +277,7 @@ add_executable(katago
   command/distill.cpp
   command/tune.cpp
   forbiddenPoint/ForbiddenPointFinder.cpp
+  forbiddenPoint/ForbiddenPointFinderBulk.cpp
   vcfsolver/VCFsolver.cpp
   vcfsolver/VCFHashTable.cpp
   main.cpp
