@@ -34,7 +34,6 @@ constexpr int kFfnChannels = C384Int8Experiment::kFfnChannels;
 constexpr int kPackedQkvChannels = C384Int8Experiment::kQkvChannels;
 constexpr int kRopePairsTotal = kHeads * (kHeadDim / 2);
 constexpr uint32_t kRmsEpsilon1e6Bits = 0x358637BDu;
-constexpr uint32_t kQuantMaxAbs4Bits = 0x40800000u;
 constexpr uint64_t kPlanGeneration = 1;
 
 uint32_t floatBits(float value) {
@@ -633,10 +632,12 @@ private:
       floatBits(desc.qNorm.epsilon) == kRmsEpsilon1e6Bits &&
       floatBits(desc.kNorm.epsilon) == kRmsEpsilon1e6Bits &&
       positiveFinite(desc.preLN.epsilon) &&
-      scalars.inputQuantMaxAbsBits == kQuantMaxAbs4Bits &&
-      scalars.outputQuantMaxAbsBits == kQuantMaxAbs4Bits &&
-      floatBits(desc.attentionInputQuantMaxAbs) == kQuantMaxAbs4Bits &&
-      floatBits(desc.attentionOutputQuantMaxAbs) == kQuantMaxAbs4Bits;
+      scalars.inputQuantMaxAbsBits ==
+        floatBits(desc.attentionInputQuantMaxAbs) &&
+      scalars.outputQuantMaxAbsBits ==
+        floatBits(desc.attentionOutputQuantMaxAbs) &&
+      positiveFinite(desc.attentionInputQuantMaxAbs) &&
+      positiveFinite(desc.attentionOutputQuantMaxAbs);
     if(!dimensions || !semantics) {
       detail = "P4 attention descriptor is outside the INT8 kernel contract";
       return false;
@@ -666,11 +667,11 @@ private:
         static_cast<size_t>(kFfnChannels) * kChannels;
     const bool semantics =
       positiveFinite(desc.preLN.epsilon) && positiveFinite(desc.swigluClip) &&
+      positiveFinite(desc.ffnInputQuantMaxAbs) &&
       positiveFinite(desc.productQuantMaxAbs) &&
       scalars.swigluClipBits == floatBits(desc.swigluClip) &&
-      scalars.productQuantMaxAbsBits == floatBits(desc.productQuantMaxAbs) &&
-      scalars.inputQuantMaxAbsBits == kQuantMaxAbs4Bits &&
-      floatBits(desc.ffnInputQuantMaxAbs) == kQuantMaxAbs4Bits;
+      scalars.inputQuantMaxAbsBits == floatBits(desc.ffnInputQuantMaxAbs) &&
+      scalars.productQuantMaxAbsBits == floatBits(desc.productQuantMaxAbs);
     if(!dimensions || !semantics) {
       detail = "P4 FFN descriptor is outside the adjustable-clip INT8 contract";
       return false;
