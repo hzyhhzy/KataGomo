@@ -28,7 +28,8 @@ scalar attention, cuDNN attention, and fallback counts must all be zero.
 
 The two reference arms are built from exact revision
 `c3b882e7aa01c2c250c76c01464a8850ed622329` plus the reviewed test-only raw
-gate overlay. Configure that worktree with every non-generic path disabled:
+gate overlay frozen as `be8eb4d4accfa4237ebabd0b5c45f0f47f14da8f` (whose sole
+parent is exact c3). Configure that worktree with every non-generic path disabled:
 
 ```text
 -DKATAGO_ENABLE_CUDNN_FRONTEND_SDPA=OFF

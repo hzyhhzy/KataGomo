@@ -24,6 +24,7 @@ import nnrawgate_compare_v2 as v2
 REPORT_SCHEMA = 1
 PROFILE = "v105-qkn-clip4"
 REFERENCE_BASE_REVISION = "c3b882e7aa01c2c250c76c01464a8850ed622329"
+REFERENCE_TEST_OVERLAY_REVISION = "be8eb4d4accfa4237ebabd0b5c45f0f47f14da8f"
 CANDIDATE_SEMANTICS_BASE_REVISION = "16999f76f0fd58681966d44324b8154f89323168"
 ROUTE_NONE = 0
 ROUTE_V105_QKN_CLIP4 = 2
@@ -48,9 +49,10 @@ def validate_revision_lock(
 ) -> dict[str, Any]:
     reference_clean = f"{REFERENCE_BASE_REVISION}-cuda"
     reference_overlay = f"{REFERENCE_BASE_REVISION}-dirty-cuda"
+    reference_frozen_overlay = f"{REFERENCE_TEST_OVERLAY_REVISION}-cuda"
     if fp32["revision"] != reference_fp16["revision"]:
         raise ValueError("FP32 and FP16 reference dumps have different source revisions")
-    if fp32["revision"] not in (reference_clean, reference_overlay):
+    if fp32["revision"] not in (reference_clean, reference_overlay, reference_frozen_overlay):
         raise ValueError(
             "reference dumps are not exact c3b882e7a (optionally with the reviewed dirty test-only overlay)"
         )
@@ -59,6 +61,7 @@ def validate_revision_lock(
         raise ValueError("candidate dump does not match the exact clean candidate revision lock")
     return {
         "referenceBaseRevision": REFERENCE_BASE_REVISION,
+        "referenceFrozenTestOverlayRevision": REFERENCE_TEST_OVERLAY_REVISION,
         "referenceEmbeddedRevision": fp32["revision"],
         "referenceTestOnlyOverlayDirty": fp32["revision"] == reference_overlay,
         "candidateSemanticsBaseRevision": CANDIDATE_SEMANTICS_BASE_REVISION,
@@ -360,6 +363,14 @@ def self_test() -> None:
         fake_dump(105, 28, 1, ROUTE_V105_QKN_CLIP4),
     )
     validate_v105_contract(*valid_arms, model_sha)
+    revision_result = validate_revision_lock(
+        {"revision": f"{REFERENCE_TEST_OVERLAY_REVISION}-cuda"},
+        {"revision": f"{REFERENCE_TEST_OVERLAY_REVISION}-cuda"},
+        {"revision": f"{'d' * 40}-cuda"},
+        "d" * 40,
+    )
+    assert revision_result["referenceBaseRevision"] == REFERENCE_BASE_REVISION
+    assert revision_result["referenceFrozenTestOverlayRevision"] == REFERENCE_TEST_OVERLAY_REVISION
     v1.validate_structure(valid_arms[0]["meta"], [28], EXACT_SCHEDULE, (105,))
     try:
         v1.validate_structure(valid_arms[0]["meta"], [28], EXACT_SCHEDULE)
