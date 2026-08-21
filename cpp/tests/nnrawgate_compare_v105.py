@@ -3,7 +3,7 @@
 
 The full R15CORP1 population is compared as FP32 reference, FP16 reference,
 and FP16 candidate. Dynamic batches are evaluated only as same-arm drift from
-the first B=36 call, so B=1/B=2 are never treated as population estimates.
+the first B=28 call, so B=1/B=2 are never treated as population estimates.
 """
 
 from __future__ import annotations
