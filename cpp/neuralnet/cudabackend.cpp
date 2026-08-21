@@ -4506,8 +4506,16 @@ void NeuralNet::getOutput(
     CUDA_ERR("getOutput",cudaPeekAtLastError());
   }
 
-  FourProfile::RuntimeKeyV1 fourProfileRuntime = gpuHandle->fourProfileRuntime;
-  fourProfileRuntime.physicalBatchSize = batchSize;
+  FourProfile::ManagerV1* selectedFourProfileManager = nullptr;
+  FourProfile::RuntimeKeyV1 fourProfileRuntime;
+  const FourProfile::RuntimeKeyV1* selectedFourProfileRuntime = nullptr;
+  if(gpuHandle->fourProfileManager != nullptr &&
+     gpuHandle->fourProfileManager->report().route == FourProfile::RouteV1::Specialized) {
+    selectedFourProfileManager = gpuHandle->fourProfileManager.get();
+    fourProfileRuntime = gpuHandle->fourProfileRuntime;
+    fourProfileRuntime.physicalBatchSize = batchSize;
+    selectedFourProfileRuntime = &fourProfileRuntime;
+  }
   gpuHandle->model->apply(
     cudaHandles,
     scratch,
@@ -4525,8 +4533,8 @@ void NeuralNet::getOutput(
 
     buffers->workspaceBuf,
     buffers->workspaceBytes,
-    gpuHandle->fourProfileManager.get(),
-    &fourProfileRuntime
+    selectedFourProfileManager,
+    selectedFourProfileRuntime
   );
 
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
