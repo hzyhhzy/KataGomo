@@ -554,6 +554,22 @@ struct ScratchBuffers {
 
 };
 
+// Exception-safe ownership for device allocations used by the transformer
+// adapter and its MatMul construction chain. Keep this deliberately small
+// instead of broadening the change into legacy convolution/head allocations.
+struct OwnedDeviceBuf {
+  void* buf = nullptr;
+
+  OwnedDeviceBuf() {}
+  ~OwnedDeviceBuf() {
+    if(buf != nullptr)
+      (void)cudaFree(buf);
+  }
+
+  OwnedDeviceBuf(const OwnedDeviceBuf&) = delete;
+  OwnedDeviceBuf& operator=(const OwnedDeviceBuf&) = delete;
+};
+
 
 //---------------------------------------------------------------------------------
 
@@ -920,7 +936,7 @@ struct MatMulLayer {
   const int inChannels;
   const int outChannels;
   const bool usingFP16;
-  void* matBuf;
+  OwnedDeviceBuf matBuf;
 
   MatMulLayer() = delete;
   MatMulLayer(const MatMulLayer&) = delete;
@@ -939,12 +955,10 @@ struct MatMulLayer {
     (void)cudaHandles;
 
     assert(desc->weights.size() == inChannels * outChannels);
-    CudaUtils::mallocAndCopyToDevice(name,desc->weights,matBuf,useFP16);
+    CudaUtils::mallocAndCopyToDevice(name,desc->weights,matBuf.buf,useFP16);
   }
 
-  ~MatMulLayer() {
-    cudaFree(matBuf);
-  }
+  ~MatMulLayer() {}
 
   size_t requiredWorkspaceBytes(
     CudaHandles* cudaHandles
@@ -978,7 +992,7 @@ struct MatMulLayer {
         batchSize,
         inChannels,
         &alpha,
-        (const float*)matBuf,outChannels,
+        (const float*)matBuf.buf,outChannels,
         (const float*)inputBuf,inChannels,
         &beta,
         (float*)outputBuf,outChannels
@@ -995,7 +1009,7 @@ struct MatMulLayer {
         batchSize,
         inChannels,
         alpha,
-        (const half*)matBuf,outChannels,
+        (const half*)matBuf.buf,outChannels,
         (const half*)inputBuf,inChannels,
         beta,
         (half*)outputBuf,outChannels
@@ -1494,8 +1508,8 @@ struct TransformerRMSNormLayer {
   const int numChannels;
   const float epsilon;
   const bool usingFP16;
-  void* weightBuf;
-  void* zeroBetaBuf;
+  OwnedDeviceBuf weightBuf;
+  OwnedDeviceBuf zeroBetaBuf;
 
   TransformerRMSNormLayer() = delete;
   TransformerRMSNormLayer(const TransformerRMSNormLayer&) = delete;
@@ -1514,16 +1528,13 @@ struct TransformerRMSNormLayer {
     (void)cudaHandles;
     if((int)desc->weight.size() != numChannels)
       throw StringError(name + ": RMSNorm weight count does not match numChannels");
-    CudaUtils::mallocAndCopyToDevice(name, desc->weight, weightBuf, useFP16);
+    CudaUtils::mallocAndCopyToDevice(name, desc->weight, weightBuf.buf, useFP16);
     // Allocate a zero buffer for beta (TransformerRMSNorm has no bias)
     vector<float> zeros(numChannels, 0.0f);
-    CudaUtils::mallocAndCopyToDevice(name + ":zeroBeta", zeros, zeroBetaBuf, useFP16);
+    CudaUtils::mallocAndCopyToDevice(name + ":zeroBeta", zeros, zeroBetaBuf.buf, useFP16);
   }
 
-  ~TransformerRMSNormLayer() {
-    cudaFree(weightBuf);
-    cudaFree(zeroBetaBuf);
-  }
+  ~TransformerRMSNormLayer() {}
 
   // Apply RMSNorm on NHWC data [N, XY, C], applying mask [N, XY] to zero padded positions.
   // Uses the RMSNormGammaBeta kernel with gamma=weight, beta=0, no activation.
@@ -1540,14 +1551,14 @@ struct TransformerRMSNormLayer {
     if(!usingFP16) {
       customCudaRMSNormGammaBetaNHWC(
         (const float*)inputBuf, (float*)outputBuf,
-        (const float*)weightBuf, (const float*)zeroBetaBuf,
+        (const float*)weightBuf.buf, (const float*)zeroBetaBuf.buf,
         (const float*)maskBuf,
         batchSize, xySize, numChannels, epsilon, ACTIVATION_IDENTITY);
     }
     else {
       customCudaRMSNormGammaBetaNHWC(
         (const half*)inputBuf, (half*)outputBuf,
-        (const half*)weightBuf, (const half*)zeroBetaBuf,
+        (const half*)weightBuf.buf, (const half*)zeroBetaBuf.buf,
         (const half*)maskBuf,
         batchSize, xySize, numChannels, epsilon, ACTIVATION_IDENTITY);
     }
@@ -1647,7 +1658,9 @@ struct RMSNormLayer {
       // Allocate temp buffer for spatial reduction from scratch (float regardless of FP16 mode).
       // Holds per-block partial sums plus the final reduced value per batch element; see
       // SPATIAL_RMSNORM_BLOCKS_PER_BATCH in cudahelpers.cu (partialStride = that + 1).
-      SizedBuf<void*> sumSqBuf(scratch->allocator, (size_t)batchSize * CUDA_SPATIAL_RMSNORM_SUMSQ_STRIDE * sizeof(float));
+      SizedBuf<void*> sumSqBuf(
+        scratch->allocator,scratch->getBufSizeFloat(CUDA_SPATIAL_RMSNORM_SUMSQ_STRIDE)
+      );
       if(!usingFP16) {
         if(!usingNHWC)
           customCudaSpatialRMSNormNCHW(
@@ -1698,16 +1711,16 @@ struct TransformerAttentionBlock {
   // QKV GEMM. Otherwise equal-shape Q/K/V share one strided-batched GEMM.
   const bool sameQKVShapes;
   const bool useCombinedQKV;
-  void* qkvPackedWeights;
+  OwnedDeviceBuf qkvPackedWeights;
   std::unique_ptr<MatMulLayer> qProj;
   std::unique_ptr<MatMulLayer> kProj;
   std::unique_ptr<MatMulLayer> vProj;
 
   // Fixed RoPE uses device tables. Learned RoPE keeps the tiny frequency
   // tensor in FP32 and recomputes sin/cos in the official fused QK kernel.
-  void* ropeCosTable;
-  void* ropeSinTable;
-  void* ropeFreqsBuf;
+  OwnedDeviceBuf ropeCosTable;
+  OwnedDeviceBuf ropeSinTable;
+  OwnedDeviceBuf ropeFreqsBuf;
   int ropeNumPairs;
 
   static bool shouldCombineQKV(
@@ -1725,6 +1738,15 @@ struct TransformerAttentionBlock {
       );
   }
 
+  static bool scalarAttentionSupportsShape(int qDim,int vDim) {
+    return
+      (qDim == 32 && vDim == 32) ||
+      (qDim == 32 && vDim == 16) ||
+      (qDim == 64 && vDim == 64) ||
+      (qDim == 64 && vDim == 32) ||
+      (qDim == 32 && vDim == 64);
+  }
+
   TransformerAttentionBlock() = delete;
   TransformerAttentionBlock(const TransformerAttentionBlock&) = delete;
   TransformerAttentionBlock& operator=(const TransformerAttentionBlock&) = delete;
@@ -1732,6 +1754,7 @@ struct TransformerAttentionBlock {
   TransformerAttentionBlock(
     CudaHandles* cudaHandles,
     const TransformerAttentionDesc* desc,
+    int maxBatchSize,
     int nnX,
     int nnY,
     bool useFP16,
@@ -1758,10 +1781,6 @@ struct TransformerAttentionBlock {
       desc->qProj.outChannels == desc->vProj.outChannels
     ),
     useCombinedQKV(shouldCombineQKV(cudaHandles,desc,useFP16)),
-    qkvPackedWeights(NULL),
-    ropeCosTable(NULL),
-    ropeSinTable(NULL),
-    ropeFreqsBuf(NULL),
     ropeNumPairs(0)
   {
     if(!useNHWC)
@@ -1772,6 +1791,26 @@ struct TransformerAttentionBlock {
     const int vTotalDim = numKVHeads * vHeadDim;
     if(qTotalDim % 8 != 0 || kTotalDim % 8 != 0 || vTotalDim % 8 != 0)
       throw StringError(name + ": CUDA attention projection widths must be multiples of 8");
+
+    // Fail closed during model construction, before adapter-specific QKV/RoPE
+    // allocations and before any inference work. The scalar attention kernel
+    // flattens batch and query-head into grid.y, while RoPE uses
+    // (seqLen,maxBatchSize) as grid.(x,y) and one thread per
+    // (query-head,coordinate-pair).
+    if(maxBatchSize <= 0 || (long long)maxBatchSize * numHeads > 65535LL)
+      throw StringError(name + ": maxBatchSize * numHeads exceeds CUDA attention grid.y limit");
+    if(useRope) {
+      const long long seqLen = (long long)nnXLen * nnYLen;
+      const long long headPairs = (long long)numHeads * (qHeadDim / 2);
+      if(seqLen <= 0 || seqLen > 2147483647LL || maxBatchSize > 65535)
+        throw StringError(name + ": board or max batch exceeds CUDA RoPE launch grid limits");
+      if(headPairs > 1024)
+        throw StringError(name + ": numHeads * RoPE coordinate pairs exceeds 1024 threads");
+    }
+    if(!useCombinedQKV && !scalarAttentionSupportsShape(qHeadDim,vHeadDim))
+      throw StringError(
+        name + ": attention shape has neither a committed MMA plan nor an official scalar kernel"
+      );
 
     if(useCombinedQKV) {
       if(!cudaHandles->loggedUsingCombinedQKV) {
@@ -1801,7 +1840,7 @@ struct TransformerAttentionBlock {
           packed.begin() + (size_t)i * combinedDim + qTotalDim + kTotalDim
         );
       }
-      CudaUtils::mallocAndCopyToDevice(name + ":qkvCombined",packed,qkvPackedWeights,useFP16);
+      CudaUtils::mallocAndCopyToDevice(name + ":qkvCombined",packed,qkvPackedWeights.buf,useFP16);
     }
     else if(sameQKVShapes) {
       vector<float> packed;
@@ -1809,7 +1848,7 @@ struct TransformerAttentionBlock {
       packed.insert(packed.end(),desc->qProj.weights.begin(),desc->qProj.weights.end());
       packed.insert(packed.end(),desc->kProj.weights.begin(),desc->kProj.weights.end());
       packed.insert(packed.end(),desc->vProj.weights.begin(),desc->vProj.weights.end());
-      CudaUtils::mallocAndCopyToDevice(name + ":qkvPacked",packed,qkvPackedWeights,useFP16);
+      CudaUtils::mallocAndCopyToDevice(name + ":qkvPacked",packed,qkvPackedWeights.buf,useFP16);
     }
     else {
       qProj = std::make_unique<MatMulLayer>(cudaHandles,&desc->qProj,useFP16);
@@ -1823,7 +1862,7 @@ struct TransformerAttentionBlock {
         if(desc->ropeFreqs.size() != (size_t)numKVHeads * ropeNumPairs * 2)
           throw StringError(name + ": invalid learned RoPE frequency tensor");
         CudaUtils::mallocAndCopyToDevice(
-          name + ":ropeFreqs",desc->ropeFreqs.data(),(int)desc->ropeFreqs.size(),ropeFreqsBuf,false
+          name + ":ropeFreqs",desc->ropeFreqs.data(),(int)desc->ropeFreqs.size(),ropeFreqsBuf.buf,false
         );
       }
       else {
@@ -1832,21 +1871,16 @@ struct TransformerAttentionBlock {
         vector<float> sinTableData;
         desc->computeRopeCosSin(nnXLen,nnYLen,seqLen,cosTableData,sinTableData);
         CudaUtils::mallocAndCopyToDevice(
-          name + ":ropeCos",cosTableData.data(),(int)cosTableData.size(),ropeCosTable,useFP16
+          name + ":ropeCos",cosTableData.data(),(int)cosTableData.size(),ropeCosTable.buf,useFP16
         );
         CudaUtils::mallocAndCopyToDevice(
-          name + ":ropeSin",sinTableData.data(),(int)sinTableData.size(),ropeSinTable,useFP16
+          name + ":ropeSin",sinTableData.data(),(int)sinTableData.size(),ropeSinTable.buf,useFP16
         );
       }
     }
   }
 
-  ~TransformerAttentionBlock() {
-    if(qkvPackedWeights != NULL) cudaFree(qkvPackedWeights);
-    if(ropeCosTable != NULL) cudaFree(ropeCosTable);
-    if(ropeSinTable != NULL) cudaFree(ropeSinTable);
-    if(ropeFreqsBuf != NULL) cudaFree(ropeFreqsBuf);
-  }
+  ~TransformerAttentionBlock() {}
 
   size_t requiredWorkspaceBytes(CudaHandles* cudaHandles,int batchSize) const {
     (void)cudaHandles;
@@ -1898,7 +1932,7 @@ struct TransformerAttentionBlock {
       applySharedInputStridedMatMuls(
         cudaHandles,scratch,usingFP16,name,
         combinedDim,matBatchSize,inChannels,
-        qkvPackedWeights,trunkScratchBuf,qkvBuf.buf,0LL,1
+        qkvPackedWeights.buf,trunkScratchBuf,qkvBuf.buf,0LL,1
       );
     }
     else {
@@ -1913,7 +1947,7 @@ struct TransformerAttentionBlock {
         applySharedInputStridedMatMuls(
           cudaHandles,scratch,usingFP16,name,
           qTotalDim,matBatchSize,inChannels,
-          qkvPackedWeights,trunkScratchBuf,qPtr,outputStrideElts,3
+          qkvPackedWeights.buf,trunkScratchBuf,qPtr,outputStrideElts,3
         );
       }
       else {
@@ -1925,24 +1959,23 @@ struct TransformerAttentionBlock {
 
     if(useRope) {
       const bool fuseQK = numHeads % numKVHeads == 0;
-      if(useCombinedQKV && !fuseQK)
-        throw StringError(name + ": combined QKV requires integral grouped-query heads");
+      assert(!useCombinedQKV || fuseQK);
 
       if(learnableRope) {
         if(!usingFP16) {
           if(fuseQK)
             customCudaApplyRoPEQKLearnableRecompute(
-              (float*)qPtr,(float*)kPtr,(const float*)ropeFreqsBuf,
+              (float*)qPtr,(float*)kPtr,(const float*)ropeFreqsBuf.buf,
               batchSize,seqLen,numHeads,numKVHeads,qHeadDim,
               qStrideElts,kvStrideElts,ropeNumPairs,nnXLen,KATAGO_LEGACY_STREAM
             );
           else {
             customCudaApplyRoPELearnableRecompute(
-              (float*)qPtr,(const float*)ropeFreqsBuf,batchSize,seqLen,numHeads,numKVHeads,
+              (float*)qPtr,(const float*)ropeFreqsBuf.buf,batchSize,seqLen,numHeads,numKVHeads,
               qHeadDim,ropeNumPairs,nnXLen,KATAGO_LEGACY_STREAM
             );
             customCudaApplyRoPELearnableRecompute(
-              (float*)kPtr,(const float*)ropeFreqsBuf,batchSize,seqLen,numKVHeads,numKVHeads,
+              (float*)kPtr,(const float*)ropeFreqsBuf.buf,batchSize,seqLen,numKVHeads,numKVHeads,
               qHeadDim,ropeNumPairs,nnXLen,KATAGO_LEGACY_STREAM
             );
           }
@@ -1950,17 +1983,17 @@ struct TransformerAttentionBlock {
         else {
           if(fuseQK)
             customCudaApplyRoPEQKLearnableRecompute(
-              (half*)qPtr,(half*)kPtr,(const float*)ropeFreqsBuf,
+              (half*)qPtr,(half*)kPtr,(const float*)ropeFreqsBuf.buf,
               batchSize,seqLen,numHeads,numKVHeads,qHeadDim,
               qStrideElts,kvStrideElts,ropeNumPairs,nnXLen,KATAGO_LEGACY_STREAM
             );
           else {
             customCudaApplyRoPELearnableRecompute(
-              (half*)qPtr,(const float*)ropeFreqsBuf,batchSize,seqLen,numHeads,numKVHeads,
+              (half*)qPtr,(const float*)ropeFreqsBuf.buf,batchSize,seqLen,numHeads,numKVHeads,
               qHeadDim,ropeNumPairs,nnXLen,KATAGO_LEGACY_STREAM
             );
             customCudaApplyRoPELearnableRecompute(
-              (half*)kPtr,(const float*)ropeFreqsBuf,batchSize,seqLen,numKVHeads,numKVHeads,
+              (half*)kPtr,(const float*)ropeFreqsBuf.buf,batchSize,seqLen,numKVHeads,numKVHeads,
               qHeadDim,ropeNumPairs,nnXLen,KATAGO_LEGACY_STREAM
             );
           }
@@ -1970,17 +2003,17 @@ struct TransformerAttentionBlock {
         if(!usingFP16) {
           if(fuseQK)
             customCudaApplyRoPEQK(
-              (float*)qPtr,(float*)kPtr,(const float*)ropeCosTable,(const float*)ropeSinTable,
+              (float*)qPtr,(float*)kPtr,(const float*)ropeCosTable.buf,(const float*)ropeSinTable.buf,
               batchSize,seqLen,numHeads,numKVHeads,qHeadDim,qStrideElts,kvStrideElts,
               ropeNumPairs,false,KATAGO_LEGACY_STREAM
             );
           else {
             customCudaApplyRoPE(
-              (float*)qPtr,(const float*)ropeCosTable,(const float*)ropeSinTable,
+              (float*)qPtr,(const float*)ropeCosTable.buf,(const float*)ropeSinTable.buf,
               batchSize,seqLen,numHeads,numKVHeads,qHeadDim,ropeNumPairs,false
             );
             customCudaApplyRoPE(
-              (float*)kPtr,(const float*)ropeCosTable,(const float*)ropeSinTable,
+              (float*)kPtr,(const float*)ropeCosTable.buf,(const float*)ropeSinTable.buf,
               batchSize,seqLen,numKVHeads,numKVHeads,qHeadDim,ropeNumPairs,false
             );
           }
@@ -1988,17 +2021,17 @@ struct TransformerAttentionBlock {
         else {
           if(fuseQK)
             customCudaApplyRoPEQK(
-              (half*)qPtr,(half*)kPtr,(const half*)ropeCosTable,(const half*)ropeSinTable,
+              (half*)qPtr,(half*)kPtr,(const half*)ropeCosTable.buf,(const half*)ropeSinTable.buf,
               batchSize,seqLen,numHeads,numKVHeads,qHeadDim,qStrideElts,kvStrideElts,
               ropeNumPairs,false,KATAGO_LEGACY_STREAM
             );
           else {
             customCudaApplyRoPE(
-              (half*)qPtr,(const half*)ropeCosTable,(const half*)ropeSinTable,
+              (half*)qPtr,(const half*)ropeCosTable.buf,(const half*)ropeSinTable.buf,
               batchSize,seqLen,numHeads,numKVHeads,qHeadDim,ropeNumPairs,false
             );
             customCudaApplyRoPE(
-              (half*)kPtr,(const half*)ropeCosTable,(const half*)ropeSinTable,
+              (half*)kPtr,(const half*)ropeCosTable.buf,(const half*)ropeSinTable.buf,
               batchSize,seqLen,numKVHeads,numKVHeads,qHeadDim,ropeNumPairs,false
             );
           }
@@ -2029,8 +2062,13 @@ struct TransformerAttentionBlock {
     // Interleaved QKV is an atomic construction-time plan: scalar attention
     // cannot consume it. A rejected launch therefore signals an invariant bug,
     // rather than silently running with the wrong strides.
-    if(!usedMma && useCombinedQKV)
-      throw StringError(name + ": combined QKV plan was rejected by MMA attention");
+    if(!usedMma && useCombinedQKV) {
+      // Construction preflight covers every rejection condition in the MMA
+      // launcher. Reaching this point means that contract drifted after QKV
+      // work was already enqueued, so fail fatally instead of throwing into a
+      // caller that might attempt an unsafe fallback on interleaved tensors.
+      std::terminate();
+    }
 
     if(!usedMma) {
       if(!cudaHandles->loggedUsingScalarAttention) {
@@ -2090,7 +2128,7 @@ struct TransformerFFNBlock {
 
   const TransformerRMSNormLayer preLN;
   const MatMulLayer linear2;
-  void* ffnPackedWeights;
+  OwnedDeviceBuf ffnPackedWeights;
 
   TransformerFFNBlock() = delete;
   TransformerFFNBlock(const TransformerFFNBlock&) = delete;
@@ -2113,8 +2151,7 @@ struct TransformerFFNBlock {
     usingFP16(useFP16),
     usingNHWC(useNHWC),
     preLN(cudaHandles,&desc->preLN,useFP16),
-    linear2(cudaHandles,&desc->linear2,useFP16),
-    ffnPackedWeights(NULL)
+    linear2(cudaHandles,&desc->linear2,useFP16)
   {
     if(!useSwiGLU)
       throw StringError("Non-SwiGLU transformer FFN is not supported by the CUDA backend");
@@ -2130,12 +2167,10 @@ struct TransformerFFNBlock {
     packed.reserve(desc->linear1.weights.size() + desc->linearGate.weights.size());
     packed.insert(packed.end(),desc->linear1.weights.begin(),desc->linear1.weights.end());
     packed.insert(packed.end(),desc->linearGate.weights.begin(),desc->linearGate.weights.end());
-    CudaUtils::mallocAndCopyToDevice(name + ":ffnPacked",packed,ffnPackedWeights,useFP16);
+    CudaUtils::mallocAndCopyToDevice(name + ":ffnPacked",packed,ffnPackedWeights.buf,useFP16);
   }
 
-  ~TransformerFFNBlock() {
-    if(ffnPackedWeights != NULL) cudaFree(ffnPackedWeights);
-  }
+  ~TransformerFFNBlock() {}
 
   size_t requiredWorkspaceBytes(CudaHandles* cudaHandles,int batchSize) const {
     (void)cudaHandles;
@@ -2168,7 +2203,7 @@ struct TransformerFFNBlock {
     applySharedInputStridedMatMuls(
       cudaHandles,scratch,usingFP16,name,
       ffnChannels,matBatchSize,numChannels,
-      ffnPackedWeights,trunkScratchBuf,linearBuf,
+      ffnPackedWeights.buf,trunkScratchBuf,linearBuf,
       (long long)(scratch->getBufSizeXY(ffnChannels) / (usingFP16 ? sizeof(half) : sizeof(float))),2
     );
 
@@ -2276,6 +2311,7 @@ BlockStack::BlockStack(
         new TransformerAttentionBlock(
           cudaHandles,
           blockDesc,
+          manager->maxBatchSize,
           nnXLen,
           nnYLen,
           useFP16,
@@ -3337,8 +3373,18 @@ struct ComputeHandle {
     cudaHandles->logger = logger;
     // Probe before constructing the model because an enabled MMA path commits
     // attention weights to the official interleaved combined-QKV layout.
+    const bool wantMmaAttention =
+      useFP16 && majorComputeCapability >= 8 && loadedModel->modelDesc.trunk.hasAnyTransformerBlocks();
     cudaHandles->mmaAttentionEnabled =
-      useFP16 && majorComputeCapability >= 8 && customCudaFlashAttentionMmaSupported();
+      wantMmaAttention && customCudaFlashAttentionMmaSupported();
+    if(wantMmaAttention && !cudaHandles->mmaAttentionEnabled) {
+      const string warning =
+        "WARNING CUDA_TRANSFORMER_ROUTE attention=official_mma_probe_failed fallback=official_scalar";
+      if(logger != NULL)
+        logger->write(warning);
+      else
+        std::cerr << warning << std::endl;
+    }
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
