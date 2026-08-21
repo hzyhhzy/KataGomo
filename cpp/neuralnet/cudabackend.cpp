@@ -1,5 +1,6 @@
 #ifdef USE_CUDA_BACKEND
 #include <atomic>
+#include <limits>
 
 #include "../neuralnet/cudaerrorcheck.h"
 #include "../neuralnet/cudaincludes.h"
@@ -323,6 +324,8 @@ struct OwnedCudnnHandle {
 struct BenchmarkRouteCountsInternal {
   int attention;
   int ffn;
+  int qkn;
+  int orderedClippedSwiGLU;
   int combinedQKV;
   int learnedRopeFp32;
   int fixedRope;
@@ -335,6 +338,8 @@ struct BenchmarkRouteCountsInternal {
   BenchmarkRouteCountsInternal()
     : attention(0),
       ffn(0),
+      qkn(0),
+      orderedClippedSwiGLU(0),
       combinedQKV(0),
       learnedRopeFp32(0),
       fixedRope(0),
@@ -2106,6 +2111,11 @@ struct TransformerAttentionBlock {
         throw StringError(name + ": Q/K normalization descriptors were not prepared");
       qNorm->apply(cudaHandles,matBatchSize * numHeads,1,qPtr,qPtr,nullptr);
       kNorm->apply(cudaHandles,matBatchSize * numKVHeads,1,kPtr,kPtr,nullptr);
+#ifdef KATAGO_BUILD_BENCHMARKNN
+      // Both learned RMSNorm kernels have been enqueued and peek-checked by
+      // TransformerRMSNormLayer::apply. Mark QKN only after that actual route.
+      cudaHandles->benchmarkRoute.current.qkn += 1;
+#endif
     }
 
     if(useRope) {
@@ -2303,6 +2313,7 @@ struct TransformerFFNBlock {
   const int nnYLen;
   const bool usingFP16;
   const bool usingNHWC;
+  const V105CudaPolicy::ProjectedScratchLayout projectedScratchLayout;
 
   const TransformerRMSNormLayer preLN;
   const MatMulLayer linear2;
@@ -2315,6 +2326,7 @@ struct TransformerFFNBlock {
   TransformerFFNBlock(
     CudaHandles* cudaHandles,
     const TransformerFFNDesc* desc,
+    int maxBatchSize,
     int nnX,
     int nnY,
     bool useFP16,
@@ -2330,6 +2342,10 @@ struct TransformerFFNBlock {
     nnYLen(nnY),
     usingFP16(useFP16),
     usingNHWC(useNHWC),
+    projectedScratchLayout(V105CudaPolicy::makeProjectedScratchLayout(
+      (size_t)maxBatchSize,(size_t)nnX,(size_t)nnY,(size_t)desc->ffnChannels,
+      useFP16 ? sizeof(half) : sizeof(float)
+    )),
     preLN(cudaHandles,&desc->preLN,useFP16),
     linear2(cudaHandles,&desc->linear2,useFP16)
   {
@@ -2379,17 +2395,21 @@ struct TransformerFFNBlock {
 
     // Official unfused FFN plan: one strided-batched GEMM produces both
     // linear and gate buffers, followed by the shared SwiGLU kernel.
-    SizedBuf<void*> projected(scratch->allocator,scratch->getBufSizeXY(2 * ffnChannels));
+    SizedBuf<void*> projected(scratch->allocator,projectedScratchLayout.totalBytes);
     void* linearBuf = projected.buf;
-    void* gateBuf = (char*)projected.buf + scratch->getBufSizeXY(ffnChannels);
+    void* gateBuf = (char*)projected.buf + projectedScratchLayout.planeStrideBytes;
     applySharedInputStridedMatMuls(
       cudaHandles,scratch,usingFP16,name,
       ffnChannels,matBatchSize,numChannels,
       ffnPackedWeights.buf,trunkScratchBuf,linearBuf,
-      (long long)(scratch->getBufSizeXY(ffnChannels) / (usingFP16 ? sizeof(half) : sizeof(float))),2
+      (long long)projectedScratchLayout.planeStrideElements,2
     );
 
-    const int totalSize = (int)((size_t)ffnChannels * matBatchSize);
+    const size_t totalElements = (size_t)ffnChannels * (size_t)matBatchSize;
+    if(totalElements > projectedScratchLayout.planeElements ||
+       totalElements > (size_t)std::numeric_limits<int>::max())
+      throw StringError(name + ": FFN actual batch exceeds the constructed scratch layout");
+    const int totalSize = (int)totalElements;
     if(!usingFP16)
       customCudaSwiGLU(
         (const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,totalSize,cudaHandles->stream
@@ -2404,6 +2424,12 @@ struct TransformerFFNBlock {
         totalSize,swigluClip,cudaHandles->stream
       );
     CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    // Publish the ordered-clip marker only after its helper launch was
+    // enqueued and cudaPeekAtLastError accepted it.
+    if(swiGLUPlan == V105CudaPolicy::SwiGLUPlan::OrderedClippedFP32)
+      cudaHandles->benchmarkRoute.current.orderedClippedSwiGLU += 1;
+#endif
 
     if(maskBuf == NULL) {
       linear2.apply(
@@ -2527,6 +2553,7 @@ BlockStack::BlockStack(
         new TransformerFFNBlock(
           cudaHandles,
           blockDesc,
+          manager->maxBatchSize,
           nnXLen,
           nnYLen,
           useFP16,
@@ -2549,10 +2576,20 @@ static void collectBenchmarkExpectedRoutes(
   BenchmarkRouteCountsInternal& counts
 ) {
   for(const auto& descBlock: descBlocks) {
-    if(descBlock.first == TRANSFORMER_ATTENTION_BLOCK_KIND)
+    if(descBlock.first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
       counts.attention += 1;
-    else if(descBlock.first == TRANSFORMER_FFN_BLOCK_KIND)
+      const TransformerAttentionDesc* attention =
+        (const TransformerAttentionDesc*)descBlock.second.get();
+      if(attention->useQKNorm)
+        counts.qkn += 1;
+    }
+    else if(descBlock.first == TRANSFORMER_FFN_BLOCK_KIND) {
       counts.ffn += 1;
+      const TransformerFFNDesc* ffn =
+        (const TransformerFFNDesc*)descBlock.second.get();
+      if(ffn->swigluClip > 0.0f)
+        counts.orderedClippedSwiGLU += 1;
+    }
     else if(descBlock.first == NESTED_BOTTLENECK_BLOCK_KIND) {
       const NestedBottleneckResidualBlockDesc* nested =
         (const NestedBottleneckResidualBlockDesc*)descBlock.second.get();
@@ -2570,6 +2607,8 @@ void BlockStack::collectBenchmarkPreparedRoutes(
       const TransformerAttentionBlock* block =
         (const TransformerAttentionBlock*)blockEntry.second.get();
       counts.attention += 1;
+      if(block->useQKNorm)
+        counts.qkn += 1;
       if(block->useCombinedQKV)
         counts.combinedQKV += 1;
       else
@@ -2591,8 +2630,13 @@ void BlockStack::collectBenchmarkPreparedRoutes(
       else
         counts.scalar += 1;
     }
-    else if(blockEntry.first == TRANSFORMER_FFN_BLOCK_KIND)
+    else if(blockEntry.first == TRANSFORMER_FFN_BLOCK_KIND) {
       counts.ffn += 1;
+      const TransformerFFNBlock* block =
+        (const TransformerFFNBlock*)blockEntry.second.get();
+      if(block->swiGLUPlan == V105CudaPolicy::SwiGLUPlan::OrderedClippedFP32)
+        counts.orderedClippedSwiGLU += 1;
+    }
     else if(blockEntry.first == NESTED_BOTTLENECK_BLOCK_KIND) {
       const NestedBottleneckResidualBlock* nested =
         (const NestedBottleneckResidualBlock*)blockEntry.second.get();
@@ -3723,6 +3767,10 @@ static void logBenchmarkPreparedRouteNoThrow(CudaHandles* cudaHandles) noexcept 
       " prepared_attention=" + Global::intToString(prepared.attention) +
       " expected_ffn=" + Global::intToString(expected.ffn) +
       " prepared_ffn=" + Global::intToString(prepared.ffn) +
+      " expected_qkn=" + Global::intToString(expected.qkn) +
+      " prepared_qkn=" + Global::intToString(prepared.qkn) +
+      " expected_ordered_clipped_swiglu=" + Global::intToString(expected.orderedClippedSwiGLU) +
+      " prepared_ordered_clipped_swiglu=" + Global::intToString(prepared.orderedClippedSwiGLU) +
       " combined_qkv=" + Global::intToString(prepared.combinedQKV) +
       " learned_rope_fp32=" + Global::intToString(prepared.learnedRopeFp32) +
       " fixed_rope=" + Global::intToString(prepared.fixedRope) +
@@ -3752,6 +3800,9 @@ static void logBenchmarkActiveRouteNoThrow(CudaHandles* cudaHandles) noexcept {
       "CUDA_TRANSFORMER_ROUTE_PROOF phase=ACTIVE invocation=" + Global::uint64ToString(route.invocationSerial) +
       " attention=" + Global::intToString(active.attention) + "/" + Global::intToString(route.expected.attention) +
       " ffn=" + Global::intToString(active.ffn) + "/" + Global::intToString(route.expected.ffn) +
+      " qkn=" + Global::intToString(active.qkn) + "/" + Global::intToString(route.expected.qkn) +
+      " ordered_clipped_swiglu=" + Global::intToString(active.orderedClippedSwiGLU) + "/" +
+        Global::intToString(route.expected.orderedClippedSwiGLU) +
       " combined_qkv=" + Global::intToString(active.combinedQKV) +
       " learned_rope_fp32=" + Global::intToString(active.learnedRopeFp32) +
       " fixed_rope=" + Global::intToString(active.fixedRope) +
@@ -3840,6 +3891,8 @@ struct ComputeHandle {
     if(
       preparedRoute.attention != expectedRoute.attention ||
       preparedRoute.ffn != expectedRoute.ffn ||
+      preparedRoute.qkn != expectedRoute.qkn ||
+      preparedRoute.orderedClippedSwiGLU != expectedRoute.orderedClippedSwiGLU ||
       preparedRoute.combinedQKV + preparedRoute.planar != preparedRoute.attention ||
       preparedRoute.mma + preparedRoute.scalar + preparedRoute.cudnn != preparedRoute.attention
     ) {
@@ -4003,8 +4056,12 @@ bool NeuralNet::getBenchmarkRouteProof(
 
   proof.expectedAttention = route.expected.attention;
   proof.expectedFfn = route.expected.ffn;
+  proof.expectedQkn = route.expected.qkn;
+  proof.expectedOrderedClippedSwiGLU = route.expected.orderedClippedSwiGLU;
   proof.preparedAttention = route.preparedCounts.attention;
   proof.preparedFfn = route.preparedCounts.ffn;
+  proof.preparedQkn = route.preparedCounts.qkn;
+  proof.preparedOrderedClippedSwiGLU = route.preparedCounts.orderedClippedSwiGLU;
   proof.preparedCombinedQKV = route.preparedCounts.combinedQKV;
   proof.preparedLearnedRopeFp32 = route.preparedCounts.learnedRopeFp32;
   proof.preparedFixedRope = route.preparedCounts.fixedRope;
@@ -4016,6 +4073,8 @@ bool NeuralNet::getBenchmarkRouteProof(
 
   proof.lastActiveAttention = route.last.attention;
   proof.lastActiveFfn = route.last.ffn;
+  proof.lastActiveQkn = route.last.qkn;
+  proof.lastActiveOrderedClippedSwiGLU = route.last.orderedClippedSwiGLU;
   proof.lastActiveCombinedQKV = route.last.combinedQKV;
   proof.lastActiveLearnedRopeFp32 = route.last.learnedRopeFp32;
   proof.lastActiveFixedRope = route.last.fixedRope;

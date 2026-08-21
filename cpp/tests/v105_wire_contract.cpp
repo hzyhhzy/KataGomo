@@ -244,6 +244,55 @@ void testVersions() {
     "native v105 global input-channel mismatch");
 }
 
+void testProjectedScratchLayout() {
+  const V105CudaPolicy::ProjectedScratchLayout oddHalf =
+    V105CudaPolicy::makeProjectedScratchLayout(3,1,1,1,2);
+  requireContract(oddHalf.planeElements == 3,
+    "odd FP16 projected plane changed its logical element count");
+  requireContract(oddHalf.planeStrideElements == 4 && oddHalf.planeStrideBytes == 8,
+    "odd FP16 projected plane was not padded to a 4-byte gate offset");
+  requireContract(oddHalf.totalBytes == 16 && oddHalf.planeStrideBytes % 4 == 0,
+    "odd FP16 projected allocation is not two aligned planes");
+
+  const V105CudaPolicy::ProjectedScratchLayout oddProduct =
+    V105CudaPolicy::makeProjectedScratchLayout(3,5,1,7,2);
+  requireContract(oddProduct.planeElements == 105 && oddProduct.planeStrideElements == 106,
+    "maxB*XY*F odd-product alignment contract changed");
+  requireContract(
+    oddProduct.planeStrideBytes / 2 == oddProduct.planeStrideElements,
+    "FP16 GEMM stride lost its element-count semantics"
+  );
+
+  const V105CudaPolicy::ProjectedScratchLayout oddFloat =
+    V105CudaPolicy::makeProjectedScratchLayout(3,1,1,1,4);
+  requireContract(oddFloat.planeStrideElements == 3 && oddFloat.planeStrideBytes == 12,
+    "FP32 projected plane was padded despite natural 4-byte alignment");
+
+  static_assert(sizeof(size_t) >= 8,"v105 CUDA contracts require a 64-bit host size_t");
+  const size_t intMax = (size_t)numeric_limits<int>::max();
+  const V105CudaPolicy::ProjectedScratchLayout boundary =
+    V105CudaPolicy::makeProjectedScratchLayout(intMax,1,1,1,2);
+  requireContract(boundary.planeElements == intMax,
+    "INT_MAX projected plane was not accepted exactly");
+  requireContract(boundary.planeStrideElements == intMax + 1,
+    "INT_MAX odd FP16 plane did not receive one alignment element");
+  requireContract(boundary.planeStrideBytes == (intMax + 1) * 2 &&
+    boundary.totalBytes == (intMax + 1) * 4,
+    "INT_MAX projected allocation overflowed size_t");
+
+  expectStringError([&](){
+    (void)V105CudaPolicy::makeProjectedScratchLayout(intMax + 1,1,1,1,2);
+  },"projected plane above INT_MAX");
+  expectStringError([&](){
+    (void)V105CudaPolicy::makeProjectedScratchLayout(
+      numeric_limits<size_t>::max(),2,1,1,2
+    );
+  },"projected layout size_t multiplication overflow");
+  expectStringError([&](){
+    (void)V105CudaPolicy::makeProjectedScratchLayout(1,1,1,1,1);
+  },"projected layout with unsupported element width");
+}
+
 void testLegacyV102() {
   AttentionWireOptions attentionOptions;
   attentionOptions.modelVersion = 102;
@@ -663,6 +712,7 @@ int MainCmds::testv105wire(const vector<string>& args) {
     throw StringError("testv105wire takes no arguments or --model FILE SHA256");
 
   testVersions();
+  testProjectedScratchLayout();
   testLegacyV102();
   testV105AttentionVariantsAndMoves();
   testV105FfnMixedLayersAndMoves();

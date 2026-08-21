@@ -112,8 +112,12 @@ namespace NeuralNet {
 
     int expectedAttention;
     int expectedFfn;
+    int expectedQkn;
+    int expectedOrderedClippedSwiGLU;
     int preparedAttention;
     int preparedFfn;
+    int preparedQkn;
+    int preparedOrderedClippedSwiGLU;
     int preparedCombinedQKV;
     int preparedLearnedRopeFp32;
     int preparedFixedRope;
@@ -125,6 +129,8 @@ namespace NeuralNet {
 
     int lastActiveAttention;
     int lastActiveFfn;
+    int lastActiveQkn;
+    int lastActiveOrderedClippedSwiGLU;
     int lastActiveCombinedQKV;
     int lastActiveLearnedRopeFp32;
     int lastActiveFixedRope;
