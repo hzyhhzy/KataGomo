@@ -318,6 +318,120 @@ struct OwnedCudnnHandle {
   OwnedCudnnHandle& operator=(const OwnedCudnnHandle&) = delete;
 };
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+struct BenchmarkRouteCountsInternal {
+  int attention;
+  int ffn;
+  int combinedQKV;
+  int learnedRopeFp32;
+  int fixedRope;
+  int mma;
+  int scalar;
+  int planar;
+  int cudnn;
+  int fallback;
+
+  BenchmarkRouteCountsInternal()
+    : attention(0),
+      ffn(0),
+      combinedQKV(0),
+      learnedRopeFp32(0),
+      fixedRope(0),
+      mma(0),
+      scalar(0),
+      planar(0),
+      cudnn(0),
+      fallback(0)
+  {}
+};
+
+struct BenchmarkRouteStateInternal {
+  bool prepared;
+  bool hasSuccessfulInvocation;
+  bool loggedPrepared;
+  bool loggedActive;
+  bool currentModelApplyComplete;
+  uint64_t invocationSerial;
+  uint64_t streamIdentity;
+  int nnXLen;
+  int nnYLen;
+  int lastBatchSize;
+  int currentBatchSize;
+  bool lastFp16;
+  bool lastNhwc;
+  bool lastExact;
+  bool lastMaskNull;
+  bool currentFp16;
+  bool currentNhwc;
+  bool currentExact;
+  bool currentMaskNull;
+  BenchmarkRouteCountsInternal expected;
+  BenchmarkRouteCountsInternal preparedCounts;
+  BenchmarkRouteCountsInternal current;
+  BenchmarkRouteCountsInternal last;
+
+  BenchmarkRouteStateInternal()
+    : prepared(false),
+      hasSuccessfulInvocation(false),
+      loggedPrepared(false),
+      loggedActive(false),
+      currentModelApplyComplete(false),
+      invocationSerial(0),
+      streamIdentity(0),
+      nnXLen(0),
+      nnYLen(0),
+      lastBatchSize(0),
+      currentBatchSize(0),
+      lastFp16(false),
+      lastNhwc(false),
+      lastExact(false),
+      lastMaskNull(false),
+      currentFp16(false),
+      currentNhwc(false),
+      currentExact(false),
+      currentMaskNull(false),
+      expected(),
+      preparedCounts(),
+      current(),
+      last()
+  {}
+
+  void beginInvocation() noexcept {
+    current = BenchmarkRouteCountsInternal();
+    currentModelApplyComplete = false;
+  }
+
+  void finishModelApply(
+    int batchSize,
+    bool fp16,
+    bool nhwc,
+    bool exact,
+    bool maskNull
+  ) noexcept {
+    currentBatchSize = batchSize;
+    currentFp16 = fp16;
+    currentNhwc = nhwc;
+    currentExact = exact;
+    currentMaskNull = maskNull;
+    currentModelApplyComplete = true;
+  }
+
+  void publishSuccessfulInvocation() noexcept {
+    if(!currentModelApplyComplete)
+      return;
+    last = current;
+    lastBatchSize = currentBatchSize;
+    lastFp16 = currentFp16;
+    lastNhwc = currentNhwc;
+    lastExact = currentExact;
+    lastMaskNull = currentMaskNull;
+    invocationSerial += 1;
+    hasSuccessfulInvocation = true;
+    currentModelApplyComplete = false;
+  }
+};
+#endif
+
 
 struct CudaHandles {
   // Every inference-time transfer, custom kernel, and vendor operation for
@@ -340,6 +454,9 @@ struct CudaHandles {
   // Set while warming up (see NNEvaluator::maybeWarmupComputeHandle). When true, a failed cudnn SDPA
   // execution is tolerated (fall back to the custom kernel); when false such a failure is fatal.
   bool isWarmup;
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  BenchmarkRouteStateInternal benchmarkRoute;
+#endif
 
   CudaHandles(int major, int minor)
     : majorComputeCapability(major),
@@ -1406,6 +1523,13 @@ struct BlockStack {
     int batchSize
   ) const;
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  void collectBenchmarkPreparedRoutes(
+    const CudaHandles* cudaHandles,
+    BenchmarkRouteCountsInternal& counts
+  ) const;
+#endif
+
   void apply(
     CudaHandles* cudaHandles,
     ScratchBuffers* scratch,
@@ -2103,6 +2227,31 @@ struct TransformerAttentionBlock {
         );
       CUDA_ERR(name.c_str(),cudaPeekAtLastError());
     }
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    BenchmarkRouteCountsInternal& active = cudaHandles->benchmarkRoute.current;
+    active.attention += 1;
+    if(useCombinedQKV)
+      active.combinedQKV += 1;
+    else
+      active.planar += 1;
+    if(useRope) {
+      if(learnableRope)
+        active.learnedRopeFp32 += 1;
+      else
+        active.fixedRope += 1;
+    }
+    if(usedMma)
+      active.mma += 1;
+    else
+      active.scalar += 1;
+    const bool mmaWasPrepared =
+      usingFP16 &&
+      cudaHandles->mmaAttentionEnabled &&
+      customCudaFlashAttentionMmaSupportsShape(numHeads,numKVHeads,qHeadDim,vHeadDim);
+    if(mmaWasPrepared && !usedMma)
+      active.fallback += 1;
+#endif
   }
 };
 
@@ -2232,6 +2381,10 @@ struct TransformerFFNBlock {
         );
       CUDA_ERR(name.c_str(),cudaPeekAtLastError());
     }
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    cudaHandles->benchmarkRoute.current.ffn += 1;
+#endif
   }
 };
 
@@ -2344,6 +2497,65 @@ BlockStack::BlockStack(
 }
 BlockStack::~BlockStack() {
 }
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+static void collectBenchmarkExpectedRoutes(
+  const std::vector<std::pair<int, unique_ptr_void>>& descBlocks,
+  BenchmarkRouteCountsInternal& counts
+) {
+  for(const auto& descBlock: descBlocks) {
+    if(descBlock.first == TRANSFORMER_ATTENTION_BLOCK_KIND)
+      counts.attention += 1;
+    else if(descBlock.first == TRANSFORMER_FFN_BLOCK_KIND)
+      counts.ffn += 1;
+    else if(descBlock.first == NESTED_BOTTLENECK_BLOCK_KIND) {
+      const NestedBottleneckResidualBlockDesc* nested =
+        (const NestedBottleneckResidualBlockDesc*)descBlock.second.get();
+      collectBenchmarkExpectedRoutes(nested->blocks,counts);
+    }
+  }
+}
+
+void BlockStack::collectBenchmarkPreparedRoutes(
+  const CudaHandles* cudaHandles,
+  BenchmarkRouteCountsInternal& counts
+) const {
+  for(const auto& blockEntry: blocks) {
+    if(blockEntry.first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+      const TransformerAttentionBlock* block =
+        (const TransformerAttentionBlock*)blockEntry.second.get();
+      counts.attention += 1;
+      if(block->useCombinedQKV)
+        counts.combinedQKV += 1;
+      else
+        counts.planar += 1;
+      if(block->useRope) {
+        if(block->learnableRope)
+          counts.learnedRopeFp32 += 1;
+        else
+          counts.fixedRope += 1;
+      }
+      const bool mmaPrepared =
+        block->usingFP16 &&
+        cudaHandles->mmaAttentionEnabled &&
+        customCudaFlashAttentionMmaSupportsShape(
+          block->numHeads,block->numKVHeads,block->qHeadDim,block->vHeadDim
+        );
+      if(mmaPrepared)
+        counts.mma += 1;
+      else
+        counts.scalar += 1;
+    }
+    else if(blockEntry.first == TRANSFORMER_FFN_BLOCK_KIND)
+      counts.ffn += 1;
+    else if(blockEntry.first == NESTED_BOTTLENECK_BLOCK_KIND) {
+      const NestedBottleneckResidualBlock* nested =
+        (const NestedBottleneckResidualBlock*)blockEntry.second.get();
+      nested->blocks.collectBenchmarkPreparedRoutes(cudaHandles,counts);
+    }
+  }
+}
+#endif
 
 size_t BlockStack::requiredWorkspaceBytes(
   CudaHandles* cudaHandles,
@@ -3114,6 +3326,9 @@ struct Model {
     void* workspaceBuf,
     size_t workspaceBytes
   ) const {
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    cudaHandles->benchmarkRoute.beginInvocation();
+#endif
     SizedBuf<void*> mask(scratch->allocator, scratch->getBufSizeXY(1));
     SizedBuf<void*> maskFloat(scratch->allocator, scratch->getBufSizeXYFloat(1));
     SizedBuf<void*> maskSum(scratch->allocator, scratch->getBufSizeFloat(1));
@@ -3202,6 +3417,14 @@ struct Model {
       workspaceBuf,
       workspaceBytes
     );
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    // This only seals a candidate. getOutput publishes it after the handle
+    // stream synchronizes successfully, so asynchronous failures leave the
+    // preceding successful snapshot and serial untouched.
+    cudaHandles->benchmarkRoute.finishModelApply(
+      batchSize,usingFP16,usingNHWC,requireExactNNLen,maskBuf == NULL
+    );
+#endif
   }
 
 };
@@ -3432,6 +3655,79 @@ void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
 
 //------------------------------------------------------------------------------
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+static bool benchmarkRouteHasTransformer(const BenchmarkRouteStateInternal& route) noexcept {
+  return route.expected.attention > 0 || route.expected.ffn > 0;
+}
+
+static void logBenchmarkPreparedRouteNoThrow(CudaHandles* cudaHandles) noexcept {
+  BenchmarkRouteStateInternal& route = cudaHandles->benchmarkRoute;
+  if(route.loggedPrepared || !benchmarkRouteHasTransformer(route))
+    return;
+  route.loggedPrepared = true;
+  if(cudaHandles->logger == NULL)
+    return;
+  try {
+    const BenchmarkRouteCountsInternal& expected = route.expected;
+    const BenchmarkRouteCountsInternal& prepared = route.preparedCounts;
+    cudaHandles->logger->write(
+      "CUDA_TRANSFORMER_ROUTE_PROOF phase=PREPARED prepared=1 expected_attention=" + Global::intToString(expected.attention) +
+      " prepared_attention=" + Global::intToString(prepared.attention) +
+      " expected_ffn=" + Global::intToString(expected.ffn) +
+      " prepared_ffn=" + Global::intToString(prepared.ffn) +
+      " combined_qkv=" + Global::intToString(prepared.combinedQKV) +
+      " learned_rope_fp32=" + Global::intToString(prepared.learnedRopeFp32) +
+      " fixed_rope=" + Global::intToString(prepared.fixedRope) +
+      " mma=" + Global::intToString(prepared.mma) +
+      " scalar=" + Global::intToString(prepared.scalar) +
+      " planar=" + Global::intToString(prepared.planar) +
+      " cudnn=" + Global::intToString(prepared.cudnn) +
+      " fallback=" + Global::intToString(prepared.fallback) +
+      " board=" + Global::intToString(route.nnXLen) + "x" + Global::intToString(route.nnYLen)
+    );
+  }
+  catch(...) {
+    // Route diagnostics are observational and must never affect inference.
+  }
+}
+
+static void logBenchmarkActiveRouteNoThrow(CudaHandles* cudaHandles) noexcept {
+  BenchmarkRouteStateInternal& route = cudaHandles->benchmarkRoute;
+  if(route.loggedActive || !benchmarkRouteHasTransformer(route) || !route.hasSuccessfulInvocation)
+    return;
+  route.loggedActive = true;
+  if(cudaHandles->logger == NULL)
+    return;
+  try {
+    const BenchmarkRouteCountsInternal& active = route.last;
+    cudaHandles->logger->write(
+      "CUDA_TRANSFORMER_ROUTE_PROOF phase=ACTIVE invocation=" + Global::uint64ToString(route.invocationSerial) +
+      " attention=" + Global::intToString(active.attention) + "/" + Global::intToString(route.expected.attention) +
+      " ffn=" + Global::intToString(active.ffn) + "/" + Global::intToString(route.expected.ffn) +
+      " combined_qkv=" + Global::intToString(active.combinedQKV) +
+      " learned_rope_fp32=" + Global::intToString(active.learnedRopeFp32) +
+      " fixed_rope=" + Global::intToString(active.fixedRope) +
+      " mma=" + Global::intToString(active.mma) +
+      " scalar=" + Global::intToString(active.scalar) +
+      " planar=" + Global::intToString(active.planar) +
+      " cudnn=" + Global::intToString(active.cudnn) +
+      " fallback=" + Global::intToString(active.fallback) +
+      " fp16=" + Global::boolToString(route.lastFp16) +
+      " nhwc=" + Global::boolToString(route.lastNhwc) +
+      " exact=" + Global::boolToString(route.lastExact) +
+      " mask_null=" + Global::boolToString(route.lastMaskNull) +
+      " batch=" + Global::intToString(route.lastBatchSize) +
+      " board=" + Global::intToString(route.nnXLen) + "x" + Global::intToString(route.nnYLen)
+    );
+  }
+  catch(...) {
+    // Route diagnostics are observational and must never affect inference.
+  }
+}
+#endif
+
+//------------------------------------------------------------------------------
+
 struct ComputeHandle {
   std::unique_ptr<CudaHandles> cudaHandles;
   std::unique_ptr<Model> model;
@@ -3463,6 +3759,11 @@ struct ComputeHandle {
     inputsUseNHWC(inputsUseNHWC_),
     policySize(NNPos::getPolicySize(context->nnXLen, context->nnYLen))
   {
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    BenchmarkRouteCountsInternal expectedRoute;
+    BenchmarkRouteCountsInternal preparedRoute;
+    collectBenchmarkExpectedRoutes(loadedModel->modelDesc.trunk.blocks,expectedRoute);
+#endif
     cudaHandles = std::make_unique<CudaHandles>(majorComputeCapability,minorComputeCapability);
     cudaHandles->logger = logger;
     // Probe before constructing the model because an enabled MMA path commits
@@ -3483,12 +3784,33 @@ struct ComputeHandle {
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,
       nnXLen, nnYLen, inputsUseNHWC, useFP16, useNHWC
     );
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    model->trunk->blocks.collectBenchmarkPreparedRoutes(cudaHandles.get(),preparedRoute);
+    if(
+      preparedRoute.attention != expectedRoute.attention ||
+      preparedRoute.ffn != expectedRoute.ffn ||
+      preparedRoute.combinedQKV + preparedRoute.planar != preparedRoute.attention ||
+      preparedRoute.mma + preparedRoute.scalar + preparedRoute.cudnn != preparedRoute.attention
+    ) {
+      throw StringError("CUDA benchmark route proof: constructed transformer routes do not match the model descriptor");
+    }
+#endif
     scratch = std::make_unique<ScratchBuffers>(maxBatchSize, nnXLen, nnYLen, useFP16);
     buffers = std::make_unique<Buffers>(cudaHandles.get(), *model, *scratch);
 
     // Ensure handle-local setup has completed without serializing unrelated
     // handles on the same device.
     CUDA_ERR("ComputeHandle",cudaStreamSynchronize(cudaHandles->stream.stream));
+#ifdef KATAGO_BUILD_BENCHMARKNN
+    BenchmarkRouteStateInternal& route = cudaHandles->benchmarkRoute;
+    route.expected = expectedRoute;
+    route.preparedCounts = preparedRoute;
+    route.streamIdentity = (uint64_t)(uintptr_t)cudaHandles->stream.stream;
+    route.nnXLen = nnXLen;
+    route.nnYLen = nnYLen;
+    route.prepared = true;
+    logBenchmarkPreparedRouteNoThrow(cudaHandles.get());
+#endif
   }
   ~ComputeHandle() noexcept {
     // Device buffers and model weights must outlive every operation enqueued
@@ -3606,6 +3928,55 @@ void NeuralNet::freeComputeHandle(ComputeHandle* gpuHandle) {
 bool NeuralNet::isUsingFP16(const ComputeHandle* handle) {
   return handle->usingFP16;
 }
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+bool NeuralNet::getBenchmarkRouteProof(
+  const ComputeHandle* handle,
+  BenchmarkRouteProof& proof
+) {
+  proof = BenchmarkRouteProof();
+  if(handle == nullptr || handle->cudaHandles == nullptr)
+    return false;
+
+  const BenchmarkRouteStateInternal& route = handle->cudaHandles->benchmarkRoute;
+  proof.prepared = route.prepared;
+  proof.hasSuccessfulInvocation = route.hasSuccessfulInvocation;
+  proof.invocationSerial = route.invocationSerial;
+  proof.streamIdentity = route.streamIdentity;
+  proof.nnXLen = route.nnXLen;
+  proof.nnYLen = route.nnYLen;
+
+  proof.expectedAttention = route.expected.attention;
+  proof.expectedFfn = route.expected.ffn;
+  proof.preparedAttention = route.preparedCounts.attention;
+  proof.preparedFfn = route.preparedCounts.ffn;
+  proof.preparedCombinedQKV = route.preparedCounts.combinedQKV;
+  proof.preparedLearnedRopeFp32 = route.preparedCounts.learnedRopeFp32;
+  proof.preparedFixedRope = route.preparedCounts.fixedRope;
+  proof.preparedMma = route.preparedCounts.mma;
+  proof.preparedScalar = route.preparedCounts.scalar;
+  proof.preparedPlanar = route.preparedCounts.planar;
+  proof.preparedCudnn = route.preparedCounts.cudnn;
+  proof.preparedFallback = route.preparedCounts.fallback;
+
+  proof.lastActiveAttention = route.last.attention;
+  proof.lastActiveFfn = route.last.ffn;
+  proof.lastActiveCombinedQKV = route.last.combinedQKV;
+  proof.lastActiveLearnedRopeFp32 = route.last.learnedRopeFp32;
+  proof.lastActiveFixedRope = route.last.fixedRope;
+  proof.lastActiveMma = route.last.mma;
+  proof.lastActiveScalar = route.last.scalar;
+  proof.lastActivePlanar = route.last.planar;
+  proof.lastActiveCudnn = route.last.cudnn;
+  proof.lastActiveFallback = route.last.fallback;
+  proof.lastBatchSize = route.lastBatchSize;
+  proof.lastFp16 = route.lastFp16;
+  proof.lastNhwc = route.lastNhwc;
+  proof.lastExact = route.lastExact;
+  proof.lastMaskNull = route.lastMaskNull;
+  return true;
+}
+#endif
 
 //------------------------------------------------------------------------------
 
@@ -3882,6 +4253,10 @@ void NeuralNet::getOutput(
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->scoreValueResults, buffers->scoreValueBuf, inputBuffers->singleScoreValueResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->ownershipResults, buffers->ownershipBuf, inputBuffers->singleOwnershipResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
   CUDA_ERR("getOutput",cudaStreamSynchronize(stream));
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  cudaHandles->benchmarkRoute.publishSuccessfulInvocation();
+  logBenchmarkActiveRouteNoThrow(cudaHandles);
+#endif
 
   assert(outputs.size() == batchSize);
 
