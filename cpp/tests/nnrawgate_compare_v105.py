@@ -47,14 +47,12 @@ def validate_revision_lock(
     candidate_fp16: dict[str, Any],
     candidate_revision: str,
 ) -> dict[str, Any]:
-    reference_clean = f"{REFERENCE_BASE_REVISION}-cuda"
-    reference_overlay = f"{REFERENCE_BASE_REVISION}-dirty-cuda"
     reference_frozen_overlay = f"{REFERENCE_TEST_OVERLAY_REVISION}-cuda"
     if fp32["revision"] != reference_fp16["revision"]:
         raise ValueError("FP32 and FP16 reference dumps have different source revisions")
-    if fp32["revision"] not in (reference_clean, reference_overlay, reference_frozen_overlay):
+    if fp32["revision"] != reference_frozen_overlay:
         raise ValueError(
-            "reference dumps are not exact c3b882e7a (optionally with the reviewed dirty test-only overlay)"
+            "reference dumps do not match the frozen test-only overlay whose sole parent is exact c3b882e7a"
         )
     expected_candidate = f"{candidate_revision}-cuda"
     if candidate_fp16["revision"] != expected_candidate:
@@ -63,7 +61,7 @@ def validate_revision_lock(
         "referenceBaseRevision": REFERENCE_BASE_REVISION,
         "referenceFrozenTestOverlayRevision": REFERENCE_TEST_OVERLAY_REVISION,
         "referenceEmbeddedRevision": fp32["revision"],
-        "referenceTestOnlyOverlayDirty": fp32["revision"] == reference_overlay,
+        "referenceOverlayParentIsExactC3": True,
         "candidateSemanticsBaseRevision": CANDIDATE_SEMANTICS_BASE_REVISION,
         "candidateEmbeddedRevision": candidate_fp16["revision"],
     }
@@ -371,6 +369,17 @@ def self_test() -> None:
     )
     assert revision_result["referenceBaseRevision"] == REFERENCE_BASE_REVISION
     assert revision_result["referenceFrozenTestOverlayRevision"] == REFERENCE_TEST_OVERLAY_REVISION
+    try:
+        validate_revision_lock(
+            {"revision": f"{REFERENCE_BASE_REVISION}-dirty-cuda"},
+            {"revision": f"{REFERENCE_BASE_REVISION}-dirty-cuda"},
+            {"revision": f"{'d' * 40}-cuda"},
+            "d" * 40,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("revision lock accepted an unauditable generic c3-dirty overlay")
     v1.validate_structure(valid_arms[0]["meta"], [28], EXACT_SCHEDULE, (105,))
     try:
         v1.validate_structure(valid_arms[0]["meta"], [28], EXACT_SCHEDULE)
@@ -413,7 +422,9 @@ def self_test() -> None:
         "schema": REPORT_SCHEMA,
         "profile": PROFILE,
         "selfTest": "pass",
-        "negativeTests": ["physical-batch-36", "mixed-v102-v105"],
+        "negativeTests": [
+            "physical-batch-36", "mixed-v102-v105", "unfrozen-c3-dirty-overlay"
+        ],
     }))
 
 
