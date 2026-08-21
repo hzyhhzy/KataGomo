@@ -58,9 +58,17 @@ set(KATAGO_BUILD_V105_WIRE_CONTRACT 0 CACHE BOOL "Build the Release-safe native 
 set(KATAGO_BUILD_NNRAWGATE 0 CACHE BOOL "Build the test-only cross-implementation raw neural-net gate command")
 set(KATAGO_ENABLE_P1_SM120 0 CACHE BOOL
   "Use the qualified C256/H8 B36 SM120 provider when its exact dependencies are present")
-set(KATAGO_CUTLASS_ROOT "" CACHE PATH
-  "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 set(KATAGO_P1_SM120_AVAILABLE 0)
+set(KATAGO_ENABLE_P3_PROVIDER 0 CACHE BOOL
+  "Build the default-off SM120 C384/H12 B28 v105 FP16 provider")
+set(KATAGO_CUTLASS_ROOT "" CACHE PATH
+  "CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
+set(KATAGO_P3_EXACT_PACKAGE_CMAKE "" CACHE FILEPATH
+  "SHA-locked C384 B28 QKV package manifest for P3")
+set(KATAGO_P3_FA4_PACKAGE_CMAKE "" CACHE FILEPATH
+  "SHA-locked C384/H12 B28 FA4 package manifest for P3")
+set(KATAGO_P3_DOWN_PACKAGE_CMAKE "" CACHE FILEPATH
+  "SHA-locked C384 B28 FFN-down package manifest for P3")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -222,6 +230,232 @@ if(USE_BACKEND STREQUAL "CUDA")
     else()
       message(WARNING "CUDA 10.2 or greater is recommended, but attempting to build anyways")
       set(CMAKE_CUDA_ARCHITECTURES 30 37 53 70)
+    endif()
+  endif()
+
+  set(KATAGO_P3_PROVIDER_COMPILED 0)
+  set(KATAGO_P3_EXTERNAL_PACKAGES_AVAILABLE 0)
+  set(KATAGO_P3_EXTERNAL_LINK_LIBRARIES "")
+  if(KATAGO_ENABLE_P3_PROVIDER)
+    set(KATAGO_P3_PINNED_CUTLASS_COMMIT
+      "dcf215af68a2d08d305076c152a06f201728cd53")
+    set(KATAGO_P3_CUTLASS_READY 0)
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
+      message(STATUS "P3 provider unavailable: CUDA 13.0 or newer is required")
+    elseif(NOT EXISTS "${KATAGO_CUTLASS_ROOT}/include/cutlass/cutlass.h" OR
+           NOT EXISTS "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm/device/dual_gemm.h")
+      message(STATUS "P3 provider unavailable: pinned CUTLASS checkout is missing")
+    else()
+      find_package(Git QUIET)
+      if(GIT_FOUND)
+        execute_process(
+          COMMAND "${GIT_EXECUTABLE}" -C "${KATAGO_CUTLASS_ROOT}" rev-parse HEAD
+          RESULT_VARIABLE KATAGO_P3_CUTLASS_REVISION_RESULT
+          OUTPUT_VARIABLE KATAGO_P3_CUTLASS_REVISION
+          OUTPUT_STRIP_TRAILING_WHITESPACE)
+      endif()
+      if(NOT GIT_FOUND OR NOT KATAGO_P3_CUTLASS_REVISION_RESULT EQUAL 0 OR
+         NOT KATAGO_P3_CUTLASS_REVISION STREQUAL KATAGO_P3_PINNED_CUTLASS_COMMIT)
+        message(STATUS
+          "P3 provider unavailable: CUTLASS must be pinned to ${KATAGO_P3_PINNED_CUTLASS_COMMIT}")
+      else()
+        set(KATAGO_P3_CUTLASS_READY 1)
+      endif()
+    endif()
+
+    if(KATAGO_P3_CUTLASS_READY)
+      set(KATAGO_P3_PROVIDER_COMPILED 1)
+      set(KATAGO_P3_QKV_TACTIC_ID "")
+      set(KATAGO_P3_FFN_DOWN_TACTIC_ID "")
+      set(KATAGO_P3_EXACT_REGISTRY
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/registry_stub.cu)
+      set(KATAGO_P3_FA4_REGISTRY
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4_registry_stub.cpp)
+      set(KATAGO_P3_DOWN_REGISTRY
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry_stub.cu)
+      set(KATAGO_P3_PACKAGE_BRIDGES "")
+      set(KATAGO_P3_PACKAGE_INCLUDE_DIRS "")
+
+      set(KATAGO_P3_PACKAGE_COUNT 0)
+      foreach(KATAGO_P3_MANIFEST IN ITEMS
+          "${KATAGO_P3_EXACT_PACKAGE_CMAKE}"
+          "${KATAGO_P3_FA4_PACKAGE_CMAKE}"
+          "${KATAGO_P3_DOWN_PACKAGE_CMAKE}")
+        if(NOT KATAGO_P3_MANIFEST STREQUAL "")
+          math(EXPR KATAGO_P3_PACKAGE_COUNT "${KATAGO_P3_PACKAGE_COUNT} + 1")
+        endif()
+      endforeach()
+
+      if(KATAGO_P3_PACKAGE_COUNT EQUAL 3)
+        foreach(KATAGO_P3_MANIFEST_VAR IN ITEMS
+            KATAGO_P3_EXACT_PACKAGE_CMAKE
+            KATAGO_P3_FA4_PACKAGE_CMAKE
+            KATAGO_P3_DOWN_PACKAGE_CMAKE)
+          get_filename_component(${KATAGO_P3_MANIFEST_VAR}
+            "${${KATAGO_P3_MANIFEST_VAR}}" ABSOLUTE)
+          if(NOT EXISTS "${${KATAGO_P3_MANIFEST_VAR}}")
+            message(FATAL_ERROR "P3 package manifest is missing: ${${KATAGO_P3_MANIFEST_VAR}}")
+          endif()
+        endforeach()
+        file(SHA256 "${KATAGO_P3_EXACT_PACKAGE_CMAKE}" KATAGO_P3_EXACT_MANIFEST_SHA)
+        file(SHA256 "${KATAGO_P3_FA4_PACKAGE_CMAKE}" KATAGO_P3_FA4_MANIFEST_SHA)
+        file(SHA256 "${KATAGO_P3_DOWN_PACKAGE_CMAKE}" KATAGO_P3_DOWN_MANIFEST_SHA)
+        if(NOT KATAGO_P3_EXACT_MANIFEST_SHA STREQUAL
+             "cadf3c674d27c3f2a4d91be535ff75bb71396d474c56d526046f811bfec422ae" OR
+           NOT KATAGO_P3_FA4_MANIFEST_SHA STREQUAL
+             "a277e078d44611dc946e101bfe153d9701aa64a0f2ffca48a6889f3f870becf0" OR
+           NOT KATAGO_P3_DOWN_MANIFEST_SHA STREQUAL
+             "f3d05ccb50e4e57c70a8504ad91bd0359999cc17e4800d924a7e3cacc75e86fe")
+          message(FATAL_ERROR "P3 package manifest SHA256 mismatch")
+        endif()
+
+        include("${KATAGO_P3_EXACT_PACKAGE_CMAKE}")
+        include("${KATAGO_P3_FA4_PACKAGE_CMAKE}")
+        include("${KATAGO_P3_DOWN_PACKAGE_CMAKE}")
+        if(NOT KATAGO_C384_EXACT_AOT_PACKAGE_SCHEMA STREQUAL "1" OR
+           NOT KATAGO_C384_EXACT_AOT_PACKAGE_MODE STREQUAL "PRODUCTION" OR
+           NOT KATAGO_C384_EXACT_AOT_SELECTED_BATCH STREQUAL "28" OR
+           NOT KATAGO_C384_EXACT_AOT_SELECTED_QKV_ID STREQUAL
+             "c384-s225-h12d32-qkv1152-rope192-m128n128k32-a4x2-sauto-g170-b28-abi1" OR
+           NOT KATAGO_C384_H12_FA4_PACKAGE_SCHEMA STREQUAL "1" OR
+           NOT KATAGO_C384_H12_FA4_PACKAGE_MODE STREQUAL "PRODUCTION" OR
+           NOT KATAGO_C384_H12_FA4_BATCHES STREQUAL "28" OR
+           NOT KATAGO_C384_FFN_DOWN_PACKAGE_SCHEMA STREQUAL "1" OR
+           NOT KATAGO_C384_FFN_DOWN_PACKAGE_MODE STREQUAL "PRODUCTION" OR
+           NOT KATAGO_C384_FFN_DOWN_SELECTED_BATCH STREQUAL "28" OR
+           NOT KATAGO_C384_FFN_DOWN_SELECTED_ID STREQUAL
+             "c384-s225-residual-ffn-down-m6300-k1024-n384-m128n128k32s3-natural-b28-abi1")
+          message(FATAL_ERROR "P3 package shape or selected tactic does not match B28 P3")
+        endif()
+
+        set(KATAGO_P3_HASH_PAIRS
+          ${KATAGO_C384_EXACT_AOT_GENERATED_FILE_SHA256}
+          ${KATAGO_C384_FFN_DOWN_GENERATED_FILE_SHA256})
+        list(LENGTH KATAGO_P3_HASH_PAIRS KATAGO_P3_HASH_PAIR_LENGTH)
+        math(EXPR KATAGO_P3_HASH_PAIR_REMAINDER "${KATAGO_P3_HASH_PAIR_LENGTH} % 2")
+        if(KATAGO_P3_HASH_PAIR_LENGTH EQUAL 0 OR NOT KATAGO_P3_HASH_PAIR_REMAINDER EQUAL 0)
+          message(FATAL_ERROR "P3 exact/down package SHA list is malformed")
+        endif()
+        math(EXPR KATAGO_P3_HASH_PAIR_LAST "${KATAGO_P3_HASH_PAIR_LENGTH} - 2")
+        foreach(KATAGO_P3_HASH_INDEX RANGE 0 ${KATAGO_P3_HASH_PAIR_LAST} 2)
+          math(EXPR KATAGO_P3_HASH_VALUE_INDEX "${KATAGO_P3_HASH_INDEX} + 1")
+          list(GET KATAGO_P3_HASH_PAIRS ${KATAGO_P3_HASH_INDEX} KATAGO_P3_HASH_FILE)
+          list(GET KATAGO_P3_HASH_PAIRS ${KATAGO_P3_HASH_VALUE_INDEX} KATAGO_P3_HASH_EXPECTED)
+          if(NOT EXISTS "${KATAGO_P3_HASH_FILE}")
+            message(FATAL_ERROR "P3 package artifact is missing: ${KATAGO_P3_HASH_FILE}")
+          endif()
+          file(SHA256 "${KATAGO_P3_HASH_FILE}" KATAGO_P3_HASH_ACTUAL)
+          if(NOT KATAGO_P3_HASH_ACTUAL STREQUAL KATAGO_P3_HASH_EXPECTED)
+            message(FATAL_ERROR "P3 package artifact SHA256 mismatch: ${KATAGO_P3_HASH_FILE}")
+          endif()
+        endforeach()
+        list(LENGTH KATAGO_C384_H12_FA4_ASSETS KATAGO_P3_FA4_ASSET_COUNT)
+        list(LENGTH KATAGO_C384_H12_FA4_ASSET_SHAS KATAGO_P3_FA4_SHA_COUNT)
+        if(NOT KATAGO_P3_FA4_ASSET_COUNT EQUAL KATAGO_P3_FA4_SHA_COUNT OR
+           KATAGO_P3_FA4_ASSET_COUNT EQUAL 0)
+          message(FATAL_ERROR "P3 FA4 package SHA list is malformed")
+        endif()
+        math(EXPR KATAGO_P3_FA4_ASSET_LAST "${KATAGO_P3_FA4_ASSET_COUNT} - 1")
+        foreach(KATAGO_P3_FA4_INDEX RANGE 0 ${KATAGO_P3_FA4_ASSET_LAST})
+          list(GET KATAGO_C384_H12_FA4_ASSETS ${KATAGO_P3_FA4_INDEX} KATAGO_P3_HASH_FILE)
+          list(GET KATAGO_C384_H12_FA4_ASSET_SHAS ${KATAGO_P3_FA4_INDEX} KATAGO_P3_HASH_EXPECTED)
+          if(NOT EXISTS "${KATAGO_P3_HASH_FILE}")
+            message(FATAL_ERROR "P3 FA4 artifact is missing: ${KATAGO_P3_HASH_FILE}")
+          endif()
+          file(SHA256 "${KATAGO_P3_HASH_FILE}" KATAGO_P3_HASH_ACTUAL)
+          if(NOT KATAGO_P3_HASH_ACTUAL STREQUAL KATAGO_P3_HASH_EXPECTED)
+            message(FATAL_ERROR "P3 FA4 artifact SHA256 mismatch: ${KATAGO_P3_HASH_FILE}")
+          endif()
+        endforeach()
+        foreach(KATAGO_P3_FA4_SINGLE IN ITEMS REGISTRY RUNTIME)
+          set(KATAGO_P3_HASH_FILE "${KATAGO_C384_H12_FA4_${KATAGO_P3_FA4_SINGLE}}")
+          set(KATAGO_P3_HASH_EXPECTED "${KATAGO_C384_H12_FA4_${KATAGO_P3_FA4_SINGLE}_SHA}")
+          if(NOT EXISTS "${KATAGO_P3_HASH_FILE}")
+            message(FATAL_ERROR "P3 FA4 ${KATAGO_P3_FA4_SINGLE} is missing")
+          endif()
+          file(SHA256 "${KATAGO_P3_HASH_FILE}" KATAGO_P3_HASH_ACTUAL)
+          if(NOT KATAGO_P3_HASH_ACTUAL STREQUAL KATAGO_P3_HASH_EXPECTED)
+            message(FATAL_ERROR "P3 FA4 ${KATAGO_P3_FA4_SINGLE} SHA256 mismatch")
+          endif()
+        endforeach()
+
+        set(KATAGO_P3_EXTERNAL_PACKAGES_AVAILABLE 1)
+        set(KATAGO_P3_QKV_TACTIC_ID "${KATAGO_C384_EXACT_AOT_SELECTED_QKV_ID}")
+        set(KATAGO_P3_FFN_DOWN_TACTIC_ID "${KATAGO_C384_FFN_DOWN_SELECTED_ID}")
+        set(KATAGO_P3_EXACT_REGISTRY "${KATAGO_C384_EXACT_AOT_REGISTRY_PROVIDER}")
+        set(KATAGO_P3_FA4_REGISTRY "${KATAGO_C384_H12_FA4_REGISTRY}")
+        set(KATAGO_P3_DOWN_REGISTRY "${KATAGO_C384_FFN_DOWN_REGISTRY_PROVIDER}")
+        set(KATAGO_P3_PACKAGE_BRIDGES
+          ${KATAGO_C384_EXACT_AOT_GENERATED_BRIDGES}
+          ${KATAGO_C384_H12_FA4_BRIDGES}
+          ${KATAGO_C384_FFN_DOWN_GENERATED_BRIDGES})
+        set(KATAGO_P3_PACKAGE_INCLUDE_DIRS
+          "${KATAGO_C384_EXACT_AOT_GENERATED_INCLUDE_DIR}"
+          "${KATAGO_C384_FFN_DOWN_GENERATED_INCLUDE_DIR}")
+        foreach(KATAGO_P3_FA4_HEADER IN LISTS KATAGO_C384_H12_FA4_HEADERS)
+          get_filename_component(KATAGO_P3_FA4_HEADER_DIR
+            "${KATAGO_P3_FA4_HEADER}" DIRECTORY)
+          list(APPEND KATAGO_P3_PACKAGE_INCLUDE_DIRS "${KATAGO_P3_FA4_HEADER_DIR}")
+        endforeach()
+        list(REMOVE_DUPLICATES KATAGO_P3_PACKAGE_INCLUDE_DIRS)
+        set(KATAGO_P3_EXTERNAL_LINK_LIBRARIES
+          ${KATAGO_C384_EXACT_AOT_GENERATED_OBJECTS}
+          ${KATAGO_C384_H12_FA4_OBJECTS}
+          ${KATAGO_C384_FFN_DOWN_GENERATED_OBJECTS}
+          "${KATAGO_C384_H12_FA4_RUNTIME}")
+        message(STATUS "P3 provider: linked SHA-locked B28 QKV/FA4/down packages")
+      elseif(KATAGO_P3_PACKAGE_COUNT GREATER 0)
+        message(STATUS "P3 provider unavailable: all three package manifests are required together")
+      else()
+        message(STATUS "P3 provider compiled with unavailable package stubs")
+      endif()
+
+      set(KATAGO_P3_PROVIDER_SOURCES
+        neuralnet/four_profile/p3_provider.cpp
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/plan.cpp
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/weights.cpp
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/registry.cu
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/fa4.cpp
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down.cpp
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/ffn_down_registry.cu
+        neuralnet/cuda_specialized/sm120/c384/fixed_batch/qknorm_rope.cu
+        ${KATAGO_P3_EXACT_REGISTRY}
+        ${KATAGO_P3_FA4_REGISTRY}
+        ${KATAGO_P3_DOWN_REGISTRY}
+        ${KATAGO_P3_PACKAGE_BRIDGES})
+      if(NOT KATAGO_P1_SM120_AVAILABLE)
+        list(APPEND KATAGO_P3_PROVIDER_SOURCES
+          neuralnet/cudafusedffn.cu
+          neuralnet/cuda_specialized/sm120/shared/rms_norm.cu)
+      endif()
+      add_library(katago_p3_provider OBJECT ${KATAGO_P3_PROVIDER_SOURCES})
+      set_target_properties(katago_p3_provider PROPERTIES
+        CUDA_ARCHITECTURES "120"
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        POSITION_INDEPENDENT_CODE ON)
+      target_compile_options(katago_p3_provider PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+        $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>)
+      if(MSVC)
+        target_compile_options(katago_p3_provider PRIVATE
+          $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+      endif()
+      target_compile_definitions(katago_p3_provider PRIVATE
+        KATAGO_ENABLE_RENJU15_RMS_SM120=1
+        KATAGO_P3_EXTERNAL_PACKAGES_AVAILABLE=${KATAGO_P3_EXTERNAL_PACKAGES_AVAILABLE}
+        "KATAGO_P3_QKV_TACTIC_ID=\"${KATAGO_P3_QKV_TACTIC_ID}\""
+        "KATAGO_P3_FFN_DOWN_TACTIC_ID=\"${KATAGO_P3_FFN_DOWN_TACTIC_ID}\"")
+      target_include_directories(katago_p3_provider PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet"
+        ${KATAGO_P3_PACKAGE_INCLUDE_DIRS})
+      target_include_directories(katago_p3_provider SYSTEM PRIVATE
+        "${KATAGO_CUTLASS_ROOT}/include"
+        "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+      list(APPEND NEURALNET_BACKEND_SOURCES $<TARGET_OBJECTS:katago_p3_provider>)
     endif()
   endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
@@ -447,6 +681,9 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
     target_include_directories(katago PRIVATE "${KATAGO_P1_FA4_ROOT}")
   endif()
+  if(KATAGO_P3_PROVIDER_COMPILED)
+    target_compile_definitions(katago PRIVATE KATAGO_P3_PROVIDER_COMPILED=1)
+  endif()
   find_package(CUDAToolkit REQUIRED)
   find_path(CUDNN_INCLUDE_DIR cudnn.h HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES include)
   if((NOT CUDNN_INCLUDE_DIR))
@@ -459,6 +696,9 @@ if(USE_BACKEND STREQUAL "CUDA")
     target_link_libraries(katago
       "${KATAGO_P1_FA4_OBJECT}"
       "${KATAGO_P1_FA4_RUNTIME}")
+  endif()
+  if(KATAGO_P3_EXTERNAL_LINK_LIBRARIES)
+    target_link_libraries(katago ${KATAGO_P3_EXTERNAL_LINK_LIBRARIES})
   endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)

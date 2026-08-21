@@ -18,6 +18,9 @@
 #include "../neuralnet/four_profile/mode.h"
 #include "../neuralnet/four_profile/native_model_view.h"
 #include "../neuralnet/four_profile/stub_factories.h"
+#if defined(KATAGO_P3_PROVIDER_COMPILED) && KATAGO_P3_PROVIDER_COMPILED
+#include "../neuralnet/four_profile/p3_provider.h"
+#endif
 #include "../neuralnet/nninterface.h"
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/nneval.h"
@@ -4037,7 +4040,12 @@ struct ComputeHandle {
       sameGpuConcurrency,requireExactNNLen,useFP16,useNHWC
     );
     FourProfile::RegistryV1 fourProfileRegistry;
+#if defined(KATAGO_P3_PROVIDER_COMPILED) && KATAGO_P3_PROVIDER_COMPILED
+    FourProfile::registerBuiltinStubFactoriesV1(
+      fourProfileRegistry,FourProfile::makeP3FactoryV1());
+#else
     FourProfile::registerBuiltinStubFactoriesV1(fourProfileRegistry);
+#endif
     const FourProfile::ModelViewV1 fourProfileModel =
       FourProfile::buildNativeModelViewV1(
         loadedModel->modelDesc,collectFourProfileExecutables(model->trunk->blocks)

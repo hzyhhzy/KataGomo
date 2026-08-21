@@ -126,10 +126,16 @@ public:
 
 }  // namespace
 
-void registerBuiltinStubFactoriesV1(RegistryV1& registry) {
+void registerBuiltinStubFactoriesV1(
+  RegistryV1& registry,
+  std::unique_ptr<FactoryV1> p3Override
+) {
   registerP1FactoryV1(registry);
   registry.add(std::make_unique<P2StubFactoryV1>());
-  registry.add(std::make_unique<P3StubFactoryV1>());
+  if(p3Override != nullptr)
+    registry.add(std::move(p3Override));
+  else
+    registry.add(std::make_unique<P3StubFactoryV1>());
   registry.add(std::make_unique<P4StubFactoryV1>());
 }
 
