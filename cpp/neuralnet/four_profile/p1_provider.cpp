@@ -341,11 +341,6 @@ public:
       throw ErrorV1("P1 provider was created with a non-P1 key");
     if(!CudaFusedFFN::supportsShape(P1_FFN_CHANNELS,P1_CHANNELS))
       throw ErrorV1("8a fast fused FFN does not support C256/F768");
-    // This is a synchronous construction-time capability probe, not inference
-    // work. It exercises the exact fused kernel and completes before any
-    // staged layer resource can be returned to the manager.
-    if(!CudaFusedFFN::supportedOnCurrentDevice())
-      throw ErrorV1("8a fast fused FFN capability probe failed");
   }
 
   const char* profileId() const noexcept override { return P1_PROFILE_ID; }
