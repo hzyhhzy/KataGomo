@@ -33,20 +33,62 @@
 namespace FourProfile {
 namespace {
 
-constexpr const char* P1_PROFILE_ID = "P1-c256-h8-s225-fp16-b36-s2";
-constexpr int P1_BOARD = 15;
-constexpr int P1_SEQUENCE = 225;
-constexpr int P1_BATCH = 36;
 constexpr int P1_CHANNELS = 256;
 constexpr int P1_HEADS = 8;
 constexpr int P1_HEAD_DIM = 32;
 constexpr int P1_ROPE_PAIRS = 16;
 constexpr int P1_FFN_CHANNELS = 768;
-constexpr int P1_TOKEN_ROWS = P1_BATCH * P1_SEQUENCE;
 
-std::string cudaFailure(const char* operation, cudaError_t status, size_t layer) {
+enum class C256Fa4Kind {
+  Renju15B36,
+  S361B28,
+};
+
+struct C256ProfileConfig {
+  const char* id;
+  int board;
+  int sequence;
+  int batch;
+  int tokenRows;
+  int qkvTactic;
+  C256Fa4Kind fa4Kind;
+};
+
+constexpr C256ProfileConfig P1_CONFIG = {
+  "P1-c256-h8-s225-fp16-b36-s2",
+  15,225,36,36 * 225,
+  KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3,
+  C256Fa4Kind::Renju15B36,
+};
+
+#if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
+constexpr C256ProfileConfig P2_CONFIG = {
+  "P2-c256-h8-s361-fp16-b28-s2",
+  19,361,28,28 * 361,
+  KATAGO_C256_S361_QKV_ROPE_GEMM_M128_N128_K32_S3,
+  C256Fa4Kind::S361B28,
+};
+
+extern "C" int c256s361fa4win_batch();
+extern "C" int c256s361fa4win_sequence();
+extern "C" int c256s361fa4win_heads();
+extern "C" int c256s361fa4win_head_dim();
+extern "C" int c256s361fa4win_input_layout();
+extern "C" cudaError_t c256s361fa4win_prepare(int deviceOrdinal);
+extern "C" cudaError_t c256s361fa4win_launch(
+  void* q,void* k,void* v,void* output,
+  int batch,int sequence,int heads,int headDim,float softmaxScale,
+  uint32_t inputLayout,int deviceOrdinal,cudaStream_t stream);
+#endif
+
+std::string cudaFailure(
+  const C256ProfileConfig& profile,
+  const char* operation,
+  cudaError_t status,
+  size_t layer
+) {
   std::ostringstream out;
-  out << P1_PROFILE_ID << " layer " << layer << " " << operation
+  out << profile.id << " layer " << layer << " " << operation
       << " failed: " << cudaGetErrorString(status);
   return out.str();
 }
@@ -56,10 +98,13 @@ bool aligned16(const void* pointer) {
     (reinterpret_cast<std::uintptr_t>(pointer) & std::uintptr_t(15)) == 0;
 }
 
-bool exactP1Runtime(const RuntimeKeyV1& runtime) {
+bool exactC256Runtime(
+  const RuntimeKeyV1& runtime,
+  const C256ProfileConfig& profile
+) {
   return runtime.deviceComputeCapability == 120 &&
-    runtime.boardX == P1_BOARD && runtime.boardY == P1_BOARD &&
-    runtime.physicalBatchSize == P1_BATCH &&
+    runtime.boardX == profile.board && runtime.boardY == profile.board &&
+    runtime.physicalBatchSize == profile.batch &&
     runtime.sameGpuConcurrency == 2 && runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
@@ -68,7 +113,7 @@ bool exactP1Runtime(const RuntimeKeyV1& runtime) {
     runtime.layout == TensorLayoutV1::Nhwc;
 }
 
-bool exactP1Attention(const AttentionSpecV1& spec) {
+bool exactC256Attention(const AttentionSpecV1& spec) {
   return spec.channels == P1_CHANNELS &&
     spec.numHeads == P1_HEADS && spec.numKVHeads == P1_HEADS &&
     spec.qHeadDim == P1_HEAD_DIM && spec.vHeadDim == P1_HEAD_DIM &&
@@ -76,16 +121,19 @@ bool exactP1Attention(const AttentionSpecV1& spec) {
     !spec.hasInputQuantRange && !spec.hasOutputQuantRange;
 }
 
-bool exactP1Ffn(const FfnSpecV1& spec) {
+bool exactC256Ffn(const FfnSpecV1& spec) {
   return spec.channels == P1_CHANNELS &&
     spec.hiddenChannels == P1_FFN_CHANNELS && spec.useSwiGLU &&
     spec.clipClass == ClipClassV1::Zero &&
     !spec.hasInputQuantRange && !spec.hasProductQuantRange;
 }
 
-bool exactP1Key(const ProfileKeyV1& key) {
-  return key.modelVersion == 102 && exactP1Runtime(key.runtime) &&
-    exactP1Attention(key.attention) && exactP1Ffn(key.ffn);
+bool exactC256Key(
+  const ProfileKeyV1& key,
+  const C256ProfileConfig& profile
+) {
+  return key.modelVersion == 102 && exactC256Runtime(key.runtime,profile) &&
+    exactC256Attention(key.attention) && exactC256Ffn(key.ffn);
 }
 
 class DeviceBuffer {
@@ -150,13 +198,15 @@ public:
   QkvRopeHandle(const QkvRopeHandle&) = delete;
   QkvRopeHandle& operator=(const QkvRopeHandle&) = delete;
 
-  void prepare() {
+  void prepare(const C256ProfileConfig& profile) {
     if(handle != nullptr)
-      throw ErrorV1("P1 QKV+RoPE handle prepared twice");
+      throw ErrorV1(std::string(profile.id) + " QKV+RoPE handle prepared twice");
     handle = katago_renju15_qkv_rope_gemm_sm120_create(
-      KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3,P1_BATCH);
+      profile.qkvTactic,profile.batch);
     if(handle == nullptr)
-      throw ErrorV1("P1 QKV+RoPE handle is unavailable on the current device");
+      throw ErrorV1(
+        std::string(profile.id) +
+        " QKV+RoPE handle is unavailable on the current device");
   }
 
   void* get() const noexcept { return handle; }
@@ -185,14 +235,20 @@ public:
   ResidualHandle(const ResidualHandle&) = delete;
   ResidualHandle& operator=(const ResidualHandle&) = delete;
 
-  void prepare(int family) {
+  void prepare(
+    int family,
+    int tokenRows,
+    const C256ProfileConfig& profile
+  ) {
     if(handle != nullptr)
-      throw ErrorV1("P1 residual handle prepared twice");
+      throw ErrorV1(std::string(profile.id) + " residual handle prepared twice");
     handle = katago_renju15_residual_gemm_sm120_create(
       family,KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3,
-      P1_TOKEN_ROWS);
+      tokenRows);
     if(handle == nullptr)
-      throw ErrorV1("P1 residual GEMM handle is unavailable on the current device");
+      throw ErrorV1(
+        std::string(profile.id) +
+        " residual GEMM handle is unavailable on the current device");
   }
 
   void* get() const noexcept { return handle; }
@@ -234,20 +290,23 @@ std::vector<float> packQkv(const TransformerAttentionDesc& desc) {
   return packed;
 }
 
-std::vector<float> packRope(const TransformerAttentionDesc& desc) {
+std::vector<float> packRope(
+  const TransformerAttentionDesc& desc,
+  const C256ProfileConfig& profile
+) {
   std::vector<float> cosTable;
   std::vector<float> sinTable;
   desc.computeRopeCosSin(
-    P1_BOARD,P1_BOARD,P1_SEQUENCE,cosTable,sinTable);
+    profile.board,profile.board,profile.sequence,cosTable,sinTable);
   const int totalPairs = P1_HEADS * P1_ROPE_PAIRS;
-  const size_t expected = static_cast<size_t>(totalPairs) * P1_SEQUENCE;
+  const size_t expected = static_cast<size_t>(totalPairs) * profile.sequence;
   if(cosTable.size() != expected || sinTable.size() != expected)
     throw ErrorV1("P1 learned-RoPE table has an unexpected size");
 
   std::vector<float> packed(expected * 2);
-  for(int xy = 0; xy < P1_SEQUENCE; xy++) {
+  for(int xy = 0; xy < profile.sequence; xy++) {
     for(int pair = 0; pair < totalPairs; pair++) {
-      const size_t source = static_cast<size_t>(pair) * P1_SEQUENCE + xy;
+      const size_t source = static_cast<size_t>(pair) * profile.sequence + xy;
       const size_t destination =
         (static_cast<size_t>(xy) * totalPairs + pair) * 2;
       packed[destination] = cosTable[source];
@@ -269,9 +328,13 @@ std::vector<float> packFusedFfnWeight(const MatMulLayerDesc& matrix) {
   return packed;
 }
 
-class P1PreparedAttention final : public PreparedAttentionV1 {
+class C256PreparedAttention final : public PreparedAttentionV1 {
 public:
-  P1PreparedAttention(size_t layer_, const TransformerAttentionDesc& desc)
+  C256PreparedAttention(
+    size_t layer_,
+    const TransformerAttentionDesc& desc,
+    const C256ProfileConfig& profile
+  )
     : layer(layer_), epsilon(desc.preLN.epsilon) {
     requireRms(desc.preLN,desc.name + ":attention");
     if(desc.numHeads != P1_HEADS || desc.numKVHeads != P1_HEADS ||
@@ -286,10 +349,11 @@ public:
 
     gamma.uploadHalf(desc.name + ":p1PreLn",desc.preLN.weight);
     qkvWeights.uploadHalf(desc.name + ":p1Qkv",packQkv(desc));
-    ropeCosSin.uploadHalf(desc.name + ":p1Rope",packRope(desc));
+    ropeCosSin.uploadHalf(desc.name + ":c256Rope",packRope(desc,profile));
     outWeights.uploadHalf(desc.name + ":p1Out",desc.outProj.weights);
-    qkv.prepare();
-    out.prepare(KATAGO_RENJU15_RESIDUAL_GEMM_OUT_PROJ);
+    qkv.prepare(profile);
+    out.prepare(
+      KATAGO_RENJU15_RESIDUAL_GEMM_OUT_PROJ,profile.tokenRows,profile);
   }
 
   const size_t layer;
@@ -302,9 +366,13 @@ public:
   ResidualHandle out;
 };
 
-class P1PreparedFfn final : public PreparedFfnV1 {
+class C256PreparedFfn final : public PreparedFfnV1 {
 public:
-  P1PreparedFfn(size_t layer_, const TransformerFFNDesc& desc)
+  C256PreparedFfn(
+    size_t layer_,
+    const TransformerFFNDesc& desc,
+    const C256ProfileConfig& profile
+  )
     : layer(layer_), epsilon(desc.preLN.epsilon) {
     requireRms(desc.preLN,desc.name + ":ffn");
     if(desc.numChannels != P1_CHANNELS ||
@@ -321,7 +389,8 @@ public:
     gateWeights.uploadHalf(
       desc.name + ":p1FastGate",packFusedFfnWeight(desc.linearGate));
     downWeights.uploadHalf(desc.name + ":p1Down",desc.linear2.weights);
-    down.prepare(KATAGO_RENJU15_RESIDUAL_GEMM_FFN_DOWN);
+    down.prepare(
+      KATAGO_RENJU15_RESIDUAL_GEMM_FFN_DOWN,profile.tokenRows,profile);
   }
 
   const size_t layer;
@@ -333,18 +402,38 @@ public:
   ResidualHandle down;
 };
 
-class P1Provider final : public ProviderV1 {
+class C256Provider final : public ProviderV1 {
 public:
-  explicit P1Provider(ProfileKeyV1 key_)
-    : key(std::move(key_)), generation(0), nextRunToken(0), armedRunToken(0) {
-    if(!exactP1Key(key))
-      throw ErrorV1("P1 provider was created with a non-P1 key");
+  C256Provider(ProfileKeyV1 key_, const C256ProfileConfig& profile_)
+    : key(std::move(key_)), profile(profile_), fa4Device(-1),
+      generation(0), nextRunToken(0), armedRunToken(0) {
+    if(!exactC256Key(key,profile))
+      throw ErrorV1(std::string(profile.id) + " provider received a nonmatching key");
     if(!CudaFusedFFN::supportsProblem(
-         P1_TOKEN_ROWS,P1_FFN_CHANNELS,P1_CHANNELS,0.0f))
+         profile.tokenRows,P1_FFN_CHANNELS,P1_CHANNELS,0.0f))
       throw ErrorV1("8a fast fused FFN does not support C256/F768");
+    const cudaError_t deviceStatus = cudaGetDevice(&fa4Device);
+    if(deviceStatus != cudaSuccess)
+      throw ErrorV1(
+        std::string(profile.id) + " could not resolve the active CUDA device");
+#if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
+    if(profile.fa4Kind == C256Fa4Kind::S361B28) {
+      if(c256s361fa4win_batch() != profile.batch ||
+         c256s361fa4win_sequence() != profile.sequence ||
+         c256s361fa4win_heads() != P1_HEADS ||
+         c256s361fa4win_head_dim() != P1_HEAD_DIM ||
+         c256s361fa4win_input_layout() != 1)
+        throw ErrorV1("P2 FA4 object does not match B28/S361/H8/D32 planar QKV");
+      const cudaError_t prepareStatus = c256s361fa4win_prepare(fa4Device);
+      if(prepareStatus != cudaSuccess)
+        throw ErrorV1(
+          std::string(profile.id) + " FA4 prepare failed: " +
+          cudaGetErrorString(prepareStatus));
+    }
+#endif
   }
 
-  const char* profileId() const noexcept override { return P1_PROFILE_ID; }
+  const char* profileId() const noexcept override { return profile.id; }
 
   PrepareAttentionResultV1 prepareAttention(
     size_t layer,
@@ -357,14 +446,14 @@ public:
       result.detail = "P1 attention prepare called after commit";
       return result;
     }
-    if(!exactP1Attention(spec) || scalars.inputQuantMaxAbsBits != 0 ||
+    if(!exactC256Attention(spec) || scalars.inputQuantMaxAbsBits != 0 ||
        scalars.outputQuantMaxAbsBits != 0 || !official.complete()) {
       result.detail = "P1 attention prepare received non-exact semantics or incomplete official resources";
       return result;
     }
     const auto* desc =
       static_cast<const TransformerAttentionDesc*>(official.descriptor);
-    result.prepared = std::make_unique<P1PreparedAttention>(layer,*desc);
+    result.prepared = std::make_unique<C256PreparedAttention>(layer,*desc,profile);
     return result;
   }
 
@@ -379,14 +468,14 @@ public:
       result.detail = "P1 FFN prepare called after commit";
       return result;
     }
-    if(!exactP1Ffn(spec) || scalars.swigluClipBits != 0 ||
+    if(!exactC256Ffn(spec) || scalars.swigluClipBits != 0 ||
        scalars.inputQuantMaxAbsBits != 0 ||
        scalars.productQuantMaxAbsBits != 0 || !official.complete()) {
       result.detail = "P1 FFN prepare received non-exact semantics or incomplete official resources";
       return result;
     }
     const auto* desc = static_cast<const TransformerFFNDesc*>(official.descriptor);
-    result.prepared = std::make_unique<P1PreparedFfn>(layer,*desc);
+    result.prepared = std::make_unique<C256PreparedFfn>(layer,*desc,profile);
     return result;
   }
 
@@ -401,14 +490,14 @@ public:
       return false;
     }
 
-    std::vector<std::unique_ptr<P1PreparedAttention>> stagedAttention;
-    std::vector<std::unique_ptr<P1PreparedFfn>> stagedFfn;
+    std::vector<std::unique_ptr<C256PreparedAttention>> stagedAttention;
+    std::vector<std::unique_ptr<C256PreparedFfn>> stagedFfn;
     stagedAttention.reserve(prepared.attention.size());
     stagedFfn.reserve(prepared.ffn.size());
     for(size_t layer = 0; layer < prepared.attention.size(); layer++) {
-      auto* attention = dynamic_cast<P1PreparedAttention*>(
+      auto* attention = dynamic_cast<C256PreparedAttention*>(
         prepared.attention[layer].get());
-      auto* ffn = dynamic_cast<P1PreparedFfn*>(prepared.ffn[layer].get());
+      auto* ffn = dynamic_cast<C256PreparedFfn*>(prepared.ffn[layer].get());
       if(attention == nullptr || ffn == nullptr ||
          attention->layer != layer || ffn->layer != layer) {
         detail = "P1 provider received a foreign, reordered, or missing staged layer";
@@ -416,19 +505,19 @@ public:
       }
     }
     for(auto& preparedAttention: prepared.attention) {
-      stagedAttention.emplace_back(static_cast<P1PreparedAttention*>(
+      stagedAttention.emplace_back(static_cast<C256PreparedAttention*>(
         preparedAttention.release()));
     }
     for(auto& preparedFfn: prepared.ffn) {
-      stagedFfn.emplace_back(static_cast<P1PreparedFfn*>(preparedFfn.release()));
+      stagedFfn.emplace_back(static_cast<C256PreparedFfn*>(preparedFfn.release()));
     }
 
     DeviceBuffer stagedQkvScratch;
     DeviceBuffer stagedOperationScratch;
-    constexpr size_t qkvElements =
-      static_cast<size_t>(3) * P1_TOKEN_ROWS * P1_CHANNELS;
-    constexpr size_t operationElements =
-      static_cast<size_t>(P1_TOKEN_ROWS) * P1_FFN_CHANNELS;
+    const size_t qkvElements =
+      static_cast<size_t>(3) * profile.tokenRows * P1_CHANNELS;
+    const size_t operationElements =
+      static_cast<size_t>(profile.tokenRows) * P1_FFN_CHANNELS;
     stagedQkvScratch.allocateBytes(
       "P1 qkv scratch",qkvElements * sizeof(half));
     stagedOperationScratch.allocateBytes(
@@ -441,7 +530,7 @@ public:
     qkvScratch = std::move(stagedQkvScratch);
     operationScratch = std::move(stagedOperationScratch);
     generation = 1;
-    detail = "P1 dynamic N/N span committed atomically";
+    detail = std::string(profile.id) + " dynamic N/N span committed atomically";
     return true;
   }
 
@@ -454,18 +543,20 @@ public:
       return ProviderOpResultV1::failure("P1 plan is not committed");
     if(armedRunToken != 0)
       throw FatalErrorV1("P1 preflight called while a prior run token is armed");
-    if(call.key != key.runtime || !exactP1Runtime(call.key) ||
-       call.actualBatchSize != P1_BATCH || call.sequenceSize != P1_SEQUENCE ||
+    if(call.key != key.runtime || !exactC256Runtime(call.key,profile) ||
+       call.actualBatchSize != profile.batch ||
+       call.sequenceSize != profile.sequence ||
        call.transformerPairCount != attention.size() || call.mask != nullptr ||
        call.stream == nullptr || !aligned16(call.trunk) ||
        !aligned16(call.trunkScratch) || !aligned16(qkvScratch.get()) ||
        !aligned16(operationScratch.get()))
       return ProviderOpResultV1::failure(
-        "P1 exact B36/S225/S2/no-mask/pointer contract rejected before enqueue");
+        std::string(profile.id) +
+        " exact batch/sequence/S2/no-mask/pointer contract rejected before enqueue");
 
     for(size_t layer = 0; layer < attention.size(); layer++) {
-      const P1PreparedAttention& attn = *attention[layer];
-      const P1PreparedFfn& feedForward = *ffn[layer];
+      const C256PreparedAttention& attn = *attention[layer];
+      const C256PreparedFfn& feedForward = *ffn[layer];
       if(!aligned16(attn.gamma.get()) || !aligned16(attn.qkvWeights.get()) ||
          !aligned16(attn.ropeCosSin.get()) || !aligned16(attn.outWeights.get()) ||
          !aligned16(feedForward.gamma.get()) ||
@@ -473,13 +564,15 @@ public:
          !aligned16(feedForward.gateWeights.get()) ||
          !aligned16(feedForward.downWeights.get()) ||
          !katago_renju15_qkv_rope_gemm_sm120_supports(
-           attn.qkv.get(),P1_BATCH,P1_SEQUENCE,P1_CHANNELS,P1_CHANNELS,
+           attn.qkv.get(),profile.batch,profile.sequence,
+           P1_CHANNELS,P1_CHANNELS,
            P1_HEADS,P1_HEADS,P1_HEAD_DIM,P1_ROPE_PAIRS,
            true,true,true,true,true) ||
          !katago_renju15_residual_gemm_sm120_supports(
-           attn.out.get(),P1_TOKEN_ROWS,P1_CHANNELS,P1_CHANNELS,true,true) ||
+           attn.out.get(),profile.tokenRows,
+           P1_CHANNELS,P1_CHANNELS,true,true) ||
          !katago_renju15_residual_gemm_sm120_supports(
-           feedForward.down.get(),P1_TOKEN_ROWS,P1_FFN_CHANNELS,
+           feedForward.down.get(),profile.tokenRows,P1_FFN_CHANNELS,
            P1_CHANNELS,true,true))
         return ProviderOpResultV1::failure(
           "P1 prepared layer failed its zero-enqueue launch-shape gate");
@@ -507,59 +600,73 @@ public:
     half* const normalized = static_cast<half*>(call.trunkScratch);
     half* const qkv = static_cast<half*>(qkvScratch.get());
     half* const q = qkv;
-    half* const k = q + static_cast<size_t>(P1_TOKEN_ROWS) * P1_CHANNELS;
-    half* const v = k + static_cast<size_t>(P1_TOKEN_ROWS) * P1_CHANNELS;
+    half* const k = q + static_cast<size_t>(profile.tokenRows) * P1_CHANNELS;
+    half* const v = k + static_cast<size_t>(profile.tokenRows) * P1_CHANNELS;
     half* const operation = static_cast<half*>(operationScratch.get());
     size_t enqueued = 0;
 
     for(size_t layer = 0; layer < attention.size(); layer++) {
-      const P1PreparedAttention& attn = *attention[layer];
-      const P1PreparedFfn& feedForward = *ffn[layer];
+      const C256PreparedAttention& attn = *attention[layer];
+      const C256PreparedFfn& feedForward = *ffn[layer];
       launchOrFatal(
         "attention RMSNorm",layer,
         Renju15Sm120::launchRmsNorm256(
           trunk,normalized,static_cast<const half*>(attn.gamma.get()),
-          P1_TOKEN_ROWS,attn.epsilon,Renju15Sm120::RmsNorm256Tactic::Warp4Vec8,
+          profile.tokenRows,attn.epsilon,
+          Renju15Sm120::RmsNorm256Tactic::Warp4Vec8,
           stream),enqueued);
       launchOrFatal(
         "QKV+RoPE",layer,
         katago_renju15_qkv_rope_gemm_sm120_launch(
           attn.qkv.get(),normalized,
           static_cast<const half*>(attn.qkvWeights.get()),
-          static_cast<const half2*>(attn.ropeCosSin.get()),qkv,P1_BATCH,stream),
+          static_cast<const half2*>(attn.ropeCosSin.get()),qkv,
+          profile.batch,stream),
         enqueued);
 
-      const Renju15Fa4Sm120::LaunchResult fa4 = Renju15Fa4Sm120::launch(
-        Renju15Fa4Sm120::Tactic::B36Tm128Tn128S1Both16,
-        q,k,v,operation,P1_BATCH,P1_SEQUENCE,P1_HEADS,P1_HEADS,
-        P1_HEAD_DIM,P1_HEAD_DIM,true,true,nullptr,true,12,0,stream);
-      if(!fa4.attempted)
-        throw FatalErrorV1(
-          std::string(P1_PROFILE_ID) + " committed FA4 refused its exact runtime");
-      launchOrFatal("FA4",layer,fa4.status,enqueued);
+      cudaError_t fa4Status = cudaErrorNotSupported;
+      if(profile.fa4Kind == C256Fa4Kind::Renju15B36) {
+        const Renju15Fa4Sm120::LaunchResult fa4 = Renju15Fa4Sm120::launch(
+          Renju15Fa4Sm120::Tactic::B36Tm128Tn128S1Both16,
+          q,k,v,operation,profile.batch,profile.sequence,P1_HEADS,P1_HEADS,
+          P1_HEAD_DIM,P1_HEAD_DIM,true,true,nullptr,true,12,0,stream);
+        if(!fa4.attempted)
+          throw FatalErrorV1(
+            std::string(profile.id) + " committed FA4 refused its exact runtime");
+        fa4Status = fa4.status;
+      }
+#if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
+      else {
+        fa4Status = c256s361fa4win_launch(
+          q,k,v,operation,profile.batch,profile.sequence,P1_HEADS,P1_HEAD_DIM,
+          1.0f / std::sqrt(static_cast<float>(P1_HEAD_DIM)),
+          1,fa4Device,stream);
+      }
+#endif
+      launchOrFatal("FA4",layer,fa4Status,enqueued);
       launchOrFatal(
         "attention residual",layer,
         katago_renju15_residual_gemm_sm120_launch(
           attn.out.get(),operation,
           static_cast<const half*>(attn.outWeights.get()),trunk,
-          P1_TOKEN_ROWS,stream),enqueued);
+          profile.tokenRows,stream),enqueued);
 
       launchOrFatal(
         "FFN RMSNorm",layer,
         Renju15Sm120::launchRmsNorm256(
           trunk,normalized,static_cast<const half*>(feedForward.gamma.get()),
-          P1_TOKEN_ROWS,feedForward.epsilon,
+          profile.tokenRows,feedForward.epsilon,
           Renju15Sm120::RmsNorm256Tactic::Warp4Vec8,stream),enqueued);
       try {
         CudaFusedFFN::runSwiGLU(
           normalized,
           static_cast<const half*>(feedForward.linearWeights.get()),
           static_cast<const half*>(feedForward.gateWeights.get()),operation,
-          P1_TOKEN_ROWS,P1_FFN_CHANNELS,P1_CHANNELS,0.0f,stream);
+          profile.tokenRows,P1_FFN_CHANNELS,P1_CHANNELS,0.0f,stream);
       }
       catch(const std::exception& e) {
         throw FatalErrorV1(
-          std::string(P1_PROFILE_ID) + " layer " + std::to_string(layer) +
+          std::string(profile.id) + " layer " + std::to_string(layer) +
           " fast fused FFN failed after enqueue entry: " + e.what());
       }
       enqueued++;
@@ -568,26 +675,28 @@ public:
         katago_renju15_residual_gemm_sm120_launch(
           feedForward.down.get(),operation,
           static_cast<const half*>(feedForward.downWeights.get()),trunk,
-          P1_TOKEN_ROWS,stream),enqueued);
+          profile.tokenRows,stream),enqueued);
     }
     return ProviderOpResultV1::success(enqueued,generation,runToken);
   }
 
 private:
-  static void launchOrFatal(
+  void launchOrFatal(
     const char* operation,
     size_t layer,
     cudaError_t status,
     size_t& enqueued
   ) {
     if(status != cudaSuccess)
-      throw FatalErrorV1(cudaFailure(operation,status,layer));
+      throw FatalErrorV1(cudaFailure(profile,operation,status,layer));
     enqueued++;
   }
 
   const ProfileKeyV1 key;
-  std::vector<std::unique_ptr<P1PreparedAttention>> attention;
-  std::vector<std::unique_ptr<P1PreparedFfn>> ffn;
+  const C256ProfileConfig& profile;
+  int fa4Device;
+  std::vector<std::unique_ptr<C256PreparedAttention>> attention;
+  std::vector<std::unique_ptr<C256PreparedFfn>> ffn;
   DeviceBuffer qkvScratch;
   DeviceBuffer operationScratch;
   uint64_t generation;
@@ -599,7 +708,13 @@ private:
 }  // namespace
 
 std::unique_ptr<ProviderV1> createP1ProviderV1(const ProfileKeyV1& key) {
-  return std::make_unique<P1Provider>(key);
+  return std::make_unique<C256Provider>(key,P1_CONFIG);
 }
+
+#if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
+std::unique_ptr<ProviderV1> createP2ProviderV1(const ProfileKeyV1& key) {
+  return std::make_unique<C256Provider>(key,P2_CONFIG);
+}
+#endif
 
 }  // namespace FourProfile

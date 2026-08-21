@@ -9,6 +9,7 @@
 enum KatagoRenju15QKVRoPEGemmSm120Tactic {
   KATAGO_RENJU15_QKV_ROPE_GEMM_DISABLED = 0,
   KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3 = 1,
+  KATAGO_C256_S361_QKV_ROPE_GEMM_M128_N128_K32_S3 = 2,
 };
 
 struct KatagoRenju15QKVRoPEGemmSm120Descriptor {
@@ -26,12 +27,13 @@ struct KatagoRenju15QKVRoPEGemmSm120Descriptor {
   std::size_t dynamicSharedBytes;
   int inputChannels;
   int projectionChannels;
+  int fixedBatchSize;
   int sequenceLength;
 };
 
-// Creation is deliberately exact-batch B36 and SM120-gated. It does not
-// enqueue work. The returned handle owns only CUTLASS launch state; packed
-// weights and the per-attention-block RoPE table remain owned by the backend.
+// Creation is exact-batch and SM120-gated. The tactic selects either the
+// S225/B36 or S361/B28 shape. The returned handle owns only CUTLASS launch
+// state; packed weights and RoPE tables remain owned by the provider.
 extern "C" void* katago_renju15_qkv_rope_gemm_sm120_create(
   int tactic,
   int fixedBatchSize
@@ -42,7 +44,7 @@ extern "C" const char* katago_renju15_qkv_rope_gemm_sm120_active_marker(
 );
 
 // This is the final launch-time fail-closed gate. precomputedHalf2 means the
-// selected exact plan is the [225][8*16] half2(cos,sin) learned-RoPE tactic.
+// selected exact plan uses a precomputed [S][8*16] half2(cos,sin) table.
 extern "C" bool katago_renju15_qkv_rope_gemm_sm120_supports(
   const void* opaque,
   int batchSize,
