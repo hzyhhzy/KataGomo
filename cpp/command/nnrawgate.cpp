@@ -406,17 +406,14 @@ RawSections runRawCall(
   uint64_t& routeSerial,
   vector<unique_ptr<NNResultBuf>>& ownedRows,
   vector<NNResultBuf*>& rowPointers,
-  vector<unique_ptr<NNOutput>>& ownedOutputs,
-  vector<float>& postPolicy
+  vector<unique_ptr<NNOutput>>& ownedOutputs
 ) {
   fillRows(corpus,rowStart,batchSize,useNHWC,ownedRows);
   vector<NNOutput*> outputs;
   outputs.reserve(batchSize);
   for(int b = 0; b < batchSize; b++)
     outputs.push_back(ownedOutputs[b].get());
-  NeuralNet::getOutput(
-    handle,inputBuffers,batchSize,rowPointers.data(),outputs,postPolicy.data()
-  );
+  NeuralNet::getOutput(handle,inputBuffers,batchSize,rowPointers.data(),outputs);
   verifyRouteAfterCall(handle,routeContract,batchSize,routeSerial);
 
   RawNNGateOutputs raw;
@@ -695,7 +692,6 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       ownedOutputs.back()->nnXLen = boardSize;
       ownedOutputs.back()->nnYLen = boardSize;
     }
-    vector<float> postPolicy((size_t)maxBatchSize * NNPos::MAX_NN_POLICY_SIZE);
     const int policyDim = area + 1;
     const int valueDim = 3;
     const int scoreValueDim = 6;
@@ -713,7 +709,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       );
       RawSections call = runRawCall(
         handle,inputBuffers,corpus,rowStart,actualBatch,useNHWC,routeContract,
-        routeSerial,ownedRows,rowPointers,ownedOutputs,postPolicy
+        routeSerial,ownedRows,rowPointers,ownedOutputs
       );
       fullBatchSizes.push_back(actualBatch);
       copyFullSection(full.policy,call.policy,rowStart,policyDim);
@@ -727,7 +723,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     for(int actualBatch: schedule) {
       dynamicCalls.push_back(runRawCall(
         handle,inputBuffers,corpus,0,actualBatch,useNHWC,routeContract,
-        routeSerial,ownedRows,rowPointers,ownedOutputs,postPolicy
+        routeSerial,ownedRows,rowPointers,ownedOutputs
       ));
     }
 
