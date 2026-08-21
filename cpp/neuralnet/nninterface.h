@@ -98,6 +98,9 @@ namespace NeuralNet {
   // allowed to assume that all boards to evaluate will be of size exactly equal
   // to (nnXLen,nnYLen) rather than smaller, and skip any masking operations.
   // gpuIdxForThisThread == -1 indicates to select a default GPU.
+  // backendNumThreads keeps its historical CPU-backend meaning. For CUDA,
+  // NNEvaluator passes the exact number of server threads mapped to this same
+  // normalized physical GPU so fixed-concurrency providers can fail closed.
   ComputeHandle* createComputeHandle(
     ComputeContext* context,
     const LoadedModel* loadedModel,

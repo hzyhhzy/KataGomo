@@ -3764,9 +3764,6 @@ struct Buffers {
 struct ComputeContext {
   int nnXLen;
   int nnYLen;
-  // Exact only when every configured server thread targets one physical GPU.
-  // -2 means that per-GPU concurrency cannot be proven from this context.
-  int singleGpuIdx;
   enabled_t useFP16Mode;
   enabled_t useNHWCMode;
 };
@@ -3787,6 +3784,7 @@ ComputeContext* NeuralNet::createComputeContext(
     V105CudaPolicy::requireCurrentExecution(
       loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,false
     );
+  (void)gpuIdxs;
   (void)logger;
   (void)openCLTunerFile;
   (void)homeDataDirOverride;
@@ -3795,20 +3793,6 @@ ComputeContext* NeuralNet::createComputeContext(
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
-  context->singleGpuIdx = -2;
-  if(!gpuIdxs.empty()) {
-    const int firstGpuIdx = gpuIdxs[0] < 0 ? 0 : gpuIdxs[0];
-    bool allSameGpu = true;
-    for(int gpuIdx: gpuIdxs) {
-      const int normalizedGpuIdx = gpuIdx < 0 ? 0 : gpuIdx;
-      if(normalizedGpuIdx != firstGpuIdx) {
-        allSameGpu = false;
-        break;
-      }
-    }
-    if(allSameGpu)
-      context->singleGpuIdx = firstGpuIdx;
-  }
   context->useFP16Mode = useFP16Mode;
   context->useNHWCMode = useNHWCMode;
   return context;
@@ -4104,7 +4088,7 @@ ComputeHandle* NeuralNet::createComputeHandle(
   bool inputsUseNHWC,
   int gpuIdxForThisThread,
   int serverThreadIdx,
-  int backendNumThreads) {
+  int sameGpuConcurrency) {
   const char* fourProfileModeSetting = std::getenv("KATAGO_FOUR_PROFILE_MODE");
   const FourProfile::ModeV1 fourProfileMode =
     FourProfile::parseModeSettingV1(fourProfileModeSetting);
@@ -4117,13 +4101,6 @@ ComputeHandle* NeuralNet::createComputeHandle(
   //Use whatever CUDA believes GPU 0 to be.
   if(gpuIdxForThisThread == -1)
     gpuIdxForThisThread = 0;
-
-  // A total thread count is valid same-GPU evidence only when the context
-  // proves every configured thread targets this one physical GPU. Multi-GPU
-  // mappings remain unknown (0) and therefore cannot match an S2 profile.
-  const int sameGpuConcurrency =
-    context->singleGpuIdx == gpuIdxForThisThread && backendNumThreads > 0 ?
-    backendNumThreads : 0;
 
   CUDA_ERR("createComputeHandle",cudaSetDevice(gpuIdxForThisThread));
 
