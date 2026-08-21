@@ -215,6 +215,20 @@ class NNEvaluator {
   NNEvalDeviceOnlyBenchmarkResult benchmarkDeviceOnly(int numWarmups, int numIterations);
 #endif
 
+#ifdef KATAGO_BUILD_NNRAWGATE
+  // The raw-gate command kills ordinary evaluator threads before borrowing
+  // this immutable initialization state to create one isolated direct handle.
+  ComputeContext* getRawGateComputeContext() const { return computeContext; }
+  LoadedModel* getRawGateLoadedModel() const { return loadedModel; }
+  bool getRawGateRequireExactNNLen() const { return requireExactNNLen; }
+  bool getRawGateInputsUseNHWC() const { return inputsUseNHWC; }
+  int getRawGateBackendNumThreads() const { return backendNumThreads; }
+  int getRawGateGpuIdx(int threadIdx) const {
+    assert(threadIdx >= 0 && threadIdx < (int)gpuIdxByServerThread.size());
+    return gpuIdxByServerThread[threadIdx];
+  }
+#endif
+
   //Set the number of threads and what gpus they use. Only call this if threads are not spawned yet, or have been killed.
   void setNumThreads(const std::vector<int>& gpuIdxByServerThr);
 
