@@ -33,7 +33,9 @@ bool isOfficialStage1Route(const NeuralNet::BenchmarkRouteProof& proof) {
   return
     proof.prepared && proof.hasSuccessfulInvocation &&
     attention > 0 && ffn > 0 && attention == ffn &&
+    proof.expectedQkn == 0 && proof.expectedOrderedClippedSwiGLU == 0 &&
     proof.preparedAttention == attention && proof.preparedFfn == ffn &&
+    proof.preparedQkn == 0 && proof.preparedOrderedClippedSwiGLU == 0 &&
     proof.preparedCombinedQKV == attention &&
     proof.preparedLearnedRopeFp32 == attention &&
     proof.preparedMma == attention &&
@@ -41,6 +43,7 @@ bool isOfficialStage1Route(const NeuralNet::BenchmarkRouteProof& proof) {
     proof.preparedPlanar == 0 && proof.preparedCudnn == 0 &&
     proof.preparedFallback == 0 &&
     proof.lastActiveAttention == attention && proof.lastActiveFfn == ffn &&
+    proof.lastActiveQkn == 0 && proof.lastActiveOrderedClippedSwiGLU == 0 &&
     proof.lastActiveCombinedQKV == attention &&
     proof.lastActiveLearnedRopeFp32 == attention &&
     proof.lastActiveMma == attention &&
@@ -50,7 +53,66 @@ bool isOfficialStage1Route(const NeuralNet::BenchmarkRouteProof& proof) {
     proof.lastFp16 && proof.lastNhwc && proof.lastExact && proof.lastMaskNull;
 }
 
-void verifyOfficialStage1RoutePredicate() {
+bool isOfficialV105Fp16Route(const NeuralNet::BenchmarkRouteProof& proof) {
+  const int attention = proof.expectedAttention;
+  const int ffn = proof.expectedFfn;
+  return
+    proof.prepared && proof.hasSuccessfulInvocation &&
+    attention > 0 && ffn == attention &&
+    proof.expectedQkn == attention &&
+    proof.expectedOrderedClippedSwiGLU == ffn &&
+    proof.preparedAttention == attention && proof.preparedFfn == ffn &&
+    proof.preparedQkn == attention &&
+    proof.preparedOrderedClippedSwiGLU == ffn &&
+    proof.preparedCombinedQKV == 0 && proof.preparedPlanar == attention &&
+    proof.preparedLearnedRopeFp32 == attention && proof.preparedFixedRope == 0 &&
+    proof.preparedMma == attention && proof.preparedScalar == 0 &&
+    proof.preparedCudnn == 0 && proof.preparedFallback == 0 &&
+    proof.lastActiveAttention == attention && proof.lastActiveFfn == ffn &&
+    proof.lastActiveQkn == attention &&
+    proof.lastActiveOrderedClippedSwiGLU == ffn &&
+    proof.lastActiveCombinedQKV == 0 && proof.lastActivePlanar == attention &&
+    proof.lastActiveLearnedRopeFp32 == attention && proof.lastActiveFixedRope == 0 &&
+    proof.lastActiveMma == attention && proof.lastActiveScalar == 0 &&
+    proof.lastActiveCudnn == 0 && proof.lastActiveFallback == 0 &&
+    proof.lastFp16 && proof.lastNhwc && proof.lastExact && proof.lastMaskNull;
+}
+
+NeuralNet::BenchmarkRouteProof makeOfficialV105Fp16RouteFixture(int numLayers) {
+  NeuralNet::BenchmarkRouteProof proof = NeuralNet::BenchmarkRouteProof();
+  proof.prepared = true;
+  proof.hasSuccessfulInvocation = true;
+  proof.invocationSerial = 8;
+  proof.streamIdentity = 0x1234;
+  proof.nnXLen = 15;
+  proof.nnYLen = 15;
+  proof.expectedAttention = numLayers;
+  proof.expectedFfn = numLayers;
+  proof.expectedQkn = numLayers;
+  proof.expectedOrderedClippedSwiGLU = numLayers;
+  proof.preparedAttention = numLayers;
+  proof.preparedFfn = numLayers;
+  proof.preparedQkn = numLayers;
+  proof.preparedOrderedClippedSwiGLU = numLayers;
+  proof.preparedPlanar = numLayers;
+  proof.preparedLearnedRopeFp32 = numLayers;
+  proof.preparedMma = numLayers;
+  proof.lastActiveAttention = numLayers;
+  proof.lastActiveFfn = numLayers;
+  proof.lastActiveQkn = numLayers;
+  proof.lastActiveOrderedClippedSwiGLU = numLayers;
+  proof.lastActivePlanar = numLayers;
+  proof.lastActiveLearnedRopeFp32 = numLayers;
+  proof.lastActiveMma = numLayers;
+  proof.lastBatchSize = 3;
+  proof.lastFp16 = true;
+  proof.lastNhwc = true;
+  proof.lastExact = true;
+  proof.lastMaskNull = true;
+  return proof;
+}
+
+void verifyOfficialRoutePredicates() {
   NeuralNet::BenchmarkRouteProof proof = NeuralNet::BenchmarkRouteProof();
   if(isOfficialStage1Route(proof))
     throw StringError("benchmarknn: empty official-route fixture unexpectedly passed");
@@ -85,6 +147,29 @@ void verifyOfficialStage1RoutePredicate() {
   proof.lastActiveFfn = 1;
   if(isOfficialStage1Route(proof))
     throw StringError("benchmarknn: unpaired attention/ffn fixture unexpectedly passed official route");
+
+  NeuralNet::BenchmarkRouteProof v105 = makeOfficialV105Fp16RouteFixture(2);
+  if(!isOfficialV105Fp16Route(v105))
+    throw StringError("benchmarknn: valid v105 FP16 route fixture unexpectedly failed");
+  if(isOfficialStage1Route(v105))
+    throw StringError("benchmarknn: v105 route fixture unexpectedly passed Stage1 route");
+
+  v105.lastActiveQkn = 1;
+  if(isOfficialV105Fp16Route(v105))
+    throw StringError("benchmarknn: incomplete active QKN fixture unexpectedly passed v105 route");
+  v105 = makeOfficialV105Fp16RouteFixture(2);
+  v105.preparedOrderedClippedSwiGLU = 1;
+  if(isOfficialV105Fp16Route(v105))
+    throw StringError("benchmarknn: incomplete prepared clipped SwiGLU fixture unexpectedly passed v105 route");
+  v105 = makeOfficialV105Fp16RouteFixture(2);
+  v105.preparedCombinedQKV = 1;
+  v105.preparedPlanar = 1;
+  if(isOfficialV105Fp16Route(v105))
+    throw StringError("benchmarknn: mixed projection fixture unexpectedly passed v105 route");
+  v105 = makeOfficialV105Fp16RouteFixture(2);
+  v105.lastMaskNull = false;
+  if(isOfficialV105Fp16Route(v105))
+    throw StringError("benchmarknn: masked fixture unexpectedly passed v105 route");
 }
 
 bool sameRawProof(const NeuralNet::BenchmarkRawIOProof& a, const NeuralNet::BenchmarkRawIOProof& b) {
@@ -113,13 +198,19 @@ bool sameRouteFamily(
 ) {
   return
     a.expectedAttention == b.expectedAttention && a.expectedFfn == b.expectedFfn &&
+    a.expectedQkn == b.expectedQkn &&
+    a.expectedOrderedClippedSwiGLU == b.expectedOrderedClippedSwiGLU &&
     a.preparedAttention == b.preparedAttention && a.preparedFfn == b.preparedFfn &&
+    a.preparedQkn == b.preparedQkn &&
+    a.preparedOrderedClippedSwiGLU == b.preparedOrderedClippedSwiGLU &&
     a.preparedCombinedQKV == b.preparedCombinedQKV &&
     a.preparedLearnedRopeFp32 == b.preparedLearnedRopeFp32 &&
     a.preparedFixedRope == b.preparedFixedRope && a.preparedMma == b.preparedMma &&
     a.preparedScalar == b.preparedScalar && a.preparedPlanar == b.preparedPlanar &&
     a.preparedCudnn == b.preparedCudnn && a.preparedFallback == b.preparedFallback &&
     a.lastActiveAttention == b.lastActiveAttention && a.lastActiveFfn == b.lastActiveFfn &&
+    a.lastActiveQkn == b.lastActiveQkn &&
+    a.lastActiveOrderedClippedSwiGLU == b.lastActiveOrderedClippedSwiGLU &&
     a.lastActiveCombinedQKV == b.lastActiveCombinedQKV &&
     a.lastActiveLearnedRopeFp32 == b.lastActiveLearnedRopeFp32 &&
     a.lastActiveFixedRope == b.lastActiveFixedRope && a.lastActiveMma == b.lastActiveMma &&
@@ -183,13 +274,18 @@ void appendBenchmarkLaneJson(
       << ",\"exact\":" << jsonBool(route.lastExact)
       << ",\"maskNull\":" << jsonBool(route.lastMaskNull)
       << ",\"officialStage1\":" << jsonBool(isOfficialStage1Route(route))
+      << ",\"officialV105Fp16\":" << jsonBool(isOfficialV105Fp16Route(route))
       << ",\"expected\":{"
       << "\"attention\":" << route.expectedAttention
       << ",\"ffn\":" << route.expectedFfn
+      << ",\"qkn\":" << route.expectedQkn
+      << ",\"orderedClippedSwiGLU\":" << route.expectedOrderedClippedSwiGLU
       << "}"
       << ",\"prepared\":{"
       << "\"attention\":" << route.preparedAttention
       << ",\"ffn\":" << route.preparedFfn
+      << ",\"qkn\":" << route.preparedQkn
+      << ",\"orderedClippedSwiGLU\":" << route.preparedOrderedClippedSwiGLU
       << ",\"combinedQKV\":" << route.preparedCombinedQKV
       << ",\"learnedRopeFp32\":" << route.preparedLearnedRopeFp32
       << ",\"fixedRope\":" << route.preparedFixedRope
@@ -202,6 +298,8 @@ void appendBenchmarkLaneJson(
       << ",\"active\":{"
       << "\"attention\":" << route.lastActiveAttention
       << ",\"ffn\":" << route.lastActiveFfn
+      << ",\"qkn\":" << route.lastActiveQkn
+      << ",\"orderedClippedSwiGLU\":" << route.lastActiveOrderedClippedSwiGLU
       << ",\"combinedQKV\":" << route.lastActiveCombinedQKV
       << ",\"learnedRopeFp32\":" << route.lastActiveLearnedRopeFp32
       << ",\"fixedRope\":" << route.lastActiveFixedRope
@@ -213,6 +311,75 @@ void appendBenchmarkLaneJson(
       << "}"
       << "}"
       << "}";
+}
+
+int emitV105RouteContractFixture(const string& mode) {
+  NNEvalBenchmarkLaneProof laneProof = NNEvalBenchmarkLaneProof();
+  laneProof.generatedInputChecksum = 0x1111;
+  laneProof.generatedInputContentChecksum = 0x2222;
+  laneProof.generatedInputRows = 3;
+  laneProof.uniqueGeneratedInputRows = 3;
+  laneProof.rawIO.valid = true;
+  laneProof.rawIO.batchSize = 3;
+  laneProof.rawIO.inputRowsHashed = 3;
+  laneProof.rawIO.uniqueInputRows = 3;
+  laneProof.rawIO.inputChecksum = laneProof.generatedInputChecksum;
+  laneProof.rawIO.inputContentChecksum = laneProof.generatedInputContentChecksum;
+  laneProof.rawIO.outputChecksum = 0x3333;
+  laneProof.rawIO.rawOutputFloatsHashed = 9;
+  laneProof.rawIO.policyFloatsHashed = 3;
+  laneProof.rawIO.valueFloatsHashed = 2;
+  laneProof.rawIO.scoreValueFloatsHashed = 2;
+  laneProof.rawIO.ownershipFloatsHashed = 2;
+  laneProof.rawIO.outputsFinite = true;
+  laneProof.rawIO.outputsNonzero = true;
+  laneProof.rawIO.outputsNonconstant = true;
+  laneProof.rawIO.outputRowsHashed = 3;
+  laneProof.rawIO.uniqueOutputRows = 3;
+  laneProof.routeAfter = makeOfficialV105Fp16RouteFixture(2);
+  if(mode == "missing-qkn")
+    laneProof.routeAfter.lastActiveQkn -= 1;
+  else if(mode == "missing-clip")
+    laneProof.routeAfter.lastActiveOrderedClippedSwiGLU -= 1;
+  else if(mode != "pass")
+    throw StringError("benchmarknn: invalid internal route fixture mode");
+  laneProof.routeBefore = laneProof.routeAfter;
+  laneProof.routeBefore.invocationSerial = laneProof.routeAfter.invocationSerial - 1;
+
+  ostringstream laneJson;
+  appendBenchmarkLaneJson(laneJson,0,0.125,24.0,laneProof,"fixture");
+  const string serialized = laneJson.str();
+  if(
+    serialized.find(
+      "\"expected\":{\"attention\":2,\"ffn\":2,\"qkn\":2,\"orderedClippedSwiGLU\":2}"
+    ) == string::npos ||
+    serialized.find(
+      "\"prepared\":{\"attention\":2,\"ffn\":2,\"qkn\":2,\"orderedClippedSwiGLU\":2"
+    ) == string::npos ||
+    serialized.find(
+      "\"active\":{\"attention\":2,\"ffn\":2,\"qkn\":"
+    ) == string::npos ||
+    serialized.find("\"orderedClippedSwiGLU\":",serialized.find("\"active\":{") + 1) == string::npos
+  ) {
+    throw StringError("benchmarknn: v105 route JSON fixture lost required route fields");
+  }
+
+  const bool routeAccepted = isOfficialV105Fp16Route(laneProof.routeAfter);
+  if((mode == "pass") != routeAccepted)
+    throw StringError("benchmarknn: v105 route fixture predicate result contradicted its mode");
+
+  cout << "BENCHMARKNN_ROUTE_CONTRACT_FIXTURE_JSON "
+       << "{\"schema\":\"katago.benchmarknn.route-fixture.v1\""
+       << ",\"status\":\"" << (routeAccepted ? "pass" : "fail") << "\""
+       << ",\"mode\":\"" << mode << "\""
+       << ",\"routeAccepted\":" << jsonBool(routeAccepted)
+       << ",\"expectedModelVersion\":105"
+       << ",\"expectedInputsVersion\":101"
+       << ",\"expectedSpatialFeatures\":22"
+       << ",\"expectedGlobalFeatures\":39"
+       << ",\"lane\":" << serialized
+       << "}" << endl;
+  return routeAccepted ? 0 : 1;
 }
 
 class NeuralNetSessionScope {
@@ -240,7 +407,7 @@ class NeuralNetSessionScope {
 }
 
 int MainCmds::benchmarknn(const vector<string>& args) {
-  verifyOfficialStage1RoutePredicate();
+  verifyOfficialRoutePredicates();
   Board::initHash();
   Rand seedRand("benchmarknn-fixed-seed-v1");
 
@@ -253,6 +420,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
   int boardXSize = 15;
   int boardYSize = 15;
   bool expectedOfficialStage1 = false;
+  bool expectedV105Fp16 = false;
 
   try {
     KataGoCommandLine cmd(
@@ -289,6 +457,22 @@ int MainCmds::benchmarknn(const vector<string>& args) {
       "","expected-official-stage1",
       "Require every lane to prove the official Stage1 FP16 transformer route",false
     );
+    TCLAP::SwitchArg expectedV105Fp16Arg(
+      "","expected-v105-fp16",
+      "Require every lane to prove the native v105 FP16 transformer route",false
+    );
+    TCLAP::SwitchArg routeContractFixtureArg(
+      "","route-contract-fixture",
+      "Run the CPU-only v105 route predicate and JSON serialization fixture",false
+    );
+    TCLAP::SwitchArg routeContractFixtureMissingQknArg(
+      "","route-contract-fixture-missing-qkn",
+      "Run the CPU-only v105 route fixture with one missing active QKN route",false
+    );
+    TCLAP::SwitchArg routeContractFixtureMissingClipArg(
+      "","route-contract-fixture-missing-clip",
+      "Run the CPU-only v105 route fixture with one missing active clipped SwiGLU route",false
+    );
     cmd.add(batchSizeArg);
     cmd.add(serverThreadsArg);
     cmd.add(warmupArg);
@@ -298,9 +482,32 @@ int MainCmds::benchmarknn(const vector<string>& args) {
     cmd.add(boardXArg);
     cmd.add(boardYArg);
     cmd.add(expectedOfficialStage1Arg);
+    cmd.add(expectedV105Fp16Arg);
+    cmd.add(routeContractFixtureArg);
+    cmd.add(routeContractFixtureMissingQknArg);
+    cmd.add(routeContractFixtureMissingClipArg);
     cmd.setShortUsageArgLimit();
     cmd.addOverrideConfigArg();
     cmd.parseArgs(args);
+
+    expectedOfficialStage1 = expectedOfficialStage1Arg.getValue();
+    expectedV105Fp16 = expectedV105Fp16Arg.getValue();
+    if(expectedOfficialStage1 && expectedV105Fp16)
+      throw StringError(
+        "benchmarknn: -expected-official-stage1 and -expected-v105-fp16 are mutually exclusive"
+      );
+    const int numRouteFixtureModes =
+      (routeContractFixtureArg.getValue() ? 1 : 0) +
+      (routeContractFixtureMissingQknArg.getValue() ? 1 : 0) +
+      (routeContractFixtureMissingClipArg.getValue() ? 1 : 0);
+    if(numRouteFixtureModes > 1)
+      throw StringError("benchmarknn: specify only one route-contract fixture mode");
+    if(routeContractFixtureArg.getValue())
+      return emitV105RouteContractFixture("pass");
+    if(routeContractFixtureMissingQknArg.getValue())
+      return emitV105RouteContractFixture("missing-qkn");
+    if(routeContractFixtureMissingClipArg.getValue())
+      return emitV105RouteContractFixture("missing-clip");
 
     modelFile = cmd.getModelFile();
     batchSize = batchSizeArg.getValue();
@@ -325,8 +532,6 @@ int MainCmds::benchmarknn(const vector<string>& args) {
       boardXSize = boardSize;
       boardYSize = boardSize;
     }
-    expectedOfficialStage1 = expectedOfficialStage1Arg.getValue();
-
     if(batchSize <= 0 || batchSize > 1024)
       throw StringError("benchmarknn: batch-size must be between 1 and 1024");
     if(serverThreads <= 0 || serverThreads > 64)
@@ -367,7 +572,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
   cfg.overrideKey("maxBoardYSizeForNNBuffer0",Global::intToString(boardYSize));
   cfg.overrideKey("requireMaxBoardSize","true");
   cfg.overrideKey("requireMaxBoardSize0","true");
-  if(expectedOfficialStage1) {
+  if(expectedOfficialStage1 || expectedV105Fp16) {
     cfg.overrideKey("cudaUseFP16","true");
     cfg.overrideKey("cudaUseFP16-0","true");
     cfg.overrideKey("cudaUseNHWC","true");
@@ -388,6 +593,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << " exact=1"
        << " noMask=1"
        << " expectedOfficialStage1=" << (expectedOfficialStage1 ? 1 : 0)
+       << " expectedV105Fp16=" << (expectedV105Fp16 ? 1 : 0)
        << " input=fixed-lane-row-distinct"
        << " policy=spatial-area-plus-pass"
        << endl;
@@ -421,8 +627,13 @@ int MainCmds::benchmarknn(const vector<string>& args) {
   const bool officialStage1InputAbi =
     actualModelVersion == 102 && actualInputsVersion == 101 &&
     actualSpatialFeatures == 22 && actualGlobalFeatures == 39;
+  const bool v105InputAbi =
+    actualModelVersion == 105 && actualInputsVersion == 101 &&
+    actualSpatialFeatures == 22 && actualGlobalFeatures == 39;
   if(expectedOfficialStage1 && !officialStage1InputAbi)
     throw StringError("benchmarknn: expected official Stage1 requires model v102 with V101 22/39 inputs");
+  if(expectedV105Fp16 && !v105InputAbi)
+    throw StringError("benchmarknn: expected v105 FP16 requires model v105 with V101 22/39 inputs");
   cout << "BENCHMARKNN_TOPOLOGY_VERIFIED"
        << " B=" << nnEval->getMaxBatchSize()
        << " boardX=" << nnEval->getNNXLen()
@@ -434,6 +645,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << " spatialFeatures=" << actualSpatialFeatures
        << " globalFeatures=" << actualGlobalFeatures
        << " officialStage1InputAbi=" << (officialStage1InputAbi ? 1 : 0)
+       << " v105InputAbi=" << (v105InputAbi ? 1 : 0)
        << endl;
 
   const set<int> configuredGpuIdxs = nnEval->getGpuIdxs();
@@ -444,13 +656,16 @@ int MainCmds::benchmarknn(const vector<string>& args) {
 
   NNEvalFullIOBenchmarkResult full = nnEval->benchmarkFullIO(numWarmups,numIterations);
   bool allLanesOfficialStage1 = true;
+  bool allLanesOfficialV105Fp16 = true;
   for(int lane = 0; lane < full.numThreads; lane++) {
     const NNEvalBenchmarkLaneProof& laneProof = full.perThreadProofs[lane];
     const NeuralNet::BenchmarkRawIOProof& raw = laneProof.rawIO;
     const NeuralNet::BenchmarkRouteProof& route = laneProof.routeAfter;
     const uint64_t serialDelta = route.invocationSerial - laneProof.routeBefore.invocationSerial;
     const bool official = isOfficialStage1Route(route);
+    const bool officialV105 = isOfficialV105Fp16Route(route);
     allLanesOfficialStage1 = allLanesOfficialStage1 && official;
+    allLanesOfficialV105Fp16 = allLanesOfficialV105Fp16 && officialV105;
     cout << "BENCHMARKNN_FULL_IO_LANE"
          << " lane=" << lane
          << " medianMs=" << setprecision(10) << full.perThreadMedianSeconds[lane] * 1000.0
@@ -474,6 +689,12 @@ int MainCmds::benchmarknn(const vector<string>& args) {
          << " batch=" << route.lastBatchSize
          << " attention=" << route.lastActiveAttention << "/" << route.expectedAttention
          << " ffn=" << route.lastActiveFfn << "/" << route.expectedFfn
+         << " expectedQkn=" << route.expectedQkn
+         << " preparedQkn=" << route.preparedQkn
+         << " activeQkn=" << route.lastActiveQkn
+         << " expectedOrderedClippedSwiGLU=" << route.expectedOrderedClippedSwiGLU
+         << " preparedOrderedClippedSwiGLU=" << route.preparedOrderedClippedSwiGLU
+         << " activeOrderedClippedSwiGLU=" << route.lastActiveOrderedClippedSwiGLU
          << " combinedQKV=" << route.lastActiveCombinedQKV
          << " learnedRopeFp32=" << route.lastActiveLearnedRopeFp32
          << " mma=" << route.lastActiveMma
@@ -481,6 +702,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
          << " exact=" << (route.lastExact ? 1 : 0)
          << " noMask=" << (route.lastMaskNull ? 1 : 0)
          << " officialStage1=" << (official ? 1 : 0)
+         << " officialV105Fp16=" << (officialV105 ? 1 : 0)
          << endl;
   }
   const bool fullFinite =
@@ -503,7 +725,9 @@ int MainCmds::benchmarknn(const vector<string>& args) {
     const NeuralNet::BenchmarkRouteProof& route = laneProof.routeAfter;
     const uint64_t serialDelta = route.invocationSerial - laneProof.routeBefore.invocationSerial;
     const bool official = isOfficialStage1Route(route);
+    const bool officialV105 = isOfficialV105Fp16Route(route);
     allLanesOfficialStage1 = allLanesOfficialStage1 && official;
+    allLanesOfficialV105Fp16 = allLanesOfficialV105Fp16 && officialV105;
     cout << "BENCHMARKNN_DEVICE_ONLY_LANE"
          << " lane=" << lane
          << " medianMs=" << setprecision(10) << device.perThreadMedianSeconds[lane] * 1000.0
@@ -527,6 +751,12 @@ int MainCmds::benchmarknn(const vector<string>& args) {
          << " batch=" << route.lastBatchSize
          << " attention=" << route.lastActiveAttention << "/" << route.expectedAttention
          << " ffn=" << route.lastActiveFfn << "/" << route.expectedFfn
+         << " expectedQkn=" << route.expectedQkn
+         << " preparedQkn=" << route.preparedQkn
+         << " activeQkn=" << route.lastActiveQkn
+         << " expectedOrderedClippedSwiGLU=" << route.expectedOrderedClippedSwiGLU
+         << " preparedOrderedClippedSwiGLU=" << route.preparedOrderedClippedSwiGLU
+         << " activeOrderedClippedSwiGLU=" << route.lastActiveOrderedClippedSwiGLU
          << " combinedQKV=" << route.lastActiveCombinedQKV
          << " learnedRopeFp32=" << route.lastActiveLearnedRopeFp32
          << " mma=" << route.lastActiveMma
@@ -534,6 +764,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
          << " exact=" << (route.lastExact ? 1 : 0)
          << " noMask=" << (route.lastMaskNull ? 1 : 0)
          << " officialStage1=" << (official ? 1 : 0)
+         << " officialV105Fp16=" << (officialV105 ? 1 : 0)
          << endl;
   }
   const bool deviceFinite =
@@ -560,7 +791,11 @@ int MainCmds::benchmarknn(const vector<string>& args) {
   }
   const bool inputChecksumMatch = full.inputChecksum == device.inputChecksum;
   const bool outputChecksumMatch = full.outputChecksum == device.outputChecksum;
-  const bool officialRoutePass = !expectedOfficialStage1 || allLanesOfficialStage1;
+  const bool stage1RoutePass = !expectedOfficialStage1 || allLanesOfficialStage1;
+  const bool v105RoutePass = !expectedV105Fp16 || allLanesOfficialV105Fp16;
+  const bool requestedRoutePass = stage1RoutePass && v105RoutePass;
+  // Retain the original field name as a schema-v1 compatibility alias.
+  const bool officialRoutePass = requestedRoutePass;
   const bool integrityPass =
     fullFinite && deviceFinite && inputChecksumMatch && outputChecksumMatch &&
     perLaneProofMatch && officialRoutePass;
@@ -571,6 +806,11 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << " perLaneProofMatch=" << (perLaneProofMatch ? 1 : 0)
        << " expectedOfficialStage1=" << (expectedOfficialStage1 ? 1 : 0)
        << " allLanesOfficialStage1=" << (allLanesOfficialStage1 ? 1 : 0)
+       << " expectedV105Fp16=" << (expectedV105Fp16 ? 1 : 0)
+       << " allLanesOfficialV105Fp16=" << (allLanesOfficialV105Fp16 ? 1 : 0)
+       << " stage1RoutePass=" << (stage1RoutePass ? 1 : 0)
+       << " v105RoutePass=" << (v105RoutePass ? 1 : 0)
+       << " requestedRoutePass=" << (requestedRoutePass ? 1 : 0)
        << " officialRoutePass=" << (officialRoutePass ? 1 : 0)
        << endl;
 
@@ -594,6 +834,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << ",\"policyShape\":\"spatialAreaPlusPass\""
        << ",\"policyFloatsPerRow\":" << boardXSize * boardYSize + 1
        << ",\"expectedOfficialStage1\":" << jsonBool(expectedOfficialStage1)
+       << ",\"expectedV105Fp16\":" << jsonBool(expectedV105Fp16)
        << "}"
        << ",\"model\":{"
        << "\"modelVersion\":" << actualModelVersion
@@ -601,6 +842,7 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << ",\"spatialFeatures\":" << actualSpatialFeatures
        << ",\"globalFeatures\":" << actualGlobalFeatures
        << ",\"officialStage1InputAbi\":" << jsonBool(officialStage1InputAbi)
+       << ",\"v105InputAbi\":" << jsonBool(v105InputAbi)
        << "}"
        << ",\"fullIO\":{"
        << "\"wallMetric\":\"actualWallNNEvalsPerSec\""
@@ -647,8 +889,14 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << ",\"inputChecksumMatch\":" << jsonBool(inputChecksumMatch)
        << ",\"outputChecksumMatch\":" << jsonBool(outputChecksumMatch)
        << ",\"perLaneProofMatch\":" << jsonBool(perLaneProofMatch)
-       << ",\"officialRouteRequired\":" << jsonBool(expectedOfficialStage1)
+       << ",\"officialRouteRequired\":" << jsonBool(expectedOfficialStage1 || expectedV105Fp16)
+       << ",\"expectedOfficialStage1\":" << jsonBool(expectedOfficialStage1)
        << ",\"allLanesOfficialStage1\":" << jsonBool(allLanesOfficialStage1)
+       << ",\"stage1RoutePass\":" << jsonBool(stage1RoutePass)
+       << ",\"expectedV105Fp16\":" << jsonBool(expectedV105Fp16)
+       << ",\"allLanesOfficialV105Fp16\":" << jsonBool(allLanesOfficialV105Fp16)
+       << ",\"v105RoutePass\":" << jsonBool(v105RoutePass)
+       << ",\"requestedRoutePass\":" << jsonBool(requestedRoutePass)
        << ",\"officialRoutePass\":" << jsonBool(officialRoutePass)
        << "}"
        << "}";
@@ -661,6 +909,9 @@ int MainCmds::benchmarknn(const vector<string>& args) {
        << " inputChecksumMatch=1"
        << " outputChecksumMatch=1"
        << " perLaneProofMatch=1"
+       << " stage1RoutePass=1"
+       << " v105RoutePass=1"
+       << " requestedRoutePass=1"
        << " officialRoutePass=1"
        << endl;
   return 0;
