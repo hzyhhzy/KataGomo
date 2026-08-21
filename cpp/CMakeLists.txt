@@ -3,6 +3,24 @@ project(katago)
 
 set(CMAKE_CXX_STANDARD 17)
 
+set(FOUR_PROFILE_PROVIDER_SOURCES
+  neuralnet/four_profile/provider_v1.cpp
+  neuralnet/four_profile/mode.cpp
+  neuralnet/four_profile/registry.cpp
+  neuralnet/four_profile/manager.cpp
+  neuralnet/four_profile/native_model_view.cpp
+  neuralnet/four_profile/stub_factories.cpp)
+
+add_executable(four_profile_provider_contract EXCLUDE_FROM_ALL
+  tests/four_profile_provider_contract.cpp
+  ${FOUR_PROFILE_PROVIDER_SOURCES})
+target_include_directories(four_profile_provider_contract PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}")
+add_custom_target(four_profile_provider_contract_check
+  COMMAND $<TARGET_FILE:four_profile_provider_contract>
+  DEPENDS four_profile_provider_contract
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+  VERBATIM)
 include_directories(external)
 include_directories(external/tclap-1.2.2/include)
 include_directories(SYSTEM external/filesystem-1.5.8/include) #SYSTEM suppresses a few warnings
@@ -221,6 +239,7 @@ add_executable(katago
   neuralnet/nninputs.cpp
   neuralnet/modelversion.cpp
   neuralnet/v105policy.cpp
+  ${FOUR_PROFILE_PROVIDER_SOURCES}
   neuralnet/nneval.cpp
   neuralnet/desc.cpp
   neuralnet/onnxprotoreader.cpp
