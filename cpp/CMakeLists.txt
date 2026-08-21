@@ -10,6 +10,7 @@ set(FOUR_PROFILE_PROVIDER_SOURCES
   neuralnet/four_profile/manager.cpp
   neuralnet/four_profile/native_model_view.cpp
   neuralnet/four_profile/p1_factory.cpp
+  neuralnet/four_profile/p2_factory.cpp
   neuralnet/four_profile/stub_factories.cpp)
 
 add_executable(four_profile_provider_contract EXCLUDE_FROM_ALL
@@ -59,6 +60,11 @@ set(KATAGO_BUILD_NNRAWGATE 0 CACHE BOOL "Build the test-only cross-implementatio
 set(KATAGO_ENABLE_P1_SM120 0 CACHE BOOL
   "Use the qualified C256/H8 B36 SM120 provider when its exact dependencies are present")
 set(KATAGO_P1_SM120_AVAILABLE 0)
+set(KATAGO_ENABLE_P2_SM120 0 CACHE BOOL
+  "Use the C256/H8 B28/S361 SM120 provider with an external FA4 package")
+set(KATAGO_P2_SM120_AVAILABLE 0)
+set(KATAGO_P2_FA4_PACKAGE_CMAKE "" CACHE FILEPATH
+  "CMake manifest for the C256/H8 B28/S361 FA4 AOT package")
 set(KATAGO_ENABLE_P3_PROVIDER 0 CACHE BOOL
   "Build the default-off SM120 C384/H12 B28 v105 FP16 provider")
 set(KATAGO_ENABLE_P4_PROVIDER 0 CACHE BOOL
@@ -169,6 +175,36 @@ if(USE_BACKEND STREQUAL "CUDA")
     message(STATUS "P1 SM120 provider disabled; exact matches use official CUDA")
   endif()
 
+  if(KATAGO_ENABLE_P2_SM120)
+    if(NOT KATAGO_P1_SM120_AVAILABLE)
+      message(STATUS "P2 provider unavailable: enable the shared P1 C256 SM120 kernel build")
+    elseif(KATAGO_P2_FA4_PACKAGE_CMAKE STREQUAL "" OR
+           NOT EXISTS "${KATAGO_P2_FA4_PACKAGE_CMAKE}")
+      message(STATUS "P2 provider unavailable: KATAGO_P2_FA4_PACKAGE_CMAKE is missing")
+    else()
+      include("${KATAGO_P2_FA4_PACKAGE_CMAKE}")
+      if(NOT KATAGO_C256_S361_FA4_SCHEMA STREQUAL "1" OR
+         NOT KATAGO_C256_S361_FA4_BATCH STREQUAL "28" OR
+         NOT KATAGO_C256_S361_FA4_SEQUENCE STREQUAL "361" OR
+         NOT KATAGO_C256_S361_FA4_HEADS STREQUAL "8")
+        message(FATAL_ERROR "P2 FA4 package does not describe B28/S361/H8")
+      endif()
+      foreach(KATAGO_P2_FILE IN ITEMS
+          "${KATAGO_C256_S361_FA4_HEADER}"
+          "${KATAGO_C256_S361_FA4_OBJECT}"
+          "${KATAGO_C256_S361_FA4_BRIDGE}"
+          "${KATAGO_C256_S361_FA4_RUNTIME}")
+        if(NOT EXISTS "${KATAGO_P2_FILE}")
+          message(FATAL_ERROR "P2 FA4 package file is missing: ${KATAGO_P2_FILE}")
+        endif()
+      endforeach()
+      get_filename_component(KATAGO_P2_FA4_INCLUDE_DIR
+        "${KATAGO_C256_S361_FA4_HEADER}" DIRECTORY)
+      set(KATAGO_P2_SM120_AVAILABLE 1)
+      message(STATUS "P2 SM120 provider available: C256/H8/B28/S361, dynamic N/N")
+    endif()
+  endif()
+
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/cudabackend.cpp
     neuralnet/cudautils.cpp
@@ -198,6 +234,12 @@ if(USE_BACKEND STREQUAL "CUDA")
     target_include_directories(katago_p1_sm120_kernels SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+    if(KATAGO_P2_SM120_AVAILABLE)
+      target_sources(katago_p1_sm120_kernels PRIVATE
+        "${KATAGO_C256_S361_FA4_BRIDGE}")
+      target_include_directories(katago_p1_sm120_kernels PRIVATE
+        "${KATAGO_P2_FA4_INCLUDE_DIR}")
+    endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
       neuralnet/four_profile/p1_provider.cpp
       neuralnet/cuda_specialized/sm120/c256/fixed_batch/fa4.cpp
@@ -717,6 +759,10 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
     target_include_directories(katago PRIVATE "${KATAGO_P1_FA4_ROOT}")
   endif()
+  if(KATAGO_P2_SM120_AVAILABLE)
+    target_compile_definitions(katago PRIVATE
+      KATAGO_ENABLE_P2_SM120_PROVIDER=1)
+  endif()
   if(KATAGO_P3_PROVIDER_COMPILED)
     target_compile_definitions(katago PRIVATE KATAGO_P3_PROVIDER_COMPILED=1)
   endif()
@@ -735,6 +781,11 @@ if(USE_BACKEND STREQUAL "CUDA")
     target_link_libraries(katago
       "${KATAGO_P1_FA4_OBJECT}"
       "${KATAGO_P1_FA4_RUNTIME}")
+  endif()
+  if(KATAGO_P2_SM120_AVAILABLE)
+    target_link_libraries(katago
+      "${KATAGO_C256_S361_FA4_OBJECT}"
+      "${KATAGO_C256_S361_FA4_RUNTIME}")
   endif()
   if(KATAGO_P3_EXTERNAL_LINK_LIBRARIES)
     target_link_libraries(katago ${KATAGO_P3_EXTERNAL_LINK_LIBRARIES})

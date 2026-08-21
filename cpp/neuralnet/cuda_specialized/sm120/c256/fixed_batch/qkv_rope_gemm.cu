@@ -1,5 +1,5 @@
 /***************************************************************************************************
- * Fixed S225/C256/H8/D32 FP16 batched QKV GEMM with learned 2-D RoPE in the epilogue.
+ * Fixed C256/H8/D32 FP16 batched QKV GEMM with learned 2-D RoPE in the epilogue.
  *
  * The output contract is the existing planar FA4 contract. CUTLASS batch z=0/1/2 is Q/K/V;
  * only z<2 is rotated. The implementation is adapted from KataGomo's retained SM89
@@ -24,13 +24,15 @@
 
 namespace {
 
-constexpr int SequenceLength = 225;
+constexpr int SequenceLength225 = 225;
+constexpr int SequenceLength361 = 361;
 constexpr int Channels = 256;
 constexpr int Heads = 8;
 constexpr int HeadDim = 32;
 constexpr int RopePairs = 16;
 constexpr int GemmBatch = 3;
 constexpr int Batch36 = 36;
+constexpr int Batch28 = 28;
 constexpr std::size_t RequiredSharedBytesPerBlockOptin = 101376ULL;
 
 using Element = cutlass::half_t;
@@ -40,7 +42,7 @@ using OutputOp = cutlass::epilogue::thread::LinearCombination<
 using InstructionShape = cutlass::gemm::GemmShape<16,8,16>;
 using Swizzle = cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle;
 
-template<typename BaseIterator>
+template<int SequenceLength, typename BaseIterator>
 class RoPEOutputTileIterator : public BaseIterator {
  public:
   using Base = BaseIterator;
@@ -54,6 +56,7 @@ class RoPEOutputTileIterator : public BaseIterator {
   using Fragment = typename Base::Fragment;
   using AccessType = typename Base::AccessType;
   using Mask = typename Base::Mask;
+  using BaseParams = typename Base::Params;
 
   static int const kElementsPerAccess = Base::kElementsPerAccess;
   static int const kIterations = Base::kIterations;
@@ -61,16 +64,16 @@ class RoPEOutputTileIterator : public BaseIterator {
   static_assert((kElementsPerAccess % 2) == 0,
     "QKV+RoPE epilogue accesses must preserve adjacent rotary pairs");
 
-  struct Params : public Base::Params {
+  struct Params : public BaseParams {
     const half2* cosSinTable;
     int totalRows;
 
     CUTLASS_HOST_DEVICE
-    Params() : Base::Params(), cosSinTable(nullptr), totalRows(0) {}
+    Params() : BaseParams(), cosSinTable(nullptr), totalRows(0) {}
 
     CUTLASS_HOST_DEVICE
     explicit Params(Layout const& layout)
-      : Base::Params(layout), cosSinTable(nullptr), totalRows(0) {}
+      : BaseParams(layout), cosSinTable(nullptr), totalRows(0) {}
   };
 
  private:
@@ -147,6 +150,7 @@ class RoPEOutputTileIterator : public BaseIterator {
 };
 
 template<
+  int SequenceLength,
   int ThreadblockM, int ThreadblockN, int ThreadblockK,
   int WarpM, int WarpN, int WarpK, int Stages>
 struct KernelBundle {
@@ -172,7 +176,7 @@ struct KernelBundle {
   using Mma = typename DefaultKernel::Mma;
   using DefaultEpilogue = typename DefaultKernel::Epilogue;
   using DefaultIterator = typename DefaultEpilogue::OutputTileIterator;
-  using RopeIterator = RoPEOutputTileIterator<DefaultIterator>;
+  using RopeIterator = RoPEOutputTileIterator<SequenceLength,DefaultIterator>;
   using RopeEpilogue = cutlass::epilogue::threadblock::Epilogue<
     typename DefaultEpilogue::Shape,
     typename DefaultEpilogue::WarpMmaOperator,
@@ -187,19 +191,31 @@ struct KernelBundle {
   using Kernel = cutlass::gemm::kernel::GemmBatched<Mma,RopeEpilogue,Swizzle>;
 };
 
-using Winner = KernelBundle<128,128,32,64,64,32,3>;
+using Winner225 = KernelBundle<SequenceLength225,128,128,32,64,64,32,3>;
+using Winner361 = KernelBundle<SequenceLength361,128,128,32,64,64,32,3>;
 
-static_assert(sizeof(typename Winner::Kernel::SharedStorage) <=
+static_assert(sizeof(typename Winner225::Kernel::SharedStorage) <=
     RequiredSharedBytesPerBlockOptin,
   "QKV+RoPE winner exceeds the SM120 opt-in shared-memory contract");
-static_assert(Winner::Kernel::kThreadCount <= 1024,
+static_assert(Winner225::Kernel::kThreadCount <= 1024,
   "QKV+RoPE winner exceeds CUDA threads-per-block limit");
+static_assert(sizeof(typename Winner361::Kernel::SharedStorage) ==
+    sizeof(typename Winner225::Kernel::SharedStorage),
+  "S361 must retain the S225 kernel resource shape");
+static_assert(Winner361::Kernel::kThreadCount == Winner225::Kernel::kThreadCount,
+  "S361 must retain the S225 threadblock shape");
 
 constexpr KatagoRenju15QKVRoPEGemmSm120Descriptor Descriptors[] = {
   {KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3,
    "qkv-rope-m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
-   Winner::Kernel::kThreadCount,sizeof(typename Winner::Kernel::SharedStorage),
-   Channels,Channels,SequenceLength},
+   Winner225::Kernel::kThreadCount,
+   sizeof(typename Winner225::Kernel::SharedStorage),
+   Channels,Channels,Batch36,SequenceLength225},
+  {KATAGO_C256_S361_QKV_ROPE_GEMM_M128_N128_K32_S3,
+   "qkv-rope-s361-b28-m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
+   Winner361::Kernel::kThreadCount,
+   sizeof(typename Winner361::Kernel::SharedStorage),
+   Channels,Channels,Batch28,SequenceLength361},
 };
 
 struct StateBase {
@@ -322,7 +338,9 @@ const KatagoRenju15QKVRoPEGemmSm120Descriptor* descriptorForTactic(int tactic) {
 std::unique_ptr<StateBase> stateForTactic(int tactic) {
   switch(tactic) {
   case KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3:
-    return std::unique_ptr<StateBase>(new State<Winner>());
+    return std::unique_ptr<StateBase>(new State<Winner225>());
+  case KATAGO_C256_S361_QKV_ROPE_GEMM_M128_N128_K32_S3:
+    return std::unique_ptr<StateBase>(new State<Winner361>());
   default:
     return nullptr;
   }
@@ -348,14 +366,15 @@ bool aligned16(const void* ptr) {
 extern "C" void* katago_renju15_qkv_rope_gemm_sm120_create(
   int tactic,
   int fixedBatchSize) {
-  if(fixedBatchSize != Batch36 || !isSm120Compatible())
-    return nullptr;
   const auto* descriptor = descriptorForTactic(tactic);
+  if(descriptor == nullptr || fixedBatchSize != descriptor->fixedBatchSize ||
+     !isSm120Compatible())
+    return nullptr;
   std::unique_ptr<StateBase> state = stateForTactic(tactic);
-  if(descriptor == nullptr || state == nullptr)
+  if(state == nullptr)
     return nullptr;
   return new(std::nothrow) Handle{
-    tactic,fixedBatchSize,fixedBatchSize * SequenceLength,
+    tactic,fixedBatchSize,fixedBatchSize * descriptor->sequenceLength,
     descriptor,std::move(state)};
 }
 
@@ -387,7 +406,7 @@ extern "C" bool katago_renju15_qkv_rope_gemm_sm120_supports(
   const Handle* handle = static_cast<const Handle*>(opaque);
   return handle != nullptr &&
     batchSize == handle->fixedBatchSize &&
-    seqLen == SequenceLength &&
+    seqLen == handle->descriptor->sequenceLength &&
     inputChannels == Channels && projectionChannels == Channels &&
     numHeads == Heads && numKVHeads == Heads &&
     headDim == HeadDim && ropePairs == RopePairs &&
