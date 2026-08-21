@@ -571,6 +571,23 @@ void testBuiltinAvailabilityAndRequiredMode() {
   registerBuiltinStubFactoriesV1(registry);
   require(registry.size() == 4,"built-in registry does not contain P1/P2/P3/P4 factories");
 
+  auto requireStreamAgnosticMatch = [&registry](
+    const ModelViewV1& modelView,
+    const RuntimeKeyV1& baseRuntime,
+    const std::string& profile
+  ) {
+    const int concurrentCounts[] = {1,4};
+    for(int concurrentCount: concurrentCounts) {
+      RuntimeKeyV1 runtime = baseRuntime;
+      runtime.sameGpuConcurrency = concurrentCount;
+      std::unique_ptr<ManagerV1> candidate = ManagerV1::create(
+        registry,modelView,runtime,ModeV1::Auto
+      );
+      require(candidate->report().reason == ReasonV1::ProviderUnavailable,
+        "same-GPU concurrency incorrectly participated in " + profile + " eligibility");
+    }
+  };
+
   const ModelViewV1 p2 = model(
     24,attentionSpec(256,8,false,false),ffnSpec(256,768,false,false),0,0,102
   );
@@ -581,6 +598,7 @@ void testBuiltinAvailabilityAndRequiredMode() {
   require(manager->report().route == RouteV1::Official &&
           manager->report().reason == ReasonV1::ProviderUnavailable,
     "P2 stub did not use official Auto fallback");
+  requireStreamAgnosticMatch(p2,p2Runtime,"P2");
   expectException<ErrorV1>([&](){
     (void)ManagerV1::create(registry,p2,p2Runtime,ModeV1::Required);
   },"Required P2 availability");
@@ -605,11 +623,7 @@ void testBuiltinAvailabilityAndRequiredMode() {
           manager->report().reason == ReasonV1::Unmatched,
     "masked runtime matched a no-mask-only profile");
 
-  RuntimeKeyV1 concurrentRuntime = p1Runtime;
-  concurrentRuntime.sameGpuConcurrency = 1;
-  manager = ManagerV1::create(registry,p1,concurrentRuntime,ModeV1::Auto);
-  require(manager->report().reason == ReasonV1::Unmatched,
-    "uncertified S1 same-GPU concurrency matched an S2 profile");
+  requireStreamAgnosticMatch(p1,p1Runtime,"P1");
 
   RuntimeKeyV1 wrongPhysicalBatch = p1Runtime;
   wrongPhysicalBatch.physicalBatchSize = 35;
@@ -624,6 +638,7 @@ void testBuiltinAvailabilityAndRequiredMode() {
   manager = ManagerV1::create(registry,p4,p4Runtime,ModeV1::Auto);
   require(manager->report().reason == ReasonV1::ProviderUnavailable,
     "P4 did not keep external FP16 storage separate from internal INT8 execution");
+  requireStreamAgnosticMatch(p4,p4Runtime,"P4");
   RuntimeKeyV1 wrongP4Storage = p4Runtime;
   wrongP4Storage.outputStorage = StorageTypeV1::Fp32;
   manager = ManagerV1::create(registry,p4,wrongP4Storage,ModeV1::Auto);
@@ -631,12 +646,13 @@ void testBuiltinAvailabilityAndRequiredMode() {
     "P4 matched non-FP16 external output storage");
 
   const ModelViewV1 p3 = model(
-    36,attentionSpec(384,12,true,true),ffnSpec(384,1024,true,true),0,0,105
+    36,attentionSpec(384,12,true,false),ffnSpec(384,1024,true,false),0,0,102
   );
   const RuntimeKeyV1 p3Runtime = runtimeKey(15,28,RequestedExecutionV1::Fp16);
   manager = ManagerV1::create(registry,p3,p3Runtime,ModeV1::Auto);
   require(manager->report().reason == ReasonV1::ProviderUnavailable,
     "P3 exact FP16 profile did not reach its stub factory");
+  requireStreamAgnosticMatch(p3,p3Runtime,"P3");
 
   auto requireP1Unmatched = [&](const ModelViewV1& candidate, const RuntimeKeyV1& candidateRuntime,
                                 const std::string& field) {
@@ -652,9 +668,6 @@ void testBuiltinAvailabilityAndRequiredMode() {
   changedRuntime = p1Runtime;
   changedRuntime.boardX = 14;
   requireP1Unmatched(p1,changedRuntime,"S");
-  changedRuntime = p1Runtime;
-  changedRuntime.sameGpuConcurrency = 1;
-  requireP1Unmatched(p1,changedRuntime,"S2 concurrency");
   requireP1Unmatched(
     model(24,attentionSpec(255,8,false,false),ffnSpec(255,768,false,false),0,0,102),
     p1Runtime,"C"

@@ -16,11 +16,12 @@
 //9 = V7 features, shortterm value error
 //10 = V7 features, shortterm value error done more properly
 //11 = V7 features, supports mish activations by desc actually reading the activations
-//101-102 = transformer-era feature/model formats
+//101-102 = transformer-era feature/model formats. V102 supports an optional,
+//          marker-delimited extension for Q/K RMSNorm and SwiGLU clipping while
+//          preserving byte-compatible parsing of legacy V102 files.
 //104 = deliberately unsupported in this CUDA transformer line
-//105 = V102 transformer topology and V101 inputs, extended with optional Q/K
-//      RMSNorm, optional nonnegative SwiGLU clipping, and mandatory positive
-//      per-layer PTQ activation ranges.
+//105 = V102 transformer topology/semantics and V101 inputs, extended with
+//      mandatory positive per-layer PTQ activation ranges for INT8 execution.
 
 static void fail(int modelVersion) {
   throw StringError("NNModelVersion: Model version not currently implemented or supported: " + Global::intToString(modelVersion));

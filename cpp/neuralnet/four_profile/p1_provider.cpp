@@ -107,7 +107,7 @@ bool exactC256Runtime(
   return runtime.deviceComputeCapability == 120 &&
     runtime.boardX == profile.board && runtime.boardY == profile.board &&
     runtime.physicalBatchSize == profile.batch &&
-    runtime.sameGpuConcurrency == profile.concurrency && runtime.exactBoard &&
+    runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&
@@ -554,7 +554,7 @@ public:
        !aligned16(operationScratch.get()))
       return ProviderOpResultV1::failure(
         std::string(profile.id) +
-        " exact batch/sequence/concurrency/no-mask/pointer contract rejected before enqueue");
+        " exact batch/sequence/no-mask/pointer contract rejected before enqueue");
     for(size_t layer = 0; layer < attention.size(); layer++) {
       const C256PreparedAttention& attn = *attention[layer];
       const C256PreparedFfn& feedForward = *ffn[layer];

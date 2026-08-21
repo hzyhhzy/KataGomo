@@ -64,7 +64,7 @@ bool baseRuntimeMatches(const RuntimeKeyV1& runtime) {
     runtime.physicalBatchSize <= kMaxProviderRows / sequence;
   return runtime.deviceComputeCapability == 120 &&
     validShape &&
-    runtime.sameGpuConcurrency > 0 && runtime.exactBoard &&
+    runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&
@@ -75,7 +75,7 @@ bool baseRuntimeMatches(const RuntimeKeyV1& runtime) {
 bool exactRuntimeMatches(const RuntimeKeyV1& runtime) {
   return baseRuntimeMatches(runtime) &&
     runtime.boardX == 15 && runtime.boardY == 15 &&
-    runtime.physicalBatchSize == kBatch && runtime.sameGpuConcurrency == 2;
+    runtime.physicalBatchSize == kBatch;
 }
 
 bool genericRuntimeMatches(const RuntimeKeyV1& runtime) {

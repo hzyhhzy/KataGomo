@@ -113,6 +113,7 @@ void appendActivation(ostringstream& out, const string& name) {
 
 struct AttentionWireOptions {
   int modelVersion = 105;
+  bool extendedV102 = false;
   bool useQKNorm = true;
   int qkNormFlag = -1;
   RopeKind rope = RopeKind::Learned;
@@ -131,7 +132,12 @@ string attentionWire(const AttentionWireOptions& options) {
   out << "attention\n2\n2\n4\n4\n"
       << (useRope ? 1 : 0) << '\n'
       << (learnableRope ? 1 : 0) << '\n';
-  if(options.modelVersion >= 105) {
+  if(options.modelVersion == 102 && options.extendedV102) {
+    const int qkNormFlag = options.qkNormFlag >= 0 ?
+      options.qkNormFlag : (options.useQKNorm ? 1 : 0);
+    out << "@V102_QKN_CLIP@\n" << qkNormFlag << '\n';
+  }
+  else if(options.modelVersion >= 105) {
     const int qkNormFlag = options.qkNormFlag >= 0 ?
       options.qkNormFlag : (options.useQKNorm ? 1 : 0);
     out << qkNormFlag << '\n';
@@ -145,7 +151,9 @@ string attentionWire(const AttentionWireOptions& options) {
   appendMatMul(out,"attention.k",8,8);
   appendMatMul(out,"attention.v",8,8);
   appendMatMul(out,"attention.out",8,8);
-  if(options.modelVersion >= 105 && options.useQKNorm && options.qkNormFlag != 0) {
+  if((options.modelVersion >= 105 ||
+      (options.modelVersion == 102 && options.extendedV102)) &&
+     options.useQKNorm && options.qkNormFlag != 0) {
     appendRMSNorm(out,"attention.qnorm",options.qNormChannels,"0.000001");
     appendRMSNorm(out,"attention.knorm",options.kNormChannels,"0.000002");
   }
@@ -161,6 +169,7 @@ string attentionWire(const AttentionWireOptions& options) {
 
 struct FfnWireOptions {
   int modelVersion = 105;
+  bool extendedV102 = false;
   bool useSwiGLU = true;
   string clip = "7.0";
   string inputRange = "2.75";
@@ -173,7 +182,12 @@ struct FfnWireOptions {
 string ffnWire(const FfnWireOptions& options) {
   ostringstream out;
   out << "ffn\n8\n12\n" << (options.useSwiGLU ? 1 : 0) << '\n';
-  if(options.modelVersion >= 105) {
+  if(options.modelVersion == 102 && options.extendedV102) {
+    out << "@V102_QKN_CLIP@\n";
+    if(options.includeClip)
+      out << options.clip << '\n';
+  }
+  else if(options.modelVersion >= 105) {
     if(options.includeClip)
       out << options.clip << '\n';
     if(options.includeInputRange)
@@ -320,6 +334,59 @@ void testLegacyV102() {
   requireContract(ffn.productQuantMaxAbs == 0.0f,"v102 product range is nonzero");
   requireContract(ffn.linearGate.inChannels == 8,"v102 gate shifted on the wire");
   requireFullyConsumed(ffnIn,"v102 FFN");
+}
+
+void testExtendedV102QKNAndClip() {
+  AttentionWireOptions attentionOptions;
+  attentionOptions.modelVersion = 102;
+  attentionOptions.extendedV102 = true;
+  attentionOptions.useQKNorm = true;
+  attentionOptions.rope = RopeKind::Learned;
+  istringstream attentionIn(attentionWire(attentionOptions));
+  TransformerAttentionDesc attention(attentionIn,102,false);
+  requireContract(attention.useQKNorm,"extended v102 lost QK norm");
+  requireContract(attention.qNorm.numChannels == 4 && attention.kNorm.numChannels == 4,
+    "extended v102 lost Q/K RMSNorm descriptors");
+  requireContract(attention.attentionInputQuantMaxAbs == 0.0f &&
+                  attention.attentionOutputQuantMaxAbs == 0.0f,
+    "extended v102 unexpectedly acquired v105 PTQ ranges");
+  requireContract(attention.learnableRope && attention.ropeFreqs.size() == 8,
+    "extended v102 shifted learned RoPE on the wire");
+  requireFullyConsumed(attentionIn,"extended v102 attention");
+
+  FfnWireOptions ffnOptions;
+  ffnOptions.modelVersion = 102;
+  ffnOptions.extendedV102 = true;
+  ffnOptions.clip = "4.0";
+  istringstream ffnIn(ffnWire(ffnOptions));
+  TransformerFFNDesc ffn(ffnIn,102,false);
+  requireContract(floatBits(ffn.swigluClip) == floatBits(4.0f),
+    "extended v102 lost adjustable SwiGLU clip");
+  requireContract(ffn.ffnInputQuantMaxAbs == 0.0f && ffn.productQuantMaxAbs == 0.0f,
+    "extended v102 unexpectedly acquired v105 PTQ ranges");
+  requireContract(ffn.linearGate.inChannels == 8,
+    "extended v102 shifted the SwiGLU gate on the wire");
+  requireFullyConsumed(ffnIn,"extended v102 FFN");
+
+  AttentionWireOptions disabledAttention;
+  disabledAttention.modelVersion = 102;
+  disabledAttention.extendedV102 = true;
+  disabledAttention.useQKNorm = false;
+  istringstream disabledAttentionIn(attentionWire(disabledAttention));
+  TransformerAttentionDesc noQKN(disabledAttentionIn,102,false);
+  requireContract(!noQKN.useQKNorm && noQKN.qNorm.numChannels == 0,
+    "extended v102 QKN-off marker changed semantics");
+  requireFullyConsumed(disabledAttentionIn,"extended v102 QKN-off attention");
+
+  FfnWireOptions disabledFfn;
+  disabledFfn.modelVersion = 102;
+  disabledFfn.extendedV102 = true;
+  disabledFfn.clip = "0.0";
+  istringstream disabledFfnIn(ffnWire(disabledFfn));
+  TransformerFFNDesc noClip(disabledFfnIn,102,false);
+  requireContract(noClip.swigluClip == 0.0f,
+    "extended v102 clip-off marker changed semantics");
+  requireFullyConsumed(disabledFfnIn,"extended v102 clip-off FFN");
 }
 
 void testV105AttentionVariantsAndMoves() {
@@ -714,6 +781,7 @@ int MainCmds::testv105wire(const vector<string>& args) {
   testVersions();
   testProjectedScratchLayout();
   testLegacyV102();
+  testExtendedV102QKNAndClip();
   testV105AttentionVariantsAndMoves();
   testV105FfnMixedLayersAndMoves();
   testVersionPropagationThroughTrunk();

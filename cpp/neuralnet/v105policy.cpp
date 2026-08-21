@@ -45,7 +45,7 @@ void inspectBlocks(
 
 Decision classify(int modelVersion, const TrunkDesc& trunk) {
   Decision decision = {modelVersion == 105,false,false};
-  if(decision.isV105)
+  if(modelVersion == 102 || decision.isV105)
     inspectBlocks(trunk.blocks,decision.hasQKNorm,decision.hasPositiveSwiGLUClip);
   return decision;
 }
@@ -64,7 +64,7 @@ SwiGLUPlan selectSwiGLUPlan(float swigluClip) {
     return SwiGLUPlan::LegacyUnclipped;
   if(std::isfinite(swigluClip) && swigluClip > 0.0f)
     return SwiGLUPlan::OrderedClippedFP32;
-  throw StringError("v105 CUDA SwiGLU clip must be finite and nonnegative");
+  throw StringError("transformer CUDA SwiGLU clip must be finite and nonnegative");
 }
 
 ProjectedScratchLayout makeProjectedScratchLayout(

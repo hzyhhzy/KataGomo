@@ -20,7 +20,7 @@ bool matchesP2(const ProfileKeyV1& key) {
     runtime.deviceComputeCapability == 120 &&
     runtime.boardX == 19 && runtime.boardY == 19 &&
     runtime.physicalBatchSize == KATAGO_P2_FIXED_BATCH &&
-    runtime.sameGpuConcurrency == KATAGO_P2_FIXED_CONCURRENCY && runtime.exactBoard &&
+    runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&

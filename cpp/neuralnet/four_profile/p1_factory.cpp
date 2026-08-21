@@ -19,7 +19,6 @@ bool matchesP1(const ProfileKeyV1& key) {
     runtime.deviceComputeCapability == 120 &&
     runtime.boardX == 15 && runtime.boardY == 15 &&
     runtime.physicalBatchSize == 36 &&
-    runtime.sameGpuConcurrency == 2 &&
     runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
