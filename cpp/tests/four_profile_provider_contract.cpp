@@ -216,6 +216,7 @@ struct FakeConfig {
   size_t failAttentionLayer = std::numeric_limits<size_t>::max();
   size_t failFfnLayer = std::numeric_limits<size_t>::max();
   bool commitOk = true;
+  bool allowSmallerActualBatch = false;
   bool preflightThrows = false;
   bool enqueueThrows = false;
   ProviderOpResultV1 preflightResult =
@@ -310,6 +311,16 @@ public:
 
   uint64_t committedPlanGeneration() const noexcept override {
     return committed.attention.empty() ? 0 : FAKE_PLAN_GENERATION;
+  }
+
+  bool acceptsActualBatchSize(
+    int actualBatchSize,
+    int physicalBatchSize
+  ) const noexcept override {
+    return actualBatchSize > 0 &&
+      (config->allowSmallerActualBatch ?
+        actualBatchSize <= physicalBatchSize :
+        actualBatchSize == physicalBatchSize);
   }
 
   ProviderOpResultV1 preflight(const RuntimeCallV1&) override {
@@ -568,8 +579,8 @@ void testBuiltinAvailabilityAndRequiredMode() {
     registry,p2,p2Runtime,ModeV1::Auto
   );
   require(manager->report().route == RouteV1::Official &&
-          manager->report().reason == ReasonV1::ProviderUncertified,
-    "P2 did not remain explicitly uncertified");
+          manager->report().reason == ReasonV1::ProviderUnavailable,
+    "P2 stub did not use official Auto fallback");
   expectException<ErrorV1>([&](){
     (void)ManagerV1::create(registry,p2,p2Runtime,ModeV1::Required);
   },"Required P2 availability");
@@ -914,6 +925,48 @@ void testCentralPreflightEvidenceRejectsBeforeProvider() {
     "valid null/zero workspace call did not reach provider enqueue");
 }
 
+void testGenericProviderMayOptIntoDynamicActualBatch() {
+  const ModelViewV1 modelView = model(1,attentionSpec(),ffnSpec());
+  const RuntimeKeyV1 runtime = runtimeKey(15,7);
+  const ProfileKeyV1 key = keyFor(modelView,runtime);
+
+  RegistryV1 registry;
+  auto stats = std::make_shared<FakeStats>();
+  auto config = std::make_shared<FakeConfig>();
+  config->allowSmallerActualBatch = true;
+  addFakeFactory(registry,"dynamic-actual-batch",key,stats,config);
+  std::unique_ptr<ManagerV1> manager = ManagerV1::create(
+    registry,modelView,runtime,ModeV1::Auto
+  );
+
+  RuntimeCallV1 call = runtimeCall(
+    runtime,analyzeTransformerSpanV1(modelView.blocks)
+  );
+  call.actualBatchSize = 3;
+  require(call.key.physicalBatchSize == 7,
+    "dynamic actual batch changed the immutable physical runtime key");
+  require(manager->preflight(call) == RouteV1::Specialized,
+    "opted-in smaller actual batch did not reach provider preflight");
+  require(manager->enqueue(call) == RouteV1::Specialized,
+    "opted-in smaller actual batch did not reach provider enqueue");
+  require(stats->preflights == 1 && stats->enqueues == 1,
+    "dynamic actual-batch call did not execute exactly once");
+
+  auto invalidStats = std::make_shared<FakeStats>();
+  RegistryV1 invalidRegistry;
+  addFakeFactory(
+    invalidRegistry,"dynamic-actual-batch-invalid",key,invalidStats,config
+  );
+  manager = ManagerV1::create(
+    invalidRegistry,modelView,runtime,ModeV1::Auto
+  );
+  call.actualBatchSize = 8;
+  require(manager->preflight(call) == RouteV1::Official,
+    "actual batch larger than the physical maximum did not fall back");
+  require(invalidStats->preflights == 0 && invalidStats->enqueues == 0,
+    "oversized actual batch reached the provider");
+}
+
 void testUnmatchedAndOfficialResourceContracts() {
   const ModelViewV1 modelView = model(1,attentionSpec(),ffnSpec());
   const RuntimeKeyV1 runtime = runtimeKey();
@@ -970,6 +1023,7 @@ int main() {
     testRuntimePreflightAndEnqueueFailurePolicy();
     testPreflightBindsCompleteCallIdentity();
     testCentralPreflightEvidenceRejectsBeforeProvider();
+    testGenericProviderMayOptIntoDynamicActualBatch();
     testUnmatchedAndOfficialResourceContracts();
     testStrictModeParser();
     std::cout << "FOUR_PROFILE_PROVIDER_CONTRACT_PASS" << std::endl;

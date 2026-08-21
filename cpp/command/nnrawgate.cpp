@@ -24,13 +24,12 @@ using namespace std;
 namespace {
 
 constexpr uint32_t RAW_GATE_SCHEMA = 1;
-constexpr uint32_t SOURCE_R15_CORPUS = 1;
+constexpr uint32_t SOURCE_LABELED_CORPUS = 1;
 constexpr uint32_t SOURCE_SYNTHETIC = 2;
 constexpr int SPATIAL_FEATURES = 22;
 constexpr int GLOBAL_FEATURES = 39;
 constexpr int V102_DEFAULT_PHYSICAL_BATCH_SIZE = 36;
 constexpr int V105_LAYER_COUNT = 36;
-constexpr int V105_PHYSICAL_BATCH_SIZE = 28;
 
 enum class ModelContract {
   V102,
@@ -47,6 +46,7 @@ struct Corpus {
   uint32_t numRows;
   int boardSize;
   uint32_t sourceKind;
+  string sourceName;
   array<unsigned char,32> identity;
   // Canonical row-major, channel-major spatial input: [row][channel][point].
   vector<float> spatial;
@@ -94,14 +94,16 @@ void writeExact(ofstream& out, const void* src, size_t bytes) {
     throw StringError("nnrawgate: output write failed");
 }
 
-Corpus readR15Corpus(const string& path) {
+Corpus readLabeledCorpus(const string& path) {
   ifstream in(path,ios::binary);
   if(!in)
     throw StringError("nnrawgate: could not open corpus " + path);
   char magic[8];
   readExact(in,magic,8,"corpus magic");
-  if(memcmp(magic,"R15CORP1",8) != 0)
-    throw StringError("nnrawgate: bad R15 corpus magic");
+  const bool legacyR15 = memcmp(magic,"R15CORP1",8) == 0;
+  const bool fullBoardV1 = memcmp(magic,"FBVCORP1",8) == 0;
+  if(!legacyR15 && !fullBoardV1)
+    throw StringError("nnrawgate: bad labeled-corpus magic");
 
   Corpus corpus;
   corpus.numRows = readU32(in,"corpus row count");
@@ -111,24 +113,29 @@ Corpus readR15Corpus(const string& path) {
   const uint32_t packedWidth = readU32(in,"corpus packed width");
   const uint32_t policyDim = readU32(in,"corpus policy dimension");
   const uint32_t globalTargetDim = readU32(in,"corpus target dimension");
-  if(corpus.numRows == 0 || posLen != 15 || spatialFeatures != SPATIAL_FEATURES ||
-     globalFeatures != GLOBAL_FEATURES || packedWidth != 29 || policyDim != 226 ||
-     globalTargetDim != 64)
-    throw StringError("nnrawgate: corpus dimensions do not match full-board 15x15 V101 input");
+  if(corpus.numRows == 0 || (posLen != 15 && posLen != 19) ||
+     (legacyR15 && posLen != 15) || spatialFeatures != SPATIAL_FEATURES ||
+     globalFeatures != GLOBAL_FEATURES ||
+     packedWidth != (posLen * posLen + 7) / 8 ||
+     policyDim != posLen * posLen + 1 || globalTargetDim != 64)
+    throw StringError(
+      "nnrawgate: labeled corpus dimensions do not match a full-board 15x15 or 19x19 V101 input");
 
-  corpus.boardSize = 15;
-  corpus.sourceKind = SOURCE_R15_CORPUS;
+  corpus.boardSize = (int)posLen;
+  corpus.sourceKind = SOURCE_LABELED_CORPUS;
+  corpus.sourceName = legacyR15 ? "R15CORP1" : "FBVCORP1";
   readExact(in,corpus.identity.data(),corpus.identity.size(),"corpus identity");
   vector<unsigned char> packed((size_t)corpus.numRows * SPATIAL_FEATURES * packedWidth);
   readExact(in,packed.data(),packed.size(),"packed spatial input");
-  corpus.spatial.resize((size_t)corpus.numRows * SPATIAL_FEATURES * 225);
+  const int area = (int)(posLen * posLen);
+  corpus.spatial.resize((size_t)corpus.numRows * SPATIAL_FEATURES * area);
   for(uint32_t row = 0; row < corpus.numRows; row++) {
     for(int c = 0; c < SPATIAL_FEATURES; c++) {
       const unsigned char* src = packed.data() +
         ((size_t)row * SPATIAL_FEATURES + (size_t)c) * packedWidth;
       float* dst = corpus.spatial.data() +
-        ((size_t)row * SPATIAL_FEATURES + (size_t)c) * 225;
-      for(int p = 0; p < 225; p++)
+        ((size_t)row * SPATIAL_FEATURES + (size_t)c) * area;
+      for(int p = 0; p < area; p++)
         dst[p] = (float)((src[p/8] >> (7-(p%8))) & 1);
     }
   }
@@ -143,10 +150,10 @@ Corpus readR15Corpus(const string& path) {
   if(!in || in.peek() != EOF)
     throw StringError("nnrawgate: corpus size mismatch");
   for(uint32_t row = 0; row < corpus.numRows; row++) {
-    const float* mask = corpus.spatial.data() + (size_t)row * SPATIAL_FEATURES * 225;
-    for(int p = 0; p < 225; p++) {
+    const float* mask = corpus.spatial.data() + (size_t)row * SPATIAL_FEATURES * area;
+    for(int p = 0; p < area; p++) {
       if(mask[p] != 1.0f)
-        throw StringError("nnrawgate: R15 gate corpus must use a full-board mask");
+        throw StringError("nnrawgate: labeled gate corpus must use a full-board mask");
     }
   }
   return corpus;
@@ -181,6 +188,7 @@ Corpus makeSyntheticCorpus(int boardSize, int numRows) {
   corpus.numRows = (uint32_t)numRows;
   corpus.boardSize = boardSize;
   corpus.sourceKind = SOURCE_SYNTHETIC;
+  corpus.sourceName = "synthetic-v1";
   corpus.spatial.resize((size_t)numRows * SPATIAL_FEATURES * area);
   corpus.global.resize((size_t)numRows * GLOBAL_FEATURES);
 
@@ -237,7 +245,8 @@ string normalizeSha256(const string& raw) {
 
 vector<int> parseSchedule(const string& raw, int maxBatchSize) {
   vector<int> schedule;
-  if(raw.empty())
+  const bool usingDefaultSchedule = raw.empty();
+  if(usingDefaultSchedule)
     schedule = {maxBatchSize,1,maxBatchSize-1,2,7,maxBatchSize};
   else {
     for(const string& piece: Global::split(raw,',')) {
@@ -248,12 +257,14 @@ vector<int> parseSchedule(const string& raw, int maxBatchSize) {
   }
   if(maxBatchSize < 8)
     throw StringError("nnrawgate: max batch size must be at least 8 for the fixed dynamic schedule");
-  if(schedule.size() < 6 || schedule.front() != maxBatchSize || schedule.back() != maxBatchSize)
-    throw StringError("nnrawgate: batch-schedule must begin and end with max batch size");
-  const int required[] = {1,2,7,maxBatchSize-1,maxBatchSize};
-  for(int requiredBatch: required) {
-    if(find(schedule.begin(),schedule.end(),requiredBatch) == schedule.end())
-      throw StringError("nnrawgate: batch-schedule is missing required dynamic batch " + Global::intToString(requiredBatch));
+  if(schedule.empty())
+    throw StringError("nnrawgate: batch-schedule must not be empty");
+  if(usingDefaultSchedule) {
+    const int required[] = {1,2,7,maxBatchSize-1,maxBatchSize};
+    for(int requiredBatch: required) {
+      if(find(schedule.begin(),schedule.end(),requiredBatch) == schedule.end())
+        throw StringError("nnrawgate: default batch-schedule is missing required dynamic batch " + Global::intToString(requiredBatch));
+    }
   }
   for(int batch: schedule) {
     if(batch <= 0 || batch > maxBatchSize)
@@ -318,16 +329,16 @@ bool isOfficialV105QknClip4Route(const NeuralNet::BenchmarkRouteProof& proof, in
     proof.expectedQkn == V105_LAYER_COUNT &&
     proof.expectedOrderedClippedSwiGLU == V105_LAYER_COUNT &&
     proof.preparedAttention == V105_LAYER_COUNT && proof.preparedFfn == V105_LAYER_COUNT &&
-    proof.preparedPlanar == V105_LAYER_COUNT && proof.preparedQkn == V105_LAYER_COUNT &&
+    proof.preparedCombinedQKV == V105_LAYER_COUNT && proof.preparedQkn == V105_LAYER_COUNT &&
     proof.preparedLearnedRopeFp32 == V105_LAYER_COUNT && proof.preparedMma == V105_LAYER_COUNT &&
     proof.preparedOrderedClippedSwiGLU == V105_LAYER_COUNT &&
-    proof.preparedCombinedQKV == 0 && proof.preparedFixedRope == 0 &&
+    proof.preparedPlanar == 0 && proof.preparedFixedRope == 0 &&
     proof.preparedScalar == 0 && proof.preparedCudnn == 0 && proof.preparedFallback == 0 &&
     proof.lastActiveAttention == V105_LAYER_COUNT && proof.lastActiveFfn == V105_LAYER_COUNT &&
-    proof.lastActivePlanar == V105_LAYER_COUNT && proof.lastActiveQkn == V105_LAYER_COUNT &&
+    proof.lastActiveCombinedQKV == V105_LAYER_COUNT && proof.lastActiveQkn == V105_LAYER_COUNT &&
     proof.lastActiveLearnedRopeFp32 == V105_LAYER_COUNT && proof.lastActiveMma == V105_LAYER_COUNT &&
     proof.lastActiveOrderedClippedSwiGLU == V105_LAYER_COUNT &&
-    proof.lastActiveCombinedQKV == 0 && proof.lastActiveFixedRope == 0 &&
+    proof.lastActivePlanar == 0 && proof.lastActiveFixedRope == 0 &&
     proof.lastActiveScalar == 0 && proof.lastActiveCudnn == 0 && proof.lastActiveFallback == 0 &&
     proof.lastFp16 && proof.lastNhwc && proof.lastExact && proof.lastMaskNull;
 }
@@ -484,7 +495,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       "","expected-model-sha256","Required full SHA-256 of the model file",true,"","HEX"
     );
     TCLAP::ValueArg<string> corpusArg(
-      "","corpus","Optional R15CORP1 corpus; omit for deterministic synthetic input",false,"","FILE"
+      "","corpus","Optional R15CORP1/FBVCORP1 labeled corpus; omit for deterministic synthetic input",false,"","FILE"
     );
     TCLAP::ValueArg<string> outputArg(
       "","output","NNRAWG1 raw output file",true,"","FILE"
@@ -493,7 +504,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       "","board","Exact square board size, 15 or 19 (default 15)",false,15,"N"
     );
     TCLAP::ValueArg<int> batchArg(
-      "B","batch-size","Maximum/full physical batch (v102 default 36; v105 requires 28)",
+      "B","batch-size","Maximum/full physical batch (default 36)",
       false,V102_DEFAULT_PHYSICAL_BATCH_SIZE,"N"
     );
     TCLAP::ValueArg<int> sameGpuConcurrencyArg(
@@ -513,7 +524,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     );
     TCLAP::SwitchArg expectedOfficialV105Arg(
       "","expected-official-v105-qkn-clip4",
-      "Require the 36-layer FP16/NHWC planar-QKV/QKN/learned-RoPE/MMA/clipped-SwiGLU route",false
+      "Require the 36-layer FP16/NHWC combined-QKV/QKN/learned-RoPE/MMA/clipped-SwiGLU route",false
     );
     cmd.add(expectedShaArg);
     cmd.add(corpusArg);
@@ -558,13 +569,8 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       throw StringError("nnrawgate: same-gpu-concurrency must be between 1 and 64");
     if(syntheticRows <= 0 || syntheticRows > 65536)
       throw StringError("nnrawgate: synthetic-rows must be between 1 and 65536");
-    if(!corpusFile.empty() && boardSize != 15)
-      throw StringError("nnrawgate: R15CORP1 may only be used with board 15");
-    if(modelContract == ModelContract::V105 &&
-       (boardSize != 15 || maxBatchSize != V105_PHYSICAL_BATCH_SIZE))
-      throw StringError("nnrawgate: v105 contract requires board 15 and physical batch-size 28");
     if(modelContract == ModelContract::V105 && corpusFile.empty())
-      throw StringError("nnrawgate: v105 contract requires an R15CORP1 corpus");
+      throw StringError("nnrawgate: v105 contract requires a labeled corpus");
     if(routeContract == RouteContract::OFFICIAL_STAGE1 && modelContract != ModelContract::V102)
       throw StringError("nnrawgate: expected-official-stage1 requires model-contract v102");
     if(routeContract == RouteContract::OFFICIAL_V105_QKN_CLIP4 && modelContract != ModelContract::V105)
@@ -577,11 +583,10 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   }
 
   const vector<int> schedule = parseSchedule(scheduleText,maxBatchSize);
-  if(modelContract == ModelContract::V105 &&
-     schedule != vector<int>{28,1,27,2,7,28})
-    throw StringError("nnrawgate: v105 contract requires exact schedule 28,1,27,2,7,28");
   Corpus corpus = corpusFile.empty() ?
-    makeSyntheticCorpus(boardSize,max(syntheticRows,maxBatchSize)) : readR15Corpus(corpusFile);
+    makeSyntheticCorpus(boardSize,max(syntheticRows,maxBatchSize)) : readLabeledCorpus(corpusFile);
+  if(corpus.boardSize != boardSize)
+    throw StringError("nnrawgate: corpus board size differs from --board");
   if(corpus.numRows < (uint32_t)maxBatchSize)
     throw StringError("nnrawgate: corpus must contain at least max-batch rows");
 
@@ -615,7 +620,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     "nnrawgate board=" + Global::intToString(boardSize) +
     " rows=" + Global::uint64ToString(corpus.numRows) +
     " maxBatch=" + Global::intToString(maxBatchSize) +
-    " source=" + string(corpus.sourceKind == SOURCE_R15_CORPUS ? "R15CORP1" : "synthetic-v1")
+    " source=" + corpus.sourceName
   );
 
   NeuralNetSessionScope session;

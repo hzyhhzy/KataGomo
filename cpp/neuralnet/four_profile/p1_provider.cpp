@@ -1,3 +1,4 @@
+#include "p2_build_config.h"
 #include "p1_provider.h"
 
 #if !defined(KATAGO_ENABLE_P1_SM120_PROVIDER) || !KATAGO_ENABLE_P1_SM120_PROVIDER
@@ -9,7 +10,6 @@
 #if !defined(KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120) || !KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120
 #error "P1 provider requires the qualified SM120 QKV+RoPE kernel"
 #endif
-
 #include "../cuda_specialized/sm120/c256/fixed_batch/fa4.h"
 #include "../cuda_specialized/sm120/c256/fixed_batch/qkv_rope_gemm.h"
 #include "../cuda_specialized/sm120/shared/residual_gemm.h"
@@ -41,7 +41,7 @@ constexpr int P1_FFN_CHANNELS = 768;
 
 enum class C256Fa4Kind {
   Renju15B36,
-  S361B28,
+  S361FixedBatch,
 };
 
 struct C256ProfileConfig {
@@ -49,6 +49,7 @@ struct C256ProfileConfig {
   int board;
   int sequence;
   int batch;
+  int concurrency;
   int tokenRows;
   int qkvTactic;
   C256Fa4Kind fa4Kind;
@@ -56,17 +57,18 @@ struct C256ProfileConfig {
 
 constexpr C256ProfileConfig P1_CONFIG = {
   "P1-c256-h8-s225-fp16-b36-s2",
-  15,225,36,36 * 225,
+  15,225,36,2,36 * 225,
   KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3,
   C256Fa4Kind::Renju15B36,
 };
 
 #if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
 constexpr C256ProfileConfig P2_CONFIG = {
-  "P2-c256-h8-s361-fp16-b28-s2",
-  19,361,28,28 * 361,
+  KATAGO_P2_PROFILE_ID,
+  19,361,KATAGO_P2_FIXED_BATCH,KATAGO_P2_FIXED_CONCURRENCY,
+  KATAGO_P2_FIXED_BATCH * 361,
   KATAGO_C256_S361_QKV_ROPE_GEMM_M128_N128_K32_S3,
-  C256Fa4Kind::S361B28,
+  C256Fa4Kind::S361FixedBatch,
 };
 
 extern "C" int c256s361fa4win_batch();
@@ -105,7 +107,7 @@ bool exactC256Runtime(
   return runtime.deviceComputeCapability == 120 &&
     runtime.boardX == profile.board && runtime.boardY == profile.board &&
     runtime.physicalBatchSize == profile.batch &&
-    runtime.sameGpuConcurrency == 2 && runtime.exactBoard &&
+    runtime.sameGpuConcurrency == profile.concurrency && runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&
@@ -417,13 +419,13 @@ public:
       throw ErrorV1(
         std::string(profile.id) + " could not resolve the active CUDA device");
 #if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
-    if(profile.fa4Kind == C256Fa4Kind::S361B28) {
+    if(profile.fa4Kind == C256Fa4Kind::S361FixedBatch) {
       if(c256s361fa4win_batch() != profile.batch ||
          c256s361fa4win_sequence() != profile.sequence ||
          c256s361fa4win_heads() != P1_HEADS ||
          c256s361fa4win_head_dim() != P1_HEAD_DIM ||
          c256s361fa4win_input_layout() != 1)
-        throw ErrorV1("P2 FA4 object does not match B28/S361/H8/D32 planar QKV");
+        throw ErrorV1("P2 FA4 object does not match the selected batch/S361/H8/D32 planar QKV");
       const cudaError_t prepareStatus = c256s361fa4win_prepare(fa4Device);
       if(prepareStatus != cudaSuccess)
         throw ErrorV1(
@@ -552,8 +554,7 @@ public:
        !aligned16(operationScratch.get()))
       return ProviderOpResultV1::failure(
         std::string(profile.id) +
-        " exact batch/sequence/S2/no-mask/pointer contract rejected before enqueue");
-
+        " exact batch/sequence/concurrency/no-mask/pointer contract rejected before enqueue");
     for(size_t layer = 0; layer < attention.size(); layer++) {
       const C256PreparedAttention& attn = *attention[layer];
       const C256PreparedFfn& feedForward = *ffn[layer];
@@ -604,7 +605,6 @@ public:
     half* const v = k + static_cast<size_t>(profile.tokenRows) * P1_CHANNELS;
     half* const operation = static_cast<half*>(operationScratch.get());
     size_t enqueued = 0;
-
     for(size_t layer = 0; layer < attention.size(); layer++) {
       const C256PreparedAttention& attn = *attention[layer];
       const C256PreparedFfn& feedForward = *ffn[layer];

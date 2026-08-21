@@ -300,6 +300,16 @@ public:
   virtual bool commit(PreparedSpanV1&& prepared, std::string& detail) = 0;
   virtual uint64_t committedPlanGeneration() const noexcept = 0;
 
+  // Exact specializations keep the default full-physical-batch contract.
+  // Generic providers may explicitly accept a smaller actual batch while
+  // retaining resources prepared for the immutable physical maximum.
+  virtual bool acceptsActualBatchSize(
+    int actualBatchSize,
+    int physicalBatchSize
+  ) const noexcept {
+    return actualBatchSize == physicalBatchSize;
+  }
+
   // preflight must enqueue nothing. The enqueued field lets the manager turn
   // a provider contract violation into a fatal error instead of double-running
   // the official implementation.

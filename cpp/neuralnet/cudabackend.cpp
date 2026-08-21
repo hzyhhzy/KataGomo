@@ -11,6 +11,9 @@
 #define KATAGO_CUDA_HAS_SDPA 0
 
 #include "../neuralnet/cudahelpers.h"
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+#include "../neuralnet/cudafusedffn.h"
+#endif
 #include "../neuralnet/cudautils.h"
 #include "../neuralnet/int8policy.h"
 #include "../neuralnet/modelversion.h"
@@ -460,12 +463,18 @@ struct CudaHandles {
   OwnedCudnnHandle cudnn;
   const int majorComputeCapability;
   const int minorComputeCapability;
+  int multiprocessorCount;
   // Set once, before Model construction. Attention blocks may commit their
   // QKV weights to the official interleaved layout only when this is true.
   bool mmaAttentionEnabled;
   bool loggedUsingCombinedQKV;
+  bool loggedUsingFusedQKNormRoPE;
   bool loggedUsingMmaAttention;
   bool loggedUsingScalarAttention;
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+  bool genericFusedFfnAvailable;
+  bool loggedUsingGenericFusedFfn;
+#endif
   std::unique_ptr<SDPAGraphCache> sdpaCache;
   // Logger for this handle's server thread; may be NULL. Used to report cudnn SDPA falling back.
   Logger* logger;
@@ -479,16 +488,31 @@ struct CudaHandles {
   CudaHandles(int major, int minor)
     : majorComputeCapability(major),
       minorComputeCapability(minor),
+      multiprocessorCount(0),
       mmaAttentionEnabled(false),
       loggedUsingCombinedQKV(false),
+      loggedUsingFusedQKNormRoPE(false),
       loggedUsingMmaAttention(false),
       loggedUsingScalarAttention(false),
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+      genericFusedFfnAvailable(false),
+      loggedUsingGenericFusedFfn(false),
+#endif
       sdpaCache(std::make_unique<SDPAGraphCache>()),
       logger(NULL),
       isWarmup(false)
   {
+    int device = 0;
+    CUDA_ERR("CudaHandles",cudaGetDevice(&device));
+    CUDA_ERR(
+      "CudaHandles",
+      cudaDeviceGetAttribute(
+        &multiprocessorCount,cudaDevAttrMultiProcessorCount,device));
     CUBLAS_ERR("CudaHandles",cublasSetStream(cublas.handle,stream.stream));
     CUDNN_ERR("CudaHandles",cudnnSetStream(cudnn.handle,stream.stream));
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+    genericFusedFfnAvailable = CudaFusedFFN::supportedOnCurrentDevice();
+#endif
   }
 
   static CudaHandles* cudaHandlesTesting() {
@@ -1702,6 +1726,12 @@ struct TransformerRMSNormLayer {
     }
     CUDA_ERR(name.c_str(), cudaPeekAtLastError());
   }
+
+  const half* fp16Weight() const {
+    if(!usingFP16)
+      throw StringError(name + ": requested FP16 RMSNorm weight from FP32 layer");
+    return (const half*)weightBuf.buf;
+  }
 };
 
 //------------------------------------------------------------------------------
@@ -1861,6 +1891,7 @@ struct TransformerAttentionBlock {
   OwnedDeviceBuf ropeCosTable;
   OwnedDeviceBuf ropeSinTable;
   OwnedDeviceBuf ropeFreqsBuf;
+  OwnedDeviceBuf learnedRopeCosSinTableFp32;
   int ropeNumPairs;
 
   static bool shouldCombineQKV(
@@ -1875,7 +1906,9 @@ struct TransformerAttentionBlock {
       desc->qProj.inChannels == desc->vProj.inChannels &&
       customCudaFlashAttentionMmaSupportsShape(
         desc->numHeads,desc->numKVHeads,desc->qHeadDim,desc->vHeadDim
-      );
+      ) &&
+      (!desc->useQKNorm ||
+       customCudaFusedQKNormRoPESupportsShape(desc->qHeadDim));
     return V105CudaPolicy::shouldUseCombinedQKV(desc->useQKNorm,otherwiseEligible);
   }
 
@@ -1939,8 +1972,6 @@ struct TransformerAttentionBlock {
     if(useQKNorm) {
       if(!useFP16)
         throw StringError(name + ": v105 Q/K normalization requires FP16");
-      if(useCombinedQKV)
-        throw StringError(name + ": Q/K normalization requires planar Q/K/V projection buffers");
       const long long seqLen = (long long)nnXLen * nnYLen;
       const long long maxQElements =
         (long long)maxBatchSize * seqLen * numHeads * qHeadDim;
@@ -2024,6 +2055,26 @@ struct TransformerAttentionBlock {
         CudaUtils::mallocAndCopyToDevice(
           name + ":ropeFreqs",desc->ropeFreqs.data(),(int)desc->ropeFreqs.size(),ropeFreqsBuf.buf,false
         );
+        if(useQKNorm && useCombinedQKV) {
+          const long long tablePairs =
+            (long long)nnXLen * nnYLen * numKVHeads * ropeNumPairs;
+          if(tablePairs <= 0 ||
+             (unsigned long long)tablePairs >
+               (unsigned long long)std::numeric_limits<size_t>::max() /
+                 (2 * sizeof(float)))
+            throw StringError(name + ": learned RoPE table size overflow");
+          CUDA_ERR(
+            name.c_str(),
+            cudaMalloc(
+              &learnedRopeCosSinTableFp32.buf,
+              (size_t)tablePairs * 2 * sizeof(float)));
+          customCudaBuildLearnedRopeTableFP32(
+            (const float*)ropeFreqsBuf.buf,
+            (float*)learnedRopeCosSinTableFp32.buf,
+            nnXLen * nnYLen,numKVHeads,ropeNumPairs,nnXLen,
+            cudaHandles->stream);
+          CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+        }
       }
       else {
         const int seqLen = nnXLen * nnYLen;
@@ -2117,22 +2168,47 @@ struct TransformerAttentionBlock {
       }
     }
 
-    // Q/K RMSNorm is per token and per head, after planar projection and
-    // before any RoPE mutation. [M,H,D] is contiguous, so viewing it as
-    // [M*H,1,D] applies the learned D-vector independently to every head.
+    // Combined QKV uses one stride-aware kernel for both per-head RMSNorm and
+    // RoPE. The planar fallback retains the two ordinary RMSNorm launches.
+    bool usedFusedQKNormRoPE = false;
     if(useQKNorm) {
       if(qNorm == nullptr || kNorm == nullptr)
         throw StringError(name + ": Q/K normalization descriptors were not prepared");
-      qNorm->apply(cudaHandles,matBatchSize * numHeads,1,qPtr,qPtr,nullptr);
-      kNorm->apply(cudaHandles,matBatchSize * numKVHeads,1,kPtr,kPtr,nullptr);
+      if(useCombinedQKV) {
+        const CudaFusedQKNormRopeMode ropeMode = !useRope ?
+          CudaFusedQKNormRopeMode::None :
+          (learnableRope ? CudaFusedQKNormRopeMode::LearnedTable :
+                           CudaFusedQKNormRopeMode::Fixed);
+        customCudaFusedQKNormRoPEFP16(
+          (half*)qPtr,(half*)kPtr,
+          qNorm->fp16Weight(),kNorm->fp16Weight(),
+          (const half*)ropeCosTable.buf,(const half*)ropeSinTable.buf,
+          (const float*)learnedRopeCosSinTableFp32.buf,
+          matBatchSize,seqLen,numHeads,numKVHeads,qHeadDim,
+          qStrideElts,kvStrideElts,ropeNumPairs,
+          qNorm->epsilon,kNorm->epsilon,ropeMode,
+          cudaHandles->multiprocessorCount,cudaHandles->stream);
+        CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+        usedFusedQKNormRoPE = true;
+        if(!cudaHandles->loggedUsingFusedQKNormRoPE) {
+          cudaHandles->loggedUsingFusedQKNormRoPE = true;
+          if(cudaHandles->logger != NULL)
+            cudaHandles->logger->write(
+              "CUDA_TRANSFORMER_ROUTE qkn_rope=fused_combined_fp16");
+        }
+      }
+      else {
+        // [M,H,D] is contiguous, so viewing it as [M*H,1,D] applies the
+        // learned D-vector independently to every head.
+        qNorm->apply(cudaHandles,matBatchSize * numHeads,1,qPtr,qPtr,nullptr);
+        kNorm->apply(cudaHandles,matBatchSize * numKVHeads,1,kPtr,kPtr,nullptr);
+      }
 #ifdef KATAGO_BUILD_BENCHMARKNN
-      // Both learned RMSNorm kernels have been enqueued and peek-checked by
-      // TransformerRMSNormLayer::apply. Mark QKN only after that actual route.
       cudaHandles->benchmarkRoute.current.qkn += 1;
 #endif
     }
 
-    if(useRope) {
+    if(useRope && !usedFusedQKNormRoPE) {
       const bool fuseQK = numHeads % numKVHeads == 0;
       assert(!useCombinedQKV || fuseQK);
 
@@ -2332,6 +2408,10 @@ struct TransformerFFNBlock {
   const TransformerRMSNormLayer preLN;
   const MatMulLayer linear2;
   OwnedDeviceBuf ffnPackedWeights;
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+  OwnedDeviceBuf fusedFfnWeights;
+  bool fusedFfnPrepared;
+#endif
 
   TransformerFFNBlock() = delete;
   TransformerFFNBlock(const TransformerFFNBlock&) = delete;
@@ -2362,6 +2442,9 @@ struct TransformerFFNBlock {
     )),
     preLN(cudaHandles,&desc->preLN,useFP16),
     linear2(cudaHandles,&desc->linear2,useFP16)
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+    ,fusedFfnPrepared(false)
+#endif
   {
     if(!useSwiGLU)
       throw StringError("Non-SwiGLU transformer FFN is not supported by the CUDA backend");
@@ -2380,6 +2463,49 @@ struct TransformerFFNBlock {
     packed.insert(packed.end(),desc->linear1.weights.begin(),desc->linear1.weights.end());
     packed.insert(packed.end(),desc->linearGate.weights.begin(),desc->linearGate.weights.end());
     CudaUtils::mallocAndCopyToDevice(name + ":ffnPacked",packed,ffnPackedWeights.buf,useFP16);
+
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+    // Positive clip has an exact ordered-FP32 epilogue in this CUTLASS
+    // family. Keep clip0 on the unchanged official helper, avoiding an
+    // unnecessary numerical recipe change for v102 models.
+    const long long maxRows64 =
+      (long long)maxBatchSize * nnX * nnY;
+    if(cudaHandles->genericFusedFfnAvailable && useFP16 &&
+       swiGLUPlan == V105CudaPolicy::SwiGLUPlan::OrderedClippedFP32 &&
+       maxRows64 > 0 && maxRows64 <= 2147483647LL &&
+       CudaFusedFFN::supportsProblem(
+         (int)maxRows64,ffnChannels,numChannels,swigluClip)) {
+      vector<float> fusedPacked(
+        (size_t)2 * (size_t)ffnChannels * (size_t)numChannels);
+      for(int out = 0; out < ffnChannels; out++) {
+        for(int in = 0; in < numChannels; in++) {
+          const size_t source = (size_t)in * ffnChannels + out;
+          const size_t destination = (size_t)out * numChannels + in;
+          fusedPacked[destination] = desc->linear1.weights[source];
+          fusedPacked[(size_t)ffnChannels * numChannels + destination] =
+            desc->linearGate.weights[source];
+        }
+      }
+      CudaUtils::mallocAndCopyToDevice(
+        name + ":genericFusedFfn",fusedPacked,fusedFfnWeights.buf,true);
+      const half* const up = (const half*)fusedFfnWeights.buf;
+      const half* const gate = up + (size_t)ffnChannels * numChannels;
+      if(CudaFusedFFN::supportsPreparedWeights(
+           up,gate,(int)maxRows64,ffnChannels,numChannels,swigluClip)) {
+        fusedFfnPrepared = true;
+        if(!cudaHandles->loggedUsingGenericFusedFfn) {
+          cudaHandles->loggedUsingGenericFusedFfn = true;
+          if(cudaHandles->logger != NULL)
+            cudaHandles->logger->write(
+              "CUDA_TRANSFORMER_ROUTE ffn=cutlass_fused_clipped_fp16");
+        }
+      }
+      else {
+        (void)cudaFree(fusedFfnWeights.buf);
+        fusedFfnWeights.buf = nullptr;
+      }
+    }
+#endif
   }
 
   ~TransformerFFNBlock() {}
@@ -2407,36 +2533,53 @@ struct TransformerFFNBlock {
     const int matBatchSize = batchSize * seqLen;
     preLN.apply(cudaHandles,batchSize,seqLen,trunkBuf,trunkScratchBuf,maskBuf);
 
-    // Official unfused FFN plan: one strided-batched GEMM produces both
-    // linear and gate buffers, followed by the shared SwiGLU kernel.
+    // The optional CUTLASS path writes the SwiGLU product directly to the
+    // first plane. Unsupported runtime rows/pointers fall back before any
+    // fused work is enqueued.
     SizedBuf<void*> projected(scratch->allocator,projectedScratchLayout.totalBytes);
     void* linearBuf = projected.buf;
     void* gateBuf = (char*)projected.buf + projectedScratchLayout.planeStrideBytes;
-    applySharedInputStridedMatMuls(
-      cudaHandles,scratch,usingFP16,name,
-      ffnChannels,matBatchSize,numChannels,
-      ffnPackedWeights.buf,trunkScratchBuf,linearBuf,
-      (long long)projectedScratchLayout.planeStrideElements,2
-    );
-
     const size_t totalElements = (size_t)ffnChannels * (size_t)matBatchSize;
     if(totalElements > projectedScratchLayout.planeElements ||
        totalElements > (size_t)std::numeric_limits<int>::max())
       throw StringError(name + ": FFN actual batch exceeds the constructed scratch layout");
     const int totalSize = (int)totalElements;
-    if(!usingFP16)
-      customCudaSwiGLU(
-        (const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,totalSize,cudaHandles->stream
+    bool usedFusedFfn = false;
+#if defined(KATAGO_CUDA_FUSED_FFN_AVAILABLE) && KATAGO_CUDA_FUSED_FFN_AVAILABLE
+    if(fusedFfnPrepared) {
+      const half* const up = (const half*)fusedFfnWeights.buf;
+      const half* const gate = up + (size_t)ffnChannels * numChannels;
+      if(CudaFusedFFN::canImplement(
+           (const half*)trunkScratchBuf,up,gate,(half*)linearBuf,
+           matBatchSize,ffnChannels,numChannels,swigluClip)) {
+        CudaFusedFFN::runSwiGLU(
+          (const half*)trunkScratchBuf,up,gate,(half*)linearBuf,
+          matBatchSize,ffnChannels,numChannels,swigluClip,cudaHandles->stream);
+        usedFusedFfn = true;
+      }
+    }
+#endif
+    if(!usedFusedFfn) {
+      applySharedInputStridedMatMuls(
+        cudaHandles,scratch,usingFP16,name,
+        ffnChannels,matBatchSize,numChannels,
+        ffnPackedWeights.buf,trunkScratchBuf,linearBuf,
+        (long long)projectedScratchLayout.planeStrideElements,2
       );
-    else if(swiGLUPlan == V105CudaPolicy::SwiGLUPlan::LegacyUnclipped)
-      customCudaSwiGLU(
-        (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,totalSize,cudaHandles->stream
-      );
-    else
-      customCudaSwiGLUOrderedClippedFP16(
-        (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,
-        totalSize,swigluClip,cudaHandles->stream
-      );
+      if(!usingFP16)
+        customCudaSwiGLU(
+          (const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,totalSize,cudaHandles->stream
+        );
+      else if(swiGLUPlan == V105CudaPolicy::SwiGLUPlan::LegacyUnclipped)
+        customCudaSwiGLU(
+          (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,totalSize,cudaHandles->stream
+        );
+      else
+        customCudaSwiGLUOrderedClippedFP16(
+          (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,
+          totalSize,swigluClip,cudaHandles->stream
+        );
+    }
     CUDA_ERR(name.c_str(),cudaPeekAtLastError());
 #ifdef KATAGO_BUILD_BENCHMARKNN
     // Publish the ordered-clip marker only after its helper launch was
@@ -4078,6 +4221,9 @@ struct ComputeHandle {
 #else
     FourProfile::registerBuiltinStubFactoriesV1(fourProfileRegistry);
 #endif
+#if defined(KATAGO_P4_PROVIDER_COMPILED) && KATAGO_P4_PROVIDER_COMPILED
+    fourProfileRegistry.add(FourProfile::makeGenericC384Int8FactoryV1());
+#endif
     const FourProfile::ModelViewV1 fourProfileModel =
       FourProfile::buildNativeModelViewV1(
         loadedModel->modelDesc,collectFourProfileExecutables(model->trunk->blocks)
@@ -4567,7 +4713,6 @@ void NeuralNet::getOutput(
      gpuHandle->fourProfileManager->report().route == FourProfile::RouteV1::Specialized) {
     selectedFourProfileManager = gpuHandle->fourProfileManager.get();
     fourProfileRuntime = gpuHandle->fourProfileRuntime;
-    fourProfileRuntime.physicalBatchSize = batchSize;
     selectedFourProfileRuntime = &fourProfileRuntime;
   }
   gpuHandle->model->apply(
@@ -5062,7 +5207,6 @@ bool NeuralNet::benchmarkDeviceOnlyOutput(
      gpuHandle->fourProfileManager->report().route == FourProfile::RouteV1::Specialized) {
     selectedFourProfileManager = gpuHandle->fourProfileManager.get();
     fourProfileRuntime = gpuHandle->fourProfileRuntime;
-    fourProfileRuntime.physicalBatchSize = batchSize;
     selectedFourProfileRuntime = &fourProfileRuntime;
   }
   for(int i = 0; i < numWarmups; i++) {

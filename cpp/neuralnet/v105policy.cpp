@@ -51,7 +51,12 @@ Decision classify(int modelVersion, const TrunkDesc& trunk) {
 }
 
 bool shouldUseCombinedQKV(bool useQKNorm, bool otherwiseEligible) {
-  return otherwiseEligible && !useQKNorm;
+  // The CUDA backend includes Q/K RMSNorm in its stride-aware combined-QKV
+  // post-projection kernel. Keep the semantic flag in this pure policy API so
+  // older callers remain source-compatible, but it no longer forces planar
+  // projection buffers.
+  (void)useQKNorm;
+  return otherwiseEligible;
 }
 
 SwiGLUPlan selectSwiGLUPlan(float swigluClip) {

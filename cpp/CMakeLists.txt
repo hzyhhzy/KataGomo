@@ -17,7 +17,10 @@ add_executable(four_profile_provider_contract EXCLUDE_FROM_ALL
   tests/four_profile_provider_contract.cpp
   ${FOUR_PROFILE_PROVIDER_SOURCES})
 target_include_directories(four_profile_provider_contract PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}")
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+  "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(four_profile_provider_contract PRIVATE
+  KATAGO_ENABLE_P2_SM120_PROVIDER=0)
 add_custom_target(four_profile_provider_contract_check
   COMMAND $<TARGET_FILE:four_profile_provider_contract>
   DEPENDS four_profile_provider_contract
@@ -61,10 +64,71 @@ set(KATAGO_ENABLE_P1_SM120 0 CACHE BOOL
   "Use the qualified C256/H8 B36 SM120 provider when its exact dependencies are present")
 set(KATAGO_P1_SM120_AVAILABLE 0)
 set(KATAGO_ENABLE_P2_SM120 0 CACHE BOOL
-  "Use the C256/H8 B28/S361 SM120 provider with an external FA4 package")
+  "Use the C256/H8 S361 SM120 provider with an external fixed-batch FA4 package")
 set(KATAGO_P2_SM120_AVAILABLE 0)
 set(KATAGO_P2_FA4_PACKAGE_CMAKE "" CACHE FILEPATH
-  "CMake manifest for the C256/H8 B28/S361 FA4 AOT package")
+  "CMake manifest for the C256/H8 S361 fixed-batch FA4 AOT package")
+set(KATAGO_P2_FIXED_CONCURRENCY "2" CACHE STRING
+  "Exact same-GPU concurrency for the P2 fixed-shape profile")
+if(NOT KATAGO_P2_FIXED_CONCURRENCY MATCHES "^[1-8]$")
+  message(FATAL_ERROR "KATAGO_P2_FIXED_CONCURRENCY must be in 1..8")
+endif()
+set(KATAGO_P2_FFN_SEARCH_THREADBLOCK_M "128" CACHE STRING
+  "Temporary P2 fused-FFN threadblock M")
+set(KATAGO_P2_FFN_SEARCH_THREADBLOCK_N "64" CACHE STRING
+  "Temporary P2 fused-FFN threadblock N")
+set(KATAGO_P2_FFN_SEARCH_WARP_M "64" CACHE STRING
+  "Temporary P2 fused-FFN warp M")
+set(KATAGO_P2_FFN_SEARCH_WARP_N "32" CACHE STRING
+  "Temporary P2 fused-FFN warp N")
+set(KATAGO_P2_FFN_SEARCH_STAGES "3" CACHE STRING
+  "Temporary P2 fixed-shape fused-FFN stage count (3 or 4)")
+set(KATAGO_P2_FFN_SEARCH_SWIZZLE "1" CACHE STRING
+  "Temporary P2 fixed-shape fused-FFN identity-swizzle factor (1, 2, or 4)")
+set(KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_M "128" CACHE STRING
+  "Temporary P2 residual-GEMM threadblock M")
+set(KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_N "128" CACHE STRING
+  "Temporary P2 residual-GEMM threadblock N")
+set(KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K "32" CACHE STRING
+  "Temporary P2 residual-GEMM threadblock K")
+set(KATAGO_P2_RESIDUAL_SEARCH_WARP_M "64" CACHE STRING
+  "Temporary P2 residual-GEMM warp M")
+set(KATAGO_P2_RESIDUAL_SEARCH_WARP_N "64" CACHE STRING
+  "Temporary P2 residual-GEMM warp N")
+set(KATAGO_P2_RESIDUAL_SEARCH_STAGES "3" CACHE STRING
+  "Temporary P2 residual-GEMM stage count")
+set(KATAGO_P2_RESIDUAL_SEARCH_SWIZZLE "1" CACHE STRING
+  "Temporary P2 residual-GEMM identity-swizzle factor")
+set(KATAGO_P2_DOWN_SEARCH_THREADBLOCK_M "128" CACHE STRING
+  "Temporary P2 FFN-down threadblock M")
+set(KATAGO_P2_DOWN_SEARCH_THREADBLOCK_N "128" CACHE STRING
+  "Temporary P2 FFN-down threadblock N")
+set(KATAGO_P2_DOWN_SEARCH_WARP_M "64" CACHE STRING
+  "Temporary P2 FFN-down warp M")
+set(KATAGO_P2_DOWN_SEARCH_WARP_N "64" CACHE STRING
+  "Temporary P2 FFN-down warp N")
+set(KATAGO_P2_DOWN_SEARCH_STAGES "3" CACHE STRING
+  "Temporary P2 FFN-down stage count")
+set(KATAGO_P2_DOWN_SEARCH_SWIZZLE "1" CACHE STRING
+  "Temporary P2 FFN-down identity-swizzle factor")
+set(KATAGO_P2_QKV_SEARCH_THREADBLOCK_M "128" CACHE STRING
+  "Temporary P2 QKV+RoPE threadblock M")
+set(KATAGO_P2_QKV_SEARCH_THREADBLOCK_N "128" CACHE STRING
+  "Temporary P2 QKV+RoPE threadblock N")
+set(KATAGO_P2_QKV_SEARCH_WARP_M "64" CACHE STRING
+  "Temporary P2 QKV+RoPE warp M")
+set(KATAGO_P2_QKV_SEARCH_WARP_N "64" CACHE STRING
+  "Temporary P2 QKV+RoPE warp N")
+set(KATAGO_P2_QKV_SEARCH_STAGES "3" CACHE STRING
+  "Temporary P2 QKV+RoPE stage count")
+set(KATAGO_P2_RMS_SEARCH_WARPS_PER_BLOCK "4" CACHE STRING
+  "Temporary P2 RMSNorm warps (rows) per thread block")
+if(NOT KATAGO_P2_FFN_SEARCH_STAGES MATCHES "^[34]$")
+  message(FATAL_ERROR "KATAGO_P2_FFN_SEARCH_STAGES must be 3 or 4")
+endif()
+if(NOT KATAGO_P2_FFN_SEARCH_SWIZZLE MATCHES "^[124]$")
+  message(FATAL_ERROR "KATAGO_P2_FFN_SEARCH_SWIZZLE must be 1, 2, or 4")
+endif()
 set(KATAGO_ENABLE_P3_PROVIDER 0 CACHE BOOL
   "Build the default-off SM120 C384/H12 B28 v105 FP16 provider")
 set(KATAGO_ENABLE_P4_PROVIDER 0 CACHE BOOL
@@ -184,11 +248,15 @@ if(USE_BACKEND STREQUAL "CUDA")
     else()
       include("${KATAGO_P2_FA4_PACKAGE_CMAKE}")
       if(NOT KATAGO_C256_S361_FA4_SCHEMA STREQUAL "1" OR
-         NOT KATAGO_C256_S361_FA4_BATCH STREQUAL "28" OR
          NOT KATAGO_C256_S361_FA4_SEQUENCE STREQUAL "361" OR
          NOT KATAGO_C256_S361_FA4_HEADS STREQUAL "8")
-        message(FATAL_ERROR "P2 FA4 package does not describe B28/S361/H8")
+        message(FATAL_ERROR "P2 FA4 package does not describe S361/H8")
       endif()
+      if(NOT KATAGO_C256_S361_FA4_BATCH MATCHES "^[1-9][0-9]*$" OR
+         KATAGO_C256_S361_FA4_BATCH GREATER 1024)
+        message(FATAL_ERROR "P2 FA4 package has an invalid fixed batch")
+      endif()
+      set(KATAGO_P2_FIXED_BATCH "${KATAGO_C256_S361_FA4_BATCH}")
       foreach(KATAGO_P2_FILE IN ITEMS
           "${KATAGO_C256_S361_FA4_HEADER}"
           "${KATAGO_C256_S361_FA4_OBJECT}"
@@ -201,7 +269,8 @@ if(USE_BACKEND STREQUAL "CUDA")
       get_filename_component(KATAGO_P2_FA4_INCLUDE_DIR
         "${KATAGO_C256_S361_FA4_HEADER}" DIRECTORY)
       set(KATAGO_P2_SM120_AVAILABLE 1)
-      message(STATUS "P2 SM120 provider available: C256/H8/B28/S361, dynamic N/N")
+      message(STATUS
+        "P2 SM120 provider available: C256/H8/B${KATAGO_P2_FIXED_BATCH}/S361, dynamic N/N")
     endif()
   endif()
 
@@ -230,15 +299,14 @@ if(USE_BACKEND STREQUAL "CUDA")
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
     target_include_directories(katago_p1_sm120_kernels PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet")
+      "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet"
+      "${CMAKE_CURRENT_BINARY_DIR}")
     target_include_directories(katago_p1_sm120_kernels SYSTEM PRIVATE
       "${KATAGO_CUTLASS_ROOT}/include"
       "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
     if(KATAGO_P2_SM120_AVAILABLE)
       target_sources(katago_p1_sm120_kernels PRIVATE
         "${KATAGO_C256_S361_FA4_BRIDGE}")
-      target_include_directories(katago_p1_sm120_kernels PRIVATE
-        "${KATAGO_P2_FA4_INCLUDE_DIR}")
     endif()
     list(APPEND NEURALNET_BACKEND_SOURCES
       neuralnet/four_profile/p1_provider.cpp
@@ -576,6 +644,34 @@ else()
   message(FATAL_ERROR "Unrecognized backend: " ${USE_BACKEND})
 endif()
 
+# Keep the package-selected P2 identity in one generated header. Its path and
+# target include flags remain stable while batch-search manifests change, so
+# ordinary Makefile builds invalidate only the three source consumers.
+set(KATAGO_P2_EFFECTIVE_FIXED_BATCH 28)
+if(KATAGO_P2_SM120_AVAILABLE)
+  set(KATAGO_P2_EFFECTIVE_FIXED_BATCH "${KATAGO_P2_FIXED_BATCH}")
+endif()
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet/four_profile/p2_build_config.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/p2_build_config.h"
+  @ONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet/four_profile/p2_ffn_search_config.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/p2_ffn_search_config.h"
+  @ONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet/four_profile/p2_residual_search_config.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/p2_residual_search_config.h"
+  @ONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet/four_profile/p2_qkv_search_config.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/p2_qkv_search_config.h"
+  @ONLY)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet/four_profile/p2_rms_search_config.h.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/p2_rms_search_config.h"
+  @ONLY)
+
 
 #--------------------------- TCMALLOC ----------------------------------------------------------------------------------
 
@@ -750,18 +846,25 @@ if(KATAGO_BUILD_NNRAWGATE)
 endif()
 
 if(USE_BACKEND STREQUAL "CUDA")
+  # cudafusedffn.cu is already part of either provider object whenever one of
+  # these provider families is available. Export that implementation to the
+  # generic CUDA backend as well; its runtime can_implement contract retains
+  # the ordinary cuBLAS path for every unsupported shape/device.
+  if(KATAGO_P1_SM120_AVAILABLE OR KATAGO_P3_PROVIDER_COMPILED)
+    set(KATAGO_CUDA_FUSED_FFN_AVAILABLE 1)
+  else()
+    set(KATAGO_CUDA_FUSED_FFN_AVAILABLE 0)
+  endif()
   target_compile_definitions(katago PRIVATE USE_CUDA_BACKEND)
   target_compile_definitions(katago PRIVATE CUDA_TARGET_VERSION=${CMAKE_CUDA_COMPILER_VERSION})
+  target_compile_definitions(katago PRIVATE
+    KATAGO_CUDA_FUSED_FFN_AVAILABLE=${KATAGO_CUDA_FUSED_FFN_AVAILABLE})
   if(KATAGO_P1_SM120_AVAILABLE)
     target_compile_definitions(katago PRIVATE
       KATAGO_ENABLE_P1_SM120_PROVIDER=1
       KATAGO_ENABLE_RENJU15_RMS_SM120=1
       KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
     target_include_directories(katago PRIVATE "${KATAGO_P1_FA4_ROOT}")
-  endif()
-  if(KATAGO_P2_SM120_AVAILABLE)
-    target_compile_definitions(katago PRIVATE
-      KATAGO_ENABLE_P2_SM120_PROVIDER=1)
   endif()
   if(KATAGO_P3_PROVIDER_COMPILED)
     target_compile_definitions(katago PRIVATE KATAGO_P3_PROVIDER_COMPILED=1)

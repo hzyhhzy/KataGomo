@@ -37,7 +37,8 @@ struct ProjectedScratchLayout {
 // FP16 execution plan.
 Decision classify(int modelVersion, const TrunkDesc& trunk);
 
-// Q/K normalization requires planar Q/K/V buffers before the per-head norm.
+// Combined QKV is allowed for QKN models when the backend's otherwiseEligible
+// check has confirmed a stride-aware fused QKN post-projection path.
 bool shouldUseCombinedQKV(bool useQKNorm, bool otherwiseEligible);
 
 // clip==0 keeps the established helper byte-for-byte; positive clip selects
