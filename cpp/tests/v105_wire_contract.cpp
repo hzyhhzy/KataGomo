@@ -405,9 +405,23 @@ void testVersionPropagationThroughTrunk() {
   const V105CudaPolicy::Decision extended = V105CudaPolicy::classify(105,trunk);
   requireContract(extended.isV105 && extended.hasQKNorm && extended.hasPositiveSwiGLUClip,
     "CUDA v105 policy failed to detect QKN/clip semantics");
+  requireContract(V105CudaPolicy::shouldUseCombinedQKV(false,true),
+    "non-QKN MMA-eligible attention unexpectedly lost combined QKV");
+  requireContract(!V105CudaPolicy::shouldUseCombinedQKV(true,true) &&
+                  !V105CudaPolicy::shouldUseCombinedQKV(true,false),
+    "QKN attention did not force planar Q/K/V projection buffers");
+  requireContract(
+    V105CudaPolicy::selectSwiGLUPlan(0.0f) ==
+      V105CudaPolicy::SwiGLUPlan::LegacyUnclipped,
+    "clip0 did not preserve the legacy SwiGLU helper");
+  requireContract(
+    V105CudaPolicy::selectSwiGLUPlan(4.0f) ==
+      V105CudaPolicy::SwiGLUPlan::OrderedClippedFP32,
+    "positive clip did not select ordered FP32 clamp semantics");
+  V105CudaPolicy::requireCurrentExecution(105,trunk,true);
   expectStringError([&](){
-    V105CudaPolicy::requireCurrentQKNClipSemantics(105,trunk);
-  },"current CUDA policy with v105 QKN/clip");
+    V105CudaPolicy::requireCurrentExecution(105,trunk,false);
+  },"v105 QKN/clip non-FP16 CUDA execution");
 
   for(auto& entry: trunk.blocks) {
     if(entry.first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
@@ -422,7 +436,6 @@ void testVersionPropagationThroughTrunk() {
   const V105CudaPolicy::Decision legacySafe = V105CudaPolicy::classify(105,trunk);
   requireContract(legacySafe.isV105 && !legacySafe.needsQKNClipSemantics(),
     "CUDA v105 policy rejected no-QKN/clip0 fallback");
-  V105CudaPolicy::requireCurrentQKNClipSemantics(105,trunk);
   V105CudaPolicy::requireCurrentExecution(105,trunk,true);
   expectStringError([&](){
     V105CudaPolicy::requireCurrentExecution(105,trunk,false);
@@ -490,12 +503,10 @@ void testNestedBottleneckVersionPropagationAndPolicy() {
   const V105CudaPolicy::Decision decision = V105CudaPolicy::classify(105,trunk);
   requireContract(decision.isV105 && decision.hasQKNorm && decision.hasPositiveSwiGLUClip,
     "CUDA v105 policy did not recursively classify nested QKN/clip semantics");
+  V105CudaPolicy::requireCurrentExecution(105,trunk,true);
   expectStringError([&](){
-    V105CudaPolicy::requireCurrentQKNClipSemantics(105,trunk);
-  },"current CUDA fail-closed policy with nested v105 QKN/clip");
-  expectStringError([&](){
-    V105CudaPolicy::requireCurrentExecution(105,trunk,true);
-  },"current CUDA execution policy with nested v105 QKN/clip");
+    V105CudaPolicy::requireCurrentExecution(105,trunk,false);
+  },"nested v105 QKN/clip non-FP16 CUDA execution");
 }
 
 void testMandatoryFieldsAndTruncation() {
@@ -637,8 +648,19 @@ void testInvalidScalarsAndGeometry() {
 }  // namespace
 
 int MainCmds::testv105wire(const vector<string>& args) {
+  if(args.size() == 4 && args[0] == "testv105wire" && args[1] == "--model") {
+    ModelDesc model;
+    ModelDesc::loadFromFileMaybeGZipped(args[2],model,args[3]);
+    requireContract(model.version == 105,"loader fixture is not canonical v105");
+    const V105CudaPolicy::Decision decision =
+      V105CudaPolicy::classify(model.version,model.trunk);
+    requireContract(decision.hasQKNorm && decision.hasPositiveSwiGLUClip,
+      "loader fixture does not contain QKN and positive clip");
+    cout << "V105_MODEL_LOADER_PASS" << endl;
+    return 0;
+  }
   if(args.size() != 1 || args[0] != "testv105wire")
-    throw StringError("testv105wire takes no arguments");
+    throw StringError("testv105wire takes no arguments or --model FILE SHA256");
 
   testVersions();
   testLegacyV102();
