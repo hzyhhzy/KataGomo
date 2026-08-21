@@ -93,6 +93,52 @@ namespace NeuralNet {
 
   bool isUsingFP16(const ComputeHandle* computeHandle);
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  // Structured CUDA route proof for benchmark/harness assertions. Static
+  // prepared fields describe the fully constructed model, while lastActive*
+  // is published as one per-handle snapshot (from the caller's single handle-owning thread)
+  // only after an entire Model::apply succeeds through the value head.
+  struct BenchmarkRouteProof {
+    bool prepared;
+    bool hasSuccessfulInvocation;
+    uint64_t invocationSerial;
+    uint64_t streamIdentity;
+    int nnXLen;
+    int nnYLen;
+
+    int expectedAttention;
+    int expectedFfn;
+    int preparedAttention;
+    int preparedFfn;
+    int preparedCombinedQKV;
+    int preparedLearnedRopeFp32;
+    int preparedFixedRope;
+    int preparedMma;
+    int preparedScalar;
+    int preparedPlanar;
+    int preparedCudnn;
+    int preparedFallback;
+
+    int lastActiveAttention;
+    int lastActiveFfn;
+    int lastActiveCombinedQKV;
+    int lastActiveLearnedRopeFp32;
+    int lastActiveFixedRope;
+    int lastActiveMma;
+    int lastActiveScalar;
+    int lastActivePlanar;
+    int lastActiveCudnn;
+    int lastActiveFallback;
+    int lastBatchSize;
+    bool lastFp16;
+    bool lastNhwc;
+    bool lastExact;
+    bool lastMaskNull;
+  };
+
+  bool getBenchmarkRouteProof(const ComputeHandle* computeHandle, BenchmarkRouteProof& proof);
+#endif
+
   //Input Buffers ---------------------------------------------------------------
 
   InputBuffers* createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen);
