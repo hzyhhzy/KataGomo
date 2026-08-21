@@ -5,6 +5,11 @@ struct TrunkDesc;
 
 namespace V105CudaPolicy {
 
+enum class SwiGLUPlan {
+  LegacyUnclipped,
+  OrderedClippedFP32,
+};
+
 struct Decision {
   bool isV105;
   bool hasQKNorm;
@@ -15,13 +20,19 @@ struct Decision {
   }
 };
 
-// Pure descriptor policy: PTQ ranges do not alter the v102 FP16 fallback, but
-// Q/K normalization and positive SwiGLU clipping do and must never be dropped.
+// Pure descriptor policy. PTQ ranges deliberately do not participate in the
+// FP16 execution plan.
 Decision classify(int modelVersion, const TrunkDesc& trunk);
 
-// Temporary fail-closed gate. The CUDA semantic execution commit will replace
-// this with the real QKN/clip-capable route.
-void requireCurrentQKNClipSemantics(int modelVersion, const TrunkDesc& trunk);
+// Q/K normalization requires planar Q/K/V buffers before the per-head norm.
+bool shouldUseCombinedQKV(bool useQKNorm, bool otherwiseEligible);
+
+// clip==0 keeps the established helper byte-for-byte; positive clip selects
+// the ordered FP32 clamp helper. Invalid clip values fail closed.
+SwiGLUPlan selectSwiGLUPlan(float swigluClip);
+
+// Canonical native v105 CUDA execution is FP16-only. The trunk argument keeps
+// this policy at every existing loader/handle call site without allocations.
 void requireCurrentExecution(int modelVersion, const TrunkDesc& trunk, bool useFP16);
 
 }  // namespace V105CudaPolicy

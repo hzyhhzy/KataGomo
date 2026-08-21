@@ -1,5 +1,6 @@
 #include "../neuralnet/v105policy.h"
 
+#include <cmath>
 #include <vector>
 
 #include "../core/global.h"
@@ -42,15 +43,22 @@ Decision classify(int modelVersion, const TrunkDesc& trunk) {
   return decision;
 }
 
-void requireCurrentQKNClipSemantics(int modelVersion, const TrunkDesc& trunk) {
-  if(classify(modelVersion,trunk).needsQKNClipSemantics())
-    throw StringError("v105 QKN/clip CUDA semantics not yet enabled");
+bool shouldUseCombinedQKV(bool useQKNorm, bool otherwiseEligible) {
+  return otherwiseEligible && !useQKNorm;
+}
+
+SwiGLUPlan selectSwiGLUPlan(float swigluClip) {
+  if(swigluClip == 0.0f)
+    return SwiGLUPlan::LegacyUnclipped;
+  if(std::isfinite(swigluClip) && swigluClip > 0.0f)
+    return SwiGLUPlan::OrderedClippedFP32;
+  throw StringError("v105 CUDA SwiGLU clip must be finite and nonnegative");
 }
 
 void requireCurrentExecution(int modelVersion, const TrunkDesc& trunk, bool useFP16) {
-  requireCurrentQKNClipSemantics(modelVersion,trunk);
+  (void)trunk;
   if(modelVersion == 105 && !useFP16)
-    throw StringError("v105 no-QKN/clip0 CUDA fallback requires FP16");
+    throw StringError("v105 CUDA execution requires FP16");
 }
 
 }  // namespace V105CudaPolicy

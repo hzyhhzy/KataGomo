@@ -1815,6 +1815,7 @@ struct TransformerAttentionBlock {
   const int vHeadDim;
   const bool useRope;
   const bool learnableRope;
+  const bool useQKNorm;
   const int inChannels;
 
   const int nnXLen;
@@ -1823,6 +1824,8 @@ struct TransformerAttentionBlock {
   const bool usingNHWC;
 
   const TransformerRMSNormLayer preLN;
+  std::unique_ptr<TransformerRMSNormLayer> qNorm;
+  std::unique_ptr<TransformerRMSNormLayer> kNorm;
   const MatMulLayer outProj;
 
   // Official projection plan. On an MMA-capable FP16 device use one interleaved
@@ -1846,7 +1849,7 @@ struct TransformerAttentionBlock {
     const TransformerAttentionDesc* desc,
     bool useFP16
   ) {
-    return
+    const bool otherwiseEligible =
       useFP16 &&
       cudaHandles->mmaAttentionEnabled &&
       desc->qProj.inChannels == desc->kProj.inChannels &&
@@ -1854,6 +1857,7 @@ struct TransformerAttentionBlock {
       customCudaFlashAttentionMmaSupportsShape(
         desc->numHeads,desc->numKVHeads,desc->qHeadDim,desc->vHeadDim
       );
+    return V105CudaPolicy::shouldUseCombinedQKV(desc->useQKNorm,otherwiseEligible);
   }
 
   static bool scalarAttentionSupportsShape(int qDim,int vDim) {
@@ -1885,12 +1889,15 @@ struct TransformerAttentionBlock {
     vHeadDim(desc->vHeadDim),
     useRope(desc->useRope),
     learnableRope(desc->learnableRope),
+    useQKNorm(desc->useQKNorm),
     inChannels(desc->qProj.inChannels),
     nnXLen(nnX),
     nnYLen(nnY),
     usingFP16(useFP16),
     usingNHWC(useNHWC),
     preLN(cudaHandles,&desc->preLN,useFP16),
+    qNorm(nullptr),
+    kNorm(nullptr),
     outProj(cudaHandles,&desc->outProj,useFP16),
     sameQKVShapes(
       desc->qProj.inChannels == desc->kProj.inChannels &&
@@ -1909,6 +1916,22 @@ struct TransformerAttentionBlock {
     const int vTotalDim = numKVHeads * vHeadDim;
     if(qTotalDim % 8 != 0 || kTotalDim % 8 != 0 || vTotalDim % 8 != 0)
       throw StringError(name + ": CUDA attention projection widths must be multiples of 8");
+
+    if(useQKNorm) {
+      if(!useFP16)
+        throw StringError(name + ": v105 Q/K normalization requires FP16");
+      if(useCombinedQKV)
+        throw StringError(name + ": Q/K normalization requires planar Q/K/V projection buffers");
+      const long long seqLen = (long long)nnXLen * nnYLen;
+      const long long maxQElements =
+        (long long)maxBatchSize * seqLen * numHeads * qHeadDim;
+      const long long maxKElements =
+        (long long)maxBatchSize * seqLen * numKVHeads * qHeadDim;
+      if(maxQElements >= 2147483647LL || maxKElements >= 2147483647LL)
+        throw StringError(name + ": Q/K normalization exceeds the CUDA 32-bit index limit");
+      qNorm = std::make_unique<TransformerRMSNormLayer>(cudaHandles,&desc->qNorm,useFP16);
+      kNorm = std::make_unique<TransformerRMSNormLayer>(cudaHandles,&desc->kNorm,useFP16);
+    }
 
     // Fail closed during model construction, before adapter-specific QKV/RoPE
     // allocations and before any inference work. The scalar attention kernel
@@ -2073,6 +2096,16 @@ struct TransformerAttentionBlock {
         kProj->apply(cudaHandles,scratch,matBatchSize,trunkScratchBuf,kPtr,workspaceBuf,workspaceBytes);
         vProj->apply(cudaHandles,scratch,matBatchSize,trunkScratchBuf,vPtr,workspaceBuf,workspaceBytes);
       }
+    }
+
+    // Q/K RMSNorm is per token and per head, after planar projection and
+    // before any RoPE mutation. [M,H,D] is contiguous, so viewing it as
+    // [M*H,1,D] applies the learned D-vector independently to every head.
+    if(useQKNorm) {
+      if(qNorm == nullptr || kNorm == nullptr)
+        throw StringError(name + ": Q/K normalization descriptors were not prepared");
+      qNorm->apply(cudaHandles,matBatchSize * numHeads,1,qPtr,qPtr,nullptr);
+      kNorm->apply(cudaHandles,matBatchSize * numKVHeads,1,kPtr,kPtr,nullptr);
     }
 
     if(useRope) {
@@ -2263,6 +2296,8 @@ struct TransformerFFNBlock {
   const int numChannels;
   const int ffnChannels;
   const bool useSwiGLU;
+  const float swigluClip;
+  const V105CudaPolicy::SwiGLUPlan swiGLUPlan;
 
   const int nnXLen;
   const int nnYLen;
@@ -2289,6 +2324,8 @@ struct TransformerFFNBlock {
     numChannels(desc->numChannels),
     ffnChannels(desc->ffnChannels),
     useSwiGLU(desc->useSwiGLU),
+    swigluClip(desc->swigluClip),
+    swiGLUPlan(V105CudaPolicy::selectSwiGLUPlan(desc->swigluClip)),
     nnXLen(nnX),
     nnYLen(nnY),
     usingFP16(useFP16),
@@ -2300,6 +2337,8 @@ struct TransformerFFNBlock {
       throw StringError("Non-SwiGLU transformer FFN is not supported by the CUDA backend");
     if(!useNHWC)
       throw StringError("Transformer blocks with NCHW layout are not supported by the CUDA backend");
+    if(swiGLUPlan == V105CudaPolicy::SwiGLUPlan::OrderedClippedFP32 && !useFP16)
+      throw StringError(name + ": positive SwiGLU clip requires FP16");
     if(
       desc->linear1.inChannels != desc->linearGate.inChannels ||
       desc->linear1.outChannels != desc->linearGate.outChannels
@@ -2355,9 +2394,14 @@ struct TransformerFFNBlock {
       customCudaSwiGLU(
         (const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,totalSize,cudaHandles->stream
       );
-    else
+    else if(swiGLUPlan == V105CudaPolicy::SwiGLUPlan::LegacyUnclipped)
       customCudaSwiGLU(
         (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,totalSize,cudaHandles->stream
+      );
+    else
+      customCudaSwiGLUOrderedClippedFP16(
+        (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,
+        totalSize,swigluClip,cudaHandles->stream
       );
     CUDA_ERR(name.c_str(),cudaPeekAtLastError());
 
@@ -3635,9 +3679,6 @@ ComputeContext* NeuralNet::createComputeContext(
   enabled_t useNHWCMode,
   const LoadedModel* loadedModel
 ) {
-  V105CudaPolicy::requireCurrentQKNClipSemantics(
-    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk
-  );
   if(loadedModel->modelDesc.version == 105 && useFP16Mode == enabled_t::False)
     V105CudaPolicy::requireCurrentExecution(
       loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,false
@@ -3856,9 +3897,6 @@ ComputeHandle* NeuralNet::createComputeHandle(
   int gpuIdxForThisThread,
   int serverThreadIdx,
   int backendNumThreads) {
-  V105CudaPolicy::requireCurrentQKNClipSemantics(
-    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk
-  );
   (void)backendNumThreads; // Unused
   //Use whatever CUDA believes GPU 0 to be.
   if(gpuIdxForThisThread == -1)
@@ -4153,9 +4191,6 @@ struct InputBuffers {
 };
 
 InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen) {
-  V105CudaPolicy::requireCurrentQKNClipSemantics(
-    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk
-  );
   return new InputBuffers(loadedModel,maxBatchSize,nnXLen,nnYLen);
 }
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
