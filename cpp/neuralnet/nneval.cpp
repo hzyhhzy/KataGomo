@@ -2,6 +2,18 @@
 #include "../neuralnet/modelversion.h"
 #include "../game/gamelogic.h"
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <cstring>
+#include <exception>
+#include <functional>
+#include <mutex>
+#include <thread>
+#endif
+
 using namespace std;
 
 //-------------------------------------------------------------------------------------
@@ -403,6 +415,703 @@ void NNEvaluator::killServerThreads() {
   assert(numWaitingEvals == 0);
   assert(numEvalsToAwaken == 0);
 }
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+
+bool NNEvaluator::getBenchmarkRequireExactNNLen() const {
+  return requireExactNNLen;
+}
+int NNEvaluator::getBenchmarkModelVersion() const {
+  return modelVersion;
+}
+int NNEvaluator::getBenchmarkInputsVersion() const {
+  return inputsVersion;
+}
+int NNEvaluator::getBenchmarkNumSpatialFeatures() const {
+  return NNModelVersion::getNumSpatialFeatures(modelVersion);
+}
+int NNEvaluator::getBenchmarkNumGlobalFeatures() const {
+  return NNModelVersion::getNumGlobalFeatures(modelVersion);
+}
+
+#if !defined(USE_CUDA_BACKEND)
+bool NeuralNet::getBenchmarkRouteProof(
+  const ComputeHandle* computeHandle,
+  BenchmarkRouteProof& proof
+) {
+  (void)computeHandle;
+  proof = BenchmarkRouteProof();
+  return false;
+}
+
+bool NeuralNet::getBenchmarkRawIOProof(
+  const ComputeHandle* computeHandle,
+  const InputBuffers* buffers,
+  int batchSize,
+  int laneIdx,
+  BenchmarkRawIOProof& proof
+) {
+  (void)computeHandle;
+  (void)buffers;
+  (void)batchSize;
+  (void)laneIdx;
+  proof = BenchmarkRawIOProof();
+  return false;
+}
+
+bool NeuralNet::benchmarkDeviceOnlyOutput(
+  ComputeHandle* computeHandle,
+  InputBuffers* buffers,
+  NNResultBuf** inputBufs,
+  int batchSize,
+  int laneIdx,
+  int numWarmups,
+  int numIterations,
+  vector<double>& iterationSeconds,
+  BenchmarkRawIOProof& proof,
+  const function<void()>& beforeTimedLoop,
+  const function<void()>& afterTimedLoop
+) {
+  (void)computeHandle;
+  (void)buffers;
+  (void)inputBufs;
+  (void)batchSize;
+  (void)laneIdx;
+  (void)numWarmups;
+  (void)numIterations;
+  proof = BenchmarkRawIOProof();
+  (void)beforeTimedLoop;
+  (void)afterTimedLoop;
+  iterationSeconds.clear();
+  return false;
+}
+#endif
+
+namespace {
+
+class BenchmarkPhaseBarrier {
+ public:
+  BenchmarkPhaseBarrier(int target, const function<void()>& onRelease)
+    : target(target), arrived(0), released(false), aborted(false), onRelease(onRelease) {
+    if(target <= 0)
+      throw StringError("benchmarknn: invalid barrier target");
+  }
+
+  void arriveAndWait() {
+    unique_lock<mutex> lock(mutex_);
+    if(aborted)
+      throw StringError("benchmarknn: peer benchmark lane failed");
+    arrived += 1;
+    if(arrived == target) {
+      try {
+        if(onRelease)
+          onRelease();
+      }
+      catch(...) {
+        aborted = true;
+        released = true;
+        condition.notify_all();
+        throw;
+      }
+      released = true;
+      condition.notify_all();
+      return;
+    }
+    condition.wait(lock,[&]() { return released; });
+    if(aborted)
+      throw StringError("benchmarknn: peer benchmark lane failed");
+  }
+
+  void abort() {
+    lock_guard<mutex> lock(mutex_);
+    aborted = true;
+    released = true;
+    condition.notify_all();
+  }
+
+ private:
+  const int target;
+  int arrived;
+  bool released;
+  bool aborted;
+  function<void()> onRelease;
+  mutex mutex_;
+  condition_variable condition;
+};
+
+void abortBenchmarkBarriers(initializer_list<BenchmarkPhaseBarrier*> barriers) {
+  for(BenchmarkPhaseBarrier* barrier : barriers) {
+    if(barrier != NULL)
+      barrier->abort();
+  }
+}
+
+template<typename Worker>
+void runBenchmarkWorkers(
+  int workerCount,
+  initializer_list<BenchmarkPhaseBarrier*> barriers,
+  Worker worker
+) {
+  vector<thread> threads;
+  threads.reserve((size_t)workerCount);
+  try {
+    for(int workerIdx = 0; workerIdx < workerCount; workerIdx++)
+      threads.emplace_back(worker,workerIdx);
+  }
+  catch(...) {
+    // A partially-created pool may already be blocked waiting for lanes that
+    // were never spawned. Abort every phase before joining those threads.
+    abortBenchmarkBarriers(barriers);
+    for(thread& workerThread : threads) {
+      if(workerThread.joinable())
+        workerThread.join();
+    }
+    throw;
+  }
+  for(thread& workerThread : threads) {
+    if(workerThread.joinable())
+      workerThread.join();
+  }
+}
+
+struct BenchmarkComputeHandleDeleter {
+  void operator()(ComputeHandle* handle) const {
+    if(handle != NULL)
+      NeuralNet::freeComputeHandle(handle);
+  }
+};
+using BenchmarkComputeHandle = unique_ptr<ComputeHandle,BenchmarkComputeHandleDeleter>;
+
+struct BenchmarkLaneData {
+  NNServerBuf serverBuf;
+  vector<unique_ptr<NNResultBuf>> ownedRows;
+  vector<NNResultBuf*> rows;
+  vector<unique_ptr<NNOutput>> ownedOutputs;
+  vector<NNOutput*> outputs;
+  vector<float> outputPolicies;
+  uint64_t inputChecksum;
+  uint64_t inputContentChecksum;
+  int inputRowsHashed;
+  int uniqueInputRows;
+
+  BenchmarkLaneData(const NNEvaluator& nnEval, const LoadedModel* loadedModel)
+    : serverBuf(nnEval,loadedModel),
+      inputChecksum(UINT64_C(1469598103934665603)),
+      inputContentChecksum(UINT64_C(1469598103934665603)),
+      inputRowsHashed(0),
+      uniqueInputRows(0)
+  {}
+};
+
+void checksumMixByte(uint64_t& hash, uint8_t value) {
+  hash ^= value;
+  hash *= UINT64_C(1099511628211);
+}
+
+void checksumMixUint64(uint64_t& hash, uint64_t value) {
+  for(int shift = 0; shift < 64; shift += 8)
+    checksumMixByte(hash,(uint8_t)(value >> shift));
+}
+
+void checksumMixFloat(uint64_t& hash, float value, bool& finite) {
+  finite = finite && std::isfinite(value);
+  uint32_t bits = 0;
+  static_assert(sizeof(bits) == sizeof(value),"unexpected float width");
+  memcpy(&bits,&value,sizeof(bits));
+  for(int shift = 0; shift < 32; shift += 8)
+    checksumMixByte(hash,(uint8_t)(bits >> shift));
+}
+
+uint64_t checksumBenchmarkInputRow(const NNResultBuf& input) {
+  uint64_t hash = UINT64_C(1469598103934665603);
+  bool finite = true;
+  for(int i = 0; i < input.rowSpatialSize; i++)
+    checksumMixFloat(hash,input.rowSpatial[i],finite);
+  for(int i = 0; i < input.rowGlobalSize; i++)
+    checksumMixFloat(hash,input.rowGlobal[i],finite);
+  if(!finite)
+    throw StringError("benchmarknn: generated a non-finite input");
+  return hash;
+}
+
+void setSpatialFeature(
+  float* spatial,
+  int feature,
+  int pos,
+  int numSpatialFeatures,
+  int spatialArea,
+  bool inputsUseNHWC,
+  float value
+) {
+  if(inputsUseNHWC)
+    spatial[(size_t)pos * numSpatialFeatures + feature] = value;
+  else
+    spatial[(size_t)feature * spatialArea + pos] = value;
+}
+
+void initializeBenchmarkLaneData(
+  BenchmarkLaneData& data,
+  int laneIdx,
+  int batchSize,
+  int nnXLen,
+  int nnYLen,
+  int numSpatialFeatures,
+  int numGlobalFeatures,
+  bool inputsUseNHWC
+) {
+  const int spatialArea = nnXLen * nnYLen;
+  const int spatialElts = numSpatialFeatures * spatialArea;
+  const int numIdentityBits = 24;
+  const int nonMaskSpatialElts = std::max(0,(numSpatialFeatures-1) * spatialArea);
+  const int encodedIdentityBits = std::max(
+    std::min(numIdentityBits,nonMaskSpatialElts),
+    std::min(numIdentityBits,numGlobalFeatures)
+  );
+  const uint64_t largestIdentity = (uint64_t)(laneIdx+1) * (uint64_t)batchSize;
+  if(encodedIdentityBits <= 0 ||
+     (encodedIdentityBits < 64 && largestIdentity >= (UINT64_C(1) << encodedIdentityBits)))
+    throw StringError("benchmarknn: model inputs cannot encode every lane/row identity");
+  data.ownedRows.reserve(batchSize);
+  data.rows.reserve(batchSize);
+  data.ownedOutputs.reserve(batchSize);
+  data.outputs.reserve(batchSize);
+  data.outputPolicies.assign((size_t)batchSize * NNPos::MAX_NN_POLICY_SIZE,0.0f);
+  set<uint64_t> distinctRowHashes;
+
+  for(int row = 0; row < batchSize; row++) {
+    data.ownedRows.push_back(make_unique<NNResultBuf>());
+    NNResultBuf* input = data.ownedRows.back().get();
+    input->boardXSizeForServer = nnXLen;
+    input->boardYSizeForServer = nnYLen;
+    input->rowSpatial = new float[spatialElts];
+    input->rowSpatialSize = spatialElts;
+    fill(input->rowSpatial,input->rowSpatial+spatialElts,0.0f);
+    // Feature channel zero is the on-board mask for the V101 input layout.
+    if(inputsUseNHWC) {
+      for(int pos = 0; pos < spatialArea; pos++)
+        input->rowSpatial[pos * numSpatialFeatures] = 1.0f;
+    }
+    else
+      fill(input->rowSpatial,input->rowSpatial+spatialArea,1.0f);
+    input->rowGlobal = new float[numGlobalFeatures];
+    input->rowGlobalSize = numGlobalFeatures;
+    fill(input->rowGlobal,input->rowGlobal+numGlobalFeatures,0.0f);
+
+    // Encode lane and row identity using exactly representable small values.
+    // This keeps the generated rows deterministic and distinct even after the
+    // benchmark's ordinary FP32-to-FP16 input conversion.
+    const uint64_t identity = (uint64_t)laneIdx * (uint64_t)batchSize + (uint64_t)row + 1;
+    for(int bit = 0; bit < numIdentityBits && bit < nonMaskSpatialElts; bit++) {
+      const int feature = 1 + bit / spatialArea;
+      const int pos = bit % spatialArea;
+      const float value = ((identity >> bit) & 1U) != 0 ? 0.125f : -0.125f;
+      setSpatialFeature(
+        input->rowSpatial,feature,pos,numSpatialFeatures,spatialArea,inputsUseNHWC,value
+      );
+    }
+    for(int bit = 0; bit < numIdentityBits && bit < numGlobalFeatures; bit++)
+      input->rowGlobal[bit] = ((identity >> bit) & 1U) != 0 ? 0.0625f : -0.0625f;
+    input->symmetry = 0;
+    data.rows.push_back(input);
+
+    const uint64_t rowHash = checksumBenchmarkInputRow(*input);
+    distinctRowHashes.insert(rowHash);
+    checksumMixUint64(data.inputChecksum,(uint64_t)laneIdx);
+    checksumMixUint64(data.inputChecksum,(uint64_t)row);
+    checksumMixUint64(data.inputChecksum,rowHash);
+    checksumMixUint64(data.inputContentChecksum,(uint64_t)row);
+    checksumMixUint64(data.inputContentChecksum,rowHash);
+    data.inputRowsHashed += 1;
+
+    data.ownedOutputs.push_back(make_unique<NNOutput>());
+    NNOutput* output = data.ownedOutputs.back().get();
+    output->nnXLen = nnXLen;
+    output->nnYLen = nnYLen;
+    data.outputs.push_back(output);
+  }
+  data.uniqueInputRows = (int)distinctRowHashes.size();
+  if(data.inputRowsHashed != batchSize || data.uniqueInputRows != batchSize)
+    throw StringError("benchmarknn: deterministic input identity contract failed");
+}
+
+void validateBenchmarkLaneProof(
+  const NNEvalBenchmarkLaneProof& laneProof,
+  int batchSize,
+  int policySize,
+  int nnXLen,
+  int nnYLen,
+  uint64_t expectedSerialDelta,
+  const string& mode
+) {
+  const NeuralNet::BenchmarkRawIOProof& raw = laneProof.rawIO;
+  const NeuralNet::BenchmarkRouteProof& before = laneProof.routeBefore;
+  const NeuralNet::BenchmarkRouteProof& after = laneProof.routeAfter;
+
+  if(laneProof.generatedInputRows != batchSize ||
+     laneProof.uniqueGeneratedInputRows != batchSize ||
+     !raw.valid || raw.batchSize != batchSize ||
+     raw.inputRowsHashed != batchSize || raw.uniqueInputRows != batchSize ||
+     raw.outputRowsHashed != batchSize || raw.uniqueOutputRows != batchSize ||
+     raw.inputChecksum != laneProof.generatedInputChecksum ||
+     raw.inputContentChecksum != laneProof.generatedInputContentChecksum)
+    throw StringError("benchmarknn: " + mode + " input/output row identity contract failed");
+  if(raw.policyFloatsHashed != (uint64_t)batchSize * (uint64_t)policySize ||
+     raw.valueFloatsHashed == 0 || raw.scoreValueFloatsHashed == 0 ||
+     raw.ownershipFloatsHashed == 0 ||
+     raw.rawOutputFloatsHashed !=
+       raw.policyFloatsHashed + raw.valueFloatsHashed +
+       raw.scoreValueFloatsHashed + raw.ownershipFloatsHashed)
+    throw StringError("benchmarknn: " + mode + " raw output shape contract failed");
+  if(!raw.outputsFinite || !raw.outputsNonzero || !raw.outputsNonconstant)
+    throw StringError("benchmarknn: " + mode + " raw output degeneracy contract failed");
+
+  if(!before.prepared || !after.prepared || !after.hasSuccessfulInvocation ||
+     before.streamIdentity == 0 || after.streamIdentity != before.streamIdentity ||
+     before.nnXLen != nnXLen || before.nnYLen != nnYLen ||
+     after.nnXLen != nnXLen || after.nnYLen != nnYLen)
+    throw StringError("benchmarknn: " + mode + " route identity contract failed");
+  if(after.invocationSerial < before.invocationSerial ||
+     after.invocationSerial - before.invocationSerial != expectedSerialDelta)
+    throw StringError("benchmarknn: " + mode + " route serial contract failed");
+  if(after.lastBatchSize != batchSize || !after.lastExact || !after.lastMaskNull)
+    throw StringError("benchmarknn: " + mode + " final batch/exact/no-mask contract failed");
+  if(after.expectedAttention != after.preparedAttention ||
+     after.expectedFfn != after.preparedFfn ||
+     after.expectedAttention != after.lastActiveAttention ||
+     after.expectedFfn != after.lastActiveFfn ||
+     before.expectedAttention != after.expectedAttention ||
+     before.expectedFfn != after.expectedFfn ||
+     before.preparedAttention != after.preparedAttention ||
+     before.preparedFfn != after.preparedFfn)
+    throw StringError("benchmarknn: " + mode + " attention/ffn route count contract failed");
+}
+
+void validateDistinctBenchmarkLanes(
+  const vector<NNEvalBenchmarkLaneProof>& laneProofs,
+  const string& mode
+) {
+  set<uint64_t> streams;
+  set<uint64_t> inputContents;
+  for(const NNEvalBenchmarkLaneProof& laneProof : laneProofs) {
+    streams.insert(laneProof.routeAfter.streamIdentity);
+    inputContents.insert(laneProof.rawIO.inputContentChecksum);
+  }
+  if(streams.size() != laneProofs.size())
+    throw StringError("benchmarknn: " + mode + " lanes do not have distinct streams");
+  if(inputContents.size() != laneProofs.size())
+    throw StringError("benchmarknn: " + mode + " lanes do not have distinct input content");
+}
+
+double medianSeconds(const vector<double>& values) {
+  if(values.empty())
+    throw StringError("benchmarknn: no iteration samples");
+  vector<double> sorted = values;
+  sort(sorted.begin(),sorted.end());
+  return sorted.size() % 2 == 1
+    ? sorted[sorted.size()/2]
+    : 0.5 * (sorted[sorted.size()/2-1] + sorted[sorted.size()/2]);
+}
+
+}
+
+NNEvalFullIOBenchmarkResult NNEvaluator::benchmarkFullIO(
+  int numWarmups,
+  int numIterations
+) {
+  if(numIterations <= 0 || numIterations > 4096)
+    throw StringError("benchmarknn: iterations must be between 1 and 4096");
+  if(numWarmups < 0 || numWarmups > 10000)
+    throw StringError("benchmarknn: warmup must be between 0 and 10000");
+  if(debugSkipNeuralNet || loadedModel == NULL || computeContext == NULL)
+    throw StringError("benchmarknn requires a real neural net model");
+  if(!serverThreads.empty())
+    throw StringError("benchmarknn requires ordinary evaluator server threads to be stopped");
+
+  const int benchmarkThreadCount = (int)gpuIdxByServerThread.size();
+  const int batchSize = maxNumRows;
+  if(benchmarkThreadCount <= 0 || batchSize <= 0)
+    throw StringError("benchmarknn: invalid server/batch topology");
+  NNEvalFullIOBenchmarkResult result;
+  result.batchSize = batchSize;
+  result.numThreads = benchmarkThreadCount;
+  result.numIterations = numIterations;
+  result.perThreadIterationSeconds.assign(benchmarkThreadCount,{});
+  result.perThreadMedianSeconds.assign(benchmarkThreadCount,0.0);
+  result.perThreadNNEvalsPerSec.assign(benchmarkThreadCount,0.0);
+  result.actualWallSeconds = 0.0;
+  result.actualWallNNEvalsPerSec = 0.0;
+  result.perThreadProofs.assign(benchmarkThreadCount,{});
+  result.outputsFinite = true;
+  result.outputsNonzero = true;
+  result.outputsNonconstant = true;
+  result.inputChecksum = UINT64_C(1469598103934665603);
+  result.outputChecksum = UINT64_C(1469598103934665603);
+
+  {
+    lock_guard<mutex> lock(bufferMutex);
+    serverThreadsIsUsingFP16.assign(benchmarkThreadCount,0);
+  }
+
+  using BenchmarkClock = chrono::steady_clock;
+  BenchmarkClock::time_point wallStart;
+  BenchmarkClock::time_point wallEnd;
+  BenchmarkPhaseBarrier warmupStartBarrier(benchmarkThreadCount,function<void()>());
+  BenchmarkPhaseBarrier timedStartBarrier(
+    benchmarkThreadCount,
+    [&]() { wallStart = BenchmarkClock::now(); }
+  );
+  BenchmarkPhaseBarrier timedEndBarrier(
+    benchmarkThreadCount,
+    [&]() { wallEnd = BenchmarkClock::now(); }
+  );
+  exception_ptr firstError;
+  mutex errorMutex;
+
+  runBenchmarkWorkers(
+    benchmarkThreadCount,
+    {&warmupStartBarrier,&timedStartBarrier,&timedEndBarrier},
+    [&](int threadIdx) {
+      try {
+        BenchmarkLaneData data(*this,loadedModel);
+        // Declared after data so that exceptional unwinding always destroys
+        // the compute handle before its InputBuffers.
+        BenchmarkComputeHandle handle(NeuralNet::createComputeHandle(
+          computeContext,loadedModel,logger,batchSize,requireExactNNLen,inputsUseNHWC,
+          gpuIdxByServerThread[threadIdx],threadIdx,backendNumThreads
+        ));
+        NNEvalBenchmarkLaneProof laneProof = NNEvalBenchmarkLaneProof();
+        if(!NeuralNet::getBenchmarkRouteProof(handle.get(),laneProof.routeBefore))
+          throw StringError("benchmarknn: CUDA route proof is unavailable");
+        {
+          lock_guard<mutex> lock(bufferMutex);
+          serverThreadsIsUsingFP16[threadIdx] = NeuralNet::isUsingFP16(handle.get()) ? 1 : 0;
+        }
+        initializeBenchmarkLaneData(
+          data,threadIdx,batchSize,nnXLen,nnYLen,
+          NNModelVersion::getNumSpatialFeatures(modelVersion),
+          NNModelVersion::getNumGlobalFeatures(modelVersion),
+          inputsUseNHWC
+        );
+        laneProof.generatedInputChecksum = data.inputChecksum;
+        laneProof.generatedInputContentChecksum = data.inputContentChecksum;
+        laneProof.generatedInputRows = data.inputRowsHashed;
+        laneProof.uniqueGeneratedInputRows = data.uniqueInputRows;
+
+        warmupStartBarrier.arriveAndWait();
+        for(int i = 0; i < numWarmups; i++) {
+          NeuralNet::getOutput(
+            handle.get(),data.serverBuf.inputBuffers,batchSize,data.rows.data(),data.outputs,
+            data.outputPolicies.data()
+          );
+        }
+
+        timedStartBarrier.arriveAndWait();
+        vector<double>& times = result.perThreadIterationSeconds[threadIdx];
+        times.reserve(numIterations);
+        for(int i = 0; i < numIterations; i++) {
+          BenchmarkClock::time_point start = BenchmarkClock::now();
+          NeuralNet::getOutput(
+            handle.get(),data.serverBuf.inputBuffers,batchSize,data.rows.data(),data.outputs,
+            data.outputPolicies.data()
+          );
+          BenchmarkClock::time_point end = BenchmarkClock::now();
+          times.push_back(chrono::duration<double>(end-start).count());
+        }
+        timedEndBarrier.arriveAndWait();
+        if(!NeuralNet::getBenchmarkRawIOProof(
+             handle.get(),data.serverBuf.inputBuffers,batchSize,threadIdx,laneProof.rawIO
+           ))
+          throw StringError("benchmarknn: CUDA raw full-I/O proof is unavailable");
+        if(!NeuralNet::getBenchmarkRouteProof(handle.get(),laneProof.routeAfter))
+          throw StringError("benchmarknn: CUDA route proof is unavailable after full-I/O");
+        validateBenchmarkLaneProof(
+          laneProof,batchSize,policySize,nnXLen,nnYLen,
+          (uint64_t)numWarmups + (uint64_t)numIterations,"full-I/O"
+        );
+        result.perThreadProofs[threadIdx] = laneProof;
+      }
+      catch(...) {
+        abortBenchmarkBarriers({&warmupStartBarrier,&timedStartBarrier,&timedEndBarrier});
+        lock_guard<mutex> lock(errorMutex);
+        if(firstError == nullptr)
+          firstError = current_exception();
+      }
+    }
+  );
+  if(firstError != nullptr)
+    rethrow_exception(firstError);
+
+  for(int threadIdx = 0; threadIdx < benchmarkThreadCount; threadIdx++) {
+    const vector<double>& times = result.perThreadIterationSeconds[threadIdx];
+    if(times.size() != (size_t)numIterations)
+      throw StringError("benchmarknn: unexpected number of full-I/O samples");
+    const double median = medianSeconds(times);
+    if(!(median > 0.0) || !std::isfinite(median))
+      throw StringError("benchmarknn: invalid full-I/O lane median");
+    result.perThreadMedianSeconds[threadIdx] = median;
+    result.perThreadNNEvalsPerSec[threadIdx] = batchSize / median;
+    if(!(result.perThreadNNEvalsPerSec[threadIdx] > 0.0) ||
+       !std::isfinite(result.perThreadNNEvalsPerSec[threadIdx]))
+      throw StringError("benchmarknn: invalid full-I/O lane rate");
+    const NeuralNet::BenchmarkRawIOProof& raw = result.perThreadProofs[threadIdx].rawIO;
+    result.outputsFinite = result.outputsFinite && raw.outputsFinite;
+    result.outputsNonzero = result.outputsNonzero && raw.outputsNonzero;
+    result.outputsNonconstant = result.outputsNonconstant && raw.outputsNonconstant;
+    checksumMixUint64(result.inputChecksum,raw.inputChecksum);
+    checksumMixUint64(result.outputChecksum,raw.outputChecksum);
+  }
+  validateDistinctBenchmarkLanes(result.perThreadProofs,"full-I/O");
+  result.actualWallSeconds = chrono::duration<double>(wallEnd-wallStart).count();
+  if(!(result.actualWallSeconds > 0.0) || !std::isfinite(result.actualWallSeconds))
+    throw StringError("benchmarknn: invalid full-I/O wall interval");
+  result.actualWallNNEvalsPerSec =
+    (double)benchmarkThreadCount * batchSize * numIterations / result.actualWallSeconds;
+  return result;
+}
+
+NNEvalDeviceOnlyBenchmarkResult NNEvaluator::benchmarkDeviceOnly(
+  int numWarmups,
+  int numIterations
+) {
+  if(numIterations <= 0 || numIterations > 4096)
+    throw StringError("benchmarknn: iterations must be between 1 and 4096");
+  if(numWarmups < 0 || numWarmups > 10000)
+    throw StringError("benchmarknn: warmup must be between 0 and 10000");
+  if(debugSkipNeuralNet || loadedModel == NULL || computeContext == NULL)
+    throw StringError("benchmarknn requires a real neural net model");
+  if(!serverThreads.empty())
+    throw StringError("benchmarknn requires ordinary evaluator server threads to be stopped");
+
+  const int benchmarkThreadCount = (int)gpuIdxByServerThread.size();
+  const int batchSize = maxNumRows;
+  if(benchmarkThreadCount <= 0 || batchSize <= 0)
+    throw StringError("benchmarknn: invalid server/batch topology");
+  if((int64_t)benchmarkThreadCount * (int64_t)numIterations > 16384)
+    throw StringError("benchmarknn: S*I exceeds the 16384 CUDA-event-pair budget");
+
+  NNEvalDeviceOnlyBenchmarkResult result;
+  result.batchSize = batchSize;
+  result.numThreads = benchmarkThreadCount;
+  result.numIterations = numIterations;
+  result.perThreadIterationSeconds.assign(benchmarkThreadCount,{});
+  result.perThreadMedianSeconds.assign(benchmarkThreadCount,0.0);
+  result.perThreadNNEvalsPerSec.assign(benchmarkThreadCount,0.0);
+  result.combinedWallSeconds = 0.0;
+  result.combinedNNEvalsPerSec = 0.0;
+  result.perThreadProofs.assign(benchmarkThreadCount,{});
+  result.outputsFinite = true;
+  result.outputsNonzero = true;
+  result.outputsNonconstant = true;
+  result.inputChecksum = UINT64_C(1469598103934665603);
+  result.outputChecksum = UINT64_C(1469598103934665603);
+
+  {
+    lock_guard<mutex> lock(bufferMutex);
+    serverThreadsIsUsingFP16.assign(benchmarkThreadCount,0);
+  }
+
+  using BenchmarkClock = chrono::steady_clock;
+  BenchmarkClock::time_point combinedStart;
+  BenchmarkClock::time_point combinedEnd;
+  BenchmarkPhaseBarrier readyBarrier(benchmarkThreadCount,function<void()>());
+  BenchmarkPhaseBarrier timedStartBarrier(
+    benchmarkThreadCount,
+    [&]() { combinedStart = BenchmarkClock::now(); }
+  );
+  BenchmarkPhaseBarrier timedEndBarrier(
+    benchmarkThreadCount,
+    [&]() { combinedEnd = BenchmarkClock::now(); }
+  );
+  exception_ptr firstError;
+  mutex errorMutex;
+
+  runBenchmarkWorkers(
+    benchmarkThreadCount,
+    {&readyBarrier,&timedStartBarrier,&timedEndBarrier},
+    [&](int threadIdx) {
+      try {
+        BenchmarkLaneData data(*this,loadedModel);
+        // Declared after data so that exceptional unwinding always destroys
+        // the compute handle before its InputBuffers.
+        BenchmarkComputeHandle handle(NeuralNet::createComputeHandle(
+          computeContext,loadedModel,logger,batchSize,requireExactNNLen,inputsUseNHWC,
+          gpuIdxByServerThread[threadIdx],threadIdx,backendNumThreads
+        ));
+        NNEvalBenchmarkLaneProof laneProof = NNEvalBenchmarkLaneProof();
+        if(!NeuralNet::getBenchmarkRouteProof(handle.get(),laneProof.routeBefore))
+          throw StringError("benchmarknn: CUDA route proof is unavailable");
+        {
+          lock_guard<mutex> lock(bufferMutex);
+          serverThreadsIsUsingFP16[threadIdx] = NeuralNet::isUsingFP16(handle.get()) ? 1 : 0;
+        }
+        initializeBenchmarkLaneData(
+          data,threadIdx,batchSize,nnXLen,nnYLen,
+          NNModelVersion::getNumSpatialFeatures(modelVersion),
+          NNModelVersion::getNumGlobalFeatures(modelVersion),
+          inputsUseNHWC
+        );
+        laneProof.generatedInputChecksum = data.inputChecksum;
+        laneProof.generatedInputContentChecksum = data.inputContentChecksum;
+        laneProof.generatedInputRows = data.inputRowsHashed;
+        laneProof.uniqueGeneratedInputRows = data.uniqueInputRows;
+
+        readyBarrier.arriveAndWait();
+        vector<double> iterationSeconds;
+        if(!NeuralNet::benchmarkDeviceOnlyOutput(
+             handle.get(),data.serverBuf.inputBuffers,data.rows.data(),batchSize,threadIdx,
+             numWarmups,numIterations,iterationSeconds,laneProof.rawIO,
+             [&]() { timedStartBarrier.arriveAndWait(); },
+             [&]() { timedEndBarrier.arriveAndWait(); }
+           ))
+          throw StringError("benchmarknn: current backend does not support device-only timing");
+        result.perThreadIterationSeconds[threadIdx] = std::move(iterationSeconds);
+        if(!NeuralNet::getBenchmarkRouteProof(handle.get(),laneProof.routeAfter))
+          throw StringError("benchmarknn: CUDA route proof is unavailable after device-only");
+        validateBenchmarkLaneProof(
+          laneProof,batchSize,policySize,nnXLen,nnYLen,UINT64_C(1),"device-only"
+        );
+        result.perThreadProofs[threadIdx] = laneProof;
+      }
+      catch(...) {
+        abortBenchmarkBarriers({&readyBarrier,&timedStartBarrier,&timedEndBarrier});
+        lock_guard<mutex> lock(errorMutex);
+        if(firstError == nullptr)
+          firstError = current_exception();
+      }
+    }
+  );
+  if(firstError != nullptr)
+    rethrow_exception(firstError);
+
+  for(int threadIdx = 0; threadIdx < benchmarkThreadCount; threadIdx++) {
+    const vector<double>& times = result.perThreadIterationSeconds[threadIdx];
+    if(times.size() != (size_t)numIterations)
+      throw StringError("benchmarknn: unexpected number of device-only samples");
+    const double median = medianSeconds(times);
+    if(!(median > 0.0) || !std::isfinite(median))
+      throw StringError("benchmarknn: invalid device-only lane median");
+    result.perThreadMedianSeconds[threadIdx] = median;
+    result.perThreadNNEvalsPerSec[threadIdx] = batchSize / median;
+    if(!(result.perThreadNNEvalsPerSec[threadIdx] > 0.0) ||
+       !std::isfinite(result.perThreadNNEvalsPerSec[threadIdx]))
+      throw StringError("benchmarknn: invalid device-only lane rate");
+    const NeuralNet::BenchmarkRawIOProof& raw = result.perThreadProofs[threadIdx].rawIO;
+    result.outputsFinite = result.outputsFinite && raw.outputsFinite;
+    result.outputsNonzero = result.outputsNonzero && raw.outputsNonzero;
+    result.outputsNonconstant = result.outputsNonconstant && raw.outputsNonconstant;
+    checksumMixUint64(result.inputChecksum,raw.inputChecksum);
+    checksumMixUint64(result.outputChecksum,raw.outputChecksum);
+  }
+  validateDistinctBenchmarkLanes(result.perThreadProofs,"device-only");
+  result.combinedWallSeconds = chrono::duration<double>(combinedEnd-combinedStart).count();
+  if(!(result.combinedWallSeconds > 0.0) || !std::isfinite(result.combinedWallSeconds))
+    throw StringError("benchmarknn: invalid device-only wall interval");
+  result.combinedNNEvalsPerSec =
+    (double)benchmarkThreadCount * batchSize * numIterations / result.combinedWallSeconds;
+  return result;
+}
+
+#endif
 
 void NNEvaluator::serve(
   NNServerBuf& buf, Rand& rand,

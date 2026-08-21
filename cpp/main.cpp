@@ -30,7 +30,11 @@ static void printHelp(const vector<string>& args) {
 
 gtp : Runs GTP engine that can be plugged into any standard Go GUI for play/analysis.
 benchmark : Test speed with different numbers of search threads.
-genconfig : User-friendly interface to generate a config with rules and automatic performance tuning.
+)%%";
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  cout << "benchmarknn : Test-only full-I/O and device-only neural-net throughput harness." << endl;
+#endif
+  cout << R"%%(genconfig : User-friendly interface to generate a config with rules and automatic performance tuning.
 
 contribute : Connect to online distributed KataGo training and run perpetually contributing selfplay games.
 
@@ -61,6 +65,10 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::analysis(subArgs);
   if(subcommand == "benchmark")
     return MainCmds::benchmark(subArgs);
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  if(subcommand == "benchmarknn")
+    return MainCmds::benchmarknn(subArgs);
+#endif
   if(subcommand == "contribute")
     return MainCmds::contribute(subArgs);
   if(subcommand == "evalsgf")

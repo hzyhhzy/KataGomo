@@ -8,6 +8,10 @@
 #include "../neuralnet/desc.h"
 #include "../neuralnet/nninputs.h"
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+#include <functional>
+#endif
+
 //Defined in nneval.h
 struct NNResultBuf;
 
@@ -136,6 +140,29 @@ namespace NeuralNet {
     bool lastMaskNull;
   };
 
+  // Exact host-side identity and raw-output proof for the final successful
+  // benchmark invocation. The output checksum covers every float copied from
+  // policy, value, score-value, and ownership device buffers.
+  struct BenchmarkRawIOProof {
+    bool valid;
+    int batchSize;
+    int inputRowsHashed;
+    int uniqueInputRows;
+    uint64_t inputChecksum;
+    uint64_t inputContentChecksum;
+    uint64_t outputChecksum;
+    uint64_t rawOutputFloatsHashed;
+    uint64_t policyFloatsHashed;
+    uint64_t valueFloatsHashed;
+    uint64_t scoreValueFloatsHashed;
+    uint64_t ownershipFloatsHashed;
+    bool outputsFinite;
+    bool outputsNonzero;
+    bool outputsNonconstant;
+    int outputRowsHashed;
+    int uniqueOutputRows;
+  };
+
   bool getBenchmarkRouteProof(const ComputeHandle* computeHandle, BenchmarkRouteProof& proof);
 #endif
 
@@ -168,6 +195,36 @@ namespace NeuralNet {
     std::vector<NNOutput*>& outputs,
     float* outputPolicys
   );
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  // Hashes the exact packed inputs and raw host outputs left by the immediately
+  // preceding full-I/O getOutput call. It does not run another inference.
+  bool getBenchmarkRawIOProof(
+    const ComputeHandle* computeHandle,
+    const InputBuffers* buffers,
+    int batchSize,
+    int laneIdx,
+    BenchmarkRawIOProof& proof
+  );
+
+  // Packs and uploads inputs once, performs untimed warmup and a timed
+  // device-only loop, then directly copies and hashes the final timed outputs.
+  // The callbacks delimit the common multi-handle wall interval; output D2H
+  // and hashing occur after that interval on the same handle stream.
+  bool benchmarkDeviceOnlyOutput(
+    ComputeHandle* computeHandle,
+    InputBuffers* buffers,
+    NNResultBuf** inputBufs,
+    int batchSize,
+    int laneIdx,
+    int numWarmups,
+    int numIterations,
+    std::vector<double>& iterationSeconds,
+    BenchmarkRawIOProof& proof,
+    const std::function<void()>& beforeTimedLoop,
+    const std::function<void()>& afterTimedLoop
+  );
+#endif
 
 
   //FOR TESTING -----------------------------------------------------------------------

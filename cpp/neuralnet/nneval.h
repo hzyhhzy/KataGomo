@@ -15,6 +15,52 @@
 
 class NNEvaluator;
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+struct NNEvalBenchmarkLaneProof {
+  uint64_t generatedInputChecksum;
+  uint64_t generatedInputContentChecksum;
+  int generatedInputRows;
+  int uniqueGeneratedInputRows;
+  NeuralNet::BenchmarkRawIOProof rawIO;
+  NeuralNet::BenchmarkRouteProof routeBefore;
+  NeuralNet::BenchmarkRouteProof routeAfter;
+};
+
+struct NNEvalFullIOBenchmarkResult {
+  int batchSize;
+  int numThreads;
+  int numIterations;
+  std::vector<std::vector<double>> perThreadIterationSeconds;
+  std::vector<double> perThreadMedianSeconds;
+  std::vector<double> perThreadNNEvalsPerSec;
+  double actualWallSeconds;
+  double actualWallNNEvalsPerSec;
+  std::vector<NNEvalBenchmarkLaneProof> perThreadProofs;
+  bool outputsFinite;
+  bool outputsNonzero;
+  bool outputsNonconstant;
+  uint64_t inputChecksum;
+  uint64_t outputChecksum;
+};
+
+struct NNEvalDeviceOnlyBenchmarkResult {
+  int batchSize;
+  int numThreads;
+  int numIterations;
+  std::vector<std::vector<double>> perThreadIterationSeconds;
+  std::vector<double> perThreadMedianSeconds;
+  std::vector<double> perThreadNNEvalsPerSec;
+  double combinedWallSeconds;
+  double combinedNNEvalsPerSec;
+  std::vector<NNEvalBenchmarkLaneProof> perThreadProofs;
+  bool outputsFinite;
+  bool outputsNonzero;
+  bool outputsNonconstant;
+  uint64_t inputChecksum;
+  uint64_t outputChecksum;
+};
+#endif
+
 class NNCacheTable {
   struct Entry {
     std::shared_ptr<NNOutput> ptr;
@@ -158,6 +204,18 @@ class NNEvaluator {
   //Kill spawned server threads and join and free them. This function is not threadsafe, and along with spawnServerThreads
   //should have calls to it and spawnServerThreads singlethreaded.
   void killServerThreads();
+
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  // Test-only direct NN harness. Both modes create one independent compute handle
+  // and input-buffer set per configured benchmark lane.
+  bool getBenchmarkRequireExactNNLen() const;
+  int getBenchmarkModelVersion() const;
+  int getBenchmarkInputsVersion() const;
+  int getBenchmarkNumSpatialFeatures() const;
+  int getBenchmarkNumGlobalFeatures() const;
+  NNEvalFullIOBenchmarkResult benchmarkFullIO(int numWarmups, int numIterations);
+  NNEvalDeviceOnlyBenchmarkResult benchmarkDeviceOnly(int numWarmups, int numIterations);
+#endif
 
   //Set the number of threads and what gpus they use. Only call this if threads are not spawned yet, or have been killed.
   void setNumThreads(const std::vector<int>& gpuIdxByServerThr);

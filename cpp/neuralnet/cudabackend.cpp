@@ -4311,6 +4311,485 @@ void NeuralNet::getOutput(
 
 }
 
+#ifdef KATAGO_BUILD_BENCHMARKNN
+
+namespace {
+
+void benchmarkHashMixByte(uint64_t& hash, uint8_t value) {
+  hash ^= value;
+  hash *= UINT64_C(1099511628211);
+}
+
+void benchmarkHashMixUint64(uint64_t& hash, uint64_t value) {
+  for(int shift = 0; shift < 64; shift += 8)
+    benchmarkHashMixByte(hash,(uint8_t)(value >> shift));
+}
+
+void benchmarkHashMixFloat(uint64_t& hash, float value) {
+  uint32_t bits = 0;
+  static_assert(sizeof(bits) == sizeof(value),"unexpected float width");
+  std::memcpy(&bits,&value,sizeof(bits));
+  for(int shift = 0; shift < 32; shift += 8)
+    benchmarkHashMixByte(hash,(uint8_t)(bits >> shift));
+}
+
+uint64_t benchmarkHashInputRow(
+  const InputBuffers* buffers,
+  int row
+) {
+  uint64_t hash = UINT64_C(1469598103934665603);
+  const float* spatial = buffers->userInputBuffer + buffers->singleInputElts * row;
+  const float* global = buffers->userInputGlobalBuffer + buffers->singleInputGlobalElts * row;
+  for(size_t i = 0; i < buffers->singleInputElts; i++) {
+    if(!std::isfinite(spatial[i]))
+      throw StringError("benchmarknn: packed spatial input is non-finite");
+    benchmarkHashMixFloat(hash,spatial[i]);
+  }
+  for(size_t i = 0; i < buffers->singleInputGlobalElts; i++) {
+    if(!std::isfinite(global[i]))
+      throw StringError("benchmarknn: packed global input is non-finite");
+    benchmarkHashMixFloat(hash,global[i]);
+  }
+  return hash;
+}
+
+void benchmarkHashRawOutputSpan(
+  uint64_t category,
+  const float* values,
+  uint64_t count,
+  NeuralNet::BenchmarkRawIOProof& proof,
+  bool& sawFirst,
+  uint32_t& firstBits
+) {
+  benchmarkHashMixUint64(proof.outputChecksum,category);
+  benchmarkHashMixUint64(proof.outputChecksum,count);
+  for(uint64_t i = 0; i < count; i++) {
+    const float value = values[i];
+    uint32_t bits = 0;
+    std::memcpy(&bits,&value,sizeof(bits));
+    benchmarkHashMixUint64(proof.outputChecksum,i);
+    benchmarkHashMixFloat(proof.outputChecksum,value);
+    proof.outputsFinite = proof.outputsFinite && std::isfinite(value);
+    proof.outputsNonzero = proof.outputsNonzero || value != 0.0f;
+    if(!sawFirst) {
+      firstBits = bits;
+      sawFirst = true;
+    }
+    else if(bits != firstBits)
+      proof.outputsNonconstant = true;
+  }
+}
+
+void benchmarkHashOutputRowSpan(
+  uint64_t& hash,
+  uint64_t category,
+  const float* values,
+  size_t count
+) {
+  benchmarkHashMixUint64(hash,category);
+  benchmarkHashMixUint64(hash,(uint64_t)count);
+  for(size_t i = 0; i < count; i++) {
+    benchmarkHashMixUint64(hash,(uint64_t)i);
+    benchmarkHashMixFloat(hash,values[i]);
+  }
+}
+
+uint64_t benchmarkHashOutputRow(const InputBuffers* buffers, int row) {
+  uint64_t hash = UINT64_C(1469598103934665603);
+  benchmarkHashOutputRowSpan(
+    hash,UINT64_C(1),
+    buffers->policyResults + buffers->singlePolicyResultElts * row,
+    buffers->singlePolicyResultElts
+  );
+  benchmarkHashOutputRowSpan(
+    hash,UINT64_C(2),
+    buffers->valueResults + buffers->singleValueResultElts * row,
+    buffers->singleValueResultElts
+  );
+  benchmarkHashOutputRowSpan(
+    hash,UINT64_C(3),
+    buffers->scoreValueResults + buffers->singleScoreValueResultElts * row,
+    buffers->singleScoreValueResultElts
+  );
+  benchmarkHashOutputRowSpan(
+    hash,UINT64_C(4),
+    buffers->ownershipResults + buffers->singleOwnershipResultElts * row,
+    buffers->singleOwnershipResultElts
+  );
+  return hash;
+}
+
+NeuralNet::BenchmarkRawIOProof makeBenchmarkRawIOProof(
+  const ComputeHandle* gpuHandle,
+  const InputBuffers* buffers,
+  int batchSize,
+  int laneIdx
+) {
+  if(gpuHandle == nullptr || buffers == nullptr)
+    throw StringError("benchmarknn: null handle or buffers for raw proof");
+  if(batchSize <= 0 || batchSize > buffers->maxBatchSize)
+    throw StringError("benchmarknn: invalid raw-proof batch size");
+  if(laneIdx < 0)
+    throw StringError("benchmarknn: invalid lane index");
+  if(buffers->singlePolicyResultElts != (size_t)gpuHandle->policySize)
+    throw StringError("benchmarknn: raw-proof policy shape mismatch");
+
+  NeuralNet::BenchmarkRawIOProof proof = NeuralNet::BenchmarkRawIOProof();
+  proof.batchSize = batchSize;
+  proof.inputChecksum = UINT64_C(1469598103934665603);
+  proof.inputContentChecksum = UINT64_C(1469598103934665603);
+  proof.outputChecksum = UINT64_C(1469598103934665603);
+  proof.outputsFinite = true;
+  benchmarkHashMixUint64(proof.outputChecksum,(uint64_t)laneIdx);
+  benchmarkHashMixUint64(proof.outputChecksum,(uint64_t)batchSize);
+
+  std::set<uint64_t> distinctInputRows;
+  for(int row = 0; row < batchSize; row++) {
+    const uint64_t rowHash = benchmarkHashInputRow(buffers,row);
+    distinctInputRows.insert(rowHash);
+    benchmarkHashMixUint64(proof.inputChecksum,(uint64_t)laneIdx);
+    benchmarkHashMixUint64(proof.inputChecksum,(uint64_t)row);
+    benchmarkHashMixUint64(proof.inputChecksum,rowHash);
+    benchmarkHashMixUint64(proof.inputContentChecksum,(uint64_t)row);
+    benchmarkHashMixUint64(proof.inputContentChecksum,rowHash);
+    proof.inputRowsHashed += 1;
+  }
+  proof.uniqueInputRows = (int)distinctInputRows.size();
+
+  proof.policyFloatsHashed = (uint64_t)buffers->singlePolicyResultElts * (uint64_t)batchSize;
+  proof.valueFloatsHashed = (uint64_t)buffers->singleValueResultElts * (uint64_t)batchSize;
+  proof.scoreValueFloatsHashed =
+    (uint64_t)buffers->singleScoreValueResultElts * (uint64_t)batchSize;
+  proof.ownershipFloatsHashed =
+    (uint64_t)buffers->singleOwnershipResultElts * (uint64_t)batchSize;
+  proof.rawOutputFloatsHashed =
+    proof.policyFloatsHashed + proof.valueFloatsHashed +
+    proof.scoreValueFloatsHashed + proof.ownershipFloatsHashed;
+
+  bool sawFirst = false;
+  uint32_t firstBits = 0;
+  benchmarkHashRawOutputSpan(
+    UINT64_C(1),buffers->policyResults,proof.policyFloatsHashed,proof,sawFirst,firstBits
+  );
+  benchmarkHashRawOutputSpan(
+    UINT64_C(2),buffers->valueResults,proof.valueFloatsHashed,proof,sawFirst,firstBits
+  );
+  benchmarkHashRawOutputSpan(
+    UINT64_C(3),buffers->scoreValueResults,proof.scoreValueFloatsHashed,proof,sawFirst,firstBits
+  );
+  benchmarkHashRawOutputSpan(
+    UINT64_C(4),buffers->ownershipResults,proof.ownershipFloatsHashed,proof,sawFirst,firstBits
+  );
+
+  std::set<uint64_t> distinctOutputRows;
+  for(int row = 0; row < batchSize; row++) {
+    distinctOutputRows.insert(benchmarkHashOutputRow(buffers,row));
+    proof.outputRowsHashed += 1;
+  }
+  proof.uniqueOutputRows = (int)distinctOutputRows.size();
+
+  proof.valid =
+    proof.inputRowsHashed == batchSize && proof.uniqueInputRows == batchSize &&
+    proof.outputRowsHashed == batchSize && proof.uniqueOutputRows == batchSize &&
+    proof.rawOutputFloatsHashed > 0 && sawFirst;
+  return proof;
+}
+
+void prepareBenchmarkHostInputs(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  NNResultBuf** inputBufs,
+  int batchSize
+) {
+  const int nnXLen = gpuHandle->nnXLen;
+  const int nnYLen = gpuHandle->nnYLen;
+  const int version = gpuHandle->model->version;
+  const int numSpatialFeatures = NNModelVersion::getNumSpatialFeatures(version);
+  const int numGlobalFeatures = NNModelVersion::getNumGlobalFeatures(version);
+  const size_t rowSpatialElts = (size_t)numSpatialFeatures * nnXLen * nnYLen;
+  for(int nIdx = 0; nIdx < batchSize; nIdx++) {
+    if(inputBufs[nIdx] == nullptr || inputBufs[nIdx]->rowSpatial == nullptr ||
+       inputBufs[nIdx]->rowGlobal == nullptr)
+      throw StringError("benchmarkDeviceOnlyOutput: null input row");
+    if(inputBufs[nIdx]->rowSpatialSize < (int)rowSpatialElts ||
+       inputBufs[nIdx]->rowGlobalSize < numGlobalFeatures)
+      throw StringError("benchmarkDeviceOnlyOutput: undersized input row");
+    float* rowSpatialInput = inputBuffers->userInputBuffer + inputBuffers->singleInputElts * nIdx;
+    float* rowGlobalInput =
+      inputBuffers->userInputGlobalBuffer + inputBuffers->singleInputGlobalElts * nIdx;
+    std::copy(
+      inputBufs[nIdx]->rowGlobal,inputBufs[nIdx]->rowGlobal+numGlobalFeatures,rowGlobalInput
+    );
+    SymmetryHelpers::copyInputsWithSymmetry(
+      inputBufs[nIdx]->rowSpatial,rowSpatialInput,1,nnYLen,nnXLen,numSpatialFeatures,
+      gpuHandle->inputsUseNHWC,inputBufs[nIdx]->symmetry
+    );
+  }
+}
+
+void uploadBenchmarkInputs(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  int batchSize,
+  cudaStream_t stream
+) {
+  Buffers* buffers = gpuHandle->buffers.get();
+  if(!gpuHandle->usingFP16) {
+    CUDA_ERR(
+      "benchmarkDeviceOnlyOutput",
+      cudaMemcpyAsync(
+        buffers->inputBuf,inputBuffers->userInputBuffer,
+        inputBuffers->singleInputBytes*batchSize,cudaMemcpyHostToDevice,stream
+      )
+    );
+    CUDA_ERR(
+      "benchmarkDeviceOnlyOutput",
+      cudaMemcpyAsync(
+        buffers->inputGlobalBuf,inputBuffers->userInputGlobalBuffer,
+        inputBuffers->singleInputGlobalBytes*batchSize,cudaMemcpyHostToDevice,stream
+      )
+    );
+  }
+  else {
+    CUDA_ERR(
+      "benchmarkDeviceOnlyOutput",
+      cudaMemcpyAsync(
+        buffers->inputBufFloat,inputBuffers->userInputBuffer,
+        inputBuffers->singleInputBytes*batchSize,cudaMemcpyHostToDevice,stream
+      )
+    );
+    CUDA_ERR(
+      "benchmarkDeviceOnlyOutput",
+      cudaMemcpyAsync(
+        buffers->inputGlobalBufFloat,inputBuffers->userInputGlobalBuffer,
+        inputBuffers->singleInputGlobalBytes*batchSize,cudaMemcpyHostToDevice,stream
+      )
+    );
+    customCudaCopyToHalf(
+      (const float*)buffers->inputBufFloat,(half*)buffers->inputBuf,
+      inputBuffers->singleInputElts*batchSize,stream
+    );
+    CUDA_ERR("benchmarkDeviceOnlyOutput",cudaPeekAtLastError());
+    customCudaCopyToHalf(
+      (const float*)buffers->inputGlobalBufFloat,(half*)buffers->inputGlobalBuf,
+      inputBuffers->singleInputGlobalElts*batchSize,stream
+    );
+    CUDA_ERR("benchmarkDeviceOnlyOutput",cudaPeekAtLastError());
+  }
+}
+
+void poisonBenchmarkDeviceOutputs(
+  Buffers* buffers,
+  const InputBuffers* inputBuffers,
+  int batchSize,
+  cudaStream_t stream
+) {
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemsetAsync(
+      buffers->policyBuf,0xFF,inputBuffers->singlePolicyResultBytes*batchSize,stream
+    )
+  );
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemsetAsync(
+      buffers->valueBuf,0xFF,inputBuffers->singleValueResultBytes*batchSize,stream
+    )
+  );
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemsetAsync(
+      buffers->scoreValueBuf,0xFF,inputBuffers->singleScoreValueResultBytes*batchSize,stream
+    )
+  );
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemsetAsync(
+      buffers->ownershipBuf,0xFF,inputBuffers->singleOwnershipResultBytes*batchSize,stream
+    )
+  );
+}
+
+void poisonBenchmarkHostOutputs(
+  InputBuffers* inputBuffers,
+  int batchSize
+) {
+  std::memset(inputBuffers->policyResults,0xFF,inputBuffers->singlePolicyResultBytes*batchSize);
+  std::memset(inputBuffers->valueResults,0xFF,inputBuffers->singleValueResultBytes*batchSize);
+  std::memset(
+    inputBuffers->scoreValueResults,0xFF,inputBuffers->singleScoreValueResultBytes*batchSize
+  );
+  std::memset(
+    inputBuffers->ownershipResults,0xFF,inputBuffers->singleOwnershipResultBytes*batchSize
+  );
+}
+
+void copyBenchmarkRawOutputsToHost(
+  Buffers* buffers,
+  InputBuffers* inputBuffers,
+  int batchSize,
+  cudaStream_t stream
+) {
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemcpyAsync(
+      inputBuffers->policyResults,buffers->policyBuf,
+      inputBuffers->singlePolicyResultBytes*batchSize,cudaMemcpyDeviceToHost,stream
+    )
+  );
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemcpyAsync(
+      inputBuffers->valueResults,buffers->valueBuf,
+      inputBuffers->singleValueResultBytes*batchSize,cudaMemcpyDeviceToHost,stream
+    )
+  );
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemcpyAsync(
+      inputBuffers->scoreValueResults,buffers->scoreValueBuf,
+      inputBuffers->singleScoreValueResultBytes*batchSize,cudaMemcpyDeviceToHost,stream
+    )
+  );
+  CUDA_ERR(
+    "benchmarkDeviceOnlyOutput",
+    cudaMemcpyAsync(
+      inputBuffers->ownershipResults,buffers->ownershipBuf,
+      inputBuffers->singleOwnershipResultBytes*batchSize,cudaMemcpyDeviceToHost,stream
+    )
+  );
+}
+
+void destroyBenchmarkEventsNoThrow(std::vector<cudaEvent_t>& events) noexcept {
+  for(cudaEvent_t event : events) {
+    if(event != nullptr)
+      (void)cudaEventDestroy(event);
+  }
+}
+
+}
+
+bool NeuralNet::getBenchmarkRawIOProof(
+  const ComputeHandle* gpuHandle,
+  const InputBuffers* buffers,
+  int batchSize,
+  int laneIdx,
+  BenchmarkRawIOProof& proof
+) {
+  proof = makeBenchmarkRawIOProof(gpuHandle,buffers,batchSize,laneIdx);
+  return true;
+}
+
+bool NeuralNet::benchmarkDeviceOnlyOutput(
+  ComputeHandle* gpuHandle,
+  InputBuffers* inputBuffers,
+  NNResultBuf** inputBufs,
+  int batchSize,
+  int laneIdx,
+  int numWarmups,
+  int numIterations,
+  std::vector<double>& iterationSeconds,
+  BenchmarkRawIOProof& proof,
+  const std::function<void()>& beforeTimedLoop,
+  const std::function<void()>& afterTimedLoop
+) {
+  if(gpuHandle == nullptr || inputBuffers == nullptr || inputBufs == nullptr)
+    throw StringError("benchmarkDeviceOnlyOutput: null argument");
+  if(batchSize <= 0 || batchSize > inputBuffers->maxBatchSize)
+    throw StringError("benchmarkDeviceOnlyOutput: invalid batch size");
+  if(laneIdx < 0)
+    throw StringError("benchmarkDeviceOnlyOutput: invalid lane index");
+  if(numWarmups < 0 || numWarmups > 10000 ||
+     numIterations <= 0 || numIterations > 4096)
+    throw StringError("benchmarkDeviceOnlyOutput: invalid warmup/iteration count");
+
+  proof = BenchmarkRawIOProof();
+  iterationSeconds.clear();
+  CudaHandles* cudaHandles = gpuHandle->cudaHandles.get();
+  const cudaStream_t stream = cudaHandles->stream;
+  prepareBenchmarkHostInputs(gpuHandle,inputBuffers,inputBufs,batchSize);
+  uploadBenchmarkInputs(gpuHandle,inputBuffers,batchSize,stream);
+
+  Buffers* buffers = gpuHandle->buffers.get();
+  ScratchBuffers* scratch = gpuHandle->scratch.get();
+  for(int i = 0; i < numWarmups; i++) {
+    gpuHandle->model->apply(
+      cudaHandles,scratch,batchSize,gpuHandle->requireExactNNLen,
+      buffers->inputBuf,buffers->inputGlobalBuf,buffers->policyBuf,buffers->valueBuf,
+      buffers->scoreValueBuf,buffers->ownershipBuf,buffers->workspaceBuf,buffers->workspaceBytes
+    );
+  }
+
+  // Poison after warmup and finish all setup work before the shared wall
+  // release. A final raw proof containing poison/NaN therefore cannot pass.
+  poisonBenchmarkDeviceOutputs(buffers,inputBuffers,batchSize,stream);
+  poisonBenchmarkHostOutputs(inputBuffers,batchSize);
+  CUDA_ERR("benchmarkDeviceOnlyOutput",cudaStreamSynchronize(stream));
+
+  std::vector<cudaEvent_t> startEvents((size_t)numIterations,nullptr);
+  std::vector<cudaEvent_t> endEvents((size_t)numIterations,nullptr);
+  try {
+    for(int i = 0; i < numIterations; i++) {
+      CUDA_ERR(
+        "benchmarkDeviceOnlyOutput",
+        cudaEventCreateWithFlags(&startEvents[i],cudaEventDefault)
+      );
+      CUDA_ERR(
+        "benchmarkDeviceOnlyOutput",
+        cudaEventCreateWithFlags(&endEvents[i],cudaEventDefault)
+      );
+    }
+
+    if(beforeTimedLoop)
+      beforeTimedLoop();
+    for(int i = 0; i < numIterations; i++) {
+      CUDA_ERR("benchmarkDeviceOnlyOutput",cudaEventRecord(startEvents[i],stream));
+      gpuHandle->model->apply(
+        cudaHandles,scratch,batchSize,gpuHandle->requireExactNNLen,
+        buffers->inputBuf,buffers->inputGlobalBuf,buffers->policyBuf,buffers->valueBuf,
+        buffers->scoreValueBuf,buffers->ownershipBuf,buffers->workspaceBuf,buffers->workspaceBytes
+      );
+      CUDA_ERR("benchmarkDeviceOnlyOutput",cudaEventRecord(endEvents[i],stream));
+    }
+    CUDA_ERR("benchmarkDeviceOnlyOutput",cudaStreamSynchronize(stream));
+    if(afterTimedLoop)
+      afterTimedLoop();
+
+    // This is deliberately the first operation after the common wall closes:
+    // consume the exact final timed outputs, on this handle's own stream,
+    // without launching another inference.
+    copyBenchmarkRawOutputsToHost(buffers,inputBuffers,batchSize,stream);
+    CUDA_ERR("benchmarkDeviceOnlyOutput",cudaStreamSynchronize(stream));
+    proof = makeBenchmarkRawIOProof(gpuHandle,inputBuffers,batchSize,laneIdx);
+    cudaHandles->benchmarkRoute.publishSuccessfulInvocation();
+    logBenchmarkActiveRouteNoThrow(cudaHandles);
+
+    iterationSeconds.reserve((size_t)numIterations);
+    for(int i = 0; i < numIterations; i++) {
+      float milliseconds = 0.0f;
+      CUDA_ERR(
+        "benchmarkDeviceOnlyOutput",
+        cudaEventElapsedTime(&milliseconds,startEvents[i],endEvents[i])
+      );
+      const double seconds = (double)milliseconds / 1000.0;
+      if(!(seconds > 0.0) || !std::isfinite(seconds))
+        throw StringError("benchmarkDeviceOnlyOutput: invalid CUDA event interval");
+      iterationSeconds.push_back(seconds);
+    }
+  }
+  catch(...) {
+    destroyBenchmarkEventsNoThrow(startEvents);
+    destroyBenchmarkEventsNoThrow(endEvents);
+    throw;
+  }
+
+  destroyBenchmarkEventsNoThrow(startEvents);
+  destroyBenchmarkEventsNoThrow(endEvents);
+  return true;
+}
+
+#endif
+
 //TESTING ----------------------------------------------------------------------------------
 
 

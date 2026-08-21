@@ -3,6 +3,9 @@
 namespace MainCmds {
   int analysis(const std::vector<std::string>& args);
   int benchmark(const std::vector<std::string>& args);
+#ifdef KATAGO_BUILD_BENCHMARKNN
+  int benchmarknn(const std::vector<std::string>& args);
+#endif
   int contribute(const std::vector<std::string>& args);
   int evalsgf(const std::vector<std::string>& args);
   int gatekeeper(const std::vector<std::string>& args);
