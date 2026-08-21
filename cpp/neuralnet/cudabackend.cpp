@@ -2741,6 +2741,20 @@ void BlockStack::apply(
       const FourProfile::RouteV1 enqueueRoute =
         fourProfileManager->enqueue(fourProfileCall);
       if(enqueueRoute == FourProfile::RouteV1::Specialized) {
+#ifdef KATAGO_BUILD_BENCHMARKNN
+        // A whole-span provider performs these logical transformer operations
+        // without entering the official per-layer implementations that update
+        // the benchmark counters. Publish the covered logical counts here so
+        // the test-only harness can validate and time the specialized route.
+        cudaHandles->benchmarkRoute.current.attention =
+          cudaHandles->benchmarkRoute.expected.attention;
+        cudaHandles->benchmarkRoute.current.ffn =
+          cudaHandles->benchmarkRoute.expected.ffn;
+        cudaHandles->benchmarkRoute.current.qkn =
+          cudaHandles->benchmarkRoute.expected.qkn;
+        cudaHandles->benchmarkRoute.current.orderedClippedSwiGLU =
+          cudaHandles->benchmarkRoute.expected.orderedClippedSwiGLU;
+#endif
         i = static_cast<int>(end) - 1;
         continue;
       }
@@ -5001,11 +5015,22 @@ bool NeuralNet::benchmarkDeviceOnlyOutput(
 
   Buffers* buffers = gpuHandle->buffers.get();
   ScratchBuffers* scratch = gpuHandle->scratch.get();
+  FourProfile::ManagerV1* selectedFourProfileManager = nullptr;
+  FourProfile::RuntimeKeyV1 fourProfileRuntime;
+  const FourProfile::RuntimeKeyV1* selectedFourProfileRuntime = nullptr;
+  if(gpuHandle->fourProfileManager != nullptr &&
+     gpuHandle->fourProfileManager->report().route == FourProfile::RouteV1::Specialized) {
+    selectedFourProfileManager = gpuHandle->fourProfileManager.get();
+    fourProfileRuntime = gpuHandle->fourProfileRuntime;
+    fourProfileRuntime.physicalBatchSize = batchSize;
+    selectedFourProfileRuntime = &fourProfileRuntime;
+  }
   for(int i = 0; i < numWarmups; i++) {
     gpuHandle->model->apply(
       cudaHandles,scratch,batchSize,gpuHandle->requireExactNNLen,
       buffers->inputBuf,buffers->inputGlobalBuf,buffers->policyBuf,buffers->valueBuf,
-      buffers->scoreValueBuf,buffers->ownershipBuf,buffers->workspaceBuf,buffers->workspaceBytes
+      buffers->scoreValueBuf,buffers->ownershipBuf,buffers->workspaceBuf,buffers->workspaceBytes,
+      selectedFourProfileManager,selectedFourProfileRuntime
     );
   }
 
@@ -5036,7 +5061,8 @@ bool NeuralNet::benchmarkDeviceOnlyOutput(
       gpuHandle->model->apply(
         cudaHandles,scratch,batchSize,gpuHandle->requireExactNNLen,
         buffers->inputBuf,buffers->inputGlobalBuf,buffers->policyBuf,buffers->valueBuf,
-        buffers->scoreValueBuf,buffers->ownershipBuf,buffers->workspaceBuf,buffers->workspaceBytes
+        buffers->scoreValueBuf,buffers->ownershipBuf,buffers->workspaceBuf,buffers->workspaceBytes,
+        selectedFourProfileManager,selectedFourProfileRuntime
       );
       CUDA_ERR("benchmarkDeviceOnlyOutput",cudaEventRecord(endEvents[i],stream));
     }
