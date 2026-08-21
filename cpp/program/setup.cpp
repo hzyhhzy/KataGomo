@@ -2,6 +2,7 @@
 
 #include "../core/datetime.h"
 #include "../core/makedir.h"
+#include "../neuralnet/int8policy.h"
 #include "../neuralnet/nninterface.h"
 #include "../search/patternbonustable.h"
 
@@ -265,6 +266,13 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
     else if(cfg.contains("useNHWC"))
       useNHWCMode = cfg.getEnabled("useNHWC");
 
+    bool useINT8 = true;
+#if defined(USE_CUDA_BACKEND)
+    useINT8 = NeuralNet::loadCudaUseINT8(cfg,idxStr);
+#else
+    NeuralNet::ignoreCudaUseINT8(cfg);
+#endif
+
     int forcedSymmetry = -1;
     if(setupFor != SETUP_FOR_DISTRIBUTED && cfg.contains("nnForcedSymmetry"))
       forcedSymmetry = cfg.getInt("nnForcedSymmetry",0,SymmetryHelpers::NUM_SYMMETRIES-1);
@@ -273,6 +281,9 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       "After dedups: nnModelFile" + idxStr + " = " + nnModelFile
       + " useFP16 " + useFP16Mode.toString()
       + " useNHWC " + useNHWCMode.toString()
+#if defined(USE_CUDA_BACKEND)
+      + " useINT8 " + (useINT8 ? "true" : "false")
+#endif
     );
 
     int nnCacheSizePowerOfTwo =
@@ -355,6 +366,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       openCLReTunePerBoardSize,
       useFP16Mode,
       useNHWCMode,
+      useINT8,
       numNNServerThreadsPerModel,
       gpuIdxByServerThread,
       nnRandSeed,

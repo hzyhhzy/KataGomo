@@ -602,6 +602,10 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     cfg.overrideKey("cudaUseNHWC0","true");
     cfg.overrideKey("cudaInputsUseNHWC","true");
     cfg.overrideKey("cudaInputsUseNHWC0","true");
+    if(routeContract == RouteContract::OFFICIAL_V105_QKN_CLIP4) {
+      cfg.overrideKey("cudaUseINT8","false");
+      cfg.overrideKey("cudaUseINT8-0","false");
+    }
   }
 
   Logger logger(NULL,true,false,false);

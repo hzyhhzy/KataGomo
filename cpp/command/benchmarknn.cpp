@@ -579,6 +579,10 @@ int MainCmds::benchmarknn(const vector<string>& args) {
     cfg.overrideKey("cudaUseNHWC0","true");
     cfg.overrideKey("cudaInputsUseNHWC","true");
     cfg.overrideKey("cudaInputsUseNHWC0","true");
+    if(expectedV105Fp16) {
+      cfg.overrideKey("cudaUseINT8","false");
+      cfg.overrideKey("cudaUseINT8-0","false");
+    }
   }
 
   Logger logger(NULL,true,false,false);
