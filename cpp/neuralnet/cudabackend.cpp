@@ -12,6 +12,7 @@
 
 #include "../neuralnet/cudahelpers.h"
 #include "../neuralnet/cudautils.h"
+#include "../neuralnet/int8policy.h"
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/v105policy.h"
 #include "../neuralnet/four_profile/manager.h"
@@ -20,6 +21,9 @@
 #include "../neuralnet/four_profile/stub_factories.h"
 #if defined(KATAGO_P3_PROVIDER_COMPILED) && KATAGO_P3_PROVIDER_COMPILED
 #include "../neuralnet/four_profile/p3_provider.h"
+#endif
+#if defined(KATAGO_P4_PROVIDER_COMPILED) && KATAGO_P4_PROVIDER_COMPILED
+#include "../neuralnet/four_profile/p4_provider.h"
 #endif
 #include "../neuralnet/nninterface.h"
 #include "../neuralnet/nninputs.h"
@@ -3783,6 +3787,7 @@ struct ComputeContext {
   int nnYLen;
   enabled_t useFP16Mode;
   enabled_t useNHWCMode;
+  bool useINT8;
 };
 
 ComputeContext* NeuralNet::createComputeContext(
@@ -3795,6 +3800,7 @@ ComputeContext* NeuralNet::createComputeContext(
   bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
   enabled_t useNHWCMode,
+  bool useINT8,
   const LoadedModel* loadedModel
 ) {
   if(loadedModel->modelDesc.version == 105 && useFP16Mode == enabled_t::False)
@@ -3802,16 +3808,33 @@ ComputeContext* NeuralNet::createComputeContext(
       loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,false
     );
   (void)gpuIdxs;
-  (void)logger;
   (void)openCLTunerFile;
   (void)homeDataDirOverride;
   (void)openCLReTunePerBoardSize;
+
+  const CudaInt8Policy requestedInt8 = resolveCudaInt8Policy(
+    useINT8,std::getenv("KATAGO_DISABLE_INT8"));
+#if defined(KATAGO_P4_PROVIDER_COMPILED) && KATAGO_P4_PROVIDER_COMPILED
+  const bool int8Compiled = true;
+#else
+  const bool int8Compiled = false;
+#endif
+  const bool allowINT8 = requestedInt8.enabled && int8Compiled;
+  if(logger != nullptr) {
+    logger->write(
+      string("CUDA_INT8_POLICY config=") +
+      (requestedInt8.configEnabled ? "1" : "0") +
+      " env_disabled=" + (requestedInt8.environmentDisabled ? "1" : "0") +
+      " compiled=" + (int8Compiled ? "1" : "0") +
+      " allowed=" + (allowINT8 ? "1" : "0"));
+  }
 
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
   context->useFP16Mode = useFP16Mode;
   context->useNHWCMode = useNHWCMode;
+  context->useINT8 = allowINT8;
   return context;
 }
 
@@ -3910,7 +3933,8 @@ static FourProfile::RuntimeKeyV1 makeFourProfileRuntimeKey(
   int sameGpuConcurrency,
   bool requireExactNNLen,
   bool useFP16,
-  bool useNHWC
+  bool useNHWC,
+  bool useINT8
 ) {
   FourProfile::RuntimeKeyV1 key;
   key.deviceComputeCapability = majorComputeCapability * 10 + minorComputeCapability;
@@ -3925,10 +3949,9 @@ static FourProfile::RuntimeKeyV1 makeFourProfileRuntimeKey(
   key.inputStorage = useFP16 ?
     FourProfile::StorageTypeV1::Fp16 : FourProfile::StorageTypeV1::Fp32;
   key.outputStorage = key.inputStorage;
-  // This first infrastructure commit requests the existing external FP16
-  // execution contract. INT8 remains a separate, explicitly testable key and
-  // is not inferred from storage type or model version.
-  key.requestedExecution = FourProfile::RequestedExecutionV1::Fp16;
+  key.requestedExecution = useINT8 ?
+    FourProfile::RequestedExecutionV1::Int8 :
+    FourProfile::RequestedExecutionV1::Fp16;
   key.layout = useNHWC ?
     FourProfile::TensorLayoutV1::Nhwc : FourProfile::TensorLayoutV1::Nchw;
   return key;
@@ -4037,12 +4060,21 @@ struct ComputeHandle {
     // official route after any explicit zero-enqueue provider failure.
     fourProfileRuntime = makeFourProfileRuntimeKey(
       majorComputeCapability,minorComputeCapability,nnXLen,nnYLen,maxBatchSize,
-      sameGpuConcurrency,requireExactNNLen,useFP16,useNHWC
+      sameGpuConcurrency,requireExactNNLen,useFP16,useNHWC,
+      context->useINT8 && loadedModel->modelDesc.version == 105
     );
     FourProfile::RegistryV1 fourProfileRegistry;
-#if defined(KATAGO_P3_PROVIDER_COMPILED) && KATAGO_P3_PROVIDER_COMPILED
+#if defined(KATAGO_P3_PROVIDER_COMPILED) && KATAGO_P3_PROVIDER_COMPILED && \
+    defined(KATAGO_P4_PROVIDER_COMPILED) && KATAGO_P4_PROVIDER_COMPILED
+    FourProfile::registerBuiltinStubFactoriesV1(
+      fourProfileRegistry,FourProfile::makeP3FactoryV1(),
+      FourProfile::makeP4FactoryV1());
+#elif defined(KATAGO_P3_PROVIDER_COMPILED) && KATAGO_P3_PROVIDER_COMPILED
     FourProfile::registerBuiltinStubFactoriesV1(
       fourProfileRegistry,FourProfile::makeP3FactoryV1());
+#elif defined(KATAGO_P4_PROVIDER_COMPILED) && KATAGO_P4_PROVIDER_COMPILED
+    FourProfile::registerBuiltinStubFactoriesV1(
+      fourProfileRegistry,nullptr,FourProfile::makeP4FactoryV1());
 #else
     FourProfile::registerBuiltinStubFactoriesV1(fourProfileRegistry);
 #endif

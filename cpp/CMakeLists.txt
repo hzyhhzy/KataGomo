@@ -61,6 +61,8 @@ set(KATAGO_ENABLE_P1_SM120 0 CACHE BOOL
 set(KATAGO_P1_SM120_AVAILABLE 0)
 set(KATAGO_ENABLE_P3_PROVIDER 0 CACHE BOOL
   "Build the default-off SM120 C384/H12 B28 v105 FP16 provider")
+set(KATAGO_ENABLE_P4_PROVIDER 0 CACHE BOOL
+  "Build the SM120 C384/H12 B28 v105 INT8 provider (uses the P3 FA4 package)")
 set(KATAGO_CUTLASS_ROOT "" CACHE PATH
   "CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
 set(KATAGO_P3_EXACT_PACKAGE_CMAKE "" CACHE FILEPATH
@@ -234,6 +236,7 @@ if(USE_BACKEND STREQUAL "CUDA")
   endif()
 
   set(KATAGO_P3_PROVIDER_COMPILED 0)
+  set(KATAGO_P4_PROVIDER_COMPILED 0)
   set(KATAGO_P3_EXTERNAL_PACKAGES_AVAILABLE 0)
   set(KATAGO_P3_EXTERNAL_LINK_LIBRARIES "")
   if(KATAGO_ENABLE_P3_PROVIDER)
@@ -456,6 +459,38 @@ if(USE_BACKEND STREQUAL "CUDA")
         "${KATAGO_CUTLASS_ROOT}/include"
         "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
       list(APPEND NEURALNET_BACKEND_SOURCES $<TARGET_OBJECTS:katago_p3_provider>)
+
+      if(KATAGO_ENABLE_P4_PROVIDER)
+        add_library(katago_p4_provider OBJECT
+          neuralnet/four_profile/p4_provider.cpp
+          neuralnet/cuda_specialized/sm120/c384/experimental_int8/kernels.cu)
+        set_target_properties(katago_p4_provider PROPERTIES
+          CUDA_ARCHITECTURES "120"
+          CUDA_STANDARD 17
+          CUDA_STANDARD_REQUIRED ON
+          CXX_STANDARD 17
+          CXX_STANDARD_REQUIRED ON
+          POSITION_INDEPENDENT_CODE ON)
+        target_compile_options(katago_p4_provider PRIVATE
+          $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+          $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>)
+        if(MSVC)
+          target_compile_options(katago_p4_provider PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
+        endif()
+        target_compile_definitions(katago_p4_provider PRIVATE
+          KATAGO_P4_EXTERNAL_PACKAGES_AVAILABLE=${KATAGO_P3_EXTERNAL_PACKAGES_AVAILABLE})
+        target_include_directories(katago_p4_provider PRIVATE
+          "${CMAKE_CURRENT_SOURCE_DIR}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet"
+          ${KATAGO_P3_PACKAGE_INCLUDE_DIRS})
+        target_include_directories(katago_p4_provider SYSTEM PRIVATE
+          "${KATAGO_CUTLASS_ROOT}/include"
+          "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+        list(APPEND NEURALNET_BACKEND_SOURCES
+          $<TARGET_OBJECTS:katago_p4_provider>)
+        set(KATAGO_P4_PROVIDER_COMPILED 1)
+      endif()
     endif()
   endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
@@ -594,6 +629,7 @@ add_executable(katago
   dataio/poswriter.cpp
   neuralnet/nninputs.cpp
   neuralnet/modelversion.cpp
+  neuralnet/int8policy.cpp
   neuralnet/v105policy.cpp
   ${FOUR_PROFILE_PROVIDER_SOURCES}
   neuralnet/nneval.cpp
@@ -683,6 +719,9 @@ if(USE_BACKEND STREQUAL "CUDA")
   endif()
   if(KATAGO_P3_PROVIDER_COMPILED)
     target_compile_definitions(katago PRIVATE KATAGO_P3_PROVIDER_COMPILED=1)
+  endif()
+  if(KATAGO_P4_PROVIDER_COMPILED)
+    target_compile_definitions(katago PRIVATE KATAGO_P4_PROVIDER_COMPILED=1)
   endif()
   find_package(CUDAToolkit REQUIRED)
   find_path(CUDNN_INCLUDE_DIR cudnn.h HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES include)

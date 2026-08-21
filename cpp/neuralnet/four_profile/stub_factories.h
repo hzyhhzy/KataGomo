@@ -8,11 +8,12 @@
 namespace FourProfile {
 
 // All four named factories are registered so matching and overlap semantics
-// stay stable. P1 and P3 become real when their optional SM120 packages are
-// linked; P2 remains uncertified and P4 remains unavailable.
+// stay stable. Optional linked implementations replace their corresponding
+// unavailable stubs without changing registry order.
 void registerBuiltinStubFactoriesV1(
   RegistryV1& registry,
-  std::unique_ptr<FactoryV1> p3Override = nullptr
+  std::unique_ptr<FactoryV1> p3Override = nullptr,
+  std::unique_ptr<FactoryV1> p4Override = nullptr
 );
 
 }  // namespace FourProfile

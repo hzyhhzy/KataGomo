@@ -79,8 +79,10 @@ ComputeContext* NeuralNet::createComputeContext(
   bool openCLReTunePerBoardSize,
   enabled_t useFP16Mode,
   enabled_t useNHWCMode,
+  bool useINT8,
   const LoadedModel* loadedModel
 ) {
+  (void)useINT8;
   if(useNHWCMode == enabled_t::True) {
     throw StringError("ONNX backend: useNHWC = false required");
   }
