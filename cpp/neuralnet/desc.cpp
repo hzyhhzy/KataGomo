@@ -387,17 +387,22 @@ TransformerRMSNormDesc& TransformerRMSNormDesc::operator=(TransformerRMSNormDesc
 
 TransformerAttentionDesc::TransformerAttentionDesc()
   : numHeads(0), numKVHeads(0), qHeadDim(0), vHeadDim(0),
-    useRope(false), learnableRope(false),
+    useRope(false), learnableRope(false), useQKNorm(false),
+    attentionInputQuantMaxAbs(0.0f), attentionOutputQuantMaxAbs(0.0f),
     ropeNumKVHeads(0), ropeNumPairs(0), ropeTheta(0.0f) {}
 
-TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloats) {
+TransformerAttentionDesc::TransformerAttentionDesc(
+  istream& in,
+  int modelVersion,
+  bool binaryFloats
+) {
   in >> name;
   in >> numHeads;
   in >> numKVHeads;
   in >> qHeadDim;
   in >> vHeadDim;
-  int useRopeInt;
-  int learnableRopeInt;
+  int useRopeInt = -1;
+  int learnableRopeInt = -1;
   in >> useRopeInt;
   in >> learnableRopeInt;
   if((useRopeInt != 0 && useRopeInt != 1) ||
@@ -405,6 +410,28 @@ TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloat
     throw StringError(name + ": transformer attention rope flags must be 0 or 1");
   useRope = useRopeInt != 0;
   learnableRope = learnableRopeInt != 0;
+  useQKNorm = false;
+  attentionInputQuantMaxAbs = 0.0f;
+  attentionOutputQuantMaxAbs = 0.0f;
+  if(modelVersion >= 105) {
+    int useQKNormInt = -1;
+    in >> useQKNormInt;
+    if(useQKNormInt != 0 && useQKNormInt != 1)
+      throw StringError(name + ": transformer attention useQKNorm flag must be 0 or 1");
+    useQKNorm = useQKNormInt != 0;
+    in >> attentionInputQuantMaxAbs;
+    in >> attentionOutputQuantMaxAbs;
+    if(in.fail() || !isfinite(attentionInputQuantMaxAbs) ||
+       attentionInputQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / attentionInputQuantMaxAbs))
+      throw StringError(
+        name + ": transformer attention attentionInputQuantMaxAbs must be finite and positive");
+    if(!isfinite(attentionOutputQuantMaxAbs) ||
+       attentionOutputQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / attentionOutputQuantMaxAbs))
+      throw StringError(
+        name + ": transformer attention attentionOutputQuantMaxAbs must be finite and positive");
+  }
 
   if(in.fail())
     throw StringError(name + ": transformer attention block failed to parse header");
@@ -420,6 +447,10 @@ TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloat
   kProj = MatMulLayerDesc(in, binaryFloats);
   vProj = MatMulLayerDesc(in, binaryFloats);
   outProj = MatMulLayerDesc(in, binaryFloats);
+  if(useQKNorm) {
+    qNorm = TransformerRMSNormDesc(in, binaryFloats);
+    kNorm = TransformerRMSNormDesc(in, binaryFloats);
+  }
 
   if(qProj.inChannels != preLN.numChannels ||
      kProj.inChannels != preLN.numChannels ||
@@ -433,6 +464,9 @@ TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloat
     throw StringError(name + ": v projection output channels do not match attention geometry");
   if(outProj.inChannels != numHeads * vHeadDim || outProj.outChannels != preLN.numChannels)
     throw StringError(name + ": output projection channels do not match attention geometry");
+  if(useQKNorm &&
+     (qNorm.numChannels != qHeadDim || kNorm.numChannels != qHeadDim))
+    throw StringError(name + ": q/k RMSNorm channels do not match qHeadDim");
 
   ropeNumKVHeads = 0;
   ropeNumPairs = 0;
@@ -481,11 +515,16 @@ TransformerAttentionDesc& TransformerAttentionDesc::operator=(TransformerAttenti
   vHeadDim = other.vHeadDim;
   useRope = other.useRope;
   learnableRope = other.learnableRope;
+  useQKNorm = other.useQKNorm;
+  attentionInputQuantMaxAbs = other.attentionInputQuantMaxAbs;
+  attentionOutputQuantMaxAbs = other.attentionOutputQuantMaxAbs;
   preLN = std::move(other.preLN);
   qProj = std::move(other.qProj);
   kProj = std::move(other.kProj);
   vProj = std::move(other.vProj);
   outProj = std::move(other.outProj);
+  qNorm = std::move(other.qNorm);
+  kNorm = std::move(other.kNorm);
   ropeNumKVHeads = other.ropeNumKVHeads;
   ropeNumPairs = other.ropeNumPairs;
   ropeFreqs = std::move(other.ropeFreqs);
@@ -556,17 +595,45 @@ void TransformerAttentionDesc::computeRopeCosSin(
 //-----------------------------------------------------------------------------
 
 TransformerFFNDesc::TransformerFFNDesc()
-  : numChannels(0), ffnChannels(0), useSwiGLU(false) {}
+  : numChannels(0), ffnChannels(0), useSwiGLU(false),
+    swigluClip(0.0f), ffnInputQuantMaxAbs(0.0f), productQuantMaxAbs(0.0f) {}
 
-TransformerFFNDesc::TransformerFFNDesc(istream& in, bool binaryFloats) {
+TransformerFFNDesc::TransformerFFNDesc(
+  istream& in,
+  int modelVersion,
+  bool binaryFloats
+) {
   in >> name;
   in >> numChannels;
   in >> ffnChannels;
-  int useSwiGLUInt;
+  int useSwiGLUInt = -1;
   in >> useSwiGLUInt;
   if(useSwiGLUInt != 0 && useSwiGLUInt != 1)
     throw StringError(name + ": transformer ffn useSwiGLU flag must be 0 or 1");
   useSwiGLU = useSwiGLUInt != 0;
+  swigluClip = 0.0f;
+  ffnInputQuantMaxAbs = 0.0f;
+  productQuantMaxAbs = 0.0f;
+  if(modelVersion >= 105) {
+    in >> swigluClip;
+    if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
+      throw StringError(name + ": transformer ffn swigluClip must be finite and nonnegative");
+    if(swigluClip > 0.0f && !useSwiGLU)
+      throw StringError(name + ": transformer ffn swigluClip requires SwiGLU");
+    in >> ffnInputQuantMaxAbs;
+    if(in.fail() || !isfinite(ffnInputQuantMaxAbs) ||
+       ffnInputQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / ffnInputQuantMaxAbs))
+      throw StringError(
+        name + ": transformer ffn ffnInputQuantMaxAbs must be finite and positive");
+    in >> productQuantMaxAbs;
+    if(in.fail() || !isfinite(productQuantMaxAbs) ||
+       productQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / productQuantMaxAbs))
+      throw StringError(name + ": transformer ffn productQuantMaxAbs must be finite and positive");
+    if(!useSwiGLU)
+      throw StringError(name + ": transformer ffn productQuantMaxAbs requires SwiGLU");
+  }
   if(in.fail())
     throw StringError(name + ": transformer ffn block failed to parse header");
   if(numChannels < 1 || ffnChannels < 1)
@@ -600,6 +667,9 @@ TransformerFFNDesc& TransformerFFNDesc::operator=(TransformerFFNDesc&& other) {
   numChannels = other.numChannels;
   ffnChannels = other.ffnChannels;
   useSwiGLU = other.useSwiGLU;
+  swigluClip = other.swigluClip;
+  ffnInputQuantMaxAbs = other.ffnInputQuantMaxAbs;
+  productQuantMaxAbs = other.productQuantMaxAbs;
   preLN = std::move(other.preLN);
   linear1 = std::move(other.linear1);
   linearGate = std::move(other.linearGate);
@@ -906,7 +976,7 @@ static void parseResidualBlockStack(
       blocks.push_back(make_pair(NESTED_BOTTLENECK_BLOCK_KIND, std::move(descPtr)));
     }
     else if(kind == "transformer_attention_block") {
-      unique_ptr_void descPtr = make_unique_void(new TransformerAttentionDesc(in,binaryFloats));
+      unique_ptr_void descPtr = make_unique_void(new TransformerAttentionDesc(in,version,binaryFloats));
       TransformerAttentionDesc& desc = *((TransformerAttentionDesc*)descPtr.get());
       if(desc.preLN.numChannels != trunkNumChannels ||
          desc.qProj.inChannels != trunkNumChannels ||
@@ -919,7 +989,7 @@ static void parseResidualBlockStack(
       blocks.push_back(make_pair(TRANSFORMER_ATTENTION_BLOCK_KIND, std::move(descPtr)));
     }
     else if(kind == "transformer_ffn_block") {
-      unique_ptr_void descPtr = make_unique_void(new TransformerFFNDesc(in,binaryFloats));
+      unique_ptr_void descPtr = make_unique_void(new TransformerFFNDesc(in,version,binaryFloats));
       TransformerFFNDesc& desc = *((TransformerFFNDesc*)descPtr.get());
       if(desc.numChannels != trunkNumChannels)
         throw StringError(
@@ -1308,6 +1378,8 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net is from an extremely old version of KataGo and is no longer supported by the engine. Model version: " + Global::intToString(version));
   if(version > NNModelVersion::latestModelVersionImplemented)
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));
+  if(version == 104)
+    throw StringError("Model version 104 is deliberately unsupported; use canonical v102 or v105 instead");
 
   in >> numInputChannels;
   if(in.fail())
@@ -1320,6 +1392,23 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError(name + ": model failed to parse numInputGlobalChannels");
   if(numInputGlobalChannels <= 0)
     throw StringError(name + ": model numInputGlobalChannels must be positive");
+
+  const int expectedNumInputChannels = NNModelVersion::getNumSpatialFeatures(version);
+  const int expectedNumInputGlobalChannels = NNModelVersion::getNumGlobalFeatures(version);
+  if(numInputChannels != expectedNumInputChannels)
+    throw StringError(
+      name + Global::strprintf(
+               ": numInputChannels (%d) does not match model version %d spatial features (%d)",
+               numInputChannels,
+               version,
+               expectedNumInputChannels));
+  if(numInputGlobalChannels != expectedNumInputGlobalChannels)
+    throw StringError(
+      name + Global::strprintf(
+               ": numInputGlobalChannels (%d) does not match model version %d global features (%d)",
+               numInputGlobalChannels,
+               version,
+               expectedNumInputGlobalChannels));
 
   trunk = TrunkDesc(in, version, binaryFloats);
   policyHead = PolicyHeadDesc(in, version, binaryFloats);
@@ -1480,6 +1569,8 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
   descBuf.onnxHeader.load(onnxFile);
 
   descBuf.version = descBuf.onnxHeader.modelVersion;
+  if(descBuf.version == 104)
+    throw StringError("ONNX model version 104 is deliberately unsupported; use canonical v102 or v105 instead");
   descBuf.name = descBuf.onnxHeader.modelName;
   descBuf.numInputChannels = descBuf.onnxHeader.num_spatial_inputs;
   descBuf.numInputGlobalChannels = descBuf.onnxHeader.num_global_inputs;
@@ -1495,10 +1586,10 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
 }
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 102, "");
+  static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 102) {
+  if(version <= 103 || version == 105) {
   }
   else {
     ASSERT_UNREACHABLE;

@@ -17,6 +17,9 @@ namespace MainCmds {
   int selfplay(const std::vector<std::string>& args);
 
   int testgpuerror(const std::vector<std::string>& args);
+#ifdef KATAGO_BUILD_V105_WIRE_CONTRACT
+  int testv105wire(const std::vector<std::string>& args);
+#endif
 
 
   int samplesgfs(const std::vector<std::string>& args);

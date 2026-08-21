@@ -32,6 +32,9 @@ benchmark : Test speed with different numbers of search threads.
 #ifdef KATAGO_BUILD_BENCHMARKNN
   cout << "benchmarknn : Test-only full-I/O and device-only neural-net throughput harness." << endl;
 #endif
+#ifdef KATAGO_BUILD_V105_WIRE_CONTRACT
+  cout << "testv105wire : Release-safe native v105/v102 wire parser contract." << endl;
+#endif
   cout << R"%%(genconfig : User-friendly interface to generate a config with rules and automatic performance tuning.
 
 contribute : Connect to online distributed KataGo training and run perpetually contributing selfplay games.
@@ -86,6 +89,10 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::selfplay(subArgs);
   else if(subcommand == "testgpuerror")
     return MainCmds::testgpuerror(subArgs);
+#ifdef KATAGO_BUILD_V105_WIRE_CONTRACT
+  else if(subcommand == "testv105wire")
+    return MainCmds::testv105wire(subArgs);
+#endif
   else if(subcommand == "samplesgfs")
     return MainCmds::samplesgfs(subArgs);
   else if(subcommand == "dataminesgfs")

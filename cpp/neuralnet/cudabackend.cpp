@@ -11,6 +11,7 @@
 #include "../neuralnet/cudahelpers.h"
 #include "../neuralnet/cudautils.h"
 #include "../neuralnet/modelversion.h"
+#include "../neuralnet/v105policy.h"
 #include "../neuralnet/nninterface.h"
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/nneval.h"
@@ -3634,12 +3635,18 @@ ComputeContext* NeuralNet::createComputeContext(
   enabled_t useNHWCMode,
   const LoadedModel* loadedModel
 ) {
+  V105CudaPolicy::requireCurrentQKNClipSemantics(
+    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk
+  );
+  if(loadedModel->modelDesc.version == 105 && useFP16Mode == enabled_t::False)
+    V105CudaPolicy::requireCurrentExecution(
+      loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,false
+    );
   (void)gpuIdxs;
   (void)logger;
   (void)openCLTunerFile;
   (void)homeDataDirOverride;
   (void)openCLReTunePerBoardSize;
-  (void)loadedModel;
 
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
@@ -3759,6 +3766,9 @@ struct ComputeHandle {
     inputsUseNHWC(inputsUseNHWC_),
     policySize(NNPos::getPolicySize(context->nnXLen, context->nnYLen))
   {
+    V105CudaPolicy::requireCurrentExecution(
+      loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,useFP16
+    );
 #ifdef KATAGO_BUILD_BENCHMARKNN
     BenchmarkRouteCountsInternal expectedRoute;
     BenchmarkRouteCountsInternal preparedRoute;
@@ -3846,6 +3856,9 @@ ComputeHandle* NeuralNet::createComputeHandle(
   int gpuIdxForThisThread,
   int serverThreadIdx,
   int backendNumThreads) {
+  V105CudaPolicy::requireCurrentQKNClipSemantics(
+    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk
+  );
   (void)backendNumThreads; // Unused
   //Use whatever CUDA believes GPU 0 to be.
   if(gpuIdxForThisThread == -1)
@@ -3914,6 +3927,10 @@ ComputeHandle* NeuralNet::createComputeHandle(
       "Cuda backend thread " + Global::intToString(serverThreadIdx) + ": Model name: " + loadedModel->modelDesc.name
     );
   }
+
+  V105CudaPolicy::requireCurrentExecution(
+    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,useFP16
+  );
 
   ComputeHandle* gpuHandle = new ComputeHandle(
     context,loadedModel,logger,prop.major,prop.minor,maxBatchSize,requireExactNNLen,inputsUseNHWC,useFP16,useNHWC
@@ -4136,6 +4153,9 @@ struct InputBuffers {
 };
 
 InputBuffers* NeuralNet::createInputBuffers(const LoadedModel* loadedModel, int maxBatchSize, int nnXLen, int nnYLen) {
+  V105CudaPolicy::requireCurrentQKNClipSemantics(
+    loadedModel->modelDesc.version,loadedModel->modelDesc.trunk
+  );
   return new InputBuffers(loadedModel,maxBatchSize,nnXLen,nnYLen);
 }
 void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {

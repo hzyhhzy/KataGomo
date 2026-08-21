@@ -123,12 +123,21 @@ struct TransformerAttentionDesc {
   int vHeadDim;
   bool useRope;
   bool learnableRope;
+  bool useQKNorm;
+  // Native v105 stores these mandatory per-attention PTQ ranges immediately
+  // after useQKNorm. They are metadata and do not change FP16 semantics.
+  float attentionInputQuantMaxAbs;
+  float attentionOutputQuantMaxAbs;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc qProj;
   MatMulLayerDesc kProj;
   MatMulLayerDesc vProj;
   MatMulLayerDesc outProj;
+  // Present on the wire only when useQKNorm is true. The learned scale is
+  // shared by heads, so both descriptors have qHeadDim channels.
+  TransformerRMSNormDesc qNorm;
+  TransformerRMSNormDesc kNorm;
 
   int ropeNumKVHeads;
   int ropeNumPairs;
@@ -136,7 +145,7 @@ struct TransformerAttentionDesc {
   float ropeTheta;
 
   TransformerAttentionDesc();
-  TransformerAttentionDesc(std::istream& in, bool binaryFloats);
+  TransformerAttentionDesc(std::istream& in, int modelVersion, bool binaryFloats);
   TransformerAttentionDesc(TransformerAttentionDesc&& other);
 
   TransformerAttentionDesc(const TransformerAttentionDesc&) = delete;
@@ -157,6 +166,13 @@ struct TransformerFFNDesc {
   int numChannels;
   int ffnChannels;
   bool useSwiGLU;
+  // Zero disables clipping. Positive values clip the activated linear branch
+  // and the gate independently before their SwiGLU product.
+  float swigluClip;
+  // Mandatory positive native-v105 PTQ metadata. Legacy versions leave all
+  // three added scalar fields at zero.
+  float ffnInputQuantMaxAbs;
+  float productQuantMaxAbs;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc linear1;
@@ -164,7 +180,7 @@ struct TransformerFFNDesc {
   MatMulLayerDesc linear2;
 
   TransformerFFNDesc();
-  TransformerFFNDesc(std::istream& in, bool binaryFloats);
+  TransformerFFNDesc(std::istream& in, int modelVersion, bool binaryFloats);
   TransformerFFNDesc(TransformerFFNDesc&& other);
 
   TransformerFFNDesc(const TransformerFFNDesc&) = delete;

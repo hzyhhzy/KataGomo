@@ -16,6 +16,11 @@
 //9 = V7 features, shortterm value error
 //10 = V7 features, shortterm value error done more properly
 //11 = V7 features, supports mish activations by desc actually reading the activations
+//101-103 = transformer-era feature/model formats
+//104 = deliberately unsupported in this CUDA transformer line
+//105 = V102 transformer topology and V101 inputs, extended with optional Q/K
+//      RMSNorm, optional nonnegative SwiGLU clipping, and mandatory positive
+//      per-layer PTQ activation ranges.
 
 static void fail(int modelVersion) {
   throw StringError("NNModelVersion: Model version not currently implemented or supported: " + Global::intToString(modelVersion));
@@ -23,13 +28,13 @@ static void fail(int modelVersion) {
 
 static_assert(NNModelVersion::oldestModelVersionImplemented == 8, "");
 static_assert(NNModelVersion::oldestInputsVersionImplemented == 7, "");
-static_assert(NNModelVersion::latestModelVersionImplemented == 102, "");
-static_assert(NNModelVersion::latestInputsVersionImplemented == 101, "");
+static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
+static_assert(NNModelVersion::latestInputsVersionImplemented == 102, "");
 
 int NNModelVersion::getInputsVersion(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
-    return 7;
-  else if(modelVersion == 101 || modelVersion == 102)
+    return 7; //old v97/v7/v10
+  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105)
     return 101;
 
   fail(modelVersion);
@@ -39,7 +44,7 @@ int NNModelVersion::getInputsVersion(int modelVersion) {
 int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return NNInputs::NUM_FEATURES_SPATIAL_V7;
-  else if(modelVersion == 101 || modelVersion == 102)
+  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105)
     return NNInputs::NUM_FEATURES_SPATIAL_V101;
   fail(modelVersion);
   return -1;
@@ -48,7 +53,7 @@ int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
 int NNModelVersion::getNumGlobalFeatures(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return NNInputs::NUM_FEATURES_GLOBAL_V7;
-  else if(modelVersion == 101 || modelVersion == 102)
+  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105)
     return NNInputs::NUM_FEATURES_GLOBAL_V101;
 
   fail(modelVersion);

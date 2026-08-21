@@ -35,6 +35,7 @@ set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the co
 set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
 set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 29. Compiling with this will use more memory and slow down KataGo, even when playing on boards of size 19.")
 set(KATAGO_BUILD_BENCHMARKNN 0 CACHE BOOL "Build the test-only raw neural-net benchmark command")
+set(KATAGO_BUILD_V105_WIRE_CONTRACT 0 CACHE BOOL "Build the Release-safe native v105 wire contract")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -218,6 +219,7 @@ add_executable(katago
   dataio/poswriter.cpp
   neuralnet/nninputs.cpp
   neuralnet/modelversion.cpp
+  neuralnet/v105policy.cpp
   neuralnet/nneval.cpp
   neuralnet/desc.cpp
   neuralnet/onnxprotoreader.cpp
@@ -273,6 +275,16 @@ add_executable(katago
 if(KATAGO_BUILD_BENCHMARKNN)
   target_sources(katago PRIVATE command/benchmarknn.cpp)
   target_compile_definitions(katago PRIVATE KATAGO_BUILD_BENCHMARKNN=1)
+endif()
+
+if(KATAGO_BUILD_V105_WIRE_CONTRACT)
+  target_sources(katago PRIVATE tests/v105_wire_contract.cpp)
+  target_compile_definitions(katago PRIVATE KATAGO_BUILD_V105_WIRE_CONTRACT=1)
+  add_custom_target(v105_wire_contract
+    COMMAND $<TARGET_FILE:katago> testv105wire
+    DEPENDS katago
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    VERBATIM)
 endif()
 
 if(USE_BACKEND STREQUAL "CUDA")
