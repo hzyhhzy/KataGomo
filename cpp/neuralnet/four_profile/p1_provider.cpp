@@ -339,7 +339,8 @@ public:
     : key(std::move(key_)), generation(0), nextRunToken(0), armedRunToken(0) {
     if(!exactP1Key(key))
       throw ErrorV1("P1 provider was created with a non-P1 key");
-    if(!CudaFusedFFN::supportsShape(P1_FFN_CHANNELS,P1_CHANNELS))
+    if(!CudaFusedFFN::supportsProblem(
+         P1_TOKEN_ROWS,P1_FFN_CHANNELS,P1_CHANNELS,0.0f))
       throw ErrorV1("8a fast fused FFN does not support C256/F768");
   }
 
@@ -554,7 +555,7 @@ public:
           normalized,
           static_cast<const half*>(feedForward.linearWeights.get()),
           static_cast<const half*>(feedForward.gateWeights.get()),operation,
-          P1_TOKEN_ROWS,P1_FFN_CHANNELS,P1_CHANNELS,stream);
+          P1_TOKEN_ROWS,P1_FFN_CHANNELS,P1_CHANNELS,0.0f,stream);
       }
       catch(const std::exception& e) {
         throw FatalErrorV1(
