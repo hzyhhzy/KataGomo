@@ -1,5 +1,6 @@
 #ifdef USE_CUDA_BACKEND
 #include <atomic>
+#include <cstdlib>
 #include <limits>
 
 #include "../neuralnet/cudaerrorcheck.h"
@@ -13,6 +14,10 @@
 #include "../neuralnet/cudautils.h"
 #include "../neuralnet/modelversion.h"
 #include "../neuralnet/v105policy.h"
+#include "../neuralnet/four_profile/manager.h"
+#include "../neuralnet/four_profile/mode.h"
+#include "../neuralnet/four_profile/native_model_view.h"
+#include "../neuralnet/four_profile/stub_factories.h"
 #include "../neuralnet/nninterface.h"
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/nneval.h"
@@ -1545,7 +1550,9 @@ struct BlockStack {
     void* trunkBuf,
     void* trunkScratchBuf,
     void* workspaceBuf,
-    size_t workspaceBytes
+    size_t workspaceBytes,
+    FourProfile::ManagerV1* fourProfileManager = nullptr,
+    const FourProfile::RuntimeKeyV1* fourProfileRuntime = nullptr
   ) const;
 
 };
@@ -2695,10 +2702,52 @@ void BlockStack::apply(
   void* trunkBuf,
   void* trunkScratchBuf,
   void* workspaceBuf,
-  size_t workspaceBytes
+  size_t workspaceBytes,
+  FourProfile::ManagerV1* fourProfileManager,
+  const FourProfile::RuntimeKeyV1* fourProfileRuntime
 ) const {
 
+  FourProfile::RouteV1 fourProfileRoute = FourProfile::RouteV1::Official;
+  FourProfile::RuntimeCallV1 fourProfileCall;
+  if(fourProfileManager != nullptr && fourProfileRuntime != nullptr) {
+    const FourProfile::BuildReportV1& report = fourProfileManager->report();
+    fourProfileCall.key = *fourProfileRuntime;
+    fourProfileCall.actualBatchSize = batchSize;
+    fourProfileCall.sequenceSize = nnXLen * nnYLen;
+    fourProfileCall.transformerBeginBlock = report.span.beginBlock;
+    fourProfileCall.transformerPairCount = report.span.pairCount;
+    fourProfileCall.stream = reinterpret_cast<void*>(cudaHandles->stream.stream);
+    fourProfileCall.trunk = trunkBuf;
+    fourProfileCall.trunkScratch = trunkScratchBuf;
+    fourProfileCall.mask = maskBuf;
+    fourProfileCall.workspace = workspaceBuf;
+    fourProfileCall.workspaceBytes = workspaceBytes;
+
+    // H2D conversion and common official setup may already be queued, but no
+    // provider-specific inference work has been queued. The provider must
+    // complete this full-identity, zero-enqueue preflight before its first
+    // specialized operation. An Auto miss therefore safely executes this
+    // same official block span exactly once.
+    fourProfileRoute = fourProfileManager->preflight(fourProfileCall);
+  }
+
   for(int i = 0; i<blocks.size(); i++) {
+    if(fourProfileRoute == FourProfile::RouteV1::Specialized &&
+       static_cast<size_t>(i) == fourProfileCall.transformerBeginBlock) {
+      const size_t end = fourProfileCall.transformerBeginBlock +
+        fourProfileCall.transformerPairCount * 2;
+      if(end > blocks.size() || end <= static_cast<size_t>(i))
+        throw FourProfile::FatalErrorV1("four-profile committed span is outside CUDA block stack");
+      const FourProfile::RouteV1 enqueueRoute =
+        fourProfileManager->enqueue(fourProfileCall);
+      if(enqueueRoute == FourProfile::RouteV1::Specialized) {
+        i = static_cast<int>(end) - 1;
+        continue;
+      }
+      // Only an explicit provider failure with enqueued==0 reaches here.
+      // Execute the official transformer blocks from the current index.
+      fourProfileRoute = FourProfile::RouteV1::Official;
+    }
 #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D("CUDA Blockstack block " + Global::intToString(i), trunkBuf, batchSize, trunkNumChannels, nnXLen*nnYLen, usingNHWC, usingFP16, maskBuf);
 #endif
@@ -2870,7 +2919,9 @@ struct Trunk {
     float* maskSumBuf,
     void* trunkBuf,
     void* workspaceBuf,
-    size_t workspaceBytes
+    size_t workspaceBytes,
+    FourProfile::ManagerV1* fourProfileManager,
+    const FourProfile::RuntimeKeyV1* fourProfileRuntime
   ) const {
 
     SizedBuf<void*> trunkScratch(scratch->allocator, scratch->getBufSizeXY(trunkNumChannels));
@@ -2909,7 +2960,9 @@ struct Trunk {
       trunkScratch.buf,
       trunkBuf,
       workspaceBuf,
-      workspaceBytes
+      workspaceBytes,
+      fourProfileManager,
+      fourProfileRuntime
     );
 
     //And now with the final BN port it from trunkScratch.buf to trunkBuf.
@@ -3413,7 +3466,9 @@ struct Model {
     void* ownershipBuf,
 
     void* workspaceBuf,
-    size_t workspaceBytes
+    size_t workspaceBytes,
+    FourProfile::ManagerV1* fourProfileManager = nullptr,
+    const FourProfile::RuntimeKeyV1* fourProfileRuntime = nullptr
   ) const {
 #ifdef KATAGO_BUILD_BENCHMARKNN
     cudaHandles->benchmarkRoute.beginInvocation();
@@ -3479,7 +3534,9 @@ struct Model {
       maskSumBuf,
       trunkBuf.buf,
       workspaceBuf,
-      workspaceBytes
+      workspaceBytes,
+      fourProfileManager,
+      fourProfileRuntime
     );
     policyHead->apply(
       cudaHandles,
@@ -3707,6 +3764,9 @@ struct Buffers {
 struct ComputeContext {
   int nnXLen;
   int nnYLen;
+  // Exact only when every configured server thread targets one physical GPU.
+  // -2 means that per-GPU concurrency cannot be proven from this context.
+  int singleGpuIdx;
   enabled_t useFP16Mode;
   enabled_t useNHWCMode;
 };
@@ -3727,7 +3787,6 @@ ComputeContext* NeuralNet::createComputeContext(
     V105CudaPolicy::requireCurrentExecution(
       loadedModel->modelDesc.version,loadedModel->modelDesc.trunk,false
     );
-  (void)gpuIdxs;
   (void)logger;
   (void)openCLTunerFile;
   (void)homeDataDirOverride;
@@ -3736,6 +3795,20 @@ ComputeContext* NeuralNet::createComputeContext(
   ComputeContext* context = new ComputeContext();
   context->nnXLen = nnXLen;
   context->nnYLen = nnYLen;
+  context->singleGpuIdx = -2;
+  if(!gpuIdxs.empty()) {
+    const int firstGpuIdx = gpuIdxs[0] < 0 ? 0 : gpuIdxs[0];
+    bool allSameGpu = true;
+    for(int gpuIdx: gpuIdxs) {
+      const int normalizedGpuIdx = gpuIdx < 0 ? 0 : gpuIdx;
+      if(normalizedGpuIdx != firstGpuIdx) {
+        allSameGpu = false;
+        break;
+      }
+    }
+    if(allSameGpu)
+      context->singleGpuIdx = firstGpuIdx;
+  }
   context->useFP16Mode = useFP16Mode;
   context->useNHWCMode = useNHWCMode;
   return context;
@@ -3827,11 +3900,60 @@ static void logBenchmarkActiveRouteNoThrow(CudaHandles* cudaHandles) noexcept {
 
 //------------------------------------------------------------------------------
 
+static FourProfile::RuntimeKeyV1 makeFourProfileRuntimeKey(
+  int majorComputeCapability,
+  int minorComputeCapability,
+  int nnXLen,
+  int nnYLen,
+  int physicalBatchSize,
+  int sameGpuConcurrency,
+  bool requireExactNNLen,
+  bool useFP16,
+  bool useNHWC
+) {
+  FourProfile::RuntimeKeyV1 key;
+  key.deviceComputeCapability = majorComputeCapability * 10 + minorComputeCapability;
+  key.boardX = nnXLen;
+  key.boardY = nnYLen;
+  key.physicalBatchSize = physicalBatchSize;
+  key.sameGpuConcurrency = sameGpuConcurrency;
+  key.exactBoard = requireExactNNLen;
+  key.maskMode = requireExactNNLen ?
+    FourProfile::MaskModeV1::None : FourProfile::MaskModeV1::Dense;
+  key.maskNull = requireExactNNLen;
+  key.inputStorage = useFP16 ?
+    FourProfile::StorageTypeV1::Fp16 : FourProfile::StorageTypeV1::Fp32;
+  key.outputStorage = key.inputStorage;
+  // This first infrastructure commit requests the existing external FP16
+  // execution contract. INT8 remains a separate, explicitly testable key and
+  // is not inferred from storage type or model version.
+  key.requestedExecution = FourProfile::RequestedExecutionV1::Fp16;
+  key.layout = useNHWC ?
+    FourProfile::TensorLayoutV1::Nhwc : FourProfile::TensorLayoutV1::Nchw;
+  return key;
+}
+
+static FourProfile::NativeExecutableBlocksV1 collectFourProfileExecutables(
+  const BlockStack& blocks
+) {
+  FourProfile::NativeExecutableBlocksV1 result;
+  result.reserve(blocks.blocks.size());
+  for(const auto& block: blocks.blocks)
+    result.emplace_back(block.first,block.second.get());
+  return result;
+}
+
+//------------------------------------------------------------------------------
+
 struct ComputeHandle {
   std::unique_ptr<CudaHandles> cudaHandles;
   std::unique_ptr<Model> model;
   std::unique_ptr<ScratchBuffers> scratch;
   std::unique_ptr<Buffers> buffers;
+  // Declared after every official resource so ordinary member unwinding also
+  // destroys provider plans first if constructor work below later throws.
+  std::unique_ptr<FourProfile::ManagerV1> fourProfileManager;
+  FourProfile::RuntimeKeyV1 fourProfileRuntime;
   const bool usingFP16;
   const int nnXLen;
   const int nnYLen;
@@ -3846,6 +3968,8 @@ struct ComputeHandle {
     int majorComputeCapability,
     int minorComputeCapability,
     int maxBatchSize,
+    int sameGpuConcurrency,
+    FourProfile::ModeV1 fourProfileMode,
     bool requireExactNNLen_,
     bool inputsUseNHWC_,
     bool useFP16,
@@ -3905,6 +4029,34 @@ struct ComputeHandle {
     // Ensure handle-local setup has completed without serializing unrelated
     // handles on the same device.
     CUDA_ERR("ComputeHandle",cudaStreamSynchronize(cudaHandles->stream.stream));
+
+    // The complete official Model, ScratchBuffers, and Buffers are all alive
+    // and their setup stream is synchronized before any provider factory may
+    // prepare or commit resources. Auto can therefore retain a fully formed
+    // official route after any explicit zero-enqueue provider failure.
+    fourProfileRuntime = makeFourProfileRuntimeKey(
+      majorComputeCapability,minorComputeCapability,nnXLen,nnYLen,maxBatchSize,
+      sameGpuConcurrency,requireExactNNLen,useFP16,useNHWC
+    );
+    FourProfile::RegistryV1 fourProfileRegistry;
+    FourProfile::registerBuiltinStubFactoriesV1(fourProfileRegistry);
+    const FourProfile::ModelViewV1 fourProfileModel =
+      FourProfile::buildNativeModelViewV1(
+        loadedModel->modelDesc,collectFourProfileExecutables(model->trunk->blocks)
+      );
+    fourProfileManager = FourProfile::ManagerV1::create(
+      fourProfileRegistry,fourProfileModel,fourProfileRuntime,fourProfileMode
+    );
+    if(logger != NULL) {
+      logger->write(
+        "CUDA_FOUR_PROFILE_ROUTE mode=" + string(FourProfile::modeNameV1(fourProfileMode)) +
+        " route=" +
+        string(fourProfileManager->report().route == FourProfile::RouteV1::Specialized ?
+          "specialized" : "official") +
+        " reason=" + FourProfile::reasonNameV1(fourProfileManager->report().reason) +
+        " profile=" + fourProfileManager->report().profileId
+      );
+    }
 #ifdef KATAGO_BUILD_BENCHMARKNN
     BenchmarkRouteStateInternal& route = cudaHandles->benchmarkRoute;
     route.expected = expectedRoute;
@@ -3929,6 +4081,9 @@ struct ComputeHandle {
         std::terminate();
       }
     }
+    // Provider plans may retain non-owning references to every official
+    // resource passed during prepare, so destroy them before any such target.
+    fourProfileManager.reset();
     buffers.reset();
     scratch.reset();
     model.reset();
@@ -3950,10 +4105,25 @@ ComputeHandle* NeuralNet::createComputeHandle(
   int gpuIdxForThisThread,
   int serverThreadIdx,
   int backendNumThreads) {
-  (void)backendNumThreads; // Unused
+  const char* fourProfileModeSetting = std::getenv("KATAGO_FOUR_PROFILE_MODE");
+  const FourProfile::ModeV1 fourProfileMode =
+    FourProfile::parseModeSettingV1(fourProfileModeSetting);
+  if(logger != NULL) {
+    logger->write(
+      "CUDA_FOUR_PROFILE_MODE mode=" + string(FourProfile::modeNameV1(fourProfileMode)) +
+      " source=" + (fourProfileModeSetting == nullptr ? string("default") : string("environment"))
+    );
+  }
   //Use whatever CUDA believes GPU 0 to be.
   if(gpuIdxForThisThread == -1)
     gpuIdxForThisThread = 0;
+
+  // A total thread count is valid same-GPU evidence only when the context
+  // proves every configured thread targets this one physical GPU. Multi-GPU
+  // mappings remain unknown (0) and therefore cannot match an S2 profile.
+  const int sameGpuConcurrency =
+    context->singleGpuIdx == gpuIdxForThisThread && backendNumThreads > 0 ?
+    backendNumThreads : 0;
 
   CUDA_ERR("createComputeHandle",cudaSetDevice(gpuIdxForThisThread));
 
@@ -4024,7 +4194,8 @@ ComputeHandle* NeuralNet::createComputeHandle(
   );
 
   ComputeHandle* gpuHandle = new ComputeHandle(
-    context,loadedModel,logger,prop.major,prop.minor,maxBatchSize,requireExactNNLen,inputsUseNHWC,useFP16,useNHWC
+    context,loadedModel,logger,prop.major,prop.minor,maxBatchSize,sameGpuConcurrency,
+    fourProfileMode,requireExactNNLen,inputsUseNHWC,useFP16,useNHWC
   );
   return gpuHandle;
 }
@@ -4358,6 +4529,8 @@ void NeuralNet::getOutput(
     CUDA_ERR("getOutput",cudaPeekAtLastError());
   }
 
+  FourProfile::RuntimeKeyV1 fourProfileRuntime = gpuHandle->fourProfileRuntime;
+  fourProfileRuntime.physicalBatchSize = batchSize;
   gpuHandle->model->apply(
     cudaHandles,
     scratch,
@@ -4374,7 +4547,9 @@ void NeuralNet::getOutput(
     buffers->ownershipBuf,
 
     buffers->workspaceBuf,
-    buffers->workspaceBytes
+    buffers->workspaceBytes,
+    gpuHandle->fourProfileManager.get(),
+    &fourProfileRuntime
   );
 
   CUDA_ERR("getOutput",cudaMemcpyAsync(inputBuffers->policyResults, buffers->policyBuf, inputBuffers->singlePolicyResultBytes*batchSize, cudaMemcpyDeviceToHost, stream));
