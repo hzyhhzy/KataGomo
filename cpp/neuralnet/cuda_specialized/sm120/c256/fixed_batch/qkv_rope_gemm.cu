@@ -8,6 +8,8 @@
  **************************************************************************************************/
 
 #include "qkv_rope_gemm.h"
+#include "p2_build_config.h"
+#include "p2_qkv_search_config.h"
 
 #include "cutlass/cutlass.h"
 #include "cutlass/device_kernel.h"
@@ -22,6 +24,9 @@
 #include <memory>
 #include <new>
 
+#define KATAGO_STRINGIFY_IMPL(value) #value
+#define KATAGO_STRINGIFY(value) KATAGO_STRINGIFY_IMPL(value)
+
 namespace {
 
 constexpr int SequenceLength225 = 225;
@@ -32,8 +37,11 @@ constexpr int HeadDim = 32;
 constexpr int RopePairs = 16;
 constexpr int GemmBatch = 3;
 constexpr int Batch36 = 36;
-constexpr int Batch28 = 28;
+constexpr int P2FixedBatch = KATAGO_P2_FIXED_BATCH;
 constexpr std::size_t RequiredSharedBytesPerBlockOptin = 101376ULL;
+
+static_assert(P2FixedBatch > 0 && P2FixedBatch <= 1024,
+  "P2 fixed batch must fit the public benchmark/runtime contract");
 
 using Element = cutlass::half_t;
 using Layout = cutlass::layout::RowMajor;
@@ -192,18 +200,24 @@ struct KernelBundle {
 };
 
 using Winner225 = KernelBundle<SequenceLength225,128,128,32,64,64,32,3>;
-using Winner361 = KernelBundle<SequenceLength361,128,128,32,64,64,32,3>;
+using Winner361 = KernelBundle<
+  SequenceLength361,
+  KATAGO_P2_QKV_SEARCH_THREADBLOCK_M,
+  KATAGO_P2_QKV_SEARCH_THREADBLOCK_N,32,
+  KATAGO_P2_QKV_SEARCH_WARP_M,
+  KATAGO_P2_QKV_SEARCH_WARP_N,32,
+  KATAGO_P2_QKV_SEARCH_STAGES>;
 
 static_assert(sizeof(typename Winner225::Kernel::SharedStorage) <=
     RequiredSharedBytesPerBlockOptin,
   "QKV+RoPE winner exceeds the SM120 opt-in shared-memory contract");
 static_assert(Winner225::Kernel::kThreadCount <= 1024,
   "QKV+RoPE winner exceeds CUDA threads-per-block limit");
-static_assert(sizeof(typename Winner361::Kernel::SharedStorage) ==
-    sizeof(typename Winner225::Kernel::SharedStorage),
-  "S361 must retain the S225 kernel resource shape");
-static_assert(Winner361::Kernel::kThreadCount == Winner225::Kernel::kThreadCount,
-  "S361 must retain the S225 threadblock shape");
+static_assert(sizeof(typename Winner361::Kernel::SharedStorage) <=
+    RequiredSharedBytesPerBlockOptin,
+  "S361 QKV+RoPE candidate exceeds the SM120 opt-in shared-memory contract");
+static_assert(Winner361::Kernel::kThreadCount <= 1024,
+  "S361 QKV+RoPE candidate exceeds CUDA threads-per-block limit");
 
 constexpr KatagoRenju15QKVRoPEGemmSm120Descriptor Descriptors[] = {
   {KATAGO_RENJU15_QKV_ROPE_GEMM_M128_N128_K32_S3,
@@ -212,10 +226,18 @@ constexpr KatagoRenju15QKVRoPEGemmSm120Descriptor Descriptors[] = {
    sizeof(typename Winner225::Kernel::SharedStorage),
    Channels,Channels,Batch36,SequenceLength225},
   {KATAGO_C256_S361_QKV_ROPE_GEMM_M128_N128_K32_S3,
-   "qkv-rope-s361-b28-m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
+   "qkv-rope-s361-b" KATAGO_STRINGIFY(KATAGO_P2_FIXED_BATCH)
+   "-m" KATAGO_STRINGIFY(KATAGO_P2_QKV_SEARCH_THREADBLOCK_M)
+   "-n" KATAGO_STRINGIFY(KATAGO_P2_QKV_SEARCH_THREADBLOCK_N)
+   "-k32-s" KATAGO_STRINGIFY(KATAGO_P2_QKV_SEARCH_STAGES)
+   "-sw1",
+   KATAGO_P2_QKV_SEARCH_THREADBLOCK_M,
+   KATAGO_P2_QKV_SEARCH_THREADBLOCK_N,32,
+   KATAGO_P2_QKV_SEARCH_WARP_M,KATAGO_P2_QKV_SEARCH_WARP_N,32,
+   KATAGO_P2_QKV_SEARCH_STAGES,1,
    Winner361::Kernel::kThreadCount,
    sizeof(typename Winner361::Kernel::SharedStorage),
-   Channels,Channels,Batch28,SequenceLength361},
+   Channels,Channels,P2FixedBatch,SequenceLength361},
 };
 
 struct StateBase {

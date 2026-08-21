@@ -99,17 +99,19 @@ public:
     const half* kGamma;
     const half2* ropeCosSin;
     int totalRows;
+    int sequenceSize;
     float qEpsilon;
     float kEpsilon;
 
     CUTLASS_HOST_DEVICE
     Params() : IteratorBase::Params(), qGamma(nullptr), kGamma(nullptr),
-      ropeCosSin(nullptr), totalRows(0), qEpsilon(0.0f), kEpsilon(0.0f) {}
+      ropeCosSin(nullptr), totalRows(0), sequenceSize(0), qEpsilon(0.0f),
+      kEpsilon(0.0f) {}
 
     CUTLASS_HOST_DEVICE
     explicit Params(Layout const& layout) : IteratorBase::Params(layout),
       qGamma(nullptr), kGamma(nullptr), ropeCosSin(nullptr), totalRows(0),
-      qEpsilon(0.0f), kEpsilon(0.0f) {}
+      sequenceSize(0), qEpsilon(0.0f), kEpsilon(0.0f) {}
   };
 
 private:
@@ -117,6 +119,7 @@ private:
   const half* kGamma_;
   const half2* ropeCosSin_;
   int totalRows_;
+  int sequenceSize_;
   float qEpsilon_;
   float kEpsilon_;
 
@@ -132,7 +135,8 @@ public:
   ) : Base(params,pointer,extent,threadIdx,threadblockOffset,indices),
       qGamma_(params.qGamma), kGamma_(params.kGamma),
       ropeCosSin_(params.ropeCosSin), totalRows_(params.totalRows),
-      qEpsilon_(params.qEpsilon), kEpsilon_(params.kEpsilon) {}
+      sequenceSize_(params.sequenceSize), qEpsilon_(params.qEpsilon),
+      kEpsilon_(params.kEpsilon) {}
 
   CUTLASS_DEVICE
   void store_with_byte_offset(Fragment const& fragment, int64_t byteOffset) const {
@@ -189,7 +193,7 @@ public:
                 const float epsilon = plane == 0 ? qEpsilon_ : kEpsilon_;
                 const float invRms = rsqrtf(
                   sumSquares / static_cast<float>(kHeadDim) + epsilon);
-                const int xy = outputRow % kSequence;
+                const int xy = outputRow % sequenceSize_;
 
                 CUTLASS_PRAGMA_UNROLL
                 for(int element = 0; element < kElementsPerAccess; element += 2) {
@@ -1282,6 +1286,7 @@ cudaError_t launchFusedQknProjectionTyped(
   params.params_D.kGamma = kGamma;
   params.params_D.ropeCosSin = ropeCosSin;
   params.params_D.totalRows = rows;
+  params.params_D.sequenceSize = handle.config.sequenceSize;
   params.params_D.qEpsilon = qEpsilon;
   params.params_D.kEpsilon = kEpsilon;
   constexpr int threads = Kernel::kThreadCount;
@@ -1761,6 +1766,8 @@ void* createProjection(const ProjectionConfig& config) {
       kQkvChannels : 0);
   if(outputChannels == 0 || config.maxTokenRows <= 0 ||
      config.maxTokenRows > kMaxTokenRows || config.packedWeights == nullptr ||
+     config.sequenceSize <= 0 ||
+     config.maxTokenRows % config.sequenceSize != 0 ||
      !aligned16(config.packedWeights) || !finitePositive(config.weightScale) ||
      !isSm120Compatible())
     return nullptr;
@@ -1846,7 +1853,10 @@ bool projectionQknormRopeSupports(
   const ProjectionHandle* handle = static_cast<const ProjectionHandle*>(opaque);
   return handle != nullptr && handle->fusedQknormRopePrepared &&
     handle->config.mode == ProjectionMode::AggressiveQkv &&
-    tokenRows == kTokenRows && inputChannels == kChannels &&
+    tokenRows > 0 && tokenRows <= handle->config.maxTokenRows &&
+    handle->config.sequenceSize > 0 &&
+    tokenRows % handle->config.sequenceSize == 0 &&
+    inputChannels == kChannels &&
     outputRowStride == kQkvChannels && qEpsilon == kRmsEpsilon &&
     kEpsilon == kRmsEpsilon;
 }

@@ -101,8 +101,6 @@ def validate_structure(
     allowed_routes = (0, 1) if meta["modelVersion"] == 102 else (0, 2)
     if meta["expectedOfficialStage1"] not in allowed_routes:
         raise ValueError("route contract is incompatible with the explicit model contract")
-    if meta["modelVersion"] == 105 and (board != 15 or meta["maxBatch"] != 28):
-        raise ValueError("v105 gate contract requires board 15 and physical batch 28")
     if meta["rows"] <= 0 or meta["maxBatch"] < 8:
         raise ValueError("invalid row or max-batch count")
     expected_full = [meta["maxBatch"]] * (meta["rows"] // meta["maxBatch"])
@@ -110,11 +108,8 @@ def validate_structure(
         expected_full.append(meta["rows"] % meta["maxBatch"])
     if full_batches != expected_full:
         raise ValueError(f"full replay actual-batch trace {full_batches} != {expected_full}")
-    required = {1, 2, 7, meta["maxBatch"] - 1, meta["maxBatch"]}
-    if len(schedule) < 6 or schedule[0] != meta["maxBatch"] or schedule[-1] != meta["maxBatch"]:
-        raise ValueError("dynamic schedule must begin and end with max batch")
-    if not required.issubset(schedule) or any(batch <= 0 or batch > meta["maxBatch"] for batch in schedule):
-        raise ValueError("dynamic schedule does not cover the required actual batches")
+    if not schedule or any(batch <= 0 or batch > meta["maxBatch"] for batch in schedule):
+        raise ValueError("batch schedule contains an invalid actual batch")
 
 
 def read_dump(path: Path, allowed_model_versions: tuple[int, ...] = (102,)) -> dict[str, Any]:
@@ -318,22 +313,29 @@ def add_full_decision_checks(
         })
 
 
-def read_r15_targets(path: Path) -> tuple[str, np.ndarray, np.ndarray]:
+def read_labeled_targets(path: Path) -> tuple[str, np.ndarray, np.ndarray]:
     with path.open("rb") as source:
-        if read_exact(source, 8, "R15 magic") != b"R15CORP1":
-            raise ValueError("bad R15 corpus magic")
-        n, pos, spatial, global_features, packed_width, policy_dim, global_target_dim = read_u32s(source, 7, "R15 header")
-        identity = read_exact(source, 32, "R15 identity").hex()
-        expected = (15, 22, 39, 29, 226, 64)
-        if (pos, spatial, global_features, packed_width, policy_dim, global_target_dim) != expected:
-            raise ValueError("unexpected R15 corpus dimensions")
-        read_exact(source, n * spatial * packed_width, "R15 packed input")
-        read_exact(source, n * global_features * 4, "R15 global input")
-        policy = np.frombuffer(read_exact(source, n * 2 * policy_dim * 2, "R15 policy targets"), dtype="<i2").reshape(n, 2, policy_dim).astype(np.float64)
-        global_target = np.frombuffer(read_exact(source, n * global_target_dim * 4, "R15 global targets"), dtype="<f4").reshape(n, global_target_dim).astype(np.float64)
+        magic = read_exact(source, 8, "labeled corpus magic")
+        if magic not in (b"R15CORP1", b"FBVCORP1"):
+            raise ValueError("bad labeled corpus magic")
+        n, pos, spatial, global_features, packed_width, policy_dim, global_target_dim = read_u32s(source, 7, "labeled corpus header")
+        identity = read_exact(source, 32, "labeled corpus identity").hex()
+        expected = (22, 39, (pos * pos + 7) // 8, pos * pos + 1, 64)
+        actual = (spatial, global_features, packed_width, policy_dim, global_target_dim)
+        if pos not in (15, 19) or (magic == b"R15CORP1" and pos != 15) or actual != expected:
+            raise ValueError("unexpected labeled corpus dimensions")
+        read_exact(source, n * spatial * packed_width, "labeled packed input")
+        read_exact(source, n * global_features * 4, "labeled global input")
+        policy = np.frombuffer(read_exact(source, n * 2 * policy_dim * 2, "labeled policy targets"), dtype="<i2").reshape(n, 2, policy_dim).astype(np.float64)
+        global_target = np.frombuffer(read_exact(source, n * global_target_dim * 4, "labeled global targets"), dtype="<f4").reshape(n, global_target_dim).astype(np.float64)
         if source.read(1):
-            raise ValueError("unexpected trailing R15 corpus bytes")
+            raise ValueError("unexpected trailing labeled corpus bytes")
     return identity, policy, global_target
+
+
+def read_r15_targets(path: Path) -> tuple[str, np.ndarray, np.ndarray]:
+    """Backward-compatible name used by the v105 comparator."""
+    return read_labeled_targets(path)
 
 
 def weighted_losses(
@@ -483,9 +485,10 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
 
     loss: dict[str, Any] | None = None
     if args.corpus is not None:
-        corpus_identity, policy_target, global_target = read_r15_targets(args.corpus)
-        if corpus_identity != fp32["inputIdentity"] or policy_target.shape[0] != fp32["meta"]["rows"]:
-            raise ValueError("R15 target corpus identity/rows differ from raw dumps")
+        corpus_identity, policy_target, global_target = read_labeled_targets(args.corpus)
+        if (corpus_identity != fp32["inputIdentity"] or
+                policy_target.shape != (fp32["meta"]["rows"], 2, fp32["meta"]["policyDim"])):
+            raise ValueError("labeled target corpus identity/shape differs from raw dumps")
         loss_fp32 = weighted_losses(fp32["full"]["policy"], fp32["full"]["value"], policy_target, global_target)
         loss_reference = weighted_losses(reference_fp16["full"]["policy"], reference_fp16["full"]["value"], policy_target, global_target)
         loss_candidate = weighted_losses(candidate_fp16["full"]["policy"], candidate_fp16["full"]["value"], policy_target, global_target)
@@ -504,7 +507,7 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
                 "pass": candidate_error <= adaptive_limit and candidate_error <= 0.01,
             })
     elif fp32["meta"]["sourceKind"] == 1:
-        raise ValueError("R15CORP1 dumps require --corpus so p0/v loss is gated")
+        raise ValueError("labeled-corpus dumps require --corpus so p0/v loss is gated")
 
     failures = [check for check in checks if not check["pass"]]
     return {

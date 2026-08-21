@@ -1,4 +1,5 @@
 #include "rms_norm.h"
+#include "p2_rms_search_config.h"
 
 #include <cstdint>
 
@@ -33,7 +34,8 @@ __global__ void rmsNorm256Warp4Vec8Kernel(
 ) {
   const int warp = threadIdx.x >> 5;
   const int lane = threadIdx.x & 31;
-  const int row = blockIdx.x * 4 + warp;
+  const int warpsPerBlock = blockDim.x >> 5;
+  const int row = blockIdx.x * warpsPerBlock + warp;
   if(row >= totalRows)
     return;
 
@@ -201,8 +203,11 @@ cudaError_t launchRmsNorm256(
     return cudaErrorInvalidValue;
   if(tactic != RmsNorm256Tactic::Warp4Vec8)
     return cudaErrorNotSupported;
-  const int blocks = (totalRows + 3) / 4;
-  rmsNorm256Warp4Vec8Kernel<<<blocks, 128, 0, stream>>>(
+  constexpr int warpsPerBlock = KATAGO_P2_RMS_SEARCH_WARPS_PER_BLOCK;
+  static_assert(warpsPerBlock == 4 || warpsPerBlock == 8 || warpsPerBlock == 16,
+    "C256 RMSNorm search supports 4, 8, or 16 warps per block");
+  const int blocks = (totalRows + warpsPerBlock - 1) / warpsPerBlock;
+  rmsNorm256Warp4Vec8Kernel<<<blocks, warpsPerBlock * 32, 0, stream>>>(
     reinterpret_cast<const uint4*>(input),
     reinterpret_cast<uint4*>(output),
     reinterpret_cast<const uint4*>(gamma),

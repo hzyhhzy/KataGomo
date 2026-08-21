@@ -456,9 +456,9 @@ void testVersionPropagationThroughTrunk() {
     "CUDA v105 policy failed to detect QKN/clip semantics");
   requireContract(V105CudaPolicy::shouldUseCombinedQKV(false,true),
     "non-QKN MMA-eligible attention unexpectedly lost combined QKV");
-  requireContract(!V105CudaPolicy::shouldUseCombinedQKV(true,true) &&
+  requireContract(V105CudaPolicy::shouldUseCombinedQKV(true,true) &&
                   !V105CudaPolicy::shouldUseCombinedQKV(true,false),
-    "QKN attention did not force planar Q/K/V projection buffers");
+    "QKN attention did not preserve an eligible fused combined-QKV plan");
   requireContract(
     V105CudaPolicy::selectSwiGLUPlan(0.0f) ==
       V105CudaPolicy::SwiGLUPlan::LegacyUnclipped,

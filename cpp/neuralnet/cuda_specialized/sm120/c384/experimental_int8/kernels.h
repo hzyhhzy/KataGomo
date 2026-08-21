@@ -111,6 +111,7 @@ struct ProjectionConfig {
   ProjectionMode mode = ProjectionMode::AggressiveQkv;
   ProjectionTactic tactic = ProjectionTactic::M128N128K64S3Sw2;
   int maxTokenRows = 0;
+  int sequenceSize = kSequence;
   // Output-major K-contiguous signed-INT8 weights. Conservative mode owns
   // [384,768], aggressive mode owns [384,1152].
   const int8_t* packedWeights = nullptr;
@@ -145,7 +146,7 @@ cudaError_t launchProjection(
 // vector in FP32, applies gamma, rounds the normalized tensor to FP16, then
 // applies learned RoPE. Only the final packed Q/K values reach global memory;
 // V is byte-for-byte identical to launchProjection and the [Q|K|V] ABI is
-// unchanged. This exact contract intentionally fails closed outside B28/S225,
+// unchanged. Batch and sequence size are dynamic; the head contract is
 // H12/D32, epsilon=1e-6.
 bool projectionQknormRopeSupports(
   const void* opaque,
@@ -288,8 +289,8 @@ cudaError_t launchQuantizeClip7Product(
   cudaStream_t stream
 );
 
-// Quantizes the FP16 packed FA4 output [M,384] using clip4, RNE, zero point
-// 0, and saturation [-127,127]. The output may reuse the attention RMS INT8
+// Quantizes the FP16 attention output [M,384] using clip4, RNE, zero point 0,
+// and saturation [-127,127]. The output may reuse the attention RMS INT8
 // scratch only after QKV projection has consumed it.
 cudaError_t launchQuantizeAttentionOutput(
   const half* attentionFp16,

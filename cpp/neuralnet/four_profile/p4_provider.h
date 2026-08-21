@@ -7,9 +7,12 @@
 
 namespace FourProfile {
 
-// C384/H12 v105 INT8 provider. The transformer span depth is intentionally
-// dynamic; only the per-pair shape and the exact B28/S225 runtime are fixed.
+// C384/H12 v105 INT8 providers. Transformer depth is dynamic. P4 retains the
+// exact B28/S2 FA4 route; the generic factory covers other positive batches
+// and board sizes using official MMA attention and the same quantized
+// projections.
 std::unique_ptr<FactoryV1> makeP4FactoryV1();
+std::unique_ptr<FactoryV1> makeGenericC384Int8FactoryV1();
 
 }  // namespace FourProfile
 

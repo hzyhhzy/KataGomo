@@ -1,4 +1,5 @@
 #include "residual_gemm.h"
+#include "p2_residual_search_config.h"
 
 #include "cutlass/cutlass.h"
 #include "cutlass/epilogue/thread/linear_combination.h"
@@ -60,14 +61,34 @@ using ResidualGemm = cutlass::gemm::device::Gemm<
   8,
   false>;
 
-using Winner = ResidualGemm<128,128,32,64,64,32,3,1>;
+using Winner = ResidualGemm<
+  KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_M,
+  KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_N,
+  KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K,
+  KATAGO_P2_RESIDUAL_SEARCH_WARP_M,
+  KATAGO_P2_RESIDUAL_SEARCH_WARP_N,
+  KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K,
+  KATAGO_P2_RESIDUAL_SEARCH_STAGES,
+  KATAGO_P2_RESIDUAL_SEARCH_SWIZZLE>;
+
+using DownWinner = ResidualGemm<
+  KATAGO_P2_DOWN_SEARCH_THREADBLOCK_M,
+  KATAGO_P2_DOWN_SEARCH_THREADBLOCK_N,32,
+  KATAGO_P2_DOWN_SEARCH_WARP_M,
+  KATAGO_P2_DOWN_SEARCH_WARP_N,32,
+  KATAGO_P2_DOWN_SEARCH_STAGES,
+  KATAGO_P2_DOWN_SEARCH_SWIZZLE>;
 
 constexpr KatagoRenju15ResidualGemmDescriptor Descriptors[] = {
   {KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3,
-   "m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
+   "m128-n128-k-search-s3-sw1",128,128,
+   KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K,64,64,
+   KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K,3,1,
    OutputChannels},
   {KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3,
-   "c384-m128-n128-k32-s3-sw1",128,128,32,64,64,32,3,1,
+   "c384-m128-n128-k-search-s3-sw1",128,128,
+   KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K,64,64,
+   KATAGO_P2_RESIDUAL_SEARCH_THREADBLOCK_K,3,1,
    C384OutputChannels},
 };
 
@@ -253,9 +274,11 @@ const KatagoRenju15ResidualGemmDescriptor* descriptorForTactic(int tactic) {
   return nullptr;
 }
 
-std::unique_ptr<StateBase> stateForTactic(int tactic) {
+std::unique_ptr<StateBase> stateForTactic(int family, int tactic) {
   switch(tactic) {
   case KATAGO_RENJU15_RESIDUAL_GEMM_M128_N128_K32_S3:
+    if(family == KATAGO_RENJU15_RESIDUAL_GEMM_FFN_DOWN)
+      return std::unique_ptr<StateBase>(new State<DownWinner>());
     return std::unique_ptr<StateBase>(new State<Winner>());
   case KATAGO_RENJU15_RESIDUAL_GEMM_C384_M128_N128_K32_S3:
     return std::unique_ptr<StateBase>(new DynamicState<Winner>());
@@ -319,7 +342,7 @@ extern "C" void* katago_renju15_residual_gemm_sm120_create(
   if(inputChannels == 0 || outputChannels == 0 || descriptor == nullptr ||
      descriptor->outputChannels != outputChannels)
     return nullptr;
-  std::unique_ptr<StateBase> state = stateForTactic(tactic);
+  std::unique_ptr<StateBase> state = stateForTactic(family,tactic);
   if(state == nullptr || state->preparationStatus(
        inputChannels,outputChannels,configuredTokenRows) != cudaSuccess)
     return nullptr;

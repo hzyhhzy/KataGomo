@@ -10,6 +10,7 @@
 // cublasHgemm x2 + SwiGLU kernel sequence at KataGo's FFN shapes.
 
 #include "../neuralnet/cudafusedffn.h"
+#include "p2_ffn_search_config.h"
 
 #include <cmath>
 #include <cstdint>
@@ -45,12 +46,16 @@ using DualGemm = cutlass::gemm::device::DualGemm<
   ElementT,
   cutlass::arch::OpClassTensorOp,
   cutlass::arch::Sm80,
-  cutlass::gemm::GemmShape<128, 64, 32>,
-  cutlass::gemm::GemmShape<64, 32, 32>,
+  cutlass::gemm::GemmShape<
+    KATAGO_P2_FFN_SEARCH_THREADBLOCK_M,
+    KATAGO_P2_FFN_SEARCH_THREADBLOCK_N,32>,
+  cutlass::gemm::GemmShape<
+    KATAGO_P2_FFN_SEARCH_WARP_M,KATAGO_P2_FFN_SEARCH_WARP_N,32>,
   cutlass::gemm::GemmShape<16, 8, 16>,
   EpilogueOutputOp01, EpilogueOutputOp01, EpilogueOutputOp2,
-  cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<1>,
-  3,      // stages
+  cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<
+    KATAGO_P2_FFN_SEARCH_SWIZZLE>,
+  KATAGO_P2_FFN_SEARCH_STAGES,
   false,  // kStoreD0
   false,  // kStoreD1
   false   // kSplitKSerial

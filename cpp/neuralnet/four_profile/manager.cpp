@@ -271,7 +271,8 @@ RouteV1 ManagerV1::preflight(const RuntimeCallV1& call) {
     (call.key.maskMode == MaskModeV1::None && call.key.maskNull && call.mask == nullptr) ||
     (call.key.maskMode == MaskModeV1::Dense && !call.key.maskNull && call.mask != nullptr);
   if(call.actualBatchSize <= 0 ||
-     call.actualBatchSize != call.key.physicalBatchSize ||
+     !provider->acceptsActualBatchSize(
+       call.actualBatchSize,call.key.physicalBatchSize) ||
      !sequenceSizeValid ||
      call.transformerBeginBlock != buildReport.span.beginBlock ||
      call.transformerPairCount != buildReport.span.pairCount ||

@@ -32,7 +32,7 @@ struct KatagoRenju15QKVRoPEGemmSm120Descriptor {
 };
 
 // Creation is exact-batch and SM120-gated. The tactic selects either the
-// S225/B36 or S361/B28 shape. The returned handle owns only CUTLASS launch
+// S225/B36 or manifest-selected S361 fixed-batch shape. The returned handle owns only CUTLASS launch
 // state; packed weights and RoPE tables remain owned by the provider.
 extern "C" void* katago_renju15_qkv_rope_gemm_sm120_create(
   int tactic,

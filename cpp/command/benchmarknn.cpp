@@ -64,14 +64,14 @@ bool isOfficialV105Fp16Route(const NeuralNet::BenchmarkRouteProof& proof) {
     proof.preparedAttention == attention && proof.preparedFfn == ffn &&
     proof.preparedQkn == attention &&
     proof.preparedOrderedClippedSwiGLU == ffn &&
-    proof.preparedCombinedQKV == 0 && proof.preparedPlanar == attention &&
+    proof.preparedCombinedQKV == attention && proof.preparedPlanar == 0 &&
     proof.preparedLearnedRopeFp32 == attention && proof.preparedFixedRope == 0 &&
     proof.preparedMma == attention && proof.preparedScalar == 0 &&
     proof.preparedCudnn == 0 && proof.preparedFallback == 0 &&
     proof.lastActiveAttention == attention && proof.lastActiveFfn == ffn &&
     proof.lastActiveQkn == attention &&
     proof.lastActiveOrderedClippedSwiGLU == ffn &&
-    proof.lastActiveCombinedQKV == 0 && proof.lastActivePlanar == attention &&
+    proof.lastActiveCombinedQKV == attention && proof.lastActivePlanar == 0 &&
     proof.lastActiveLearnedRopeFp32 == attention && proof.lastActiveFixedRope == 0 &&
     proof.lastActiveMma == attention && proof.lastActiveScalar == 0 &&
     proof.lastActiveCudnn == 0 && proof.lastActiveFallback == 0 &&
@@ -94,14 +94,14 @@ NeuralNet::BenchmarkRouteProof makeOfficialV105Fp16RouteFixture(int numLayers) {
   proof.preparedFfn = numLayers;
   proof.preparedQkn = numLayers;
   proof.preparedOrderedClippedSwiGLU = numLayers;
-  proof.preparedPlanar = numLayers;
+  proof.preparedCombinedQKV = numLayers;
   proof.preparedLearnedRopeFp32 = numLayers;
   proof.preparedMma = numLayers;
   proof.lastActiveAttention = numLayers;
   proof.lastActiveFfn = numLayers;
   proof.lastActiveQkn = numLayers;
   proof.lastActiveOrderedClippedSwiGLU = numLayers;
-  proof.lastActivePlanar = numLayers;
+  proof.lastActiveCombinedQKV = numLayers;
   proof.lastActiveLearnedRopeFp32 = numLayers;
   proof.lastActiveMma = numLayers;
   proof.lastBatchSize = 3;

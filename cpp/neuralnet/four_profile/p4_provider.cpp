@@ -1,6 +1,7 @@
 #include "p4_provider.h"
 
 #include "../cudaincludes.h"
+#include "../cudaandrocmhelpers.h"
 #include "../desc.h"
 #include "../cuda_specialized/sm120/c384/experimental_int8/kernels.h"
 #include "../cuda_specialized/sm120/c384/experimental_int8/weights.h"
@@ -24,9 +25,10 @@ namespace {
 
 constexpr const char* kProfileId =
   "P4-c384-h12-s225-qkn-positive-clip-int8-b28-s2";
+constexpr const char* kGenericProfileId =
+  "GINT8-c384-h12-qkn-positive-clip-dynamic-bs-mma";
 constexpr int kBatch = C384Int8Experiment::kBatch;
 constexpr int kSequence = C384Int8Experiment::kSequence;
-constexpr int kRows = C384Int8Experiment::kTokenRows;
 constexpr int kChannels = C384Int8Experiment::kChannels;
 constexpr int kHeads = C384Int8Experiment::kHeads;
 constexpr int kHeadDim = C384Int8Experiment::kHeadDim;
@@ -35,6 +37,7 @@ constexpr int kPackedQkvChannels = C384Int8Experiment::kQkvChannels;
 constexpr int kRopePairsTotal = kHeads * (kHeadDim / 2);
 constexpr uint32_t kRmsEpsilon1e6Bits = 0x358637BDu;
 constexpr uint64_t kPlanGeneration = 1;
+constexpr int kMaxProviderRows = 1 << 20;
 
 uint32_t floatBits(float value) {
   uint32_t bits = 0;
@@ -52,16 +55,31 @@ bool aligned16(const void* pointer) {
     (reinterpret_cast<uintptr_t>(pointer) & uintptr_t(15)) == 0;
 }
 
-bool runtimeMatches(const RuntimeKeyV1& runtime) {
+bool baseRuntimeMatches(const RuntimeKeyV1& runtime) {
+  const int64_t sequence =
+    static_cast<int64_t>(runtime.boardX) * runtime.boardY;
+  const bool validShape = runtime.boardX > 0 && runtime.boardY > 0 &&
+    sequence > 0 && sequence <= kMaxProviderRows &&
+    runtime.physicalBatchSize > 0 &&
+    runtime.physicalBatchSize <= kMaxProviderRows / sequence;
   return runtime.deviceComputeCapability == 120 &&
-    runtime.boardX == 15 && runtime.boardY == 15 &&
-    runtime.physicalBatchSize == kBatch &&
-    runtime.sameGpuConcurrency == 2 && runtime.exactBoard &&
+    validShape &&
+    runtime.sameGpuConcurrency > 0 && runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&
     runtime.requestedExecution == RequestedExecutionV1::Int8 &&
     runtime.layout == TensorLayoutV1::Nhwc;
+}
+
+bool exactRuntimeMatches(const RuntimeKeyV1& runtime) {
+  return baseRuntimeMatches(runtime) &&
+    runtime.boardX == 15 && runtime.boardY == 15 &&
+    runtime.physicalBatchSize == kBatch && runtime.sameGpuConcurrency == 2;
+}
+
+bool genericRuntimeMatches(const RuntimeKeyV1& runtime) {
+  return baseRuntimeMatches(runtime) && !exactRuntimeMatches(runtime);
 }
 
 bool attentionMatches(const AttentionSpecV1& attention) {
@@ -163,17 +181,22 @@ DeviceBuffer uploadInt8(
   return uploadBytes(label,packed.values.data(),packed.values.size());
 }
 
-std::vector<float> learnedRopeTable(const TransformerAttentionDesc& desc) {
+std::vector<float> learnedRopeTable(
+  const TransformerAttentionDesc& desc,
+  int boardX,
+  int boardY,
+  int sequenceSize
+) {
   std::vector<float> cosTable;
   std::vector<float> sinTable;
-  desc.computeRopeCosSin(15,15,kSequence,cosTable,sinTable);
-  if(cosTable.size() != static_cast<size_t>(kSequence) * kRopePairsTotal ||
+  desc.computeRopeCosSin(boardX,boardY,sequenceSize,cosTable,sinTable);
+  if(cosTable.size() != static_cast<size_t>(sequenceSize) * kRopePairsTotal ||
      sinTable.size() != cosTable.size())
     throw ErrorV1(desc.name + ": invalid learned RoPE table shape");
   std::vector<float> interleaved(cosTable.size() * 2);
-  for(int xy = 0; xy < kSequence; xy++) {
+  for(int xy = 0; xy < sequenceSize; xy++) {
     for(int pair = 0; pair < kRopePairsTotal; pair++) {
-      const size_t source = static_cast<size_t>(pair) * kSequence + xy;
+      const size_t source = static_cast<size_t>(pair) * sequenceSize + xy;
       const size_t destination =
         (static_cast<size_t>(xy) * kRopePairsTotal + pair) * 2;
       interleaved[destination] = cosTable[source];
@@ -242,11 +265,15 @@ public:
 class P4Provider final : public ProviderV1 {
 public:
   explicit P4Provider(const ProfileKeyV1& key_)
-    : key(key_),deviceOrdinal(-1),deviceMajor(0),deviceMinor(0),
+    : key(key_),physicalBatch(key_.runtime.physicalBatchSize),
+      sequenceSize(key_.runtime.boardX * key_.runtime.boardY),tokenRows(0),
+      exactFa4(exactRuntimeMatches(key_.runtime)),
+      deviceOrdinal(-1),deviceMajor(0),deviceMinor(0),
       committed(false),runCounter(0),armedToken(0) {
-    if(key.modelVersion != 105 || !runtimeMatches(key.runtime) ||
+    if(key.modelVersion != 105 || !baseRuntimeMatches(key.runtime) ||
        !attentionMatches(key.attention) || !ffnMatches(key.ffn))
-      throw ErrorV1("P4 factory created for a non-P4 profile key");
+      throw ErrorV1("C384 INT8 factory created for an unsupported profile key");
+    tokenRows = physicalBatch * sequenceSize;
     cudaError_t status = cudaGetDevice(&deviceOrdinal);
     if(status != cudaSuccess || deviceOrdinal < 0)
       throw ErrorV1("P4 could not resolve the current CUDA device");
@@ -257,9 +284,25 @@ public:
         &deviceMinor,cudaDevAttrComputeCapabilityMinor,deviceOrdinal);
     if(status != cudaSuccess || deviceMajor != 12 || deviceMinor != 0)
       throw ErrorV1("P4 requires an exact SM120 CUDA device");
+    if(!exactFa4 &&
+       (!customCudaFlashAttentionMmaSupportsShape(
+          kHeads,kHeads,kHeadDim,kHeadDim) ||
+        !customCudaFlashAttentionMmaSupported()))
+      throw ErrorV1("generic C384 INT8 route requires official MMA attention");
   }
 
-  const char* profileId() const noexcept override { return kProfileId; }
+  const char* profileId() const noexcept override {
+    return exactFa4 ? kProfileId : kGenericProfileId;
+  }
+
+  bool acceptsActualBatchSize(
+    int actualBatchSize,
+    int physicalBatchSize
+  ) const noexcept override {
+    return physicalBatchSize == physicalBatch && actualBatchSize > 0 &&
+      (exactFa4 ? actualBatchSize == physicalBatch :
+        actualBatchSize <= physicalBatch);
+  }
 
   PrepareAttentionResultV1 prepareAttention(
     size_t layer,
@@ -287,7 +330,10 @@ public:
     prepared->qGamma = uploadFp16(desc->name + ":p4-qgamma",desc->qNorm.weight);
     prepared->kGamma = uploadFp16(desc->name + ":p4-kgamma",desc->kNorm.weight);
     prepared->ropeTable =
-      uploadFp16(desc->name + ":p4-learned-rope",learnedRopeTable(*desc));
+      uploadFp16(
+        desc->name + ":p4-learned-rope",
+        learnedRopeTable(
+          *desc,key.runtime.boardX,key.runtime.boardY,sequenceSize));
 
     const C384Int8Experiment::PackedWeights packedQkv =
       C384Int8Experiment::packProjection(
@@ -298,7 +344,8 @@ public:
     projectionConfig.mode = C384Int8Experiment::ProjectionMode::AggressiveQkv;
     projectionConfig.tactic =
       C384Int8Experiment::ProjectionTactic::M128N128K64S3Sw2;
-    projectionConfig.maxTokenRows = kRows;
+    projectionConfig.maxTokenRows = tokenRows;
+    projectionConfig.sequenceSize = sequenceSize;
     projectionConfig.packedWeights =
       static_cast<const int8_t*>(prepared->qkvWeights.get());
     projectionConfig.weightScale = packedQkv.scale;
@@ -306,7 +353,7 @@ public:
       C384Int8Experiment::createProjection(projectionConfig));
     if(prepared->projection == nullptr ||
        !C384Int8Experiment::projectionQknormRopeSupports(
-         prepared->projection.get(),kRows,kChannels,kPackedQkvChannels,
+         prepared->projection.get(),tokenRows,kChannels,kPackedQkvChannels,
          prepared->qEpsilon,prepared->kEpsilon)) {
       result.detail = "P4 fused INT8 QKV/QKN/RoPE preparation failed";
       return result;
@@ -318,7 +365,7 @@ public:
     C384Int8Experiment::AttentionOutConfig outConfig;
     outConfig.tactic =
       C384Int8Experiment::AttentionOutTactic::M128N128K64S3Sw2;
-    outConfig.maxTokenRows = kRows;
+    outConfig.maxTokenRows = tokenRows;
     outConfig.packedWeights =
       static_cast<const int8_t*>(prepared->outWeights.get());
     outConfig.weightScale = packedOut.scale;
@@ -326,7 +373,7 @@ public:
       C384Int8Experiment::createAttentionOut(outConfig));
     if(prepared->attentionOut == nullptr ||
        !C384Int8Experiment::attentionOutSupports(
-         prepared->attentionOut.get(),kRows)) {
+         prepared->attentionOut.get(),tokenRows)) {
       result.detail = "P4 INT8 attention-out preparation failed";
       return result;
     }
@@ -373,7 +420,7 @@ public:
       C384Int8Experiment::DualFfnDivide127Tactic::Auto;
     dualConfig.productPathTactic =
       C384Int8Experiment::DualFfnProductPathTactic::Auto;
-    dualConfig.maxTokenRows = kRows;
+    dualConfig.maxTokenRows = tokenRows;
     dualConfig.packedUpWeights =
       static_cast<const int8_t*>(prepared->upWeights.get());
     dualConfig.packedGateWeights =
@@ -386,7 +433,7 @@ public:
     if(prepared->dual == nullptr ||
        !C384Int8Experiment::dualFfnSupports(
          prepared->dual.get(),
-         C384Int8Experiment::DualFfnOutputMode::Int8Product,kRows)) {
+         C384Int8Experiment::DualFfnOutputMode::Int8Product,tokenRows)) {
       result.detail = "P4 adjustable-clip INT8 dual-FFN preparation failed";
       return result;
     }
@@ -397,14 +444,14 @@ public:
     prepared->downWeights = uploadInt8(desc->name + ":p4-down",packedDown);
     C384Int8Experiment::DownConfig downConfig;
     downConfig.tactic = C384Int8Experiment::DownTactic::M128N128K64S3Sw2;
-    downConfig.maxTokenRows = kRows;
+    downConfig.maxTokenRows = tokenRows;
     downConfig.packedWeights =
       static_cast<const int8_t*>(prepared->downWeights.get());
     downConfig.weightScale = packedDown.scale;
     downConfig.productQuantMaxAbs = desc->productQuantMaxAbs;
     prepared->down.reset(C384Int8Experiment::createDown(downConfig));
     if(prepared->down == nullptr ||
-       !C384Int8Experiment::downSupports(prepared->down.get(),kRows) ||
+       !C384Int8Experiment::downSupports(prepared->down.get(),tokenRows) ||
        !C384Int8Experiment::dualFfnDownProductQuantizationMatches(
          prepared->dual.get(),prepared->down.get())) {
       result.detail = "P4 INT8 FFN-down preparation failed";
@@ -442,7 +489,7 @@ public:
     }
 
     C384H12Fa4Sm120::PreparedProof stagedFa4;
-    if(C384H12Fa4Sm120::prepareProofForExactBatch(
+    if(exactFa4 && C384H12Fa4Sm120::prepareProofForExactBatch(
          kBatch,deviceOrdinal,C384H12Fa4Sm120::InputLayout::PackedTokenQkv,
          stagedFa4) != cudaSuccess) {
       detail = "P4 B28 packed FA4 preparation failed";
@@ -450,13 +497,13 @@ public:
     }
     DeviceBuffer stagedQkv = DeviceBuffer::allocate(
       "P4 packed QKV scratch",
-      static_cast<size_t>(kRows) * kPackedQkvChannels * sizeof(half));
+      static_cast<size_t>(tokenRows) * kPackedQkvChannels * sizeof(half));
     DeviceBuffer stagedAttentionOut = DeviceBuffer::allocate(
       "P4 attention output scratch",
-      static_cast<size_t>(kRows) * kChannels * sizeof(half));
+      static_cast<size_t>(tokenRows) * kChannels * sizeof(half));
     DeviceBuffer stagedProduct = DeviceBuffer::allocate(
       "P4 INT8 FFN product scratch",
-      static_cast<size_t>(kRows) * kFfnChannels * sizeof(int8_t));
+      static_cast<size_t>(tokenRows) * kFfnChannels * sizeof(int8_t));
 
     attention = std::move(stagedAttention);
     ffn = std::move(stagedFfn);
@@ -465,7 +512,9 @@ public:
     attentionOutScratch = std::move(stagedAttentionOut);
     productScratch = std::move(stagedProduct);
     committed = true;
-    detail = "P4 dynamic N/N INT8 plan committed without inference enqueue";
+    detail = exactFa4 ?
+      "P4 dynamic N/N INT8 plan committed without inference enqueue" :
+      "generic dynamic-batch C384 INT8 plan committed with official MMA attention";
     return true;
   }
 
@@ -476,36 +525,38 @@ public:
   ProviderOpResultV1 preflight(const RuntimeCallV1& call) override {
     armedToken = 0;
     if(!committed || call.key != key.runtime ||
-       call.actualBatchSize != kBatch || call.sequenceSize != kSequence ||
+       !acceptsActualBatchSize(call.actualBatchSize,call.key.physicalBatchSize) ||
+       call.sequenceSize != sequenceSize ||
        call.transformerPairCount != attention.size() || call.mask != nullptr ||
        call.stream == nullptr || !aligned16(call.trunk) ||
        !aligned16(call.trunkScratch) || !aligned16(qkvScratch.get()) ||
        !aligned16(attentionOutScratch.get()) || !aligned16(productScratch.get()))
       return ProviderOpResultV1::failure(
         "P4 full-chain preflight rejected runtime identity or scratch");
+    const int activeRows = call.actualBatchSize * sequenceSize;
 
     int currentDevice = -1;
     if(cudaGetDevice(&currentDevice) != cudaSuccess || currentDevice != deviceOrdinal)
       return ProviderOpResultV1::failure(
         "P4 current CUDA device changed after commit");
-    if(!C384H12Fa4Sm120::proofCompatible(
+    if(exactFa4 && !C384H12Fa4Sm120::proofCompatible(
          fa4Proof,kBatch,deviceOrdinal,
          C384H12Fa4Sm120::InputLayout::PackedTokenQkv))
       return ProviderOpResultV1::failure("P4 packed FA4 proof drifted");
 
     for(const auto& a: attention) {
       if(!C384Int8Experiment::projectionQknormRopeSupports(
-           a->projection.get(),kRows,kChannels,kPackedQkvChannels,
+           a->projection.get(),activeRows,kChannels,kPackedQkvChannels,
            a->qEpsilon,a->kEpsilon) ||
-         !C384Int8Experiment::attentionOutSupports(a->attentionOut.get(),kRows))
+         !C384Int8Experiment::attentionOutSupports(a->attentionOut.get(),activeRows))
         return ProviderOpResultV1::failure(
           "P4 attention layer failed kernel preflight");
     }
     for(const auto& f: ffn) {
       if(!C384Int8Experiment::dualFfnSupports(
            f->dual.get(),C384Int8Experiment::DualFfnOutputMode::Int8Product,
-           kRows) ||
-         !C384Int8Experiment::downSupports(f->down.get(),kRows) ||
+           activeRows) ||
+         !C384Int8Experiment::downSupports(f->down.get(),activeRows) ||
          !C384Int8Experiment::dualFfnDownProductQuantizationMatches(
            f->dual.get(),f->down.get()))
         return ProviderOpResultV1::failure(
@@ -529,6 +580,8 @@ public:
     armedToken = 0;
     size_t enqueued = 0;
     const auto stream = reinterpret_cast<cudaStream_t>(call.stream);
+    const int activeBatch = call.actualBatchSize;
+    const int activeRows = activeBatch * sequenceSize;
     half* const trunk = static_cast<half*>(call.trunk);
     int8_t* const activation = static_cast<int8_t*>(call.trunkScratch);
     half* const qkv = static_cast<half*>(qkvScratch.get());
@@ -544,13 +597,13 @@ public:
       enqueued++;
       cudaError_t status = C384Int8Experiment::launchRmsNormInt8(
         trunk,activation,static_cast<const half*>(a.preGamma.get()),
-        kRows,a.preEpsilon,stream);
+        activeRows,a.preEpsilon,stream);
       if(status != cudaSuccess)
         return cudaFailure("attention RMS-to-INT8",status,enqueued);
 
       enqueued++;
       status = C384Int8Experiment::launchProjectionQknormRope(
-        a.projection.get(),kRows,activation,qkv,kPackedQkvChannels,
+        a.projection.get(),activeRows,activation,qkv,kPackedQkvChannels,
         static_cast<const half*>(a.qGamma.get()),
         static_cast<const half*>(a.kGamma.get()),
         static_cast<const half2*>(a.ropeTable.get()),
@@ -559,24 +612,35 @@ public:
         return cudaFailure("fused INT8 QKV/QKN/RoPE",status,enqueued);
 
       enqueued++;
-      const C384H12Fa4Sm120::LaunchResult fa4 = C384H12Fa4Sm120::launch(
-        q,k,v,attentionOutput,kBatch,kSequence,kHeads,kHeads,kHeadDim,kHeadDim,
-        true,true,C384H12Fa4Sm120::InputLayout::PackedTokenQkv,nullptr,true,
-        &fa4Proof,deviceOrdinal,deviceMajor,deviceMinor,stream);
-      if(!fa4.attempted || fa4.status != cudaSuccess)
-        return cudaFailure(
-          "B28 packed FA4",
-          fa4.attempted ? fa4.status : cudaErrorNotSupported,enqueued);
+      if(exactFa4) {
+        const C384H12Fa4Sm120::LaunchResult fa4 = C384H12Fa4Sm120::launch(
+          q,k,v,attentionOutput,kBatch,kSequence,kHeads,kHeads,kHeadDim,kHeadDim,
+          true,true,C384H12Fa4Sm120::InputLayout::PackedTokenQkv,nullptr,true,
+          &fa4Proof,deviceOrdinal,deviceMajor,deviceMinor,stream);
+        if(!fa4.attempted || fa4.status != cudaSuccess)
+          return cudaFailure(
+            "B28 packed FA4",
+            fa4.attempted ? fa4.status : cudaErrorNotSupported,enqueued);
+      }
+      else {
+        const bool launched = customCudaFlashAttentionMma(
+          q,k,v,nullptr,attentionOutput,activeBatch,sequenceSize,
+          kHeads,kHeads,kHeadDim,kHeadDim,kPackedQkvChannels,
+          kPackedQkvChannels,stream);
+        status = launched ? cudaPeekAtLastError() : cudaErrorNotSupported;
+        if(status != cudaSuccess)
+          return cudaFailure("official MMA attention",status,enqueued);
+      }
 
       enqueued++;
       status = C384Int8Experiment::launchQuantizeAttentionOutput(
-        attentionOutput,activation,kRows,stream);
+        attentionOutput,activation,activeRows,stream);
       if(status != cudaSuccess)
         return cudaFailure("attention output quantization",status,enqueued);
 
       enqueued++;
       status = C384Int8Experiment::launchAttentionOutResidual(
-        a.attentionOut.get(),kRows,activation,trunk,trunk,stream);
+        a.attentionOut.get(),activeRows,activation,trunk,trunk,stream);
       if(status != cudaSuccess)
         return cudaFailure("INT8 attention-out residual",status,enqueued);
 
@@ -584,19 +648,19 @@ public:
       enqueued++;
       status = C384Int8Experiment::launchRmsNormInt8(
         trunk,activation,static_cast<const half*>(f.preGamma.get()),
-        kRows,f.preEpsilon,stream);
+        activeRows,f.preEpsilon,stream);
       if(status != cudaSuccess)
         return cudaFailure("FFN RMS-to-INT8",status,enqueued);
 
       enqueued++;
       status = C384Int8Experiment::launchDualFfnInt8(
-        f.dual.get(),kRows,activation,product,stream);
+        f.dual.get(),activeRows,activation,product,stream);
       if(status != cudaSuccess)
         return cudaFailure("adjustable-clip INT8 dual-FFN",status,enqueued);
 
       enqueued++;
       status = C384Int8Experiment::launchDownResidual(
-        f.down.get(),kRows,product,trunk,trunk,stream);
+        f.down.get(),activeRows,product,trunk,trunk,stream);
       if(status != cudaSuccess)
         return cudaFailure("INT8 FFN-down residual",status,enqueued);
     }
@@ -690,6 +754,10 @@ private:
   }
 
   ProfileKeyV1 key;
+  int physicalBatch;
+  int sequenceSize;
+  int tokenRows;
+  bool exactFa4;
   int deviceOrdinal;
   int deviceMajor;
   int deviceMinor;
@@ -709,7 +777,7 @@ public:
   const char* factoryId() const noexcept override { return kProfileId; }
 
   bool matches(const ProfileKeyV1& key) const override {
-    return key.modelVersion == 105 && runtimeMatches(key.runtime) &&
+    return key.modelVersion == 105 && exactRuntimeMatches(key.runtime) &&
       attentionMatches(key.attention) && ffnMatches(key.ffn);
   }
 
@@ -735,10 +803,46 @@ public:
   }
 };
 
+class GenericC384Int8Factory final : public FactoryV1 {
+public:
+  const char* factoryId() const noexcept override { return kGenericProfileId; }
+
+  bool matches(const ProfileKeyV1& key) const override {
+    return key.modelVersion == 105 && genericRuntimeMatches(key.runtime) &&
+      attentionMatches(key.attention) && ffnMatches(key.ffn);
+  }
+
+  AvailabilityResultV1 availability(const ProfileKeyV1&) const override {
+    AvailabilityResultV1 result;
+#if KATAGO_P4_EXTERNAL_PACKAGES_AVAILABLE
+    result.availability = AvailabilityV1::Available;
+    result.detail =
+      "generic C384 INT8 kernels are linked; runtime uses official MMA attention";
+#else
+    result.availability = AvailabilityV1::Unavailable;
+    result.detail = "generic C384 INT8 kernels are not linked";
+#endif
+    return result;
+  }
+
+  std::unique_ptr<ProviderV1> create(const ProfileKeyV1& key) const override {
+#if KATAGO_P4_EXTERNAL_PACKAGES_AVAILABLE
+    return std::make_unique<P4Provider>(key);
+#else
+    (void)key;
+    return nullptr;
+#endif
+  }
+};
+
 }  // namespace
 
 std::unique_ptr<FactoryV1> makeP4FactoryV1() {
   return std::make_unique<P4Factory>();
+}
+
+std::unique_ptr<FactoryV1> makeGenericC384Int8FactoryV1() {
+  return std::make_unique<GenericC384Int8Factory>();
 }
 
 }  // namespace FourProfile

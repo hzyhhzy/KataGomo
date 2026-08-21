@@ -285,12 +285,13 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
 
     loss: dict[str, Any] | None = None
     if args.corpus is not None:
-        corpus_identity, policy_target, global_target = v1.read_r15_targets(args.corpus)
+        corpus_identity, policy_target, global_target = v1.read_labeled_targets(args.corpus)
         if (
             corpus_identity != fp32["inputIdentity"]
-            or policy_target.shape[0] != fp32["meta"]["rows"]
+            or policy_target.shape
+            != (fp32["meta"]["rows"], 2, fp32["meta"]["policyDim"])
         ):
-            raise ValueError("R15 target corpus identity/rows differ from raw dumps")
+            raise ValueError("labeled target corpus identity/shape differs from raw dumps")
         loss_fp32 = v1.weighted_losses(
             fp32["full"]["policy"], fp32["full"]["value"], policy_target, global_target
         )
@@ -325,7 +326,7 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
                 "pass": candidate_error <= adaptive_limit and candidate_error <= 0.01,
             })
     elif fp32["meta"]["sourceKind"] == 1:
-        raise ValueError("R15CORP1 dumps require --corpus so p0/v loss is gated")
+        raise ValueError("labeled-corpus dumps require --corpus so p0/v loss is gated")
 
     comparator_path = Path(__file__).resolve()
     base_comparator_path = Path(v1.__file__).resolve()

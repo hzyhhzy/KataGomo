@@ -1,4 +1,5 @@
 #include "p2_factory.h"
+#include "p2_build_config.h"
 
 #include <memory>
 
@@ -9,7 +10,7 @@
 namespace FourProfile {
 namespace {
 
-constexpr const char* P2_PROFILE_ID = "P2-c256-h8-s361-fp16-b28-s2";
+constexpr const char* P2_PROFILE_ID = KATAGO_P2_PROFILE_ID;
 
 bool matchesP2(const ProfileKeyV1& key) {
   const RuntimeKeyV1& runtime = key.runtime;
@@ -18,8 +19,8 @@ bool matchesP2(const ProfileKeyV1& key) {
   return key.modelVersion == 102 &&
     runtime.deviceComputeCapability == 120 &&
     runtime.boardX == 19 && runtime.boardY == 19 &&
-    runtime.physicalBatchSize == 28 &&
-    runtime.sameGpuConcurrency == 2 && runtime.exactBoard &&
+    runtime.physicalBatchSize == KATAGO_P2_FIXED_BATCH &&
+    runtime.sameGpuConcurrency == KATAGO_P2_FIXED_CONCURRENCY && runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&
@@ -45,7 +46,7 @@ public:
     AvailabilityResultV1 result;
 #if defined(KATAGO_ENABLE_P2_SM120_PROVIDER) && KATAGO_ENABLE_P2_SM120_PROVIDER
     result.availability = AvailabilityV1::Available;
-    result.detail = "SM120 C256/S361 kernels and B28 FA4 package are linked";
+    result.detail = "SM120 C256/S361 kernels and selected fixed-batch FA4 package are linked";
 #else
     result.availability = AvailabilityV1::Unavailable;
     result.detail = "P2 profile matched, but its SM120 provider is not linked";

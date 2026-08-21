@@ -101,7 +101,7 @@ def validate_v105_contract(
         "fp32": route_contracts[0],
         "referenceFP16": route_contracts[1],
         "candidateFP16": route_contracts[2],
-        "candidateMeaning": "36 layers: planar/QKN/learnedRopeFp32/MMA/clippedSwiGLU; combined/scalar/cudnn/fallback=0; physical batch 28",
+        "candidateMeaning": "36 layers: combined/QKN/learnedRopeFp32/MMA/clippedSwiGLU; planar/scalar/cudnn/fallback=0; physical batch 28",
     }
     return result
 
