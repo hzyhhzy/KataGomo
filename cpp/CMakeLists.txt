@@ -127,6 +127,19 @@ if(USE_BACKEND STREQUAL "CUDA")
            NOT KATAGO_P1_CUTLASS_REVISION STREQUAL KATAGO_P1_PINNED_CUTLASS_COMMIT)
           set(KATAGO_P1_DEPENDENCY_REASON
             "CUTLASS revision is '${KATAGO_P1_CUTLASS_REVISION}', expected '${KATAGO_P1_PINNED_CUTLASS_COMMIT}'")
+        else()
+          # HEAD alone is not an exact dependency lock: tracked edits under
+          # either include root can change every compiled P1 CUTLASS kernel
+          # while rev-parse still reports the pinned commit. Unrelated docs
+          # and examples stay outside the qualification boundary.
+          execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${KATAGO_CUTLASS_ROOT}"
+              diff --quiet HEAD -- include examples/45_dual_gemm
+            RESULT_VARIABLE KATAGO_P1_CUTLASS_DIFF_RESULT)
+          if(NOT KATAGO_P1_CUTLASS_DIFF_RESULT EQUAL 0)
+            set(KATAGO_P1_DEPENDENCY_REASON
+              "tracked CUTLASS inputs under include or examples/45_dual_gemm differ from the pinned commit")
+          endif()
         endif()
       endif()
     endif()
