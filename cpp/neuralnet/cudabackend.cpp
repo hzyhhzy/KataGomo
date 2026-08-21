@@ -4256,6 +4256,21 @@ void NeuralNet::freeInputBuffers(InputBuffers* inputBuffers) {
   delete inputBuffers;
 }
 
+#ifdef KATAGO_BUILD_NNRAWGATE
+void NeuralNet::getRawNNGateOutputs(const InputBuffers* inputBuffers, RawNNGateOutputs& out) {
+  if(inputBuffers == nullptr)
+    throw StringError("nnrawgate: null input buffers for raw output view");
+  out.policy = inputBuffers->policyResults;
+  out.value = inputBuffers->valueResults;
+  out.scoreValue = inputBuffers->scoreValueResults;
+  out.ownership = inputBuffers->ownershipResults;
+  out.policyElts = inputBuffers->singlePolicyResultElts;
+  out.valueElts = inputBuffers->singleValueResultElts;
+  out.scoreValueElts = inputBuffers->singleScoreValueResultElts;
+  out.ownershipElts = inputBuffers->singleOwnershipResultElts;
+}
+#endif
+
 //---------------------------------------------------------------------------------------
 
 

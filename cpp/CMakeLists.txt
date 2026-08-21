@@ -48,6 +48,7 @@ set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
 set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 29. Compiling with this will use more memory and slow down KataGo, even when playing on boards of size 19.")
 set(KATAGO_BUILD_BENCHMARKNN 0 CACHE BOOL "Build the test-only raw neural-net benchmark command")
 set(KATAGO_BUILD_V105_WIRE_CONTRACT 0 CACHE BOOL "Build the Release-safe native v105 wire contract")
+set(KATAGO_BUILD_NNRAWGATE 0 CACHE BOOL "Build the test-only cross-implementation raw neural-net gate command")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -307,6 +308,14 @@ if(KATAGO_BUILD_V105_WIRE_CONTRACT)
     DEPENDS katago
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     VERBATIM)
+endif()
+
+if(KATAGO_BUILD_NNRAWGATE)
+  if(NOT USE_BACKEND STREQUAL "CUDA")
+    message(FATAL_ERROR "KATAGO_BUILD_NNRAWGATE requires USE_BACKEND=CUDA")
+  endif()
+  target_sources(katago PRIVATE command/nnrawgate.cpp)
+  target_compile_definitions(katago PRIVATE KATAGO_BUILD_NNRAWGATE=1)
 endif()
 
 if(USE_BACKEND STREQUAL "CUDA")

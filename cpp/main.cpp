@@ -37,6 +37,9 @@ benchmark : Test speed with different numbers of search threads.
 #ifdef KATAGO_BUILD_V105_WIRE_CONTRACT
   cout << "testv105wire : Release-safe native v105/v102 wire parser contract." << endl;
 #endif
+#ifdef KATAGO_BUILD_NNRAWGATE
+  cout << "nnrawgate : Test-only deterministic raw neural-net replay gate." << endl;
+#endif
   cout << R"%%(genconfig : User-friendly interface to generate a config with rules and automatic performance tuning.
 
 contribute : Connect to online distributed KataGo training and run perpetually contributing selfplay games.
@@ -71,6 +74,10 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
 #ifdef KATAGO_BUILD_BENCHMARKNN
   if(subcommand == "benchmarknn")
     return MainCmds::benchmarknn(subArgs);
+#endif
+#ifdef KATAGO_BUILD_NNRAWGATE
+  if(subcommand == "nnrawgate")
+    return MainCmds::nnrawgate(subArgs);
 #endif
   if(subcommand == "contribute")
     return MainCmds::contribute(subArgs);

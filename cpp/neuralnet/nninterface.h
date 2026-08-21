@@ -30,6 +30,22 @@ struct InputBuffers;
 // A handle to the loaded neural network model.
 struct LoadedModel;
 
+#ifdef KATAGO_BUILD_NNRAWGATE
+// Test-only host views of the raw per-row head tensors from the most recent
+// getOutput call. Storage remains owned by InputBuffers and is overwritten by
+// the next call using the same buffers.
+struct RawNNGateOutputs {
+  const float* policy;
+  const float* value;
+  const float* scoreValue;
+  const float* ownership;
+  size_t policyElts;
+  size_t valueElts;
+  size_t scoreValueElts;
+  size_t ownershipElts;
+};
+#endif
+
 // Generic interface to neural net inference.
 // There is a single CUDA backend.
 namespace NeuralNet {
@@ -201,6 +217,10 @@ namespace NeuralNet {
     std::vector<NNOutput*>& outputs,
     float* outputPolicys
   );
+
+#ifdef KATAGO_BUILD_NNRAWGATE
+  void getRawNNGateOutputs(const InputBuffers* buffers, RawNNGateOutputs& out);
+#endif
 
 #ifdef KATAGO_BUILD_BENCHMARKNN
   // Hashes the exact packed inputs and raw host outputs left by the immediately

@@ -6,6 +6,9 @@ namespace MainCmds {
 #ifdef KATAGO_BUILD_BENCHMARKNN
   int benchmarknn(const std::vector<std::string>& args);
 #endif
+#ifdef KATAGO_BUILD_NNRAWGATE
+  int nnrawgate(const std::vector<std::string>& args);
+#endif
   int contribute(const std::vector<std::string>& args);
   int evalsgf(const std::vector<std::string>& args);
   int gatekeeper(const std::vector<std::string>& args);
