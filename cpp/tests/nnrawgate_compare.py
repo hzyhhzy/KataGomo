@@ -66,7 +66,12 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_structure(meta: dict[str, Any], full_batches: list[int], schedule: list[int]) -> None:
+def validate_structure(
+    meta: dict[str, Any],
+    full_batches: list[int],
+    schedule: list[int],
+    allowed_model_versions: tuple[int, ...] = (102,),
+) -> None:
     if meta["schema"] != SCHEMA or meta["reserved"] != 0:
         raise ValueError("unsupported NNRAWG1 schema or nonzero reserved field")
     board = meta["board"]
@@ -78,8 +83,26 @@ def validate_structure(meta: dict[str, Any], full_batches: list[int], schedule: 
     )
     if actual_dims != expected_dims:
         raise ValueError(f"raw head dimensions {actual_dims} do not match v102 {expected_dims}")
-    if (meta["modelVersion"], meta["inputsVersion"], meta["spatialFeatures"], meta["globalFeatures"]) != (102, 101, 22, 39):
-        raise ValueError("gate requires model v102 with V101 22/39 inputs")
+    model_contract = (
+        meta["modelVersion"], meta["inputsVersion"],
+        meta["spatialFeatures"], meta["globalFeatures"],
+    )
+    supported_contracts = {
+        102: (102, 101, 22, 39),
+        105: (105, 101, 22, 39),
+    }
+    if (
+        meta["modelVersion"] not in allowed_model_versions
+        or supported_contracts.get(meta["modelVersion"]) != model_contract
+    ):
+        raise ValueError(
+            f"gate model contract is not in the explicit allowlist {allowed_model_versions}"
+        )
+    allowed_routes = (0, 1) if meta["modelVersion"] == 102 else (0, 2)
+    if meta["expectedOfficialStage1"] not in allowed_routes:
+        raise ValueError("route contract is incompatible with the explicit model contract")
+    if meta["modelVersion"] == 105 and (board != 15 or meta["maxBatch"] != 28):
+        raise ValueError("v105 gate contract requires board 15 and physical batch 28")
     if meta["rows"] <= 0 or meta["maxBatch"] < 8:
         raise ValueError("invalid row or max-batch count")
     expected_full = [meta["maxBatch"]] * (meta["rows"] // meta["maxBatch"])
@@ -94,7 +117,7 @@ def validate_structure(meta: dict[str, Any], full_batches: list[int], schedule: 
         raise ValueError("dynamic schedule does not cover the required actual batches")
 
 
-def read_dump(path: Path) -> dict[str, Any]:
+def read_dump(path: Path, allowed_model_versions: tuple[int, ...] = (102,)) -> dict[str, Any]:
     with path.open("rb") as source:
         if read_exact(source, 8, "magic") != MAGIC:
             raise ValueError(f"{path}: bad NNRAWG1 magic")
@@ -110,7 +133,7 @@ def read_dump(path: Path) -> dict[str, Any]:
         revision = read_exact(source, revision_len, "revision").decode("utf-8")
         full_batches = list(read_u32s(source, meta["fullCallCount"], "full batch trace"))
         schedule = list(read_u32s(source, meta["scheduleCount"], "dynamic schedule"))
-        validate_structure(meta, full_batches, schedule)
+        validate_structure(meta, full_batches, schedule, allowed_model_versions)
         dims = (
             meta["policyDim"], meta["valueDim"], meta["scoreValueDim"], meta["ownershipDim"]
         )
@@ -378,6 +401,11 @@ def compare(args: argparse.Namespace) -> dict[str, Any]:
     fp32 = read_dump(args.fp32)
     reference_fp16 = read_dump(args.reference_fp16)
     candidate_fp16 = read_dump(args.candidate_fp16)
+    if any(
+        dump["meta"]["modelVersion"] != 102
+        for dump in (fp32, reference_fp16, candidate_fp16)
+    ):
+        raise ValueError("schema-1 comparator profile is restricted to Stage1 model v102")
     validate_arm_provenance(fp32, reference_fp16, candidate_fp16)
     validate_arm_layout(fp32, reference_fp16, candidate_fp16)
     identity = identity_view(fp32)

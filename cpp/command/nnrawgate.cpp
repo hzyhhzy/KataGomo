@@ -28,6 +28,19 @@ constexpr uint32_t SOURCE_R15_CORPUS = 1;
 constexpr uint32_t SOURCE_SYNTHETIC = 2;
 constexpr int SPATIAL_FEATURES = 22;
 constexpr int GLOBAL_FEATURES = 39;
+constexpr int V105_LAYER_COUNT = 36;
+constexpr int V105_PHYSICAL_BATCH_SIZE = 28;
+
+enum class ModelContract {
+  V102,
+  V105,
+};
+
+enum class RouteContract : uint32_t {
+  NONE = 0,
+  OFFICIAL_STAGE1 = 1,
+  OFFICIAL_V105_QKN_CLIP4 = 2,
+};
 
 struct Corpus {
   uint32_t numRows;
@@ -100,7 +113,7 @@ Corpus readR15Corpus(const string& path) {
   if(corpus.numRows == 0 || posLen != 15 || spatialFeatures != SPATIAL_FEATURES ||
      globalFeatures != GLOBAL_FEATURES || packedWidth != 29 || policyDim != 226 ||
      globalTargetDim != 64)
-    throw StringError("nnrawgate: corpus dimensions do not match full-board 15x15 v102 input");
+    throw StringError("nnrawgate: corpus dimensions do not match full-board 15x15 V101 input");
 
   corpus.boardSize = 15;
   corpus.sourceKind = SOURCE_R15_CORPUS;
@@ -296,15 +309,36 @@ bool isOfficialStage1Route(const NeuralNet::BenchmarkRouteProof& proof, int batc
     proof.lastActiveFallback == 0 &&
     proof.lastFp16 && proof.lastNhwc && proof.lastExact && proof.lastMaskNull;
 }
+
+bool isOfficialV105QknClip4Route(const NeuralNet::BenchmarkRouteProof& proof, int batchSize) {
+  return
+    proof.prepared && proof.hasSuccessfulInvocation && proof.lastBatchSize == batchSize &&
+    proof.expectedAttention == V105_LAYER_COUNT && proof.expectedFfn == V105_LAYER_COUNT &&
+    proof.expectedQkn == V105_LAYER_COUNT &&
+    proof.expectedOrderedClippedSwiGLU == V105_LAYER_COUNT &&
+    proof.preparedAttention == V105_LAYER_COUNT && proof.preparedFfn == V105_LAYER_COUNT &&
+    proof.preparedPlanar == V105_LAYER_COUNT && proof.preparedQkn == V105_LAYER_COUNT &&
+    proof.preparedLearnedRopeFp32 == V105_LAYER_COUNT && proof.preparedMma == V105_LAYER_COUNT &&
+    proof.preparedOrderedClippedSwiGLU == V105_LAYER_COUNT &&
+    proof.preparedCombinedQKV == 0 && proof.preparedFixedRope == 0 &&
+    proof.preparedScalar == 0 && proof.preparedCudnn == 0 && proof.preparedFallback == 0 &&
+    proof.lastActiveAttention == V105_LAYER_COUNT && proof.lastActiveFfn == V105_LAYER_COUNT &&
+    proof.lastActivePlanar == V105_LAYER_COUNT && proof.lastActiveQkn == V105_LAYER_COUNT &&
+    proof.lastActiveLearnedRopeFp32 == V105_LAYER_COUNT && proof.lastActiveMma == V105_LAYER_COUNT &&
+    proof.lastActiveOrderedClippedSwiGLU == V105_LAYER_COUNT &&
+    proof.lastActiveCombinedQKV == 0 && proof.lastActiveFixedRope == 0 &&
+    proof.lastActiveScalar == 0 && proof.lastActiveCudnn == 0 && proof.lastActiveFallback == 0 &&
+    proof.lastFp16 && proof.lastNhwc && proof.lastExact && proof.lastMaskNull;
+}
 #endif
 
 void verifyRouteAfterCall(
   const ComputeHandle* handle,
-  bool expectedOfficialStage1,
+  RouteContract routeContract,
   int batchSize,
   uint64_t& previousSerial
 ) {
-  if(!expectedOfficialStage1)
+  if(routeContract == RouteContract::NONE)
     return;
 #ifdef KATAGO_BUILD_BENCHMARKNN
   NeuralNet::BenchmarkRouteProof proof = NeuralNet::BenchmarkRouteProof();
@@ -312,14 +346,16 @@ void verifyRouteAfterCall(
     throw StringError("nnrawgate: official route proof unavailable after inference");
   if(proof.invocationSerial != previousSerial + 1)
     throw StringError("nnrawgate: route serial did not advance exactly once for actual batch");
-  if(!isOfficialStage1Route(proof,batchSize))
-    throw StringError("nnrawgate: inference did not use the required official Stage1 route");
+  const bool routeMatches = routeContract == RouteContract::OFFICIAL_STAGE1 ?
+    isOfficialStage1Route(proof,batchSize) : isOfficialV105QknClip4Route(proof,batchSize);
+  if(!routeMatches)
+    throw StringError("nnrawgate: inference did not use the required official route contract");
   previousSerial = proof.invocationSerial;
 #else
   (void)handle;
   (void)batchSize;
   (void)previousSerial;
-  throw StringError("nnrawgate: expected-official-stage1 requires KATAGO_BUILD_BENCHMARKNN=ON");
+  throw StringError("nnrawgate: an expected official route requires KATAGO_BUILD_BENCHMARKNN=ON");
 #endif
 }
 
@@ -354,7 +390,7 @@ RawSections runRawCall(
   uint32_t rowStart,
   int batchSize,
   bool useNHWC,
-  bool expectedOfficialStage1,
+  RouteContract routeContract,
   uint64_t& routeSerial,
   vector<unique_ptr<NNResultBuf>>& ownedRows,
   vector<NNResultBuf*>& rowPointers,
@@ -369,14 +405,14 @@ RawSections runRawCall(
   NeuralNet::getOutput(
     handle,inputBuffers,batchSize,rowPointers.data(),outputs,postPolicy.data()
   );
-  verifyRouteAfterCall(handle,expectedOfficialStage1,batchSize,routeSerial);
+  verifyRouteAfterCall(handle,routeContract,batchSize,routeSerial);
 
   RawNNGateOutputs raw;
   NeuralNet::getRawNNGateOutputs(inputBuffers,raw);
   const int area = corpus.boardSize * corpus.boardSize;
   if(raw.policyElts != (size_t)area+1 || raw.valueElts != 3 ||
      raw.scoreValueElts != 6 || raw.ownershipElts != (size_t)area)
-    throw StringError("nnrawgate: raw head dimensions differ from the v102 contract");
+    throw StringError("nnrawgate: raw head dimensions differ from the V101 contract");
 
   RawSections sections;
   sections.batchSize = batchSize;
@@ -433,7 +469,8 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   int boardSize = 15;
   int maxBatchSize = 36;
   int syntheticRows = 512;
-  bool expectedOfficialStage1 = false;
+  ModelContract modelContract = ModelContract::V102;
+  RouteContract routeContract = RouteContract::NONE;
 
   try {
     KataGoCommandLine cmd(
@@ -462,8 +499,15 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     TCLAP::ValueArg<string> scheduleArg(
       "","batch-schedule","Same-handle actual-batch sequence (default B,1,B-1,2,7,B)",false,"","LIST"
     );
+    TCLAP::ValueArg<string> modelContractArg(
+      "","model-contract","Exact model contract: v102 or v105 (default v102)",false,"v102","NAME"
+    );
     TCLAP::SwitchArg expectedOfficialArg(
       "","expected-official-stage1","Require official FP16/NHWC attention+FFN route after every call",false
+    );
+    TCLAP::SwitchArg expectedOfficialV105Arg(
+      "","expected-official-v105-qkn-clip4",
+      "Require the 36-layer FP16/NHWC planar-QKV/QKN/learned-RoPE/MMA/clipped-SwiGLU route",false
     );
     cmd.add(expectedShaArg);
     cmd.add(corpusArg);
@@ -472,7 +516,9 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     cmd.add(batchArg);
     cmd.add(rowsArg);
     cmd.add(scheduleArg);
+    cmd.add(modelContractArg);
     cmd.add(expectedOfficialArg);
+    cmd.add(expectedOfficialV105Arg);
     cmd.setShortUsageArgLimit();
     cmd.addOverrideConfigArg();
     cmd.parseArgs(args);
@@ -484,7 +530,18 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     maxBatchSize = batchArg.getValue();
     syntheticRows = rowsArg.getValue();
     scheduleText = scheduleArg.getValue();
-    expectedOfficialStage1 = expectedOfficialArg.getValue();
+    if(modelContractArg.getValue() == "v102")
+      modelContract = ModelContract::V102;
+    else if(modelContractArg.getValue() == "v105")
+      modelContract = ModelContract::V105;
+    else
+      throw StringError("nnrawgate: model-contract must be v102 or v105");
+    if(expectedOfficialArg.getValue() && expectedOfficialV105Arg.getValue())
+      throw StringError("nnrawgate: expected route flags are mutually exclusive");
+    if(expectedOfficialArg.getValue())
+      routeContract = RouteContract::OFFICIAL_STAGE1;
+    else if(expectedOfficialV105Arg.getValue())
+      routeContract = RouteContract::OFFICIAL_V105_QKN_CLIP4;
     if(boardSize != 15 && boardSize != 19)
       throw StringError("nnrawgate: board must be 15 or 19");
     if(maxBatchSize < 8 || maxBatchSize > 1024)
@@ -493,6 +550,13 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       throw StringError("nnrawgate: synthetic-rows must be between 1 and 65536");
     if(!corpusFile.empty() && boardSize != 15)
       throw StringError("nnrawgate: R15CORP1 may only be used with board 15");
+    if(modelContract == ModelContract::V105 &&
+       (boardSize != 15 || maxBatchSize != V105_PHYSICAL_BATCH_SIZE))
+      throw StringError("nnrawgate: v105 contract requires board 15 and physical batch-size 28");
+    if(routeContract == RouteContract::OFFICIAL_STAGE1 && modelContract != ModelContract::V102)
+      throw StringError("nnrawgate: expected-official-stage1 requires model-contract v102");
+    if(routeContract == RouteContract::OFFICIAL_V105_QKN_CLIP4 && modelContract != ModelContract::V105)
+      throw StringError("nnrawgate: expected-official-v105-qkn-clip4 requires model-contract v105");
     cmd.getConfig(cfg);
   }
   catch(TCLAP::ArgException& e) {
@@ -516,7 +580,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   cfg.overrideKey("maxBoardYSizeForNNBuffer0",Global::intToString(boardSize));
   cfg.overrideKey("requireMaxBoardSize","true");
   cfg.overrideKey("requireMaxBoardSize0","true");
-  if(expectedOfficialStage1) {
+  if(routeContract != RouteContract::NONE) {
     cfg.overrideKey("cudaUseFP16","true");
     cfg.overrideKey("cudaUseFP16-0","true");
     cfg.overrideKey("cudaUseNHWC","true");
@@ -553,10 +617,13 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   LoadedModel* loadedModel = nnEval->getRawGateLoadedModel();
   const int modelVersion = NeuralNet::getModelVersion(loadedModel);
   const int inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
-  if(modelVersion != 102 || inputsVersion != 101 ||
+  const int requiredModelVersion = modelContract == ModelContract::V105 ? 105 : 102;
+  if(modelVersion != requiredModelVersion || inputsVersion != 101 ||
      NNModelVersion::getNumSpatialFeatures(modelVersion) != SPATIAL_FEATURES ||
      NNModelVersion::getNumGlobalFeatures(modelVersion) != GLOBAL_FEATURES)
-    throw StringError("nnrawgate: Stage1 gate requires model v102 with V101 22/39 inputs");
+    throw StringError(
+      "nnrawgate: model does not satisfy the selected exact V101 22/39 model contract"
+    );
 
   ComputeHandle* handle = nullptr;
   InputBuffers* inputBuffers = nullptr;
@@ -572,12 +639,12 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     );
     const bool usingFP16 = NeuralNet::isUsingFP16(handle);
     const bool useNHWC = nnEval->getRawGateInputsUseNHWC();
-    if(expectedOfficialStage1 && (!usingFP16 || !useNHWC))
-      throw StringError("nnrawgate: expected official Stage1 requires FP16 and NHWC");
+    if(routeContract != RouteContract::NONE && (!usingFP16 || !useNHWC))
+      throw StringError("nnrawgate: expected official route requires FP16 and NHWC");
 
     uint64_t routeSerial = 0;
 #ifdef KATAGO_BUILD_BENCHMARKNN
-    if(expectedOfficialStage1) {
+    if(routeContract != RouteContract::NONE) {
       NeuralNet::BenchmarkRouteProof initial = NeuralNet::BenchmarkRouteProof();
       if(!NeuralNet::getBenchmarkRouteProof(handle,initial) || !initial.prepared || initial.hasSuccessfulInvocation)
         throw StringError("nnrawgate: invalid initial official-route proof state");
@@ -621,7 +688,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
         (uint32_t)maxBatchSize,corpus.numRows-rowStart
       );
       RawSections call = runRawCall(
-        handle,inputBuffers,corpus,rowStart,actualBatch,useNHWC,expectedOfficialStage1,
+        handle,inputBuffers,corpus,rowStart,actualBatch,useNHWC,routeContract,
         routeSerial,ownedRows,rowPointers,ownedOutputs,postPolicy
       );
       fullBatchSizes.push_back(actualBatch);
@@ -635,7 +702,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     dynamicCalls.reserve(schedule.size());
     for(int actualBatch: schedule) {
       dynamicCalls.push_back(runRawCall(
-        handle,inputBuffers,corpus,0,actualBatch,useNHWC,expectedOfficialStage1,
+        handle,inputBuffers,corpus,0,actualBatch,useNHWC,routeContract,
         routeSerial,ownedRows,rowPointers,ownedOutputs,postPolicy
       ));
     }
@@ -650,7 +717,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       SPATIAL_FEATURES,GLOBAL_FEATURES,(uint32_t)policyDim,(uint32_t)valueDim,
       (uint32_t)scoreValueDim,(uint32_t)ownershipDim,usingFP16 ? 1u : 0u,
       useNHWC ? 1u : 0u,corpus.sourceKind,(uint32_t)schedule.size(),
-      (uint32_t)fullBatchSizes.size(),expectedOfficialStage1 ? 1u : 0u,
+      (uint32_t)fullBatchSizes.size(),(uint32_t)routeContract,
       (uint32_t)modelVersion,(uint32_t)inputsVersion,0u
     };
     for(uint32_t value: header)
