@@ -555,6 +555,8 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     if(modelContract == ModelContract::V105 &&
        (boardSize != 15 || maxBatchSize != V105_PHYSICAL_BATCH_SIZE))
       throw StringError("nnrawgate: v105 contract requires board 15 and physical batch-size 28");
+    if(modelContract == ModelContract::V105 && corpusFile.empty())
+      throw StringError("nnrawgate: v105 contract requires an R15CORP1 corpus");
     if(routeContract == RouteContract::OFFICIAL_STAGE1 && modelContract != ModelContract::V102)
       throw StringError("nnrawgate: expected-official-stage1 requires model-contract v102");
     if(routeContract == RouteContract::OFFICIAL_V105_QKN_CLIP4 && modelContract != ModelContract::V105)
@@ -567,6 +569,9 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   }
 
   const vector<int> schedule = parseSchedule(scheduleText,maxBatchSize);
+  if(modelContract == ModelContract::V105 &&
+     schedule != vector<int>{28,1,27,2,7,28})
+    throw StringError("nnrawgate: v105 contract requires exact schedule 28,1,27,2,7,28");
   Corpus corpus = corpusFile.empty() ?
     makeSyntheticCorpus(boardSize,max(syntheticRows,maxBatchSize)) : readR15Corpus(corpusFile);
   if(corpus.numRows < (uint32_t)maxBatchSize)
