@@ -1,4 +1,5 @@
 #include "stub_factories.h"
+#include "p1_factory.h"
 
 #include <memory>
 
@@ -84,19 +85,6 @@ private:
   AvailabilityV1 stubAvailability;
 };
 
-class P1StubFactoryV1 final : public StubFactoryBaseV1 {
-public:
-  P1StubFactoryV1()
-    : StubFactoryBaseV1("P1-c256-h8-s225-fp16-b36-s2",AvailabilityV1::Unavailable) {}
-
-  bool matches(const ProfileKeyV1& key) const override {
-    return key.modelVersion == 102 &&
-      runtimeMatches(key.runtime,15,36,RequestedExecutionV1::Fp16) &&
-      attentionMatches(key.attention,256,8,false,false) &&
-      ffnMatches(key.ffn,256,768,false,false);
-  }
-};
-
 class P2StubFactoryV1 final : public StubFactoryBaseV1 {
 public:
   P2StubFactoryV1()
@@ -139,7 +127,7 @@ public:
 }  // namespace
 
 void registerBuiltinStubFactoriesV1(RegistryV1& registry) {
-  registry.add(std::make_unique<P1StubFactoryV1>());
+  registerP1FactoryV1(registry);
   registry.add(std::make_unique<P2StubFactoryV1>());
   registry.add(std::make_unique<P3StubFactoryV1>());
   registry.add(std::make_unique<P4StubFactoryV1>());

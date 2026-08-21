@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "status": "source-staged-not-compiled",
+  "target": {
+    "base_commit": "3d97eb7c6fa0ae2ca535d0b4d39616e1135ee3e4",
+    "predecessor_commit": "313119e57",
+    "tracked_target_modified": false
+  },
+  "focused_patch": {
+    "path": "PRODUCTION_WINNER_FOCUSED.patch",
+    "bytes": 236402,
+    "sha256": "5f52994026b5ea8b380bd1d522b787cd4de4d95c63cf9bfb5119e2bfc5120374"
+  },
+  "selection_contract": {
+    "api": "typed Capability -> Recipe -> PreparedTactics",
+    "environment_selectors": false,
+    "model_sha_selector": false,
+    "weights_selector": false,
+    "model_depth_selector": false,
+    "local_reuse_predicates": true,
+    "generic_fallback_retained": true,
+    "per_handle_nonblocking_stream": true
+  },
+  "winner": {
+    "rms_norm": "warp4-vec8",
+    "qkv_rope": "m128-n128-k32-s3",
+    "attention": "fa4-b36-tm128-tn128-s1-both16",
+    "dual_ffn": "m128-n64-k32-s3-sw4",
+    "out_projection": "m128-n128-k32-s3-sw1",
+    "ffn_down": "m128-n128-k32-s3-sw1"
+  },
+  "toolchain": {
+    "cuda_compiler": "13.0.88",
+    "cuda_runtime": 13000,
+    "cuda_driver": 13020,
+    "cublas": 130101,
+    "cutlass_commit": "dcf215af68a2d08d305076c152a06f201728cd53",
+    "flash_attn_4": "4.0.0b25",
+    "nvidia_cutlass_dsl": "4.6.0.dev0",
+    "quack_kernels": "0.5.3"
+  },
+  "fa4_b36": {
+    "generation": "two independent CPU-only runs, byte-identical",
+    "object_kind": "clean ELF ET_REL link input, 15 sections",
+    "object_sha256": "690fbd68a750e90ad4ea964ecb729258ccce8d5d81a8e996dc436435dcb62a9d",
+    "header_sha256": "48e8572e7dda80f7022085e0384830e88f3a4f58e6a79f25c40b0ff60167311d",
+    "metadata_sha256": "08c8b0121d15c75c47dcc6dde987eff4dba64840989a301091063c57e518e925",
+    "bridge_sha256": "671dcd19239a45ab6b04b156b2ca51737d2a4a3dadc645b9b3ab54f637894111",
+    "cuda_dialect_runtime_static_sha256": "5ffeb7ae24bf02755a6ad751d196b2f1efd18a834b747972ffdd8bbc6550b899",
+    "embedded_cubin_sha256": "c8f5321154f3109a1b7f812c62d64f75f4845ff47a25778128be710d6bf381b0",
+    "resource": {
+      "architecture": "sm_120",
+      "registers_per_thread": 198,
+      "static_shared_bytes": 1024,
+      "stack_bytes": 0,
+      "local_bytes": 0,
+      "constant0_bytes": 944
+    },
+    "excluded_objcopy_mutated_object_sha256": "141c37bfe23219d8cd8e30afb7e945c865e816bfe8b4b19f916d867e45260c45"
+  },
+  "dependencies": {
+    "cutlass_license_sha256": "ad1513ca983da737a6843364ad19e8424a56d860736c2da773b8c5be527e1475",
+    "flash_attention_license_sha256": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+    "nvidia_cutlass_dsl_license_sha256": "9ed3a0344d6bf9f08420f268d8aa70f7e3930d248edc2cf1a8107a560b483433",
+    "quack_kernels_license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "apache_tvm_ffi_license_sha256": "bb354d8b94589ad8817f2dff029d39a1133d217407f73679d0b0311c980e511f"
+  },
+  "audits": {
+    "git_diff_check": "pass",
+    "forbidden_environment_selector_scan": "pass",
+    "rejected_candidate_scan": "pass",
+    "cmake_parse_cuda_winner_off": "passed CUDA/toolkit/cuDNN stages; later stopped by missing host zlib",
+    "compile": "not_run_by_design",
+    "gpu_runtime": "not_run_by_design"
+  }
+}
+

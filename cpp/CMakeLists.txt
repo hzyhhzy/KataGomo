@@ -9,6 +9,7 @@ set(FOUR_PROFILE_PROVIDER_SOURCES
   neuralnet/four_profile/registry.cpp
   neuralnet/four_profile/manager.cpp
   neuralnet/four_profile/native_model_view.cpp
+  neuralnet/four_profile/p1_factory.cpp
   neuralnet/four_profile/stub_factories.cpp)
 
 add_executable(four_profile_provider_contract EXCLUDE_FROM_ALL
@@ -55,6 +56,11 @@ set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 29. Compil
 set(KATAGO_BUILD_BENCHMARKNN 0 CACHE BOOL "Build the test-only raw neural-net benchmark command")
 set(KATAGO_BUILD_V105_WIRE_CONTRACT 0 CACHE BOOL "Build the Release-safe native v105 wire contract")
 set(KATAGO_BUILD_NNRAWGATE 0 CACHE BOOL "Build the test-only cross-implementation raw neural-net gate command")
+set(KATAGO_ENABLE_P1_SM120 0 CACHE BOOL
+  "Use the qualified C256/H8 B36 SM120 provider when its exact dependencies are present")
+set(KATAGO_CUTLASS_ROOT "" CACHE PATH
+  "NVIDIA CUTLASS checkout pinned to dcf215af68a2d08d305076c152a06f201728cd53")
+set(KATAGO_P1_SM120_AVAILABLE 0)
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
 
@@ -65,12 +71,115 @@ if(USE_BACKEND STREQUAL "CUDA")
   enable_language(CUDA)
 
   set(CUDA_STANDARD 11)
+  if(KATAGO_ENABLE_P1_SM120)
+    set(KATAGO_P1_PINNED_CUTLASS_COMMIT
+      "dcf215af68a2d08d305076c152a06f201728cd53")
+    set(KATAGO_P1_FA4_ROOT
+      "${CMAKE_CURRENT_SOURCE_DIR}/external/renju15-sm120-fa4")
+    set(KATAGO_P1_FA4_HEADER
+      "${KATAGO_P1_FA4_ROOT}/renju15_fa4_b36_tn128.h")
+    set(KATAGO_P1_FA4_OBJECT
+      "${KATAGO_P1_FA4_ROOT}/renju15_fa4_b36_tn128.o")
+    set(KATAGO_P1_FA4_METADATA
+      "${KATAGO_P1_FA4_ROOT}/renju15_fa4_b36_tn128.json")
+    set(KATAGO_P1_FA4_RUNTIME
+      "${KATAGO_P1_FA4_ROOT}/libcuda_dialect_runtime_static.a")
+    set(KATAGO_P1_DEPENDENCY_REASON "")
+
+    if(WIN32)
+      set(KATAGO_P1_DEPENDENCY_REASON
+        "the SHA-locked B36 FA4 package contains Linux ELF objects")
+    elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13.0)
+      set(KATAGO_P1_DEPENDENCY_REASON "CUDA 13.0 or newer is required")
+    elseif(NOT EXISTS "${KATAGO_CUTLASS_ROOT}/include/cutlass/cutlass.h" OR
+           NOT EXISTS "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm/device/dual_gemm.h")
+      set(KATAGO_P1_DEPENDENCY_REASON
+        "KATAGO_CUTLASS_ROOT does not contain the pinned CUTLASS headers")
+    elseif(NOT EXISTS "${KATAGO_P1_FA4_HEADER}" OR
+           NOT EXISTS "${KATAGO_P1_FA4_OBJECT}" OR
+           NOT EXISTS "${KATAGO_P1_FA4_METADATA}" OR
+           NOT EXISTS "${KATAGO_P1_FA4_RUNTIME}")
+      set(KATAGO_P1_DEPENDENCY_REASON "the SHA-locked B36 FA4 package is incomplete")
+    else()
+      find_package(Git QUIET)
+      if(NOT GIT_FOUND)
+        set(KATAGO_P1_DEPENDENCY_REASON "Git is required to verify the CUTLASS revision")
+      else()
+        execute_process(
+          COMMAND "${GIT_EXECUTABLE}" -C "${KATAGO_CUTLASS_ROOT}" rev-parse HEAD
+          RESULT_VARIABLE KATAGO_P1_CUTLASS_REVISION_RESULT
+          OUTPUT_VARIABLE KATAGO_P1_CUTLASS_REVISION
+          OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT KATAGO_P1_CUTLASS_REVISION_RESULT EQUAL 0 OR
+           NOT KATAGO_P1_CUTLASS_REVISION STREQUAL KATAGO_P1_PINNED_CUTLASS_COMMIT)
+          set(KATAGO_P1_DEPENDENCY_REASON
+            "CUTLASS revision is '${KATAGO_P1_CUTLASS_REVISION}', expected '${KATAGO_P1_PINNED_CUTLASS_COMMIT}'")
+        endif()
+      endif()
+    endif()
+
+    if(KATAGO_P1_DEPENDENCY_REASON STREQUAL "")
+      file(SHA256 "${KATAGO_P1_FA4_HEADER}" KATAGO_P1_FA4_HEADER_SHA)
+      file(SHA256 "${KATAGO_P1_FA4_OBJECT}" KATAGO_P1_FA4_OBJECT_SHA)
+      file(SHA256 "${KATAGO_P1_FA4_METADATA}" KATAGO_P1_FA4_METADATA_SHA)
+      file(SHA256 "${KATAGO_P1_FA4_RUNTIME}" KATAGO_P1_FA4_RUNTIME_SHA)
+      if(NOT KATAGO_P1_FA4_HEADER_SHA STREQUAL
+           "48e8572e7dda80f7022085e0384830e88f3a4f58e6a79f25c40b0ff60167311d" OR
+         NOT KATAGO_P1_FA4_OBJECT_SHA STREQUAL
+           "690fbd68a750e90ad4ea964ecb729258ccce8d5d81a8e996dc436435dcb62a9d" OR
+         NOT KATAGO_P1_FA4_METADATA_SHA STREQUAL
+           "08c8b0121d15c75c47dcc6dde987eff4dba64840989a301091063c57e518e925" OR
+         NOT KATAGO_P1_FA4_RUNTIME_SHA STREQUAL
+           "5ffeb7ae24bf02755a6ad751d196b2f1efd18a834b747972ffdd8bbc6550b899")
+        set(KATAGO_P1_DEPENDENCY_REASON "the B36 FA4 package SHA256 contract failed")
+      endif()
+    endif()
+
+    if(KATAGO_P1_DEPENDENCY_REASON STREQUAL "")
+      set(KATAGO_P1_SM120_AVAILABLE 1)
+      message(STATUS "P1 SM120 provider available: C256/H8/B36/S225, dynamic N/N")
+    else()
+      message(STATUS
+        "P1 SM120 provider unavailable; exact matches use official CUDA: ${KATAGO_P1_DEPENDENCY_REASON}")
+    endif()
+  else()
+    message(STATUS "P1 SM120 provider disabled; exact matches use official CUDA")
+  endif()
+
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/cudabackend.cpp
     neuralnet/cudautils.cpp
     neuralnet/cudahelpers.cu
     neuralnet/debugprint.cpp
   )
+  if(KATAGO_P1_SM120_AVAILABLE)
+    add_library(katago_p1_sm120_kernels OBJECT
+      neuralnet/cuda_specialized/sm120/shared/rms_norm.cu
+      neuralnet/cuda_specialized/sm120/shared/residual_gemm.cu
+      neuralnet/cuda_specialized/sm120/c256/fixed_batch/qkv_rope_gemm.cu
+      neuralnet/cudafusedffn.cu)
+    set_target_properties(katago_p1_sm120_kernels PROPERTIES
+      CUDA_ARCHITECTURES "120"
+      CUDA_STANDARD 17
+      CUDA_STANDARD_REQUIRED ON
+      POSITION_INDEPENDENT_CODE ON)
+    target_compile_options(katago_p1_sm120_kernels PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda>)
+    target_compile_definitions(katago_p1_sm120_kernels PRIVATE
+      KATAGO_ENABLE_RENJU15_RMS_SM120=1
+      KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
+    target_include_directories(katago_p1_sm120_kernels PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/neuralnet")
+    target_include_directories(katago_p1_sm120_kernels SYSTEM PRIVATE
+      "${KATAGO_CUTLASS_ROOT}/include"
+      "${KATAGO_CUTLASS_ROOT}/examples/45_dual_gemm")
+    list(APPEND NEURALNET_BACKEND_SOURCES
+      neuralnet/four_profile/p1_provider.cpp
+      neuralnet/cuda_specialized/sm120/c256/fixed_batch/fa4.cpp
+      $<TARGET_OBJECTS:katago_p1_sm120_kernels>)
+  endif()
   # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
   if(NOT CMAKE_CUDA_ARCHITECTURES)
     if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
@@ -318,6 +427,13 @@ endif()
 if(USE_BACKEND STREQUAL "CUDA")
   target_compile_definitions(katago PRIVATE USE_CUDA_BACKEND)
   target_compile_definitions(katago PRIVATE CUDA_TARGET_VERSION=${CMAKE_CUDA_COMPILER_VERSION})
+  if(KATAGO_P1_SM120_AVAILABLE)
+    target_compile_definitions(katago PRIVATE
+      KATAGO_ENABLE_P1_SM120_PROVIDER=1
+      KATAGO_ENABLE_RENJU15_RMS_SM120=1
+      KATAGO_ENABLE_RENJU15_QKV_ROPE_GEMM_SM120=1)
+    target_include_directories(katago PRIVATE "${KATAGO_P1_FA4_ROOT}")
+  endif()
   find_package(CUDAToolkit REQUIRED)
   find_path(CUDNN_INCLUDE_DIR cudnn.h HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_INCLUDE_DIRS} PATH_SUFFIXES include)
   if((NOT CUDNN_INCLUDE_DIR))
@@ -326,6 +442,11 @@ if(USE_BACKEND STREQUAL "CUDA")
   find_library(CUDNN_LIBRARY cudnn HINTS ${CUDNN_ROOT_DIR} ${CUDAToolkit_LIBRARY_DIR} PATH_SUFFIXES lib64)
   include_directories(SYSTEM ${CUDAToolkit_INCLUDE_DIRS} ${CUDNN_INCLUDE_DIR}) #SYSTEM is for suppressing some compiler warnings in thrust libraries
   target_link_libraries(katago CUDA::cublas ${CUDNN_LIBRARY})
+  if(KATAGO_P1_SM120_AVAILABLE)
+    target_link_libraries(katago
+      "${KATAGO_P1_FA4_OBJECT}"
+      "${KATAGO_P1_FA4_RUNTIME}")
+  endif()
 elseif(USE_BACKEND STREQUAL "TENSORRT")
   target_compile_definitions(katago PRIVATE USE_TENSORRT_BACKEND)
   find_package(CUDAToolkit REQUIRED)

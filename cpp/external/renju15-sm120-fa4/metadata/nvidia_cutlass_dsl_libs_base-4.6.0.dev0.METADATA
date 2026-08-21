@@ -1,0 +1,42 @@
+Metadata-Version: 2.4
+Name: nvidia-cutlass-dsl-libs-base
+Version: 4.6.0.dev0
+Summary: NVIDIA CUTLASS Python DSL
+Author: NVIDIA Corporation
+Project-URL: Documentation, https://github.com/NVIDIA/cutlass
+Project-URL: Repository, https://github.com/NVIDIA/cutlass
+Project-URL: Issues, https://github.com/NVIDIA/cutlass/issues
+Project-URL: License, https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/license.html
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: GPU :: NVIDIA CUDA :: 13
+Classifier: License :: Other/Proprietary License
+Classifier: Operating System :: POSIX :: Linux
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Programming Language :: Python :: Implementation :: CPython
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: typing-extensions>=4.10.0
+Requires-Dist: cuda-python>=12.8
+Requires-Dist: protobuf<7,>=6.30.2
+Dynamic: license-file
+
+CUTLASS 4.x provides a Python native interfaces for writing high-performance CUDA kernels based on core CUTLASS and CuTe concepts without any performance compromises. This allows for a much smoother learning curve, orders of magnitude faster compile times, native integration with DL frameworks without writing glue code, and much more intuitive meta-programming that does not require deep C++ expertise.
+
+Overall we envision CUTLASS DSLs as a family of domain-specific languages (DSLs). With the release of 4.0, we are releasing the first of these in **CuTe DSL**. This is a low level programming model that is fully consistent with CuTe C++ abstractions 鈥?exposing core concepts such as layouts, tensors, hardware atoms, and full control over the hardware thread and data hierarchy.
+
+CuTe DSL demonstrates optimal matrix multiply and other linear algebra operations targeting the programmable, high-throughput Tensor Cores implemented by NVIDIA's Ampere, Hopper, and Blackwell architectures.
+
+We believe it will become an indispensable tool for students, researchers, and performance engineers alike 鈥?flattening the learning curve of GPU programming, rapidly prototyping kernel designs, and bringing optimized solutions into production.
+
+**CuTe DSL is currently in public beta and will graduate out of beta by summer 2026.**
+
+For more details please visit [CUTLASS Documentation](https://docs.nvidia.com/cutlass) or [CUTLASS GitHub](https://github.com/NVIDIA/cutlass/tree/main).
+
+

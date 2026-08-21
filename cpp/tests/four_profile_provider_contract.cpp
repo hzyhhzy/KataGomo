@@ -662,6 +662,44 @@ void testBuiltinAvailabilityAndRequiredMode() {
   );
 }
 
+void testBuiltinP1DynamicDepthAndSemanticExclusions() {
+  RegistryV1 registry;
+  registerBuiltinStubFactoriesV1(registry);
+  const RuntimeKeyV1 runtime = runtimeKey(15,36,RequestedExecutionV1::Fp16);
+  const AttentionSpecV1 attention = attentionSpec(256,8,false,false);
+  const FfnSpecV1 ffn = ffnSpec(256,768,false,false);
+
+  for(int depth: {1,24,36}) {
+    const ModelViewV1 candidate = model(depth,attention,ffn,1,1,102);
+    const ProfileKeyV1 key = keyFor(candidate,runtime);
+    const ResolutionV1 resolution = registry.resolve(key);
+    require(resolution.matched(),
+      "P1 dynamic depth " + std::to_string(depth) + " did not match");
+    require(std::strcmp(
+      resolution.factory->factoryId(),"P1-c256-h8-s225-fp16-b36-s2") == 0,
+      "P1 dynamic depth resolved to the wrong factory");
+  }
+
+  auto requireNoP1Match = [&](const ModelViewV1& candidate,
+                              const RuntimeKeyV1& candidateRuntime,
+                              const std::string& exclusion) {
+    const ResolutionV1 resolution = registry.resolve(
+      keyFor(candidate,candidateRuntime));
+    require(!resolution.matched(),
+      "P1 matched excluded " + exclusion + " semantics");
+  };
+
+  RuntimeKeyV1 b35 = runtime;
+  b35.physicalBatchSize = 35;
+  requireNoP1Match(model(24,attention,ffn,0,0,102),b35,"B35");
+  requireNoP1Match(
+    model(24,attentionSpec(256,8,true,false),ffn,0,0,102),runtime,"QKN");
+  requireNoP1Match(
+    model(24,attention,ffnSpec(256,768,true,false),0,0,102),runtime,"positive clip");
+  requireNoP1Match(
+    model(24,attention,ffn,0,0,105),runtime,"v105");
+}
+
 void testRuntimePreflightAndEnqueueFailurePolicy() {
   const ModelViewV1 modelView = model(1,attentionSpec(),ffnSpec());
   const RuntimeKeyV1 runtime = runtimeKey();
@@ -928,6 +966,7 @@ int main() {
     testRegistryOverlapIsFatal();
     testAtomicPrepareCommit();
     testBuiltinAvailabilityAndRequiredMode();
+    testBuiltinP1DynamicDepthAndSemanticExclusions();
     testRuntimePreflightAndEnqueueFailurePolicy();
     testPreflightBindsCompleteCallIdentity();
     testCentralPreflightEvidenceRejectsBeforeProvider();
