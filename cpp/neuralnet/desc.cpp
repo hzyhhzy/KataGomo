@@ -371,6 +371,24 @@ TransformerRMSNormDesc::TransformerRMSNormDesc(istream& in, bool binaryFloats) {
     throw StringError(name + ": transformer rmsnorm failed to parse weights");
 }
 
+TransformerRMSNormDesc::TransformerRMSNormDesc(
+  istream& in,
+  bool binaryFloats,
+  const string& prefetchedName
+) : name(prefetchedName) {
+  in >> numChannels;
+  in >> epsilon;
+  if(in.fail())
+    throw StringError(name + ": transformer rmsnorm failed to parse parameters");
+  if(numChannels < 1)
+    throw StringError(name + ": transformer rmsnorm numChannels must be positive");
+  if(!isfinite(epsilon) || epsilon <= 0.0f || epsilon > 1.0f)
+    throw StringError(name + ": transformer rmsnorm epsilon must be positive and at most 1");
+  readFloats(in, (size_t)numChannels, binaryFloats, name, weight);
+  if(in.fail())
+    throw StringError(name + ": transformer rmsnorm failed to parse weights");
+}
+
 TransformerRMSNormDesc::TransformerRMSNormDesc(TransformerRMSNormDesc&& other) {
   *this = std::move(other);
 }
@@ -384,6 +402,9 @@ TransformerRMSNormDesc& TransformerRMSNormDesc::operator=(TransformerRMSNormDesc
 }
 
 //-----------------------------------------------------------------------------
+
+static constexpr const char* V102_TRANSFORMER_EXTENSION_MARKER =
+  "@V102_QKN_CLIP@";
 
 TransformerAttentionDesc::TransformerAttentionDesc()
   : numHeads(0), numKVHeads(0), qHeadDim(0), vHeadDim(0),
@@ -413,7 +434,24 @@ TransformerAttentionDesc::TransformerAttentionDesc(
   useQKNorm = false;
   attentionInputQuantMaxAbs = 0.0f;
   attentionOutputQuantMaxAbs = 0.0f;
-  if(modelVersion >= 105) {
+  string prefetchedPreLNName;
+  bool hasPrefetchedPreLNName = false;
+  if(modelVersion == 102) {
+    string extensionOrPreLNName;
+    in >> extensionOrPreLNName;
+    if(extensionOrPreLNName == V102_TRANSFORMER_EXTENSION_MARKER) {
+      int useQKNormInt = -1;
+      in >> useQKNormInt;
+      if(useQKNormInt != 0 && useQKNormInt != 1)
+        throw StringError(name + ": extended v102 attention useQKNorm flag must be 0 or 1");
+      useQKNorm = useQKNormInt != 0;
+    }
+    else {
+      prefetchedPreLNName = extensionOrPreLNName;
+      hasPrefetchedPreLNName = true;
+    }
+  }
+  else if(modelVersion >= 105) {
     int useQKNormInt = -1;
     in >> useQKNormInt;
     if(useQKNormInt != 0 && useQKNormInt != 1)
@@ -442,7 +480,9 @@ TransformerAttentionDesc::TransformerAttentionDesc(
   if(learnableRope && !useRope)
     throw StringError(name + ": learnableRope requires useRope");
 
-  preLN = TransformerRMSNormDesc(in, binaryFloats);
+  preLN = hasPrefetchedPreLNName ?
+    TransformerRMSNormDesc(in,binaryFloats,prefetchedPreLNName) :
+    TransformerRMSNormDesc(in,binaryFloats);
   qProj = MatMulLayerDesc(in, binaryFloats);
   kProj = MatMulLayerDesc(in, binaryFloats);
   vProj = MatMulLayerDesc(in, binaryFloats);
@@ -614,7 +654,24 @@ TransformerFFNDesc::TransformerFFNDesc(
   swigluClip = 0.0f;
   ffnInputQuantMaxAbs = 0.0f;
   productQuantMaxAbs = 0.0f;
-  if(modelVersion >= 105) {
+  string prefetchedPreLNName;
+  bool hasPrefetchedPreLNName = false;
+  if(modelVersion == 102) {
+    string extensionOrPreLNName;
+    in >> extensionOrPreLNName;
+    if(extensionOrPreLNName == V102_TRANSFORMER_EXTENSION_MARKER) {
+      in >> swigluClip;
+      if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
+        throw StringError(name + ": extended v102 transformer ffn swigluClip must be finite and nonnegative");
+      if(swigluClip > 0.0f && !useSwiGLU)
+        throw StringError(name + ": extended v102 transformer ffn swigluClip requires SwiGLU");
+    }
+    else {
+      prefetchedPreLNName = extensionOrPreLNName;
+      hasPrefetchedPreLNName = true;
+    }
+  }
+  else if(modelVersion >= 105) {
     in >> swigluClip;
     if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
       throw StringError(name + ": transformer ffn swigluClip must be finite and nonnegative");
@@ -639,7 +696,9 @@ TransformerFFNDesc::TransformerFFNDesc(
   if(numChannels < 1 || ffnChannels < 1)
     throw StringError(name + ": transformer ffn channel counts must be positive");
 
-  preLN = TransformerRMSNormDesc(in, binaryFloats);
+  preLN = hasPrefetchedPreLNName ?
+    TransformerRMSNormDesc(in,binaryFloats,prefetchedPreLNName) :
+    TransformerRMSNormDesc(in,binaryFloats);
   linear1 = MatMulLayerDesc(in, binaryFloats);
   if(useSwiGLU)
     linearGate = MatMulLayerDesc(in, binaryFloats);

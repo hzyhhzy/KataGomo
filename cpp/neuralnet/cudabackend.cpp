@@ -1971,7 +1971,7 @@ struct TransformerAttentionBlock {
 
     if(useQKNorm) {
       if(!useFP16)
-        throw StringError(name + ": v105 Q/K normalization requires FP16");
+        throw StringError(name + ": transformer Q/K normalization requires FP16");
       const long long seqLen = (long long)nnXLen * nnYLen;
       const long long maxQElements =
         (long long)maxBatchSize * seqLen * numHeads * qHeadDim;

@@ -108,6 +108,11 @@ struct TransformerRMSNormDesc {
 
   TransformerRMSNormDesc();
   TransformerRMSNormDesc(std::istream& in, bool binaryFloats);
+  TransformerRMSNormDesc(
+    std::istream& in,
+    bool binaryFloats,
+    const std::string& prefetchedName
+  );
   TransformerRMSNormDesc(TransformerRMSNormDesc&& other);
 
   TransformerRMSNormDesc(const TransformerRMSNormDesc&) = delete;
@@ -124,8 +129,9 @@ struct TransformerAttentionDesc {
   bool useRope;
   bool learnableRope;
   bool useQKNorm;
-  // Native v105 stores these mandatory per-attention PTQ ranges immediately
-  // after useQKNorm. They are metadata and do not change FP16 semantics.
+  // Extended v102 can store optional Q/K norm without PTQ ranges. Native v105
+  // additionally stores these mandatory per-attention PTQ ranges. They are
+  // metadata and do not change FP16 semantics.
   float attentionInputQuantMaxAbs;
   float attentionOutputQuantMaxAbs;
 
@@ -169,8 +175,8 @@ struct TransformerFFNDesc {
   // Zero disables clipping. Positive values clip the activated linear branch
   // and the gate independently before their SwiGLU product.
   float swigluClip;
-  // Mandatory positive native-v105 PTQ metadata. Legacy versions leave all
-  // three added scalar fields at zero.
+  // Mandatory positive native-v105 PTQ metadata. Extended v102 may carry
+  // swigluClip while leaving these two PTQ range fields at zero.
   float ffnInputQuantMaxAbs;
   float productQuantMaxAbs;
 

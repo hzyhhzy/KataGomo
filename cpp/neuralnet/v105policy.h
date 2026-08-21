@@ -18,7 +18,7 @@ struct Decision {
   bool hasPositiveSwiGLUClip;
 
   bool needsQKNClipSemantics() const {
-    return isV105 && (hasQKNorm || hasPositiveSwiGLUClip);
+    return hasQKNorm || hasPositiveSwiGLUClip;
   }
 };
 
@@ -33,8 +33,8 @@ struct ProjectedScratchLayout {
   size_t totalBytes;
 };
 
-// Pure descriptor policy. PTQ ranges deliberately do not participate in the
-// FP16 execution plan.
+// Pure descriptor policy for extended v102 and native v105. PTQ ranges
+// deliberately do not participate in the FP16 execution plan.
 Decision classify(int modelVersion, const TrunkDesc& trunk);
 
 // Combined QKV is allowed for QKN models when the backend's otherwiseEligible

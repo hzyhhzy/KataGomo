@@ -65,7 +65,7 @@ bool runtimeMatches(const RuntimeKeyV1& runtime) {
   return runtime.deviceComputeCapability == 120 &&
     runtime.boardX == 15 && runtime.boardY == 15 &&
     runtime.physicalBatchSize == kBatch &&
-    runtime.sameGpuConcurrency == 2 && runtime.exactBoard &&
+    runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None && runtime.maskNull &&
     runtime.inputStorage == StorageTypeV1::Fp16 &&
     runtime.outputStorage == StorageTypeV1::Fp16 &&
@@ -78,14 +78,14 @@ bool attentionMatches(const AttentionSpecV1& attention) {
     attention.numHeads == kHeads && attention.numKVHeads == kHeads &&
     attention.qHeadDim == kHeadDim && attention.vHeadDim == kHeadDim &&
     attention.useRope && attention.learnableRope && attention.useQKNorm &&
-    attention.hasInputQuantRange && attention.hasOutputQuantRange;
+    !attention.hasInputQuantRange && !attention.hasOutputQuantRange;
 }
 
 bool ffnMatches(const FfnSpecV1& ffn) {
   return ffn.channels == kChannels &&
     ffn.hiddenChannels == kFfnChannels && ffn.useSwiGLU &&
     ffn.clipClass == ClipClassV1::PositiveFinite &&
-    ffn.hasInputQuantRange && ffn.hasProductQuantRange;
+    !ffn.hasInputQuantRange && !ffn.hasProductQuantRange;
 }
 
 class DeviceBuffer {
@@ -250,7 +250,7 @@ public:
   explicit P3Provider(const ProfileKeyV1& key_)
     : key(key_),deviceOrdinal(-1),deviceMajor(0),deviceMinor(0),
       committed(false),runCounter(0),armedToken(0) {
-    if(!runtimeMatches(key.runtime) || key.modelVersion != 105 ||
+    if(!runtimeMatches(key.runtime) || key.modelVersion != 102 ||
        !attentionMatches(key.attention) || !ffnMatches(key.ffn))
       throw ErrorV1("P3 factory created for a non-P3 profile key");
     cudaError_t status = cudaGetDevice(&deviceOrdinal);
@@ -630,13 +630,6 @@ private:
     const AttentionLayerScalarsV1& scalars,
     std::string& detail
   ) const {
-    const bool rangesMatch =
-      scalars.inputQuantMaxAbsBits ==
-        floatBits(desc.attentionInputQuantMaxAbs) &&
-      scalars.outputQuantMaxAbsBits ==
-        floatBits(desc.attentionOutputQuantMaxAbs) &&
-      positiveFinite(desc.attentionInputQuantMaxAbs) &&
-      positiveFinite(desc.attentionOutputQuantMaxAbs);
     const bool dimensionsMatch =
       desc.numHeads == kHeads && desc.numKVHeads == kHeads &&
       desc.qHeadDim == kHeadDim && desc.vHeadDim == kHeadDim &&
@@ -668,8 +661,13 @@ private:
       floatBits(desc.qNorm.epsilon) == kRmsEpsilon1e6Bits &&
       floatBits(desc.kNorm.epsilon) == kRmsEpsilon1e6Bits &&
       positiveFinite(desc.preLN.epsilon);
-    if(!rangesMatch || !dimensionsMatch || !qknSemantics) {
-      detail = "P3 attention descriptor failed complete v105 semantic validation";
+    const bool noPtqRanges =
+      scalars.inputQuantMaxAbsBits == 0 &&
+      scalars.outputQuantMaxAbsBits == 0 &&
+      desc.attentionInputQuantMaxAbs == 0.0f &&
+      desc.attentionOutputQuantMaxAbs == 0.0f;
+    if(!dimensionsMatch || !qknSemantics || !noPtqRanges) {
+      detail = "P3 attention descriptor failed complete v102 semantic validation";
       return false;
     }
     return true;
@@ -682,13 +680,11 @@ private:
   ) const {
     const bool scalarsMatch =
       scalars.swigluClipBits == floatBits(desc.swigluClip) &&
-      scalars.inputQuantMaxAbsBits ==
-        floatBits(desc.ffnInputQuantMaxAbs) &&
-      scalars.productQuantMaxAbsBits ==
-        floatBits(desc.productQuantMaxAbs) &&
-      positiveFinite(desc.swigluClip) &&
-      positiveFinite(desc.ffnInputQuantMaxAbs) &&
-      positiveFinite(desc.productQuantMaxAbs);
+      scalars.inputQuantMaxAbsBits == 0 &&
+      scalars.productQuantMaxAbsBits == 0 &&
+      desc.ffnInputQuantMaxAbs == 0.0f &&
+      desc.productQuantMaxAbs == 0.0f &&
+      positiveFinite(desc.swigluClip);
     const bool dimensionsMatch =
       desc.numChannels == kChannels &&
       desc.ffnChannels == kFfnChannels && desc.useSwiGLU &&
@@ -707,7 +703,7 @@ private:
         static_cast<size_t>(kFfnChannels) * kChannels &&
       positiveFinite(desc.preLN.epsilon);
     if(!scalarsMatch || !dimensionsMatch) {
-      detail = "P3 FFN descriptor failed complete v105 semantic validation";
+      detail = "P3 FFN descriptor failed complete v102 semantic validation";
       return false;
     }
     return true;
@@ -840,7 +836,7 @@ public:
   const char* factoryId() const noexcept override { return kProfileId; }
 
   bool matches(const ProfileKeyV1& key) const override {
-    return key.modelVersion == 105 && runtimeMatches(key.runtime) &&
+    return key.modelVersion == 102 && runtimeMatches(key.runtime) &&
       attentionMatches(key.attention) && ffnMatches(key.ffn);
   }
 

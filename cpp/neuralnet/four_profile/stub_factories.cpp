@@ -17,7 +17,6 @@ bool runtimeMatches(
     runtime.boardX == board &&
     runtime.boardY == board &&
     runtime.physicalBatchSize == batch &&
-    runtime.sameGpuConcurrency == 2 &&
     runtime.exactBoard &&
     runtime.maskMode == MaskModeV1::None &&
     runtime.maskNull &&
@@ -92,10 +91,10 @@ public:
     : StubFactoryBaseV1("P3-c384-h12-s225-qkn-positive-clip-fp16-b28-s2",AvailabilityV1::Unavailable) {}
 
   bool matches(const ProfileKeyV1& key) const override {
-    return key.modelVersion == 105 &&
+    return key.modelVersion == 102 &&
       runtimeMatches(key.runtime,15,28,RequestedExecutionV1::Fp16) &&
-      attentionMatches(key.attention,384,12,true,true) &&
-      ffnMatches(key.ffn,384,1024,true,true);
+      attentionMatches(key.attention,384,12,true,false) &&
+      ffnMatches(key.ffn,384,1024,true,false);
   }
 };
 

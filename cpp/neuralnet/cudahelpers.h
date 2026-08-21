@@ -6,7 +6,8 @@
 
 #include "../neuralnet/cudaandrocmhelpers.h"
 
-// Canonical v105 positive-clip SwiGLU. Inputs and output are FP16, while SiLU,
+// Transformer positive-clip SwiGLU for extended v102 and native v105. Inputs
+// and output are FP16, while SiLU,
 // both ordered clamps, and the product are evaluated in FP32 before one final
 // round-to-nearest conversion to half.
 void customCudaSwiGLUOrderedClippedFP16(
