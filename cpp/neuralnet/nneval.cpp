@@ -2,6 +2,10 @@
 #include "../neuralnet/modelversion.h"
 #include "../game/gamelogic.h"
 
+#ifdef USE_CUDA_BACKEND
+#include "../neuralnet/four_profile/runtime_bridge.h"
+#endif
+
 #ifdef KATAGO_BUILD_BENCHMARKNN
 #include <algorithm>
 #include <chrono>
@@ -15,6 +19,29 @@
 #endif
 
 using namespace std;
+
+namespace {
+
+int getBackendHandleThreadCount(
+  const vector<int>& gpuIdxByServerThread,
+  int gpuIdxForThisThread,
+  int backendNumThreads
+) {
+#ifdef USE_CUDA_BACKEND
+  const int sameGpuConcurrency = FourProfile::countSameGpuConcurrencyV1(
+    gpuIdxByServerThread,gpuIdxForThisThread
+  );
+  if(sameGpuConcurrency <= 0)
+    throw StringError("CUDA server-thread GPU mapping does not contain the current thread");
+  return sameGpuConcurrency;
+#else
+  (void)gpuIdxByServerThread;
+  (void)gpuIdxForThisThread;
+  return backendNumThreads;
+#endif
+}
+
+}
 
 //-------------------------------------------------------------------------------------
 
@@ -877,7 +904,10 @@ NNEvalFullIOBenchmarkResult NNEvaluator::benchmarkFullIO(
         // the compute handle before its InputBuffers.
         BenchmarkComputeHandle handle(NeuralNet::createComputeHandle(
           computeContext,loadedModel,logger,batchSize,requireExactNNLen,inputsUseNHWC,
-          gpuIdxByServerThread[threadIdx],threadIdx,backendNumThreads
+          gpuIdxByServerThread[threadIdx],threadIdx,
+          getBackendHandleThreadCount(
+            gpuIdxByServerThread,gpuIdxByServerThread[threadIdx],backendNumThreads
+          )
         ));
         NNEvalBenchmarkLaneProof laneProof = NNEvalBenchmarkLaneProof();
         if(!NeuralNet::getBenchmarkRouteProof(handle.get(),laneProof.routeBefore))
@@ -1035,7 +1065,10 @@ NNEvalDeviceOnlyBenchmarkResult NNEvaluator::benchmarkDeviceOnly(
         // the compute handle before its InputBuffers.
         BenchmarkComputeHandle handle(NeuralNet::createComputeHandle(
           computeContext,loadedModel,logger,batchSize,requireExactNNLen,inputsUseNHWC,
-          gpuIdxByServerThread[threadIdx],threadIdx,backendNumThreads
+          gpuIdxByServerThread[threadIdx],threadIdx,
+          getBackendHandleThreadCount(
+            gpuIdxByServerThread,gpuIdxByServerThread[threadIdx],backendNumThreads
+          )
         ));
         NNEvalBenchmarkLaneProof laneProof = NNEvalBenchmarkLaneProof();
         if(!NeuralNet::getBenchmarkRouteProof(handle.get(),laneProof.routeBefore))
@@ -1132,7 +1165,9 @@ void NNEvaluator::serve(
       inputsUseNHWC,
       gpuIdxForThisThread,
       serverThreadIdx,
-      backendNumThreads
+      getBackendHandleThreadCount(
+        gpuIdxByServerThread,gpuIdxForThisThread,backendNumThreads
+      )
     );
 
   {

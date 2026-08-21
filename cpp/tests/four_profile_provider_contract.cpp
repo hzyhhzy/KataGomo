@@ -1,5 +1,6 @@
 #include "../neuralnet/four_profile/manager.h"
 #include "../neuralnet/four_profile/mode.h"
+#include "../neuralnet/four_profile/runtime_bridge.h"
 #include "../neuralnet/four_profile/stub_factories.h"
 
 #include <cstring>
@@ -412,6 +413,19 @@ void testDynamicDepthAndLayerlessKey() {
     require(stats->events[stats->events.size()-2] == "preflight" &&
             stats->events.back() == "enqueue","provider enqueue preceded runtime preflight");
   }
+}
+
+void testSameGpuConcurrencyBridge() {
+  require(countSameGpuConcurrencyV1({0,0},0) == 2,
+    "two CUDA server threads on GPU 0 were not reported as S2");
+  require(countSameGpuConcurrencyV1({0,1,0},0) == 2,
+    "multi-GPU mapping did not count only the target GPU");
+  require(countSameGpuConcurrencyV1({0,1,0},1) == 1,
+    "multi-GPU mapping reported the wrong concurrency for GPU 1");
+  require(countSameGpuConcurrencyV1({-1,-1},-1) == 2,
+    "default GPU indices were not normalized to GPU 0");
+  require(countSameGpuConcurrencyV1({1,1},0) == 0,
+    "missing current GPU did not fail closed to zero concurrency");
 }
 
 void testMixedPositiveClipAndPerLayerScalars() {
@@ -908,6 +922,7 @@ void testStrictModeParser() {
 int main() {
   try {
     testDynamicDepthAndLayerlessKey();
+    testSameGpuConcurrencyBridge();
     testMixedPositiveClipAndPerLayerScalars();
     testStrictTransformerSpan();
     testRegistryOverlapIsFatal();
