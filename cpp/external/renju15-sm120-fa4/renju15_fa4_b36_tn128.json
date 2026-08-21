@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "candidate_id": "tm128-tn128-s1-both16-b36-s225-h8-d32",
+  "unique_c_abi_prefix": "katago_renju15_fa4_b36_tn128_sm120",
+  "batch": 36,
+  "fixed_shape": {
+    "sequence": 225,
+    "heads": 8,
+    "head_dim": 32
+  },
+  "layout": "planar-or-packed-qkv",
+  "mask": false,
+  "dtype": "fp16",
+  "accumulation": {
+    "qk": "fp16",
+    "pv": "fp16"
+  },
+  "tile": {
+    "m": 128,
+    "n": 128,
+    "num_stages": 1
+  },
+  "gpu_used_for_generation": false,
+  "python": "3.12.3",
+  "cutlass_cuda_version": "DSLCudaVersion(major=12, minor=9)",
+  "sha256": {
+    ".h": "48e8572e7dda80f7022085e0384830e88f3a4f58e6a79f25c40b0ff60167311d",
+    ".o": "690fbd68a750e90ad4ea964ecb729258ccce8d5d81a8e996dc436435dcb62a9d",
+    "bridge": "671dcd19239a45ab6b04b156b2ca51737d2a4a3dadc645b9b3ab54f637894111"
+  }
+}

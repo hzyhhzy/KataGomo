@@ -5,9 +5,10 @@
 
 namespace FourProfile {
 
-// First infrastructure commit: all four named factories are registered so
-// matching and overlap semantics are stable before any exclusive kernel moves.
-// P2 is explicitly uncertified; the other stubs are unavailable.
+// All four named factories are registered so matching and overlap semantics
+// stay stable. P1 becomes real only when its optional SM120 package is linked;
+// otherwise it remains unavailable. P2 is explicitly uncertified and P3/P4
+// remain unavailable.
 void registerBuiltinStubFactoriesV1(RegistryV1& registry);
 
 }  // namespace FourProfile
