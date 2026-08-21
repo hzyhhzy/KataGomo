@@ -219,12 +219,12 @@ void testVersions() {
   requireContract(NNModelVersion::getInputsVersion(105) == 101,"v105 must use V101 inputs");
   requireContract(NNModelVersion::getNumSpatialFeatures(102) == 22,"v102 spatial ABI changed");
   requireContract(NNModelVersion::getNumGlobalFeatures(102) == 39,"v102 global ABI changed");
-  requireContract(NNModelVersion::getInputsVersion(103) == 102,"v103 input mapping changed");
-  requireContract(NNModelVersion::getNumSpatialFeatures(103) == 32,"v103 spatial ABI changed");
-  requireContract(NNModelVersion::getNumGlobalFeatures(103) == 64,"v103 global ABI changed");
   requireContract(NNModelVersion::getNumSpatialFeatures(105) == 22,"v105 spatial ABI is not V101");
   requireContract(NNModelVersion::getNumGlobalFeatures(105) == 39,"v105 global ABI is not V101");
 
+  expectStringError([](){ (void)NNModelVersion::getInputsVersion(103); },"v103 input mapping");
+  expectStringError([](){ (void)NNModelVersion::getNumSpatialFeatures(103); },"v103 spatial mapping");
+  expectStringError([](){ (void)NNModelVersion::getNumGlobalFeatures(103); },"v103 global mapping");
   expectStringError([](){ (void)NNModelVersion::getInputsVersion(104); },"v104 input mapping");
   expectStringError([](){ (void)NNModelVersion::getNumSpatialFeatures(104); },"v104 spatial mapping");
   expectStringError([](){ (void)NNModelVersion::getNumGlobalFeatures(104); },"v104 global mapping");

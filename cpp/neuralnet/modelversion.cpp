@@ -16,7 +16,7 @@
 //9 = V7 features, shortterm value error
 //10 = V7 features, shortterm value error done more properly
 //11 = V7 features, supports mish activations by desc actually reading the activations
-//101-103 = transformer-era feature/model formats
+//101-102 = transformer-era feature/model formats
 //104 = deliberately unsupported in this CUDA transformer line
 //105 = V102 transformer topology and V101 inputs, extended with optional Q/K
 //      RMSNorm, optional nonnegative SwiGLU clipping, and mandatory positive
@@ -29,7 +29,7 @@ static void fail(int modelVersion) {
 static_assert(NNModelVersion::oldestModelVersionImplemented == 8, "");
 static_assert(NNModelVersion::oldestInputsVersionImplemented == 7, "");
 static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
-static_assert(NNModelVersion::latestInputsVersionImplemented == 102, "");
+static_assert(NNModelVersion::latestInputsVersionImplemented == 101, "");
 
 int NNModelVersion::getInputsVersion(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)

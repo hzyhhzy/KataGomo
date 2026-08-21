@@ -303,6 +303,11 @@ int NNEvaluator::getNNXLen() const {
 int NNEvaluator::getNNYLen() const {
   return nnYLen;
 }
+bool NNEvaluator::supportsBoardSize(int boardXSize, int boardYSize) const {
+  if(boardXSize > nnXLen || boardYSize > nnYLen)
+    return false;
+  return !requireExactNNLen || (boardXSize == nnXLen && boardYSize == nnYLen);
+}
 enabled_t NNEvaluator::getUsingFP16Mode() const {
   return usingFP16Mode;
 }
@@ -611,7 +616,6 @@ struct BenchmarkLaneData {
   vector<NNResultBuf*> rows;
   vector<unique_ptr<NNOutput>> ownedOutputs;
   vector<NNOutput*> outputs;
-  vector<float> outputPolicies;
   uint64_t inputChecksum;
   uint64_t inputContentChecksum;
   int inputRowsHashed;
@@ -698,7 +702,6 @@ void initializeBenchmarkLaneData(
   data.rows.reserve(batchSize);
   data.ownedOutputs.reserve(batchSize);
   data.outputs.reserve(batchSize);
-  data.outputPolicies.assign((size_t)batchSize * NNPos::MAX_NN_POLICY_SIZE,0.0f);
   set<uint64_t> distinctRowHashes;
 
   for(int row = 0; row < batchSize; row++) {
@@ -926,8 +929,7 @@ NNEvalFullIOBenchmarkResult NNEvaluator::benchmarkFullIO(
         warmupStartBarrier.arriveAndWait();
         for(int i = 0; i < numWarmups; i++) {
           NeuralNet::getOutput(
-            handle.get(),data.serverBuf.inputBuffers,batchSize,data.rows.data(),data.outputs,
-            data.outputPolicies.data()
+            handle.get(),data.serverBuf.inputBuffers,batchSize,data.rows.data(),data.outputs
           );
         }
 
@@ -937,8 +939,7 @@ NNEvalFullIOBenchmarkResult NNEvaluator::benchmarkFullIO(
         for(int i = 0; i < numIterations; i++) {
           BenchmarkClock::time_point start = BenchmarkClock::now();
           NeuralNet::getOutput(
-            handle.get(),data.serverBuf.inputBuffers,batchSize,data.rows.data(),data.outputs,
-            data.outputPolicies.data()
+            handle.get(),data.serverBuf.inputBuffers,batchSize,data.rows.data(),data.outputs
           );
           BenchmarkClock::time_point end = BenchmarkClock::now();
           times.push_back(chrono::duration<double>(end-start).count());

@@ -131,8 +131,7 @@ void NeuralNet::getOutput(
   InputBuffers* inputBuffers,
   int numBatchEltsFilled,
   NNResultBuf** inputBufs,
-  vector<NNOutput*>& outputs,
-  float* outputPolicys
+  vector<NNOutput*>& outputs
 ) {
   (void)gpuHandle;
   (void)inputBuffers;
