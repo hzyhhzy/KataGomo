@@ -28,6 +28,7 @@ constexpr uint32_t SOURCE_R15_CORPUS = 1;
 constexpr uint32_t SOURCE_SYNTHETIC = 2;
 constexpr int SPATIAL_FEATURES = 22;
 constexpr int GLOBAL_FEATURES = 39;
+constexpr int V102_DEFAULT_PHYSICAL_BATCH_SIZE = 36;
 constexpr int V105_LAYER_COUNT = 36;
 constexpr int V105_PHYSICAL_BATCH_SIZE = 28;
 
@@ -467,7 +468,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   string outputFile;
   string scheduleText;
   int boardSize = 15;
-  int maxBatchSize = 36;
+  int maxBatchSize = V102_DEFAULT_PHYSICAL_BATCH_SIZE;
   int syntheticRows = 512;
   ModelContract modelContract = ModelContract::V102;
   RouteContract routeContract = RouteContract::NONE;
@@ -491,7 +492,8 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       "","board","Exact square board size, 15 or 19 (default 15)",false,15,"N"
     );
     TCLAP::ValueArg<int> batchArg(
-      "B","batch-size","Maximum/full replay batch size (default 36)",false,36,"N"
+      "B","batch-size","Maximum/full physical batch (v102 default 36; v105 requires 28)",
+      false,V102_DEFAULT_PHYSICAL_BATCH_SIZE,"N"
     );
     TCLAP::ValueArg<int> rowsArg(
       "","synthetic-rows","Rows when no corpus is supplied (default 512)",false,512,"N"
