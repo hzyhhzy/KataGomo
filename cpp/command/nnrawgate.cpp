@@ -469,6 +469,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   string scheduleText;
   int boardSize = 15;
   int maxBatchSize = V102_DEFAULT_PHYSICAL_BATCH_SIZE;
+  int sameGpuConcurrency = 1;
   int syntheticRows = 512;
   ModelContract modelContract = ModelContract::V102;
   RouteContract routeContract = RouteContract::NONE;
@@ -495,6 +496,9 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       "B","batch-size","Maximum/full physical batch (v102 default 36; v105 requires 28)",
       false,V102_DEFAULT_PHYSICAL_BATCH_SIZE,"N"
     );
+    TCLAP::ValueArg<int> sameGpuConcurrencyArg(
+      "S","same-gpu-concurrency","Same-GPU compute-handle concurrency (default 1)",false,1,"N"
+    );
     TCLAP::ValueArg<int> rowsArg(
       "","synthetic-rows","Rows when no corpus is supplied (default 512)",false,512,"N"
     );
@@ -516,6 +520,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     cmd.add(outputArg);
     cmd.add(boardArg);
     cmd.add(batchArg);
+    cmd.add(sameGpuConcurrencyArg);
     cmd.add(rowsArg);
     cmd.add(scheduleArg);
     cmd.add(modelContractArg);
@@ -530,6 +535,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     outputFile = outputArg.getValue();
     boardSize = boardArg.getValue();
     maxBatchSize = batchArg.getValue();
+    sameGpuConcurrency = sameGpuConcurrencyArg.getValue();
     syntheticRows = rowsArg.getValue();
     scheduleText = scheduleArg.getValue();
     if(modelContractArg.getValue() == "v102")
@@ -548,6 +554,8 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       throw StringError("nnrawgate: board must be 15 or 19");
     if(maxBatchSize < 8 || maxBatchSize > 1024)
       throw StringError("nnrawgate: batch-size must be between 8 and 1024");
+    if(sameGpuConcurrency < 1 || sameGpuConcurrency > 64)
+      throw StringError("nnrawgate: same-gpu-concurrency must be between 1 and 64");
     if(syntheticRows <= 0 || syntheticRows > 65536)
       throw StringError("nnrawgate: synthetic-rows must be between 1 and 65536");
     if(!corpusFile.empty() && boardSize != 15)
@@ -639,7 +647,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       &NeuralNet::createComputeHandle,
       nnEval->getRawGateComputeContext(),loadedModel,&logger,maxBatchSize,true,
       nnEval->getRawGateInputsUseNHWC(),nnEval->getRawGateGpuIdx(0),
-      nnEval->getRawGateBackendNumThreads()
+      sameGpuConcurrency
     );
     inputBuffers = NeuralNet::createInputBuffers(
       loadedModel,maxBatchSize,boardSize,boardSize
