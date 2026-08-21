@@ -3235,63 +3235,116 @@ struct Buffers {
   Buffers(const Buffers&) = delete;
   Buffers& operator=(const Buffers&) = delete;
 
-  Buffers(CudaHandles* cudaHandles, const Model& m, const ScratchBuffers& scratch) {
-    size_t batchXYFloatBytes = (size_t)scratch.batchXYFloatBytes;
-    size_t batchFloatBytes = (size_t)scratch.batchFloatBytes;
-    size_t batchXYBytes = (size_t)scratch.batchXYBytes;
-    size_t batchBytes = (size_t)scratch.batchBytes;
+  Buffers(CudaHandles* cudaHandles, const Model& m, const ScratchBuffers& scratch)
+    : inputBufFloat(nullptr),
+      inputBuf(nullptr),
+      inputGlobalBufFloat(nullptr),
+      inputGlobalBuf(nullptr),
+      inputBufBytesFloat(0),
+      inputBufBytes(0),
+      inputGlobalBufBytesFloat(0),
+      inputGlobalBufBytes(0),
+      policyBuf(nullptr),
+      policyBufBytes(0),
+      valueBuf(nullptr),
+      valueBufBytes(0),
+      scoreValueBuf(nullptr),
+      scoreValueBufBytes(0),
+      ownershipBuf(nullptr),
+      ownershipBufBytes(0),
+      workspaceBuf(nullptr),
+      workspaceBytes(0)
+  {
+    try {
+      size_t batchXYFloatBytes = (size_t)scratch.batchXYFloatBytes;
+      size_t batchFloatBytes = (size_t)scratch.batchFloatBytes;
+      size_t batchXYBytes = (size_t)scratch.batchXYBytes;
+      size_t batchBytes = (size_t)scratch.batchBytes;
 
-    inputBufBytesFloat = m.numInputChannels * batchXYFloatBytes;
-    inputBufBytes = m.numInputChannels * batchXYBytes;
-    inputGlobalBufBytesFloat = m.numInputGlobalChannels * batchFloatBytes;
-    inputGlobalBufBytes = m.numInputGlobalChannels * batchBytes;
+      inputBufBytesFloat = m.numInputChannels * batchXYFloatBytes;
+      inputBufBytes = m.numInputChannels * batchXYBytes;
+      inputGlobalBufBytesFloat = m.numInputGlobalChannels * batchFloatBytes;
+      inputGlobalBufBytes = m.numInputGlobalChannels * batchBytes;
 
-    CUDA_ERR("Buffers", cudaMalloc(reinterpret_cast<void**>(&inputBufFloat), inputBufBytesFloat));
-    CUDA_ERR("Buffers",cudaMalloc(&inputBuf, inputBufBytes));
-    CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&inputGlobalBufFloat), inputGlobalBufBytesFloat));
-    CUDA_ERR("Buffers",cudaMalloc(&inputGlobalBuf, inputGlobalBufBytes));
+      CUDA_ERR("Buffers", cudaMalloc(reinterpret_cast<void**>(&inputBufFloat), inputBufBytesFloat));
+      CUDA_ERR("Buffers",cudaMalloc(&inputBuf, inputBufBytes));
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&inputGlobalBufFloat), inputGlobalBufBytesFloat));
+      CUDA_ERR("Buffers",cudaMalloc(&inputGlobalBuf, inputGlobalBufBytes));
 
-    policyBufBytes = m.policyHead->p2Channels * (batchXYFloatBytes + batchFloatBytes);
-    CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyBuf), policyBufBytes));
-    assert(m.policyHead->p2Channels == 1);
+      policyBufBytes = m.policyHead->p2Channels * (batchXYFloatBytes + batchFloatBytes);
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&policyBuf), policyBufBytes));
+      assert(m.policyHead->p2Channels == 1);
 
-    valueBufBytes = m.valueHead->valueChannels * batchFloatBytes;
-    CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&valueBuf), valueBufBytes));
+      valueBufBytes = m.valueHead->valueChannels * batchFloatBytes;
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&valueBuf), valueBufBytes));
 
-    scoreValueBufBytes = m.valueHead->scoreValueChannels * batchFloatBytes;
-    CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&scoreValueBuf), scoreValueBufBytes));
+      scoreValueBufBytes = m.valueHead->scoreValueChannels * batchFloatBytes;
+      CUDA_ERR("Buffers",cudaMalloc(reinterpret_cast<void**>(&scoreValueBuf), scoreValueBufBytes));
 
-    //This buf is used for both an intermdiate fp16 result in fp16 mode, and ALSO the final fp32 output, so always must be fp32-sized
-    ownershipBufBytes = m.valueHead->ownershipChannels * batchXYFloatBytes;
-    CUDA_ERR("Buffers",cudaMalloc(&ownershipBuf, ownershipBufBytes));
+      //This buf is used for both an intermdiate fp16 result in fp16 mode, and ALSO the final fp32 output, so always must be fp32-sized
+      ownershipBufBytes = m.valueHead->ownershipChannels * batchXYFloatBytes;
+      CUDA_ERR("Buffers",cudaMalloc(&ownershipBuf, ownershipBufBytes));
 
-    //In theory the requiredWorkspaceBytes calls could give us values non-monotone in batch size
-    //such as if the convolution algorithm changes between batch size 1 and larger.
-    //So we call it for all the batch sizes.
-    size_t bytes = 0;
-    size_t b;
-    for(int batchSize = 1; batchSize <= m.maxBatchSize; batchSize++) {
-      b = m.requiredWorkspaceBytes(cudaHandles,batchSize);
-      bytes = std::max(bytes,b);
+      //In theory the requiredWorkspaceBytes calls could give us values non-monotone in batch size
+      //such as if the convolution algorithm changes between batch size 1 and larger.
+      //So we call it for all the batch sizes.
+      size_t bytes = 0;
+      size_t b;
+      for(int batchSize = 1; batchSize <= m.maxBatchSize; batchSize++) {
+        b = m.requiredWorkspaceBytes(cudaHandles,batchSize);
+        bytes = std::max(bytes,b);
+      }
+
+      CUDA_ERR("Buffers",cudaMalloc(&workspaceBuf, bytes));
+      workspaceBytes = bytes;
     }
-
-    CUDA_ERR("Buffers",cudaMalloc(&workspaceBuf, bytes));
-    workspaceBytes = bytes;
+    catch(...) {
+      freeDeviceBuffers();
+      throw;
+    }
   }
 
   ~Buffers() {
-    cudaFree(inputBufFloat);
-    cudaFree(inputBuf);
-    cudaFree(inputGlobalBufFloat);
-    cudaFree(inputGlobalBuf);
+    freeDeviceBuffers();
+  }
 
-    cudaFree(policyBuf);
-
-    cudaFree(valueBuf);
-    cudaFree(scoreValueBuf);
-    cudaFree(ownershipBuf);
-
-    cudaFree(workspaceBuf);
+  void freeDeviceBuffers() noexcept {
+    if(workspaceBuf != nullptr) {
+      (void)cudaFree(workspaceBuf);
+      workspaceBuf = nullptr;
+    }
+    if(ownershipBuf != nullptr) {
+      (void)cudaFree(ownershipBuf);
+      ownershipBuf = nullptr;
+    }
+    if(scoreValueBuf != nullptr) {
+      (void)cudaFree(scoreValueBuf);
+      scoreValueBuf = nullptr;
+    }
+    if(valueBuf != nullptr) {
+      (void)cudaFree(valueBuf);
+      valueBuf = nullptr;
+    }
+    if(policyBuf != nullptr) {
+      (void)cudaFree(policyBuf);
+      policyBuf = nullptr;
+    }
+    if(inputGlobalBuf != nullptr) {
+      (void)cudaFree(inputGlobalBuf);
+      inputGlobalBuf = nullptr;
+    }
+    if(inputGlobalBufFloat != nullptr) {
+      (void)cudaFree(inputGlobalBufFloat);
+      inputGlobalBufFloat = nullptr;
+    }
+    if(inputBuf != nullptr) {
+      (void)cudaFree(inputBuf);
+      inputBuf = nullptr;
+    }
+    if(inputBufFloat != nullptr) {
+      (void)cudaFree(inputBufFloat);
+      inputBufFloat = nullptr;
+    }
   }
 
 };
