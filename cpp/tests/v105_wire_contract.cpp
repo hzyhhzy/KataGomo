@@ -210,9 +210,62 @@ string prefixWire(const vector<string>& tokens, size_t count) {
   return out.str();
 }
 
+string quantizedMatMulWire(
+  const vector<float>& scales,
+  const vector<int8_t>& weights
+) {
+  requireContract(scales.size() == 3,"v106 test scale size is wrong");
+  requireContract(weights.size() == 6,"v106 test weight size is wrong");
+  ostringstream out(ios::out | ios::binary);
+  out << "quantized.projection\n2\n3\n@S8P@";
+  out.write(reinterpret_cast<const char*>(scales.data()),
+            (streamsize)(scales.size() * sizeof(float)));
+  out.write(reinterpret_cast<const char*>(weights.data()),
+            (streamsize)weights.size());
+  out << '\n';
+  return out.str();
+}
+
+void testV106QuantizedMatMul() {
+  const vector<float> scales = {0.25f,0.5f,0.75f};
+  const vector<int8_t> weights = {-127,-3,0,2,17,127};
+  istringstream in(quantizedMatMulWire(scales,weights),ios::in | ios::binary);
+  MatMulLayerDesc layer(in,true,true);
+  requireFullyConsumed(in,"v106 S8 matmul");
+  requireContract(layer.name == "quantized.projection","v106 S8 name changed");
+  requireContract(layer.inChannels == 2 && layer.outChannels == 3,
+    "v106 S8 shape changed");
+  requireContract(layer.isQuantized,"v106 S8 flag was not retained");
+  requireContract(layer.weights.empty(),"v106 S8 layer retained FP32 weights");
+  requireContract(layer.weightScales == scales,"v106 S8 scales changed");
+  requireContract(layer.quantizedWeights == weights,"v106 S8 weights changed");
+
+  vector<int8_t> withNegative128 = weights;
+  withNegative128[2] = numeric_limits<int8_t>::min();
+  expectStringError([&](){
+    istringstream bad(quantizedMatMulWire(scales,withNegative128),ios::in | ios::binary);
+    (void)MatMulLayerDesc(bad,true,true);
+  },"v106 S8 -128 sentinel");
+
+  vector<float> zeroScale = scales;
+  zeroScale[1] = 0.0f;
+  expectStringError([&](){
+    istringstream bad(quantizedMatMulWire(zeroScale,weights),ios::in | ios::binary);
+    (void)MatMulLayerDesc(bad,true,true);
+  },"v106 S8 zero scale");
+
+  expectStringError([&](){
+    istringstream text(quantizedMatMulWire(scales,weights),ios::in | ios::binary);
+    (void)MatMulLayerDesc(text,false,true);
+  },"v106 S8 text container");
+}
+
 void testVersions() {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 105,
-    "native v105 must be the latest implemented wire version");
+  // v106 retains v105 topology/metadata semantics but replaces Transformer
+  // projection payloads with canonical S8 blocks. The rest of this test
+  // continues to freeze the canonical v105 contract.
+  static_assert(NNModelVersion::latestModelVersionImplemented == 106,
+    "v105 wire contract needs an explicit audit when the latest version changes");
   static_assert(NNModelVersion::defaultModelVersion == 102,
     "v105 must not silently replace the ordinary v102 default");
   requireContract(NNModelVersion::getInputsVersion(102) == 101,"v102 input version changed");
@@ -224,6 +277,9 @@ void testVersions() {
   requireContract(NNModelVersion::getNumGlobalFeatures(103) == 64,"v103 global ABI changed");
   requireContract(NNModelVersion::getNumSpatialFeatures(105) == 22,"v105 spatial ABI is not V101");
   requireContract(NNModelVersion::getNumGlobalFeatures(105) == 39,"v105 global ABI is not V101");
+  requireContract(NNModelVersion::getInputsVersion(106) == 101,"v106 must use V101 inputs");
+  requireContract(NNModelVersion::getNumSpatialFeatures(106) == 22,"v106 spatial ABI is not V101");
+  requireContract(NNModelVersion::getNumGlobalFeatures(106) == 39,"v106 global ABI is not V101");
 
   expectStringError([](){ (void)NNModelVersion::getInputsVersion(104); },"v104 input mapping");
   expectStringError([](){ (void)NNModelVersion::getNumSpatialFeatures(104); },"v104 spatial mapping");
@@ -712,6 +768,7 @@ int MainCmds::testv105wire(const vector<string>& args) {
     throw StringError("testv105wire takes no arguments or --model FILE SHA256");
 
   testVersions();
+  testV106QuantizedMatMul();
   testProjectedScratchLayout();
   testLegacyV102();
   testV105AttentionVariantsAndMoves();

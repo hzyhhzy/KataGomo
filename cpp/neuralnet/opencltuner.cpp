@@ -3350,7 +3350,10 @@ void OpenCLTuner::autoTuneEverything(
   string gpuName = allDeviceInfos[gpuIdxForTuning].name;
 
   //Just hardcodedly tune all the models that KataGo's main run uses.
-  static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
+  // v106 is a CPU-PTQ-only wire version and adds no OpenCL tuning shapes.
+  // Keep this assertion exact so a future general model version still forces
+  // an explicit audit of the hardcoded tuning catalogue below.
+  static_assert(NNModelVersion::latestModelVersionImplemented == 106, "");
   vector<ModelInfoForTuning> modelInfos;
   {
     ModelInfoForTuning modelInfo;

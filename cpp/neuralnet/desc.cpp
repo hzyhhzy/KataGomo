@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <zlib.h>
 
 #include "../core/global.h"
@@ -83,6 +84,62 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
     for(size_t i = 0; i<numFloats; i++) {
       CHECKFINITE(buf[i],name);
     }
+  }
+}
+
+static void readPerOutputS8(
+  istream& in,
+  size_t inChannels,
+  size_t outChannels,
+  bool binaryFloats,
+  const string& name,
+  vector<float>& scales,
+  vector<int8_t>& weights
+) {
+  if(!binaryFloats)
+    throw StringError(name + ": v106 S8 projection requires a binary .bin.gz model");
+
+  int numCharsBeforeAt = 0;
+  while((char)in.get() != '@') {
+    numCharsBeforeAt++;
+    if(numCharsBeforeAt > 100 || in.fail())
+      throw StringError(name + ": could not find v106 @S8P@ projection block");
+  }
+  string marker;
+  marker += (char)in.get();
+  marker += (char)in.get();
+  marker += (char)in.get();
+  marker += (char)in.get();
+  if(marker != "S8P@")
+    throw StringError(name + ": did not find expected v106 @S8P@ projection block");
+
+  scales.resize(outChannels);
+  static_assert(sizeof(float) == 4,"v106 requires 32-bit float scales");
+  in.read(reinterpret_cast<char*>(scales.data()),outChannels*sizeof(float));
+  if(in.fail())
+    throw StringError(name + ": truncated v106 projection scale block");
+#if BYTE_ORDER == BIG_ENDIAN
+  char* scaleBytes = reinterpret_cast<char*>(scales.data());
+  for(size_t i = 0; i < outChannels; i++) {
+    std::swap(scaleBytes[i*4 + 0],scaleBytes[i*4 + 3]);
+    std::swap(scaleBytes[i*4 + 1],scaleBytes[i*4 + 2]);
+  }
+#endif
+  for(float scale: scales) {
+    if(!isfinite(scale) || !(scale > 0.0f))
+      throw StringError(name + ": v106 projection scale must be finite and positive");
+  }
+
+  if(inChannels > numeric_limits<size_t>::max() / outChannels)
+    throw StringError(name + ": v106 projection element count overflow");
+  const size_t numWeights = inChannels * outChannels;
+  weights.resize(numWeights);
+  in.read(reinterpret_cast<char*>(weights.data()),numWeights);
+  if(in.fail())
+    throw StringError(name + ": truncated v106 S8 projection weights");
+  for(int8_t weight: weights) {
+    if(weight == numeric_limits<int8_t>::min())
+      throw StringError(name + ": v106 symmetric S8 projection contains forbidden -128");
   }
 }
 
@@ -273,32 +330,37 @@ ActivationLayerDesc& ActivationLayerDesc::operator=(ActivationLayerDesc&& other)
 
 //-----------------------------------------------------------------------------
 
-MatMulLayerDesc::MatMulLayerDesc() : inChannels(0), outChannels(0) {}
+MatMulLayerDesc::MatMulLayerDesc()
+  : inChannels(0), outChannels(0), isQuantized(false) {}
 
-MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats) {
+MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats, bool quantized) {
   in >> name;
   in >> inChannels;
   in >> outChannels;
+  isQuantized = quantized;
 
   if(in.fail())
     throw StringError(name + ": matmullayer failed to parse num channels");
   if(inChannels <= 0 || outChannels <= 0)
     throw StringError(name + ": number of in and out channels must be positive");
 
-  // Model file order is ic,oc
-  // Cublas order used is also ic,oc since we transpose
-  int numWeights = inChannels * outChannels;
-  weights.resize(numWeights);
-  int icStride = outChannels;
-  int ocStride = 1;
-
-  vector<float> floats;
-  readFloats(in, (size_t)inChannels * outChannels, binaryFloats, name, floats);
-  size_t idx = 0;
-  for(int ic = 0; ic < inChannels; ic++) {
-    for(int oc = 0; oc < outChannels; oc++) {
-      float w = floats[idx++];
-      weights[oc * ocStride + ic * icStride] = w;
+  if(isQuantized) {
+    readPerOutputS8(
+      in,(size_t)inChannels,(size_t)outChannels,binaryFloats,name,
+      weightScales,quantizedWeights);
+  }
+  else {
+    // Model file order is ic,oc. Cublas order used is also ic,oc since
+    // ordinary backends transpose the operation.
+    weights.resize((size_t)inChannels * outChannels);
+    vector<float> floats;
+    readFloats(in, (size_t)inChannels * outChannels, binaryFloats, name, floats);
+    size_t idx = 0;
+    for(int ic = 0; ic < inChannels; ic++) {
+      for(int oc = 0; oc < outChannels; oc++) {
+        float w = floats[idx++];
+        weights[(size_t)ic * outChannels + oc] = w;
+      }
     }
   }
   if(in.fail())
@@ -313,7 +375,10 @@ MatMulLayerDesc& MatMulLayerDesc::operator=(MatMulLayerDesc&& other) {
   name = std::move(other.name);
   inChannels = other.inChannels;
   outChannels = other.outChannels;
+  isQuantized = other.isQuantized;
   weights = std::move(other.weights);
+  quantizedWeights = std::move(other.quantizedWeights);
+  weightScales = std::move(other.weightScales);
   return *this;
 }
 
@@ -443,10 +508,11 @@ TransformerAttentionDesc::TransformerAttentionDesc(
     throw StringError(name + ": learnableRope requires useRope");
 
   preLN = TransformerRMSNormDesc(in, binaryFloats);
-  qProj = MatMulLayerDesc(in, binaryFloats);
-  kProj = MatMulLayerDesc(in, binaryFloats);
-  vProj = MatMulLayerDesc(in, binaryFloats);
-  outProj = MatMulLayerDesc(in, binaryFloats);
+  const bool quantizedProjections = modelVersion == 106;
+  qProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  kProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  vProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  outProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
   if(useQKNorm) {
     qNorm = TransformerRMSNormDesc(in, binaryFloats);
     kNorm = TransformerRMSNormDesc(in, binaryFloats);
@@ -640,10 +706,11 @@ TransformerFFNDesc::TransformerFFNDesc(
     throw StringError(name + ": transformer ffn channel counts must be positive");
 
   preLN = TransformerRMSNormDesc(in, binaryFloats);
-  linear1 = MatMulLayerDesc(in, binaryFloats);
+  const bool quantizedProjections = modelVersion == 106;
+  linear1 = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
   if(useSwiGLU)
-    linearGate = MatMulLayerDesc(in, binaryFloats);
-  linear2 = MatMulLayerDesc(in, binaryFloats);
+    linearGate = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  linear2 = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
 
   if(preLN.numChannels != numChannels)
     throw StringError(name + ": ffn preLN channels do not match trunk channels");
@@ -1380,6 +1447,10 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));
   if(version == 104)
     throw StringError("Model version 104 is deliberately unsupported; use canonical v102 or v105 instead");
+#ifndef USE_CPU_PTQ_BACKEND
+  if(version == 106)
+    throw StringError("Model version 106 is reserved for the CPU-PTQ backend");
+#endif
 
   in >> numInputChannels;
   if(in.fail())
@@ -1586,10 +1657,10 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
 }
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
+  static_assert(NNModelVersion::latestModelVersionImplemented == 106, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 103 || version == 105) {
+  if(version <= 103 || version == 105 || version == 106) {
   }
   else {
     ASSERT_UNREACHABLE;
