@@ -62,6 +62,12 @@ channel, then output-major signed-byte codes with input channels contiguous.
 Quantization is symmetric per output channel, round-to-nearest ties-to-even,
 and saturating. A code outside the marker's declared range is rejected.
 
+The v106 wire format does not store a board width, height, token count, batch
+size, or target ISA. Board shape is ordinary engine/runtime state. The current
+compiled CPU-PTQ profiles deliberately assert the 15x15, 225-token contract,
+but a future kernel profile can consume the same grammar at another board size
+without changing the container version.
+
 This is not an MLAS packed-B buffer. The stable canonical bytes can be loaded
 across MLAS versions and target CPUs; the loader validates, transposes, and
 packs them for the selected kernel. It does not retain or reconstruct an FP32
@@ -73,6 +79,34 @@ Convert a native v105 model without overwriting the source:
 python python/convert_cpu_ptq_v106.py model-v105.bin.gz model-s8-v106.bin.gz --projection-bits 8
 python python/convert_cpu_ptq_v106.py model-v105.bin.gz model-s7-v106.bin.gz --projection-bits 7
 ```
+
+For the qualified GPTQ recipes, first collect projection moments while fake
+quantizing the same projection and attention paths as the C++ backend. The
+calibrator is block-count and channel-count driven by the checkpoint; its
+`--board-size` only selects calibration activations and is not written to the
+manifest or final model.
+
+```text
+python python/calibrate_cpu_ptq_v106.py \
+  --training-repo /path/to/KataGo_Transformer \
+  --checkpoint checkpoint.ckpt --data calibration.npz \
+  --output runtime_data/model-s8-gptq.npz --qmax 127
+python python/convert_cpu_ptq_v106.py model-v105.bin.gz model-s8-v106.bin.gz \
+  --projection-bits 8 --gptq-overrides runtime_data/model-s8-gptq.npz
+
+python python/calibrate_cpu_ptq_v106.py \
+  --training-repo /path/to/KataGo_Transformer \
+  --checkpoint checkpoint.ckpt --data calibration.npz \
+  --output runtime_data/model-s7-gptq.npz --qmax 63
+python python/convert_cpu_ptq_v106.py model-v105.bin.gz model-s7-v106.bin.gz \
+  --projection-bits 7 --gptq-overrides runtime_data/model-s7-gptq.npz
+```
+
+The selected defaults are act-order GPTQ with damping `0.05` for S8 and
+non-act-order GPTQ with damping `0.001` for S7. Calibration uses 4,096 full-board
+rows by default. The manifest records source-weight SHA-256 values; conversion
+fails if it is paired with a different checkpoint, projection set, shape, or
+bit range. GPTQ changes only stored codes and scales and adds no runtime work.
 
 The converter rejects ONNX, non-v105 inputs, and unsupported geometries. It
 parses the complete source, quantizes all seven matrices per layer, writes
@@ -95,14 +129,15 @@ attention output and FFN down remain separate. S32 results are dequantized
 with per-output scales while QKN/RoPE, clipped SwiGLU, residual addition, and
 residual RMSNorm are fused into output processors.
 
-The VNNI projection path dynamically quantizes each projection input matrix to
-U8 with one min/max range and uses S8 weights with `VPDPBUSD`. Its attention
-path dynamically quantizes each Q/K token/head row, computes QK with
+The VNNI projection path dynamically quantizes each projection input token to
+U8 with one symmetric scale per row and uses S8 weights with `VPDPBUSD`. Its
+attention path dynamically quantizes each Q/K token/head row, computes QK with
 `VPDPBUSD` plus signed-key correction, keeps softmax in FP32, then uses U8
 probabilities and per-channel S8 values for PV. Four-query PV fusion reuses
 each packed value load.
 
-The AVX2 projection path uses A8W7: U8 activations and S7 weights avoid
+The AVX2 projection path uses the same per-token symmetric U8 activation
+quantizer with A8W7 weights. S7 weights avoid
 `VPMADDUBSW`'s signed-16 intermediate saturation before widening to S32.
 Attention uses the independently saturation-safe Q7K8 and P8V7 recipe.
 QKV/RoPE, SwiGLU, residual/RMSNorm, packing, and attention are hand-vectorized
@@ -163,6 +198,12 @@ controlled by `CPU_PTQ_VNNI_PV_QUAD` and is enabled by default.
 off for a tournament engine. `KATAGO_BUILD_V105_WIRE_CONTRACT=ON` adds
 `testv105wire` and its custom target.
 
+The calibration and converter contract tests run with:
+
+```text
+python -m unittest discover -s python/tests -p test_cpu_ptq_v106.py -v
+```
+
 ## GTP use
 
 ```text
@@ -182,9 +223,9 @@ paired passes with profiling disabled.
 
 | profile | AVX2/FMA3 | AVX-512 VNNI | VNNI speedup over AVX2 |
 |---|---:|---:|---:|
-| b11c96 | 5.8593 ms | 2.6428 ms | 2.22x |
-| b16c128 | 13.6211 ms | 6.0329 ms | 2.26x |
-| b24c192 | 36.0854 ms | 15.1436 ms | 2.38x |
+| b11c96 | 5.8056 ms | 2.6064 ms | 2.23x |
+| b16c128 | 13.4712 ms | 6.0287 ms | 2.23x |
+| b24c192 | 35.5774 ms | 15.1095 ms | 2.35x |
 
 The VM exposes two physical cores and four logical processors. A final
 contention test used logical CPU 3 for one process, one hardware thread from
@@ -193,15 +234,15 @@ for four processes:
 
 | profile / ISA | 1-process aggregate | 2-process aggregate (scale) | 4-process aggregate (scale) |
 |---|---:|---:|---:|
-| b11 AVX2 | 170.81 rows/s | 331.93 (1.94x) | 376.04 (2.20x) |
-| b16 AVX2 | 73.29 rows/s | 133.99 (1.83x) | 161.44 (2.20x) |
-| b24 AVX2 | 27.77 rows/s | 55.06 (1.98x) | 61.37 (2.21x) |
-| b11 VNNI | 389.40 rows/s | 689.10 (1.77x) | 834.56 (2.14x) |
-| b16 VNNI | 166.76 rows/s | 317.18 (1.90x) | 387.07 (2.32x) |
-| b24 VNNI | 66.58 rows/s | 129.65 (1.95x) | 159.81 (2.40x) |
+| b11 AVX2 | 172.45 rows/s | 336.88 (1.95x) | 380.27 (2.21x) |
+| b16 AVX2 | 74.37 rows/s | 146.00 (1.96x) | 161.90 (2.18x) |
+| b24 AVX2 | 28.10 rows/s | 55.63 (1.98x) | 61.97 (2.21x) |
+| b11 VNNI | 385.22 rows/s | 681.11 (1.77x) | 795.80 (2.07x) |
+| b16 VNNI | 166.29 rows/s | 315.17 (1.90x) | 380.96 (2.29x) |
+| b24 VNNI | 65.54 rows/s | 127.64 (1.95x) | 159.87 (2.44x) |
 
 Two independent physical cores therefore scale well. Enabling both SMT
-siblings raises total throughput a further 10-23%, but also raises individual
+siblings raises total throughput a further 10-25%, but also raises individual
 request latency; a many-engine tournament host should optimize for aggregate
 throughput rather than extrapolate isolated latency linearly. Four processes
 are the maximum meaningful concurrency sample on this VM, so this is not a
@@ -228,13 +269,13 @@ deterministic structural/performance fixtures; their numerical outputs were
 checked byte-for-byte between each accepted tuning baseline and final binary.
 
 The real b11 corpus contains 18,432 rows. Against the same FP32 reference
-(`p0loss=1.6944791187`, `vloss=0.5712485925`), actual C++ replay measured:
+(`p0loss=1.6944791379`, `vloss=0.5712486147`), actual C++ replay measured:
 
 | deployment recipe | p0loss | p0loss delta | vloss delta | gate |
 |---|---:|---:|---:|---|
-| VNNI S8/U8S8 | 1.70340036 | +0.00892124 | +0.00583537 | pass |
-| AVX2 S7/A8W7 + Q7K8/P8V7 | 1.70623627 | +0.01175715 | +0.00682329 | pass |
+| VNNI S8/U8S8 | 1.69730353 | +0.00282439 | +0.00162294 | pass |
+| AVX2 S7/A8W7 + Q7K8/P8V7 | 1.69945149 | +0.00497236 | +0.00379858 | pass |
 
-Both are below the required `+0.03` p0loss limit. The strict AVX2 FP32-edge
-change preserved the AVX2 result to approximately `1e-9`; converter reruns
-also reproduce the accepted b11 S8 and b24 S7 model hashes exactly.
+Both satisfy the approximately `+0.005` acceptance target without an FP32
+projection fallback. Fresh calibrator runs reproduce every accepted b11 S7
+and S8 manifest field and the complete NPZ SHA-256 exactly.

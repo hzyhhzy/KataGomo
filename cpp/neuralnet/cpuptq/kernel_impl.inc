@@ -127,6 +127,112 @@ inline float horizontal_sum(__m256 value);
 inline __m512 exp512_post_ps(__m512 x);
 #endif
 
+// Quantize one projection input row with a symmetric, per-row scale. Calling
+// the generic MLAS min/max and quantize entry points once for every one of the
+// 225 tokens leaves a noticeable fixed cost, especially on the smaller
+// profiles. The projection channel counts are all SIMD-friendly, but the tail
+// remains supported so this helper does not constrain future profile widths.
+inline float quantize_symmetric_row_u8(
+    const float* source,
+    uint8_t* destination,
+    size_t count,
+    int quantized_maximum,
+    uint8_t zero_point) {
+  float max_abs = 0.0f;
+  size_t channel = 0;
+#if defined(KTCP_POSTOPS_AVX512)
+  const __m512 abs_mask =
+      _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffff));
+  __m512 vector_max = _mm512_setzero_ps();
+  for (; channel + 16 <= count; channel += 16) {
+    const __m512 value = _mm512_loadu_ps(source + channel);
+    vector_max = _mm512_max_ps(
+        vector_max, _mm512_and_ps(value, abs_mask));
+  }
+  max_abs = _mm512_reduce_max_ps(vector_max);
+#else
+  const __m256 abs_mask =
+      _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+  __m256 vector_max = _mm256_setzero_ps();
+  for (; channel + 8 <= count; channel += 8) {
+    const __m256 value = _mm256_loadu_ps(source + channel);
+    vector_max = _mm256_max_ps(
+        vector_max, _mm256_and_ps(value, abs_mask));
+  }
+  __m128 max128 = _mm_max_ps(
+      _mm256_castps256_ps128(vector_max),
+      _mm256_extractf128_ps(vector_max, 1));
+  max128 = _mm_max_ps(max128, _mm_movehl_ps(max128, max128));
+  max128 = _mm_max_ss(max128, _mm_shuffle_ps(max128, max128, 1));
+  max_abs = _mm_cvtss_f32(max128);
+#endif
+  for (; channel < count; ++channel) {
+    max_abs = std::max(max_abs, std::abs(source[channel]));
+  }
+
+  float scale = max_abs / static_cast<float>(quantized_maximum);
+  if (!(scale > 0.0f) || !std::isfinite(scale)) {
+    scale = 1.0f;
+  }
+
+  channel = 0;
+#if defined(KTCP_POSTOPS_AVX512)
+  const __m512 scale_vector = _mm512_set1_ps(scale);
+  const __m512 minimum =
+      _mm512_set1_ps(static_cast<float>(-quantized_maximum));
+  const __m512 maximum =
+      _mm512_set1_ps(static_cast<float>(quantized_maximum));
+  const __m512i zero = _mm512_set1_epi32(zero_point);
+  for (; channel + 16 <= count; channel += 16) {
+    __m512 value = _mm512_div_ps(
+        _mm512_loadu_ps(source + channel), scale_vector);
+    value = _mm512_min_ps(maximum, _mm512_max_ps(minimum, value));
+    const __m512i quantized = _mm512_add_epi32(
+        _mm512_cvtps_epi32(value), zero);
+    _mm_storeu_si128(
+        reinterpret_cast<__m128i*>(destination + channel),
+        _mm512_cvtusepi32_epi8(quantized));
+  }
+#else
+  const __m256 scale_vector = _mm256_set1_ps(scale);
+  const __m256 minimum =
+      _mm256_set1_ps(static_cast<float>(-quantized_maximum));
+  const __m256 maximum =
+      _mm256_set1_ps(static_cast<float>(quantized_maximum));
+  const __m256i zero = _mm256_set1_epi32(zero_point);
+  for (; channel + 16 <= count; channel += 16) {
+    __m256 value0 = _mm256_div_ps(
+        _mm256_loadu_ps(source + channel), scale_vector);
+    __m256 value1 = _mm256_div_ps(
+        _mm256_loadu_ps(source + channel + 8), scale_vector);
+    value0 = _mm256_min_ps(maximum, _mm256_max_ps(minimum, value0));
+    value1 = _mm256_min_ps(maximum, _mm256_max_ps(minimum, value1));
+    const __m256i quantized0 = _mm256_add_epi32(
+        _mm256_cvtps_epi32(value0), zero);
+    const __m256i quantized1 = _mm256_add_epi32(
+        _mm256_cvtps_epi32(value1), zero);
+    const __m128i packed0 = _mm_packs_epi32(
+        _mm256_castsi256_si128(quantized0),
+        _mm256_extracti128_si256(quantized0, 1));
+    const __m128i packed1 = _mm_packs_epi32(
+        _mm256_castsi256_si128(quantized1),
+        _mm256_extracti128_si256(quantized1, 1));
+    _mm_storeu_si128(
+        reinterpret_cast<__m128i*>(destination + channel),
+        _mm_packus_epi16(packed0, packed1));
+  }
+#endif
+  for (; channel < count; ++channel) {
+    float value = source[channel] / scale;
+    value = std::min(
+        static_cast<float>(quantized_maximum),
+        std::max(static_cast<float>(-quantized_maximum), value));
+    destination[channel] = static_cast<uint8_t>(
+        static_cast<int>(std::nearbyint(value)) + zero_point);
+  }
+  return scale;
+}
+
 #if defined(KTCP_ATTENTION_VNNI)
 inline float quantize_s8x32_avx512(
     __m512 value0,
@@ -321,8 +427,13 @@ struct ResidualOutput {
 
 class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
  public:
-  QkvRopeOutputProcessor(const float* scales, QkvRopeOutput output)
-      : scales_(scales), output_(output) {}
+  QkvRopeOutputProcessor(
+      const float* weight_scales,
+      const float* input_scales,
+      QkvRopeOutput output)
+      : weight_scales_(weight_scales),
+        input_scales_(input_scales),
+        output_(output) {}
 
   void Process(
       const int32_t* accumulators,
@@ -335,6 +446,10 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
     if (start_column == 0 && column_count == 3 * kC) {
       for (size_t row = start_row; row < start_row + row_count; ++row) {
         const int32_t* source = accumulators + row * accumulator_stride;
+        const float input_scale_scalar = input_scales_[row];
+        const float input_scale_squared =
+            input_scale_scalar * input_scale_scalar;
+        const __m256 input_scale = _mm256_set1_ps(input_scale_scalar);
         for (size_t projection = 0; projection < 2; ++projection) {
           float* projection_output = projection == 0 ? output_.q : output_.k;
           const float* gamma =
@@ -349,14 +464,19 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
                   _mm256_cvtepi32_ps(_mm256_loadu_si256(
                       reinterpret_cast<const __m256i*>(
                           source + channel_base + block * 8))),
-                  _mm256_loadu_ps(scales_ + channel_base + block * 8));
+                  _mm256_loadu_ps(
+                      weight_scales_ + channel_base + block * 8));
               squares = _mm256_fmadd_ps(
                   values[block], values[block], squares);
             }
-            const float inv_rms = 1.0f / std::sqrt(
-                horizontal_sum(squares) / static_cast<float>(kHeadDim) +
+            // The positive per-token input scale is common to all channels
+            // in this head and therefore cancels through QKN. Apply it once
+            // to the scalar RMS factor instead of to every Q/K element.
+            const float norm_scale_scalar = input_scale_scalar / std::sqrt(
+                horizontal_sum(squares) / static_cast<float>(kHeadDim) *
+                    input_scale_squared +
                 kRmsEpsilon);
-            const __m256 norm_scale = _mm256_set1_ps(inv_rms);
+            const __m256 norm_scale = _mm256_set1_ps(norm_scale_scalar);
             const size_t rope_base =
                 (row * kHeads + head) * kHeadDim;
             float* destination = projection_output +
@@ -385,7 +505,9 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
               _mm256_cvtepi32_ps(_mm256_loadu_si256(
                   reinterpret_cast<const __m256i*>(
                       source + source_column))),
-              _mm256_loadu_ps(scales_ + source_column));
+              _mm256_mul_ps(
+                  _mm256_loadu_ps(weight_scales_ + source_column),
+                  input_scale));
           const size_t head = channel / kHeadDim;
           const size_t within_head = channel % kHeadDim;
           _mm256_storeu_ps(
@@ -400,6 +522,7 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
     if (start_column == 0 && column_count == 3 * kC) {
       for (size_t row = start_row; row < start_row + row_count; ++row) {
         const int32_t* source = accumulators + row * accumulator_stride;
+        const __m512 input_scale = _mm512_set1_ps(input_scales_[row]);
         for (size_t projection = 0; projection < 2; ++projection) {
           float* projection_output = projection == 0 ? output_.q : output_.k;
           const float* gamma =
@@ -411,11 +534,15 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
                 (head * kS + row) * kHeadDim;
             const __m512 values0 = _mm512_mul_ps(
                 _mm512_cvtepi32_ps(_mm512_loadu_si512(source + channel_base)),
-                _mm512_loadu_ps(scales_ + channel_base));
+                _mm512_mul_ps(
+                    _mm512_loadu_ps(weight_scales_ + channel_base),
+                    input_scale));
             const __m512 values1 = _mm512_mul_ps(
                 _mm512_cvtepi32_ps(
                     _mm512_loadu_si512(source + channel_base + 16)),
-                _mm512_loadu_ps(scales_ + channel_base + 16));
+                _mm512_mul_ps(
+                    _mm512_loadu_ps(weight_scales_ + channel_base + 16),
+                    input_scale));
             const float inv_rms = 1.0f / std::sqrt(
                 _mm512_reduce_add_ps(_mm512_add_ps(
                     _mm512_mul_ps(values0, values0),
@@ -450,7 +577,8 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
           const size_t column = 2 * kC + channel;
           const __m512 values = _mm512_mul_ps(
               _mm512_cvtepi32_ps(_mm512_loadu_si512(source + column)),
-              _mm512_loadu_ps(scales_ + column));
+              _mm512_mul_ps(
+                  _mm512_loadu_ps(weight_scales_ + column), input_scale));
           const size_t head = channel / kHeadDim;
           const size_t within_head = channel % kHeadDim;
           _mm512_storeu_ps(
@@ -464,6 +592,10 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
     const size_t end_column = start_column + column_count;
     for (size_t row = start_row; row < start_row + row_count; ++row) {
       const int32_t* source = accumulators + row * accumulator_stride;
+      const float input_scale = input_scales_[row];
+#if defined(KTCP_POSTOPS_AVX2)
+      const float input_scale_squared = input_scale * input_scale;
+#endif
       for (size_t projection = 0; projection < 2; ++projection) {
         const size_t projection_begin = projection * kC;
         const size_t intersection_begin = std::max(start_column, projection_begin);
@@ -483,21 +615,33 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
           const size_t channel_base = projection_begin + head * kHeadDim;
           for (size_t channel = 0; channel < kHeadDim; ++channel) {
             const size_t source_column = channel_base + channel;
+#if defined(KTCP_POSTOPS_AVX2)
             const float value = static_cast<float>(source[source_column]) *
-                                scales_[source_column];
+                                weight_scales_[source_column];
+#else
+            const float value = static_cast<float>(source[source_column]) *
+                                weight_scales_[source_column] * input_scale;
+#endif
             values[channel] = value;
             sum_squares += value * value;
           }
-          const float inv_rms = 1.0f / std::sqrt(
+#if defined(KTCP_POSTOPS_AVX2)
+          const float norm_scale = input_scale / std::sqrt(
+              sum_squares / static_cast<float>(kHeadDim) *
+                  input_scale_squared +
+              kRmsEpsilon);
+#else
+          const float norm_scale = 1.0f / std::sqrt(
               sum_squares / static_cast<float>(kHeadDim) + kRmsEpsilon);
+#endif
           float* destination = projection_output +
               (head * kS + row) * kHeadDim;
           for (size_t pair = 0; pair < kPairs; ++pair) {
             const size_t pair_channel = pair * 2;
             const float first =
-                values[pair_channel] * gamma[pair_channel] * inv_rms;
+                values[pair_channel] * gamma[pair_channel] * norm_scale;
             const float second =
-                values[pair_channel + 1] * gamma[pair_channel + 1] * inv_rms;
+                values[pair_channel + 1] * gamma[pair_channel + 1] * norm_scale;
 #if defined(KTCP_POSTOPS_AVX512) || defined(KTCP_POSTOPS_AVX2)
             const size_t table =
                 (row * kHeads + head) * kHeadDim + pair * 2;
@@ -530,20 +674,27 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
         const size_t head = within / kHeadDim;
         const size_t head_channel = within % kHeadDim;
         output_.v[(head * kS + row) * kHeadDim + head_channel] =
-            static_cast<float>(source[column]) * scales_[column];
+            static_cast<float>(source[column]) *
+            weight_scales_[column] * input_scale;
       }
     }
   }
 
  private:
-  const float* scales_ = nullptr;
+  const float* weight_scales_ = nullptr;
+  const float* input_scales_ = nullptr;
   QkvRopeOutput output_{};
 };
 
 class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
  public:
-  SwiGluOutputProcessor(const float* scales, SwiGluOutput output)
-      : scales_(scales), output_(output) {}
+  SwiGluOutputProcessor(
+      const float* weight_scales,
+      const float* input_scales,
+      SwiGluOutput output)
+      : weight_scales_(weight_scales),
+        input_scales_(input_scales),
+        output_(output) {}
 
   void Process(
       const int32_t* accumulators,
@@ -556,6 +707,11 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
     for (size_t row = start_row; row < start_row + row_count; ++row) {
       const int32_t* source = accumulators + row * accumulator_stride;
       float* destination = output_.values + row * kFfn;
+      const float input_scale_scalar = input_scales_[row];
+#if defined(KTCP_POSTOPS_AVX512)
+      const __m512 input_scale512 = _mm512_set1_ps(input_scale_scalar);
+#endif
+      const __m256 input_scale256 = _mm256_set1_ps(input_scale_scalar);
 
       size_t column = start_column;
       const size_t up_end = std::min(end_column, kFfn);
@@ -563,7 +719,8 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
       for (; column + 16 <= up_end; column += 16) {
         const __m512 values = _mm512_mul_ps(
             _mm512_cvtepi32_ps(_mm512_loadu_si512(source + column)),
-            _mm512_loadu_ps(scales_ + column));
+            _mm512_mul_ps(
+                _mm512_loadu_ps(weight_scales_ + column), input_scale512));
         _mm512_storeu_ps(destination + column, values);
       }
 #endif
@@ -571,11 +728,13 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
         const __m256 values = _mm256_mul_ps(
             _mm256_cvtepi32_ps(_mm256_loadu_si256(
                 reinterpret_cast<const __m256i*>(source + column))),
-            _mm256_loadu_ps(scales_ + column));
+            _mm256_mul_ps(
+                _mm256_loadu_ps(weight_scales_ + column), input_scale256));
         _mm256_storeu_ps(destination + column, values);
       }
       for (; column < up_end; ++column) {
-        destination[column] = static_cast<float>(source[column]) * scales_[column];
+        destination[column] = static_cast<float>(source[column]) *
+                              weight_scales_[column] * input_scale_scalar;
       }
 
       column = std::max(start_column, kFfn);
@@ -585,7 +744,8 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
         const __m512 up = _mm512_loadu_ps(destination + channel);
         const __m512 gate_unclipped = _mm512_mul_ps(
             _mm512_cvtepi32_ps(_mm512_loadu_si512(source + column)),
-            _mm512_loadu_ps(scales_ + column));
+            _mm512_mul_ps(
+                _mm512_loadu_ps(weight_scales_ + column), input_scale512));
         const __m512 clip_min = _mm512_set1_ps(-kSwiGluClip);
         const __m512 clip_max = _mm512_set1_ps(kSwiGluClip);
         const __m512 gate =
@@ -609,7 +769,8 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
         const __m256 gate_unclipped = _mm256_mul_ps(
             _mm256_cvtepi32_ps(_mm256_loadu_si256(
                 reinterpret_cast<const __m256i*>(source + column))),
-            _mm256_loadu_ps(scales_ + column));
+            _mm256_mul_ps(
+                _mm256_loadu_ps(weight_scales_ + column), input_scale256));
         const __m256 clip_min = _mm256_set1_ps(-kSwiGluClip);
         const __m256 clip_max = _mm256_set1_ps(kSwiGluClip);
         const __m256 gate =
@@ -630,7 +791,8 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
         const size_t channel = column - kFfn;
         const float up = destination[channel];
         const float gate = std::clamp(
-            static_cast<float>(source[column]) * scales_[column],
+            static_cast<float>(source[column]) * weight_scales_[column] *
+                input_scale_scalar,
             -kSwiGluClip, kSwiGluClip);
         const float activated = std::clamp(
             up / (1.0f + std::exp(-up)), -kSwiGluClip, kSwiGluClip);
@@ -640,14 +802,20 @@ class SwiGluOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
   }
 
  private:
-  const float* scales_ = nullptr;
+  const float* weight_scales_ = nullptr;
+  const float* input_scales_ = nullptr;
   SwiGluOutput output_{};
 };
 
 class ResidualOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
  public:
-  ResidualOutputProcessor(const float* scales, ResidualOutput output)
-      : scales_(scales), output_(output) {}
+  ResidualOutputProcessor(
+      const float* weight_scales,
+      const float* input_scales,
+      ResidualOutput output)
+      : weight_scales_(weight_scales),
+        input_scales_(input_scales),
+        output_(output) {}
 
   void Process(
       const int32_t* accumulators,
@@ -664,11 +832,13 @@ class ResidualOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
       const int32_t* source = accumulators + row * accumulator_stride;
       float* residual = output_.residual + row * kC;
 #if defined(KTCP_POSTOPS_AVX512)
+      const __m512 input_scale = _mm512_set1_ps(input_scales_[row]);
       __m512 squares512 = _mm512_setzero_ps();
       for (size_t channel = 0; channel < kC; channel += 16) {
         const __m512 update = _mm512_mul_ps(
             _mm512_cvtepi32_ps(_mm512_loadu_si512(source + channel)),
-            _mm512_loadu_ps(scales_ + channel));
+            _mm512_mul_ps(
+                _mm512_loadu_ps(weight_scales_ + channel), input_scale));
         const __m512 value =
             _mm512_add_ps(_mm512_loadu_ps(residual + channel), update);
         _mm512_storeu_ps(residual + channel, value);
@@ -691,12 +861,14 @@ class ResidualOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
         }
       }
 #else
+      const __m256 input_scale = _mm256_set1_ps(input_scales_[row]);
       __m256 squares = _mm256_setzero_ps();
       for (size_t channel = 0; channel < kC; channel += 8) {
         const __m256 update = _mm256_mul_ps(
             _mm256_cvtepi32_ps(_mm256_loadu_si256(
                 reinterpret_cast<const __m256i*>(source + channel))),
-            _mm256_loadu_ps(scales_ + channel));
+            _mm256_mul_ps(
+                _mm256_loadu_ps(weight_scales_ + channel), input_scale));
         const __m256 value =
             _mm256_add_ps(_mm256_loadu_ps(residual + channel), update);
         _mm256_storeu_ps(residual + channel, value);
@@ -722,7 +894,8 @@ class ResidualOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
   }
 
  private:
-  const float* scales_ = nullptr;
+  const float* weight_scales_ = nullptr;
+  const float* input_scales_ = nullptr;
   ResidualOutput output_{};
 };
 
@@ -900,36 +1073,24 @@ class FullyConnected {
     }
 #endif
     if (mode_ == KTCP_MODE_MLAS_U8S8) {
-      float minimum = 0.0f;
-      float maximum = 0.0f;
-      MlasFindMinMaxElement(
-          mlas_input_f32_, &minimum, &maximum, rows_ * input_channels_);
-      minimum = std::min(minimum, 0.0f);
-      maximum = std::max(maximum, 0.0f);
+      // One symmetric scale per board token materially reduces activation
+      // error while preserving a single packed U8S8 GEMM. A fixed zero point
+      // lets MLAS process every row in one call. S7 weights keep AVX2
+      // pmaddubsw pairs safe for raw U8 values up to 255; the legacy A7W8
+      // recipe instead limits raw U8 to 127.
 #if defined(KTCP_MLAS_AVX2_SAFE_U8)
-      // AVX2 U8S8 GEMM reduces adjacent products with saturating int16
-      // arithmetic. Keeping activations in [0,127] and symmetric weights in
-      // [-127,127] bounds every pair to +/-32258 and preserves exact int32
-      // dot products. VNNI does not have this restriction and retains U8.
-      constexpr float quantized_levels = 127.0f;
-      constexpr int maximum_zero_point = 127;
+      constexpr uint8_t zero_point = 64;
+      constexpr float activation_maximum = 63.0f;
 #else
-      constexpr float quantized_levels = 255.0f;
-      constexpr int maximum_zero_point = 255;
+      constexpr uint8_t zero_point = 128;
+      constexpr float activation_maximum = 127.0f;
 #endif
-      float input_scale = (maximum - minimum) / quantized_levels;
-      if (!(input_scale > 0.0f) || !std::isfinite(input_scale)) {
-        input_scale = 1.0f;
-      }
-      const int zero_point_int = std::clamp(
-          static_cast<int>(std::nearbyint(-minimum / input_scale)),
-          0, maximum_zero_point);
-      const uint8_t zero_point = static_cast<uint8_t>(zero_point_int);
-      MlasQuantizeLinear<uint8_t>(
-          mlas_input_f32_, mlas_input_.data(), rows_ * input_channels_,
-          input_scale, zero_point);
-      for (size_t channel = 0; channel < output_channels_; ++channel) {
-        mlas_output_scales_[channel] = input_scale * weight_scales_[channel];
+      for (size_t row = 0; row < rows_; ++row) {
+        const float* source = mlas_input_f32_ + row * input_channels_;
+        uint8_t* destination = mlas_input_.data() + row * input_channels_;
+        mlas_input_scales_[row] = quantize_symmetric_row_u8(
+            source, destination, input_channels_,
+            static_cast<int>(activation_maximum), zero_point);
       }
       mlas_data_.ZeroPointA = zero_point;
       MlasGemm(mlas_shape_, mlas_data_, nullptr);
@@ -1010,31 +1171,28 @@ class FullyConnected {
         reinterpret_cast<const uint8_t*>(weights_kn.data()), output_channels_,
         false, true, mlas_packed_weights_.data());
 
-    mlas_output_scales_.assign(output_channels_, 1.0f);
+    mlas_input_scales_.assign(rows_, 1.0f);
     if (qkv_rope_output.enabled()) {
       if (rows_ != kS || input_channels_ != kC || output_channels_ != 3 * kC) {
         throw std::runtime_error("QKV/RoPE fusion received an incompatible shape");
       }
       mlas_output_processor_ = std::make_unique<QkvRopeOutputProcessor>(
-          mlas_output_scales_.data(), qkv_rope_output);
+          weight_scales_.data(), mlas_input_scales_.data(), qkv_rope_output);
     } else if (swiglu_output.enabled()) {
       if (rows_ != kS || input_channels_ != kC || output_channels_ != 2 * kFfn) {
         throw std::runtime_error("SwiGLU fusion received an incompatible shape");
       }
       mlas_output_processor_ = std::make_unique<SwiGluOutputProcessor>(
-          mlas_output_scales_.data(), swiglu_output);
+          weight_scales_.data(), mlas_input_scales_.data(), swiglu_output);
     } else if (residual_output.enabled()) {
       if (rows_ != kS || output_channels_ != kC) {
         throw std::runtime_error("Residual fusion received an incompatible shape");
       }
       mlas_output_processor_ = std::make_unique<ResidualOutputProcessor>(
-          mlas_output_scales_.data(), residual_output);
+          weight_scales_.data(), mlas_input_scales_.data(), residual_output);
     } else {
-      mlas_output_processor_ =
-          std::make_unique<MLAS_QGEMM_SCALE_BIAS_OUTPUT_PROCESSOR>(
-              output, output_channels_, mlas_output_scales_.data(), bias_.data(),
-              MLAS_QGEMM_OUTPUT_MODE::ZeroMode,
-              MLAS_QUANTIZATION_GRANULARITY::PerColumn);
+      throw std::runtime_error(
+          "CPU-PTQ rowwise projection requires a fused output processor");
     }
     mlas_shape_.M = rows_;
     mlas_shape_.N = output_channels_;
@@ -1066,7 +1224,7 @@ class FullyConnected {
   std::vector<uint8_t> mlas_input_;
   std::vector<uint8_t> mlas_packed_weights_;
   std::vector<int32_t> mlas_accumulator_;
-  std::vector<float> mlas_output_scales_;
+  std::vector<float> mlas_input_scales_;
 #if defined(CPU_PTQ_AVX2_ONLY)
   const float* fp32_input_ = nullptr;
   float* fp32_output_ = nullptr;

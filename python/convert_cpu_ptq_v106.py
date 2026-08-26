@@ -20,6 +20,7 @@ import gzip
 import hashlib
 import io
 import pathlib
+import re
 import tempfile
 from dataclasses import dataclass
 from typing import BinaryIO
@@ -68,6 +69,14 @@ class QuantizedMatrix:
     quantized_max: int
     scales: np.ndarray
     values: np.ndarray
+
+
+@dataclass(frozen=True)
+class QuantizedOverrides:
+    matrices: dict[str, QuantizedMatrix]
+    recipe: str
+    activation_quantizer: str
+    activation_scale_factor: float
 
 
 class NativeReader:
@@ -512,20 +521,137 @@ def _read_model(path: pathlib.Path) -> bytes:
     raise ValueError("input must end in .bin or .bin.gz (ONNX is not accepted)")
 
 
-def _quantize(matrix: Matrix, quantized_max: int) -> tuple[bytes, int, int]:
+_PROJECTION_NAME = re.compile(
+    r"model\.blocks\.(\d+)\.(?:attention|ffn)\."
+    r"(q_proj|k_proj|v_proj|out_proj|ffn_linear1|ffn_linear_gate|ffn_linear2)"
+)
+
+
+def _projection_key(native_name: str) -> str:
+    match = _PROJECTION_NAME.fullmatch(native_name)
+    if match is None:
+        raise ValueError(f"unsupported native projection name {native_name!r}")
+    return f"blocks.{int(match.group(1))}.{match.group(2)}"
+
+
+def _source_weight_sha256(matrix: Matrix) -> str:
+    if matrix.values is None:
+        raise AssertionError("source projection has no retained FP32 values")
+    output_major = np.ascontiguousarray(matrix.values.T, dtype="<f4")
+    return hashlib.sha256(output_major.tobytes(order="C")).hexdigest()
+
+
+def _load_gptq_overrides(
+    path: pathlib.Path,
+    projections: list[Matrix],
+    quantized_max: int,
+) -> QuantizedOverrides:
+    path = path.resolve()
+    if not path.is_file():
+        raise ValueError(f"GPTQ override archive does not exist: {path}")
+    with np.load(path, allow_pickle=False) as archive:
+        if str(archive["format"].item()) != "cpuptq-gptq-v1":
+            raise ValueError("unsupported GPTQ override archive format")
+        archive_qmax = int(archive["qmax"].item())
+        if archive_qmax != quantized_max:
+            raise ValueError(
+                f"GPTQ qmax {archive_qmax} does not match requested "
+                f"projection range {quantized_max}"
+            )
+        activation_quantizer = str(archive["activation_quantizer"].item())
+        activation_scale_factor = float(
+            archive["activation_scale_factor"].item()
+        )
+        if activation_quantizer != "row-sym" or activation_scale_factor != 1.0:
+            raise ValueError(
+                "v106 GPTQ overrides require row-sym activation quantization "
+                "with scale factor 1"
+            )
+        recipe = str(archive["recipe"].item())
+        names = [str(name) for name in archive["names"].tolist()]
+        if len(names) != len(set(names)):
+            raise ValueError("GPTQ override archive contains duplicate names")
+        matrices: dict[str, QuantizedMatrix] = {}
+        for index, name in enumerate(names):
+            codes = np.asarray(archive[f"codes_{index}"], dtype=np.int8)
+            scales = np.asarray(archive[f"scales_{index}"], dtype=np.float32)
+            source_sha256 = str(archive[f"source_sha256_{index}"].item())
+            source = next(
+                (matrix for matrix in projections if _projection_key(matrix.name) == name),
+                None,
+            )
+            if source is None:
+                raise ValueError(f"GPTQ override has unknown projection {name!r}")
+            if codes.shape != (source.outputs, source.inputs):
+                raise ValueError(
+                    f"{name}: GPTQ codes shape {codes.shape} does not match "
+                    f"{(source.outputs, source.inputs)}"
+                )
+            if scales.shape != (source.outputs,):
+                raise ValueError(
+                    f"{name}: GPTQ scale shape {scales.shape} does not match "
+                    f"{(source.outputs,)}"
+                )
+            if not np.isfinite(scales).all() or not np.all(scales > 0.0):
+                raise ValueError(f"{name}: GPTQ scales must be finite and positive")
+            maximum_code = int(np.max(np.abs(codes.astype(np.int16))))
+            if maximum_code > quantized_max:
+                raise ValueError(f"{name}: GPTQ code exceeds requested range")
+            actual_source_sha256 = _source_weight_sha256(source)
+            if source_sha256 != actual_source_sha256:
+                raise ValueError(
+                    f"{name}: GPTQ calibration checkpoint does not match "
+                    "the source v105 projection"
+                )
+            matrices[name] = QuantizedMatrix(
+                name,
+                source.inputs,
+                source.outputs,
+                quantized_max,
+                np.ascontiguousarray(scales),
+                np.ascontiguousarray(codes),
+            )
+
+    expected = {_projection_key(matrix.name) for matrix in projections}
+    if set(matrices) != expected:
+        missing = sorted(expected - set(matrices))
+        extra = sorted(set(matrices) - expected)
+        raise ValueError(
+            f"GPTQ override projection set mismatch: missing={missing}, extra={extra}"
+        )
+    return QuantizedOverrides(
+        matrices, recipe, activation_quantizer, activation_scale_factor
+    )
+
+
+def _quantize(
+    matrix: Matrix,
+    quantized_max: int,
+    override: QuantizedMatrix | None = None,
+) -> tuple[bytes, int, int]:
     if matrix.values is None or matrix.payload_span is None:
         raise AssertionError("source projection has no retained FP32 payload")
-    values = np.asarray(matrix.values, dtype=np.float32, order="C")
-    max_abs = np.max(np.abs(values), axis=0).astype(np.float32)
-    scales = np.asarray(max_abs / np.float32(quantized_max), dtype=np.float32)
-    scales[max_abs == np.float32(0.0)] = np.float32(1.0)
-    if not np.isfinite(scales).all() or not np.all(scales > 0.0):
-        raise ValueError(f"{matrix.name}: invalid per-output quantized scale")
-    scaled = np.asarray(values / scales.reshape(1, -1), dtype=np.float32)
-    quantized_kn = np.clip(
-        np.rint(scaled), -quantized_max, quantized_max
-    ).astype(np.int8)
-    quantized_nk = np.ascontiguousarray(quantized_kn.T)
+    if override is None:
+        values = np.asarray(matrix.values, dtype=np.float32, order="C")
+        max_abs = np.max(np.abs(values), axis=0).astype(np.float32)
+        scales = np.asarray(max_abs / np.float32(quantized_max), dtype=np.float32)
+        scales[max_abs == np.float32(0.0)] = np.float32(1.0)
+        if not np.isfinite(scales).all() or not np.all(scales > 0.0):
+            raise ValueError(f"{matrix.name}: invalid per-output quantized scale")
+        scaled = np.asarray(values / scales.reshape(1, -1), dtype=np.float32)
+        quantized_kn = np.clip(
+            np.rint(scaled), -quantized_max, quantized_max
+        ).astype(np.int8)
+        quantized_nk = np.ascontiguousarray(quantized_kn.T)
+    else:
+        if (
+            override.inputs != matrix.inputs
+            or override.outputs != matrix.outputs
+            or override.quantized_max != quantized_max
+        ):
+            raise AssertionError("validated GPTQ override geometry changed")
+        scales = np.ascontiguousarray(override.scales, dtype=np.float32)
+        quantized_nk = np.ascontiguousarray(override.values, dtype=np.int8)
     packed = quantized_nk.tobytes(order="C")
     if b"\x80" in packed:
         raise AssertionError(f"{matrix.name}: symmetric quantizer emitted -128")
@@ -563,7 +689,10 @@ def _sha256_file(path: pathlib.Path) -> str:
 
 
 def convert(
-    source: pathlib.Path, destination: pathlib.Path, projection_bits: int = 8
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    projection_bits: int = 8,
+    gptq_overrides_path: pathlib.Path | None = None,
 ) -> None:
     source = source.resolve()
     destination = destination.resolve()
@@ -582,6 +711,13 @@ def convert(
     source_payload = _read_model(source)
     reader = NativeReader(source_payload, expected_version=105)
     profile = reader.parse()
+    gptq_overrides = (
+        _load_gptq_overrides(
+            gptq_overrides_path, reader.projections, quantized_max
+        )
+        if gptq_overrides_path is not None
+        else None
+    )
     replacements: list[tuple[int, int, bytes]] = [
         (*reader.version_span, b"106")
     ]
@@ -589,8 +725,13 @@ def convert(
     scale_bytes = 0
     fp32_projection_bytes = 0
     for matrix in reader.projections:
+        override = (
+            gptq_overrides.matrices[_projection_key(matrix.name)]
+            if gptq_overrides is not None
+            else None
+        )
         replacement, matrix_quantized_bytes, matrix_scale_bytes = _quantize(
-            matrix, quantized_max
+            matrix, quantized_max, override
         )
         assert matrix.payload_span is not None
         replacements.append((*matrix.payload_span, replacement))
@@ -635,6 +776,18 @@ def convert(
     print(f"profile={profile.name}")
     print(f"projection_count={len(reader.projections)}")
     print(f"projection_bits={projection_bits}")
+    print(
+        "projection_quantizer="
+        + (gptq_overrides.recipe if gptq_overrides is not None else "maxabs-rne")
+    )
+    print(
+        "activation_quantizer="
+        + (
+            gptq_overrides.activation_quantizer
+            if gptq_overrides is not None
+            else "row-sym"
+        )
+    )
     print(f"projection_fp32_bytes={fp32_projection_bytes}")
     print(f"projection_quantized_bytes={quantized_bytes}")
     print(f"projection_scale_bytes={scale_bytes}")
@@ -664,8 +817,21 @@ def main() -> None:
         "--projection-bits", type=int, choices=(7, 8), default=8,
         help="symmetric per-output projection weight bit width (default: 8)",
     )
+    parser.add_argument(
+        "--gptq-overrides",
+        type=pathlib.Path,
+        help=(
+            "calibrated cpuptq-gptq-v1 NPZ; its source-weight hashes and "
+            "projection geometry must exactly match the v105 input"
+        ),
+    )
     args = parser.parse_args()
-    convert(args.source, args.destination, args.projection_bits)
+    convert(
+        args.source,
+        args.destination,
+        args.projection_bits,
+        args.gptq_overrides,
+    )
 
 
 if __name__ == "__main__":
