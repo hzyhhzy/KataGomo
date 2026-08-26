@@ -40,7 +40,7 @@ void requireBoundary(bool condition, const string& message) {
     failBoundary(message);
 }
 
-bool hasRequiredAvx512Vnni() {
+bool hasRequiredCpuIsa() {
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
   int regs[4] = {};
   __cpuid(regs,0);
@@ -52,6 +52,17 @@ bool hasRequiredAvx512Vnni() {
   if(!osxsave || !avx)
     return false;
   const unsigned __int64 xcr0 = _xgetbv(0);
+#if defined(CPU_PTQ_AVX2_ONLY)
+  if((xcr0 & 0x6) != 0x6)
+    return false;
+  const bool sse41 = (regs[2] & (1 << 19)) != 0;
+  const bool sse42 = (regs[2] & (1 << 20)) != 0;
+  const bool popcnt = (regs[2] & (1 << 23)) != 0;
+  const bool fma = (regs[2] & (1 << 12)) != 0;
+  __cpuidex(regs,7,0);
+  const bool avx2 = (regs[1] & (1 << 5)) != 0;
+  return sse41 && sse42 && popcnt && fma && avx2;
+#else
   if((xcr0 & 0xE6) != 0xE6)
     return false;
   __cpuidex(regs,7,0);
@@ -61,6 +72,7 @@ bool hasRequiredAvx512Vnni() {
   const bool avx512vl = (regs[1] & (1u << 31)) != 0;
   const bool avx512vnni = (regs[2] & (1 << 11)) != 0;
   return avx512f && avx512dq && avx512bw && avx512vl && avx512vnni;
+#endif
 #elif (defined(__x86_64__) || defined(__i386__)) && defined(__GNUC__)
   unsigned int eax = 0;
   unsigned int ebx = 0;
@@ -71,6 +83,16 @@ bool hasRequiredAvx512Vnni() {
   if((ecx & bit_OSXSAVE) == 0 || (ecx & bit_AVX) == 0)
     return false;
   const uint64_t xcr0 = _xgetbv(0);
+#if defined(CPU_PTQ_AVX2_ONLY)
+  if((xcr0 & 0x6) != 0x6)
+    return false;
+  if((ecx & bit_SSE4_1) == 0 || (ecx & bit_SSE4_2) == 0 ||
+     (ecx & bit_POPCNT) == 0 || (ecx & bit_FMA) == 0)
+    return false;
+  if(!__get_cpuid_count(7,0,&eax,&ebx,&ecx,&edx))
+    return false;
+  return (ebx & bit_AVX2) != 0;
+#else
   if((xcr0 & 0xE6) != 0xE6)
     return false;
   if(!__get_cpuid_count(7,0,&eax,&ebx,&ecx,&edx))
@@ -80,6 +102,7 @@ bool hasRequiredAvx512Vnni() {
          (ebx & bit_AVX512BW) != 0 &&
          (ebx & bit_AVX512VL) != 0 &&
          (ecx & bit_AVX512VNNI) != 0;
+#endif
 #else
   return false;
 #endif
@@ -141,12 +164,23 @@ struct ComputeHandle {
   ComputeHandle(const ComputeContext* ctx, const LoadedModel& model)
     : context(ctx) {
     CpuPtq::TensorMap tensors = CpuPtq::makeKernelTensors(model.modelDesc,*ctx->profile);
-    if(ctx->profile->kind == CpuPtq::ProfileKind::B16C128H4F384)
-      kernel = CpuPtq::createB16Kernel(tensors);
-    else if(ctx->profile->kind == CpuPtq::ProfileKind::B11C96H3F256)
-      kernel = CpuPtq::createB11Kernel(tensors);
-    else
-      failBoundary("selected profile has no compiled kernel");
+    using Factory = std::unique_ptr<CpuPtq::Kernel> (*)(const CpuPtq::TensorMap&);
+    struct Entry {
+      CpuPtq::ProfileKind kind;
+      Factory factory;
+    };
+    static constexpr Entry entries[] = {
+      {CpuPtq::ProfileKind::B24C192H6F512,CpuPtq::createB24Kernel},
+      {CpuPtq::ProfileKind::B16C128H4F384,CpuPtq::createB16Kernel},
+      {CpuPtq::ProfileKind::B11C96H3F256,CpuPtq::createB11Kernel},
+    };
+    for(const Entry& entry: entries) {
+      if(entry.kind == ctx->profile->kind) {
+        kernel = entry.factory(tensors);
+        return;
+      }
+    }
+    failBoundary("selected profile has no compiled kernel");
   }
 };
 
@@ -182,7 +216,11 @@ void NeuralNet::globalInitialize() {
 void NeuralNet::globalCleanup() {}
 
 void NeuralNet::printDevices() {
+#if defined(CPU_PTQ_AVX2_ONLY)
+  cout << "CPU-PTQ device 0: AVX2/FMA single-thread (AVX-512/VNNI disabled)" << endl;
+#else
   cout << "CPU-PTQ device 0: AVX-512 VNNI single-thread" << endl;
+#endif
 }
 
 ComputeContext* NeuralNet::createComputeContext(
@@ -208,7 +246,15 @@ ComputeContext* NeuralNet::createComputeContext(
                   "board must be exactly 15x15");
   requireBoundary(useFP16Mode != enabled_t::True,"FP16 is unsupported");
   requireBoundary(useNHWCMode != enabled_t::True,"backend internal NHWC mode is unsupported");
-  requireBoundary(hasRequiredAvx512Vnni(),"CPU/OS must expose AVX-512F/DQ/BW/VL and VNNI");
+#if defined(CPU_PTQ_AVX2_ONLY)
+  requireBoundary(
+    hasRequiredCpuIsa(),
+    "CPU/OS must expose SSE4.1/SSE4.2/POPCNT/AVX/AVX2/FMA and AVX XSAVE state");
+#else
+  requireBoundary(
+    hasRequiredCpuIsa(),
+    "CPU/OS must expose AVX-512F/DQ/BW/VL and VNNI");
+#endif
   const CpuPtq::ProfileSpec& profile = CpuPtq::selectProfile(loadedModel->modelDesc);
   if(logger != nullptr)
     logger->write("CPU-PTQ backend: selected " + string(profile.name));

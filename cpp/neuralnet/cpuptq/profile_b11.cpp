@@ -6,9 +6,6 @@
 #define CPU_PTQ_FFN_CHANNELS 256
 #define CPU_PTQ_BLOCKS 11
 #define CPU_PTQ_VALUE_HIDDEN_CHANNELS 64
-#define KTCP_ATTENTION_VNNI 1
-#define KTCP_ATTENTION_PV_INT8 1
-#define KTCP_POSTOPS_AVX512 1
 
 #include "kernel_impl.inc"
 

@@ -212,12 +212,15 @@ string prefixWire(const vector<string>& tokens, size_t count) {
 
 string quantizedMatMulWire(
   const vector<float>& scales,
-  const vector<int8_t>& weights
+  const vector<int8_t>& weights,
+  int quantizedMax = 127
 ) {
   requireContract(scales.size() == 3,"v106 test scale size is wrong");
   requireContract(weights.size() == 6,"v106 test weight size is wrong");
   ostringstream out(ios::out | ios::binary);
-  out << "quantized.projection\n2\n3\n@S8P@";
+  requireContract(quantizedMax == 63 || quantizedMax == 127,
+    "v106 test quantized maximum is invalid");
+  out << "quantized.projection\n2\n3\n@S" << (quantizedMax == 63 ? 7 : 8) << "P@";
   out.write(reinterpret_cast<const char*>(scales.data()),
             (streamsize)(scales.size() * sizeof(float)));
   out.write(reinterpret_cast<const char*>(weights.data()),
@@ -236,9 +239,17 @@ void testV106QuantizedMatMul() {
   requireContract(layer.inChannels == 2 && layer.outChannels == 3,
     "v106 S8 shape changed");
   requireContract(layer.isQuantized,"v106 S8 flag was not retained");
+  requireContract(layer.quantizedMax == 127,"v106 S8 range changed");
   requireContract(layer.weights.empty(),"v106 S8 layer retained FP32 weights");
   requireContract(layer.weightScales == scales,"v106 S8 scales changed");
   requireContract(layer.quantizedWeights == weights,"v106 S8 weights changed");
+
+  const vector<int8_t> s7Weights = {-63,-3,0,2,17,63};
+  istringstream s7In(quantizedMatMulWire(scales,s7Weights,63),ios::in | ios::binary);
+  MatMulLayerDesc s7Layer(s7In,true,true);
+  requireFullyConsumed(s7In,"v106 S7 matmul");
+  requireContract(s7Layer.quantizedMax == 63,"v106 S7 range changed");
+  requireContract(s7Layer.quantizedWeights == s7Weights,"v106 S7 weights changed");
 
   vector<int8_t> withNegative128 = weights;
   withNegative128[2] = numeric_limits<int8_t>::min();
@@ -246,6 +257,13 @@ void testV106QuantizedMatMul() {
     istringstream bad(quantizedMatMulWire(scales,withNegative128),ios::in | ios::binary);
     (void)MatMulLayerDesc(bad,true,true);
   },"v106 S8 -128 sentinel");
+
+  vector<int8_t> outOfS7Range = s7Weights;
+  outOfS7Range[2] = 64;
+  expectStringError([&](){
+    istringstream bad(quantizedMatMulWire(scales,outOfS7Range,63),ios::in | ios::binary);
+    (void)MatMulLayerDesc(bad,true,true);
+  },"v106 S7 range");
 
   vector<float> zeroScale = scales;
   zeroScale[1] = 0.0f;

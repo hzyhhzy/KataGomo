@@ -2,13 +2,14 @@
 """Convert a strict native v105 Transformer model to CPU-PTQ v106.
 
 Version 106 replaces each Transformer Q/K/V/O and SwiGLU up/gate/down FP32
-matrix with a canonical per-output-channel symmetric S8 block. The canonical
-layout is deliberately independent of MLAS: scales are little-endian FP32 and
-weights are output-major with input channels contiguous. The CPU backend only
-has to transpose and pack these already-quantized weights at load time.
+matrix with a canonical per-output-channel symmetric S7 or S8 block. The
+canonical layout is deliberately independent of MLAS: scales are little-endian
+FP32 and weights are output-major with input channels contiguous. The CPU
+backend only has to transpose and pack these already-quantized weights at load
+time.
 
 All other native weights remain byte-for-byte identical to v105. This tool is
-strictly scoped to the two compiled CPU profiles and validates the complete
+strictly scoped to the three compiled CPU profiles and validates the complete
 native body before writing an atomic, deterministic .bin.gz artifact.
 """
 
@@ -28,6 +29,7 @@ import numpy as np
 
 FP32_MARKER = b"@BIN@"
 S8_MARKER = b"@S8P@"
+S7_MARKER = b"@S7P@"
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class Profile:
 PROFILES = (
     Profile("b11c96h3-f256", 22, 11, 96, 3, 32, 256, 64),
     Profile("b16c128h4-f384", 32, 16, 128, 4, 32, 384, 96),
+    Profile("b24c192h6-f512", 48, 24, 192, 6, 32, 512, 96),
 )
 
 
@@ -62,6 +65,7 @@ class QuantizedMatrix:
     name: str
     inputs: int
     outputs: int
+    quantized_max: int
     scales: np.ndarray
     values: np.ndarray
 
@@ -154,8 +158,15 @@ class NativeReader:
             raise ValueError(f"{field}: non-finite native FP32 weight")
         return (values.copy() if retain else None), (start, self.stream.tell())
 
-    def s8_weights(self, inputs: int, outputs: int, field: str) -> None:
-        self._marker_start(S8_MARKER, field)
+    def quantized_weights(self, inputs: int, outputs: int, field: str) -> None:
+        marker_start = self.stream.tell()
+        try:
+            self._marker_start(S8_MARKER, field)
+            quantized_max = 127
+        except ValueError:
+            self.stream.seek(marker_start)
+            self._marker_start(S7_MARKER, field)
+            quantized_max = 63
         scale_raw = self.stream.read(outputs * 4)
         if len(scale_raw) != outputs * 4:
             raise EOFError(f"{field}: truncated v106 scale block")
@@ -164,20 +175,26 @@ class NativeReader:
             raise ValueError(f"{field}: v106 scales must be finite and positive")
         quantized = self.stream.read(inputs * outputs)
         if len(quantized) != inputs * outputs:
-            raise EOFError(f"{field}: truncated v106 S8 block")
+            raise EOFError(f"{field}: truncated v106 S7/S8 block")
         if b"\x80" in quantized:
-            raise ValueError(f"{field}: symmetric v106 S8 block contains -128")
+            raise ValueError(f"{field}: symmetric v106 block contains -128")
         self.quantized_projections.append(
             QuantizedMatrix(
                 field,
                 inputs,
                 outputs,
+                quantized_max,
                 scales.copy(),
                 np.frombuffer(quantized, dtype=np.int8)
                 .reshape(outputs, inputs)
                 .copy(),
             )
         )
+        maximum_code = int(np.max(np.abs(
+            self.quantized_projections[-1].values.astype(np.int16)
+        )))
+        if maximum_code > quantized_max:
+            raise ValueError(f"{field}: quantized code exceeds declared S7/S8 range")
         self.quantized_projection_count += 1
 
     def conv(self) -> tuple[int, int, int, int, int, int]:
@@ -195,7 +212,7 @@ class NativeReader:
         if inputs <= 0 or outputs <= 0:
             raise ValueError(f"{name}: invalid native matmul descriptor")
         if projection and self.expected_version == 106:
-            self.s8_weights(inputs, outputs, name)
+            self.quantized_weights(inputs, outputs, name)
             return Matrix(name, inputs, outputs, None, None)
         values, span = self.fp32_weights(
             inputs * outputs, name, retain=projection
@@ -495,23 +512,25 @@ def _read_model(path: pathlib.Path) -> bytes:
     raise ValueError("input must end in .bin or .bin.gz (ONNX is not accepted)")
 
 
-def _quantize(matrix: Matrix) -> tuple[bytes, int, int]:
+def _quantize(matrix: Matrix, quantized_max: int) -> tuple[bytes, int, int]:
     if matrix.values is None or matrix.payload_span is None:
         raise AssertionError("source projection has no retained FP32 payload")
     values = np.asarray(matrix.values, dtype=np.float32, order="C")
     max_abs = np.max(np.abs(values), axis=0).astype(np.float32)
-    scales = np.asarray(max_abs / np.float32(127.0), dtype=np.float32)
+    scales = np.asarray(max_abs / np.float32(quantized_max), dtype=np.float32)
     scales[max_abs == np.float32(0.0)] = np.float32(1.0)
     if not np.isfinite(scales).all() or not np.all(scales > 0.0):
-        raise ValueError(f"{matrix.name}: invalid per-output S8 scale")
+        raise ValueError(f"{matrix.name}: invalid per-output quantized scale")
     scaled = np.asarray(values / scales.reshape(1, -1), dtype=np.float32)
-    quantized_kn = np.clip(np.rint(scaled), -127, 127).astype(np.int8)
+    quantized_kn = np.clip(
+        np.rint(scaled), -quantized_max, quantized_max
+    ).astype(np.int8)
     quantized_nk = np.ascontiguousarray(quantized_kn.T)
     packed = quantized_nk.tobytes(order="C")
     if b"\x80" in packed:
         raise AssertionError(f"{matrix.name}: symmetric quantizer emitted -128")
     replacement = (
-        S8_MARKER
+        (S7_MARKER if quantized_max == 63 else S8_MARKER)
         + np.ascontiguousarray(scales, dtype="<f4").tobytes(order="C")
         + packed
     )
@@ -543,7 +562,9 @@ def _sha256_file(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def convert(source: pathlib.Path, destination: pathlib.Path) -> None:
+def convert(
+    source: pathlib.Path, destination: pathlib.Path, projection_bits: int = 8
+) -> None:
     source = source.resolve()
     destination = destination.resolve()
     if not source.is_file():
@@ -554,6 +575,9 @@ def convert(source: pathlib.Path, destination: pathlib.Path) -> None:
         raise ValueError("destination must end in .bin.gz")
     if destination.exists():
         raise ValueError(f"refusing to overwrite existing output: {destination}")
+    if projection_bits not in (7, 8):
+        raise ValueError("projection_bits must be 7 or 8")
+    quantized_max = 63 if projection_bits == 7 else 127
 
     source_payload = _read_model(source)
     reader = NativeReader(source_payload, expected_version=105)
@@ -561,14 +585,16 @@ def convert(source: pathlib.Path, destination: pathlib.Path) -> None:
     replacements: list[tuple[int, int, bytes]] = [
         (*reader.version_span, b"106")
     ]
-    s8_bytes = 0
+    quantized_bytes = 0
     scale_bytes = 0
     fp32_projection_bytes = 0
     for matrix in reader.projections:
-        replacement, matrix_s8_bytes, matrix_scale_bytes = _quantize(matrix)
+        replacement, matrix_quantized_bytes, matrix_scale_bytes = _quantize(
+            matrix, quantized_max
+        )
         assert matrix.payload_span is not None
         replacements.append((*matrix.payload_span, replacement))
-        s8_bytes += matrix_s8_bytes
+        quantized_bytes += matrix_quantized_bytes
         scale_bytes += matrix_scale_bytes
         fp32_projection_bytes += matrix.inputs * matrix.outputs * 4
 
@@ -605,11 +631,12 @@ def convert(source: pathlib.Path, destination: pathlib.Path) -> None:
         destination.unlink(missing_ok=True)
         raise RuntimeError("v106 deterministic gzip round-trip verification failed")
 
-    canonical_bytes = s8_bytes + scale_bytes
+    canonical_bytes = quantized_bytes + scale_bytes
     print(f"profile={profile.name}")
     print(f"projection_count={len(reader.projections)}")
+    print(f"projection_bits={projection_bits}")
     print(f"projection_fp32_bytes={fp32_projection_bytes}")
-    print(f"projection_s8_bytes={s8_bytes}")
+    print(f"projection_quantized_bytes={quantized_bytes}")
     print(f"projection_scale_bytes={scale_bytes}")
     print(
         f"projection_storage_ratio="
@@ -627,13 +654,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Quantize the seven Transformer projections per layer in a strict "
-            "native v105 b11c96 or b16c128 model and write CPU-PTQ v106"
+            "native v105 b11c96, b16c128, or b24c192 model and write "
+            "CPU-PTQ v106"
         )
     )
     parser.add_argument("source", type=pathlib.Path)
     parser.add_argument("destination", type=pathlib.Path)
+    parser.add_argument(
+        "--projection-bits", type=int, choices=(7, 8), default=8,
+        help="symmetric per-output projection weight bit width (default: 8)",
+    )
     args = parser.parse_args()
-    convert(args.source, args.destination)
+    convert(args.source, args.destination, args.projection_bits)
 
 
 if __name__ == "__main__":

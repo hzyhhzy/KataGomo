@@ -21,6 +21,7 @@ constexpr int SCORE_VALUE_SIZE = 6;
 constexpr int OWNERSHIP_SIZE = BOARD_AREA;
 
 enum class ProfileKind {
+  B24C192H6F512,
   B16C128H4F384,
   B11C96H3F256,
 };
@@ -36,6 +37,7 @@ struct ProfileSpec {
   int valueHiddenChannels;
 };
 
+const ProfileSpec& b24Profile();
 const ProfileSpec& b16Profile();
 const ProfileSpec& b11Profile();
 const ProfileSpec& selectProfile(const ModelDesc& model);
@@ -47,6 +49,7 @@ struct Tensor {
   // with input channels contiguous, and scales has one entry per output.
   std::vector<int8_t> quantizedValues;
   std::vector<float> quantizedScales;
+  int quantizedMax = 0;
 };
 using TensorMap = std::unordered_map<std::string,Tensor>;
 
@@ -78,6 +81,7 @@ class Kernel {
   ) = 0;
 };
 
+std::unique_ptr<Kernel> createB24Kernel(const TensorMap& tensors);
 std::unique_ptr<Kernel> createB16Kernel(const TensorMap& tensors);
 std::unique_ptr<Kernel> createB11Kernel(const TensorMap& tensors);
 

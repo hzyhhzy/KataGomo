@@ -87,31 +87,36 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
   }
 }
 
-static void readPerOutputS8(
+static void readPerOutputQuantized(
   istream& in,
   size_t inChannels,
   size_t outChannels,
   bool binaryFloats,
   const string& name,
+  int& quantizedMax,
   vector<float>& scales,
   vector<int8_t>& weights
 ) {
   if(!binaryFloats)
-    throw StringError(name + ": v106 S8 projection requires a binary .bin.gz model");
+    throw StringError(name + ": v106 quantized projection requires a binary .bin.gz model");
 
   int numCharsBeforeAt = 0;
   while((char)in.get() != '@') {
     numCharsBeforeAt++;
     if(numCharsBeforeAt > 100 || in.fail())
-      throw StringError(name + ": could not find v106 @S8P@ projection block");
+      throw StringError(name + ": could not find v106 quantized projection block");
   }
   string marker;
   marker += (char)in.get();
   marker += (char)in.get();
   marker += (char)in.get();
   marker += (char)in.get();
-  if(marker != "S8P@")
-    throw StringError(name + ": did not find expected v106 @S8P@ projection block");
+  if(marker == "S7P@")
+    quantizedMax = 63;
+  else if(marker == "S8P@")
+    quantizedMax = 127;
+  else
+    throw StringError(name + ": did not find expected v106 @S7P@ or @S8P@ projection block");
 
   scales.resize(outChannels);
   static_assert(sizeof(float) == 4,"v106 requires 32-bit float scales");
@@ -136,11 +141,10 @@ static void readPerOutputS8(
   weights.resize(numWeights);
   in.read(reinterpret_cast<char*>(weights.data()),numWeights);
   if(in.fail())
-    throw StringError(name + ": truncated v106 S8 projection weights");
-  for(int8_t weight: weights) {
-    if(weight == numeric_limits<int8_t>::min())
-      throw StringError(name + ": v106 symmetric S8 projection contains forbidden -128");
-  }
+    throw StringError(name + ": truncated v106 S7/S8 projection weights");
+  for(int8_t weight: weights)
+    if(weight < -quantizedMax || weight > quantizedMax)
+      throw StringError(name + ": v106 symmetric projection code exceeds its declared range");
 }
 
 //-----------------------------------------------------------------------------
@@ -331,13 +335,14 @@ ActivationLayerDesc& ActivationLayerDesc::operator=(ActivationLayerDesc&& other)
 //-----------------------------------------------------------------------------
 
 MatMulLayerDesc::MatMulLayerDesc()
-  : inChannels(0), outChannels(0), isQuantized(false) {}
+  : inChannels(0), outChannels(0), isQuantized(false), quantizedMax(0) {}
 
 MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats, bool quantized) {
   in >> name;
   in >> inChannels;
   in >> outChannels;
   isQuantized = quantized;
+  quantizedMax = 0;
 
   if(in.fail())
     throw StringError(name + ": matmullayer failed to parse num channels");
@@ -345,9 +350,9 @@ MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats, bool quantized)
     throw StringError(name + ": number of in and out channels must be positive");
 
   if(isQuantized) {
-    readPerOutputS8(
+    readPerOutputQuantized(
       in,(size_t)inChannels,(size_t)outChannels,binaryFloats,name,
-      weightScales,quantizedWeights);
+      quantizedMax,weightScales,quantizedWeights);
   }
   else {
     // Model file order is ic,oc. Cublas order used is also ic,oc since
@@ -376,6 +381,7 @@ MatMulLayerDesc& MatMulLayerDesc::operator=(MatMulLayerDesc&& other) {
   inChannels = other.inChannels;
   outChannels = other.outChannels;
   isQuantized = other.isQuantized;
+  quantizedMax = other.quantizedMax;
   weights = std::move(other.weights);
   quantizedWeights = std::move(other.quantizedWeights);
   weightScales = std::move(other.weightScales);

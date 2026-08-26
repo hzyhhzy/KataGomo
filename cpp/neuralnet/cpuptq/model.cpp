@@ -173,7 +173,7 @@ void validateProfile(const ModelDesc& model, const ProfileSpec& profile) {
 }
 
 vector<float> outputMajor(const MatMulLayerDesc& layer) {
-  requireBoundary(!layer.isQuantized,layer.name + " unexpectedly contains S8 weights");
+  requireBoundary(!layer.isQuantized,layer.name + " unexpectedly contains quantized weights");
   vector<float> result((size_t)layer.inChannels * layer.outChannels);
   for(int output = 0; output < layer.outChannels; output++) {
     for(int input = 0; input < layer.inChannels; input++) {
@@ -204,18 +204,22 @@ void addQuantizedMatMul(
   const string& name,
   const MatMulLayerDesc& layer
 ) {
-  requireBoundary(layer.isQuantized,layer.name + " must use v106 S8 storage");
+  requireBoundary(layer.isQuantized,layer.name + " must use v106 S7/S8 storage");
   requireBoundary(
     layer.quantizedWeights.size() == (size_t)layer.inChannels * layer.outChannels,
-    layer.name + " S8 element count mismatch");
+    layer.name + " quantized element count mismatch");
   requireBoundary(
     layer.weightScales.size() == (size_t)layer.outChannels,
-    layer.name + " S8 scale count mismatch");
+    layer.name + " quantized scale count mismatch");
+  requireBoundary(
+    layer.quantizedMax == 63 || layer.quantizedMax == 127,
+    layer.name + " quantized range must be S7 or S8");
   requireBoundary(layer.weights.empty(),layer.name + " retained an FP32 projection copy");
   Tensor tensor;
   tensor.shape = {(uint64_t)layer.outChannels,(uint64_t)layer.inChannels};
   tensor.quantizedValues = layer.quantizedWeights;
   tensor.quantizedScales = layer.weightScales;
+  tensor.quantizedMax = layer.quantizedMax;
   const bool inserted = tensors.emplace(name,std::move(tensor)).second;
   requireBoundary(inserted,name + " tensor was inserted twice");
 }
@@ -293,6 +297,13 @@ const ProfileSpec& b16Profile() {
   return profile;
 }
 
+const ProfileSpec& b24Profile() {
+  static const ProfileSpec profile = {
+    ProfileKind::B24C192H6F512,"b24c192h6-f512",24,192,6,32,512,96
+  };
+  return profile;
+}
+
 const ProfileSpec& b11Profile() {
   static const ProfileSpec profile = {
     ProfileKind::B11C96H3F256,"b11c96h3-f256",11,96,3,32,256,64
@@ -302,15 +313,14 @@ const ProfileSpec& b11Profile() {
 
 const ProfileSpec& selectProfile(const ModelDesc& model) {
   requireBoundary(model.version == 106,"only v106 CPU-PTQ models are accepted");
-  if(geometryMatches(model,b16Profile())) {
-    validateProfile(model,b16Profile());
-    return b16Profile();
+  const ProfileSpec* profiles[] = {&b24Profile(),&b16Profile(),&b11Profile()};
+  for(const ProfileSpec* profile: profiles) {
+    if(geometryMatches(model,*profile)) {
+      validateProfile(model,*profile);
+      return *profile;
+    }
   }
-  if(geometryMatches(model,b11Profile())) {
-    validateProfile(model,b11Profile());
-    return b11Profile();
-  }
-  failBoundary("model does not match a compiled b16c128 or b11c96 profile");
+  failBoundary("model does not match a compiled b24c192, b16c128, or b11c96 profile");
 }
 
 const vector<float>& requireTensor(
@@ -324,7 +334,7 @@ const vector<float>& requireTensor(
   if(found->second.shape != vector<uint64_t>(shape))
     failBoundary("shape mismatch for tensor " + name);
   if(!found->second.quantizedValues.empty() || !found->second.quantizedScales.empty())
-    failBoundary("expected FP32 tensor but found S8 tensor " + name);
+    failBoundary("expected FP32 tensor but found quantized tensor " + name);
   return found->second.values;
 }
 
@@ -339,14 +349,14 @@ const Tensor& requireQuantizedTensor(
   if(found->second.shape != vector<uint64_t>(shape))
     failBoundary("shape mismatch for tensor " + name);
   if(!found->second.values.empty())
-    failBoundary("expected S8 tensor but found FP32 tensor " + name);
+    failBoundary("expected quantized tensor but found FP32 tensor " + name);
   if(found->second.shape.size() != 2)
-    failBoundary("S8 tensor must be a matrix " + name);
+    failBoundary("quantized tensor must be a matrix " + name);
   const size_t outputs = (size_t)found->second.shape[0];
   const size_t inputs = (size_t)found->second.shape[1];
   if(found->second.quantizedValues.size() != outputs * inputs ||
      found->second.quantizedScales.size() != outputs)
-    failBoundary("malformed S8 tensor payload " + name);
+    failBoundary("malformed quantized tensor payload " + name);
   return found->second;
 }
 

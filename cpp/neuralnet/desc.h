@@ -75,8 +75,10 @@ struct MatMulLayerDesc {
   int outChannels;
   // Ordinary native models use FP32 weights in input-major/output-minor
   // order. CPU-PTQ v106 transformer projections instead use canonical
-  // output-major S8 weights with one positive FP32 scale per output.
+  // output-major symmetric S7/S8 weights with one positive FP32 scale per
+  // output. quantizedMax is 63 for S7 and 127 for S8.
   bool isQuantized;
+  int quantizedMax;
   std::vector<float> weights;
   std::vector<int8_t> quantizedWeights;
   std::vector<float> weightScales;

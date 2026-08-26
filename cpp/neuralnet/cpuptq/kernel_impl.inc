@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -182,6 +183,21 @@ std::vector<T> padded_vector(size_t elements) {
   return std::vector<T>(elements + extra);
 }
 
+struct AlignedByteDeleter {
+  void operator()(uint8_t* value) const noexcept {
+    _aligned_free(value);
+  }
+};
+
+using AlignedByteBuffer = std::unique_ptr<uint8_t, AlignedByteDeleter>;
+
+AlignedByteBuffer allocate_mlas_buffer(size_t bytes) {
+  uint8_t* value = static_cast<uint8_t*>(
+      _aligned_malloc(bytes, MlasGetPreferredBufferAlignment()));
+  if (value == nullptr) throw std::bad_alloc();
+  return AlignedByteBuffer(value);
+}
+
 class Operator {
  public:
   Operator() = default;
@@ -220,23 +236,25 @@ std::vector<float> zero_bias(size_t channels) {
   return std::vector<float>(channels, 0.0f);
 }
 
-struct CanonicalS8Weights {
+struct CanonicalQuantizedWeights {
   std::vector<int8_t> values;
   std::vector<float> scales;
+  int quantized_max = 0;
 };
 
-CanonicalS8Weights copy_s8_weights(
+CanonicalQuantizedWeights copy_quantized_weights(
     const TensorMap& tensors,
     const std::string& name,
     std::initializer_list<uint64_t> dims) {
   const Tensor& tensor = requireQuantizedTensor(tensors, name, dims);
-  return CanonicalS8Weights{tensor.quantizedValues, tensor.quantizedScales};
+  return CanonicalQuantizedWeights{
+      tensor.quantizedValues, tensor.quantizedScales, tensor.quantizedMax};
 }
 
-CanonicalS8Weights concatenate_s8_rows(
+CanonicalQuantizedWeights concatenate_quantized_rows(
     const std::vector<const Tensor*>& branches,
     size_t input_channels) {
-  CanonicalS8Weights result;
+  CanonicalQuantizedWeights result;
   size_t elements = 0;
   size_t outputs = 0;
   for (const Tensor* branch : branches) {
@@ -246,6 +264,13 @@ CanonicalS8Weights concatenate_s8_rows(
         branch->quantizedScales.size() != branch->shape[0] ||
         !branch->values.empty()) {
       throw std::runtime_error("Cannot concatenate malformed S8 projection weights");
+    }
+    if (branch->quantizedMax != 63 && branch->quantizedMax != 127) {
+      throw std::runtime_error("Cannot concatenate invalid S7/S8 projection weights");
+    }
+    if (result.quantized_max == 0) result.quantized_max = branch->quantizedMax;
+    if (result.quantized_max != branch->quantizedMax) {
+      throw std::runtime_error("Cannot concatenate mixed S7/S8 projection weights");
     }
     elements += branch->quantizedValues.size();
     outputs += branch->quantizedScales.size();
@@ -306,6 +331,71 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
       size_t row_count,
       size_t column_count,
       size_t accumulator_stride) const override {
+#if defined(KTCP_POSTOPS_AVX2)
+    if (start_column == 0 && column_count == 3 * kC) {
+      for (size_t row = start_row; row < start_row + row_count; ++row) {
+        const int32_t* source = accumulators + row * accumulator_stride;
+        for (size_t projection = 0; projection < 2; ++projection) {
+          float* projection_output = projection == 0 ? output_.q : output_.k;
+          const float* gamma =
+              projection == 0 ? output_.q_gamma : output_.k_gamma;
+          for (size_t head = 0; head < kHeads; ++head) {
+            const size_t channel_base =
+                projection * kC + head * kHeadDim;
+            __m256 values[4];
+            __m256 squares = _mm256_setzero_ps();
+            for (size_t block = 0; block < 4; ++block) {
+              values[block] = _mm256_mul_ps(
+                  _mm256_cvtepi32_ps(_mm256_loadu_si256(
+                      reinterpret_cast<const __m256i*>(
+                          source + channel_base + block * 8))),
+                  _mm256_loadu_ps(scales_ + channel_base + block * 8));
+              squares = _mm256_fmadd_ps(
+                  values[block], values[block], squares);
+            }
+            const float inv_rms = 1.0f / std::sqrt(
+                horizontal_sum(squares) / static_cast<float>(kHeadDim) +
+                kRmsEpsilon);
+            const __m256 norm_scale = _mm256_set1_ps(inv_rms);
+            const size_t rope_base =
+                (row * kHeads + head) * kHeadDim;
+            float* destination = projection_output +
+                (head * kS + row) * kHeadDim;
+            for (size_t block = 0; block < 4; ++block) {
+              const size_t channel = block * 8;
+              const __m256 normalized = _mm256_mul_ps(
+                  _mm256_mul_ps(
+                      values[block], _mm256_loadu_ps(gamma + channel)),
+                  norm_scale);
+              const __m256 swapped = _mm256_permute_ps(normalized, 0xb1);
+              const __m256 rotated = _mm256_fmadd_ps(
+                  swapped,
+                  _mm256_loadu_ps(output_.sine + rope_base + channel),
+                  _mm256_mul_ps(
+                      normalized,
+                      _mm256_loadu_ps(
+                          output_.cosine + rope_base + channel)));
+              _mm256_storeu_ps(destination + channel, rotated);
+            }
+          }
+        }
+        for (size_t channel = 0; channel < kC; channel += 8) {
+          const size_t source_column = 2 * kC + channel;
+          const __m256 values = _mm256_mul_ps(
+              _mm256_cvtepi32_ps(_mm256_loadu_si256(
+                  reinterpret_cast<const __m256i*>(
+                      source + source_column))),
+              _mm256_loadu_ps(scales_ + source_column));
+          const size_t head = channel / kHeadDim;
+          const size_t within_head = channel % kHeadDim;
+          _mm256_storeu_ps(
+              output_.v + (head * kS + row) * kHeadDim + within_head,
+              values);
+        }
+      }
+      return;
+    }
+#endif
 #if defined(KTCP_POSTOPS_AVX512)
     if (start_column == 0 && column_count == 3 * kC) {
       for (size_t row = start_row; row < start_row + row_count; ++row) {
@@ -408,7 +498,7 @@ class QkvRopeOutputProcessor final : public MLAS_QGEMM_OUTPUT_PROCESSOR {
                 values[pair_channel] * gamma[pair_channel] * inv_rms;
             const float second =
                 values[pair_channel + 1] * gamma[pair_channel + 1] * inv_rms;
-#if defined(KTCP_POSTOPS_AVX512)
+#if defined(KTCP_POSTOPS_AVX512) || defined(KTCP_POSTOPS_AVX2)
             const size_t table =
                 (row * kHeads + head) * kHeadDim + pair * 2;
             const float cosine = output_.cosine[table];
@@ -662,6 +752,9 @@ class FullyConnected {
     }
 
     if (mode_ == KTCP_MODE_FP32) {
+#if defined(CPU_PTQ_AVX2_ONLY)
+      initialize_avx2_fp32(input, output);
+#else
       xnn_operator_t raw = nullptr;
       check_xnn(
           xnn_create_fully_connected_nc_f32(
@@ -677,16 +770,20 @@ class FullyConnected {
       check_xnn(
           xnn_setup_fully_connected_nc_f32(op_.get(), input, output),
           "xnn_setup_fully_connected_nc_f32");
+#endif
       return;
     }
     if (mode_ == KTCP_MODE_MLAS_U8S8) {
       throw std::runtime_error(
-          "MLAS projection requires canonical v106 S8 weights");
+          "MLAS projection requires canonical v106 quantized weights");
     }
     if (mode_ != KTCP_MODE_QD8) {
       throw std::runtime_error("Unsupported projection mode");
     }
 
+#if defined(CPU_PTQ_AVX2_ONLY)
+    throw std::runtime_error("The AVX2 backend does not provide XNNPACK QD8");
+#else
     quantized_input_ = padded_vector<int8_t>(rows_ * input_channels_);
     quantization_params_.resize(rows_ + XNN_EXTRA_QUANTIZATION_PARAMS);
     quantized_weights_ = padded_vector<int8_t>(weights_.size());
@@ -738,6 +835,7 @@ class FullyConnected {
         xnn_setup_fully_connected_nc_qd8_f32_qc8w(
             op_.get(), quantized_input_.data(), output, quantization_params_.data()),
         "xnn_setup_fully_connected_nc_qd8_f32_qc8w");
+#endif
   }
 
   FullyConnected(
@@ -745,7 +843,7 @@ class FullyConnected {
       size_t rows,
       size_t input_channels,
       size_t output_channels,
-      CanonicalS8Weights weights,
+      CanonicalQuantizedWeights weights,
       std::vector<float> bias,
       const float* input,
       float* output,
@@ -758,22 +856,36 @@ class FullyConnected {
         output_channels_(output_channels),
         bias_(std::move(bias)) {
     if (mode_ != KTCP_MODE_MLAS_U8S8) {
-      throw std::runtime_error("Canonical S8 weights require the MLAS U8S8 path");
+      throw std::runtime_error("Canonical quantized weights require the MLAS U8S8 path");
     }
     if (weights.values.size() != input_channels_ * output_channels_ ||
         weights.scales.size() != output_channels_ ||
         bias_.size() != output_channels_) {
-      throw std::runtime_error("Canonical S8 weight/bias size mismatch");
+      throw std::runtime_error("Canonical quantized weight/bias size mismatch");
     }
+#if defined(KTCP_MLAS_AVX2_S7_WEIGHTS)
+    if (weights.quantized_max != 63) {
+      throw std::runtime_error("AVX2 A8W7 projections require native v106 S7 weights");
+    }
+#else
+    if (weights.quantized_max != 127) {
+      throw std::runtime_error("This projection kernel requires native v106 S8 weights");
+    }
+#endif
     for (float scale : weights.scales) {
       if (!(scale > 0.0f) || !std::isfinite(scale)) {
-        throw std::runtime_error("Canonical S8 weight scale is invalid");
+        throw std::runtime_error("Canonical quantized weight scale is invalid");
       }
     }
     for (int8_t value : weights.values) {
       if (value == std::numeric_limits<int8_t>::min()) {
-        throw std::runtime_error("Canonical symmetric S8 weight contains -128");
+        throw std::runtime_error("Canonical symmetric quantized weight contains -128");
       }
+#if defined(KTCP_MLAS_AVX2_S7_WEIGHTS)
+      if (value < -63 || value > 63) {
+        throw std::runtime_error("AVX2 A8W7 projection weight exceeds S7 range");
+      }
+#endif
     }
     initialize_mlas(
         std::move(weights), input, output,
@@ -781,6 +893,12 @@ class FullyConnected {
   }
 
   void run() {
+#if defined(CPU_PTQ_AVX2_ONLY)
+    if (mode_ == KTCP_MODE_FP32) {
+      run_avx2_fp32();
+      return;
+    }
+#endif
     if (mode_ == KTCP_MODE_MLAS_U8S8) {
       float minimum = 0.0f;
       float maximum = 0.0f;
@@ -788,12 +906,24 @@ class FullyConnected {
           mlas_input_f32_, &minimum, &maximum, rows_ * input_channels_);
       minimum = std::min(minimum, 0.0f);
       maximum = std::max(maximum, 0.0f);
-      float input_scale = (maximum - minimum) / 255.0f;
+#if defined(KTCP_MLAS_AVX2_SAFE_U8)
+      // AVX2 U8S8 GEMM reduces adjacent products with saturating int16
+      // arithmetic. Keeping activations in [0,127] and symmetric weights in
+      // [-127,127] bounds every pair to +/-32258 and preserves exact int32
+      // dot products. VNNI does not have this restriction and retains U8.
+      constexpr float quantized_levels = 127.0f;
+      constexpr int maximum_zero_point = 127;
+#else
+      constexpr float quantized_levels = 255.0f;
+      constexpr int maximum_zero_point = 255;
+#endif
+      float input_scale = (maximum - minimum) / quantized_levels;
       if (!(input_scale > 0.0f) || !std::isfinite(input_scale)) {
         input_scale = 1.0f;
       }
       const int zero_point_int = std::clamp(
-          static_cast<int>(std::nearbyint(-minimum / input_scale)), 0, 255);
+          static_cast<int>(std::nearbyint(-minimum / input_scale)),
+          0, maximum_zero_point);
       const uint8_t zero_point = static_cast<uint8_t>(zero_point_int);
       MlasQuantizeLinear<uint8_t>(
           mlas_input_f32_, mlas_input_.data(), rows_ * input_channels_,
@@ -806,14 +936,52 @@ class FullyConnected {
       return;
     }
     if (mode_ == KTCP_MODE_QD8) {
+#if defined(CPU_PTQ_AVX2_ONLY)
+      throw std::runtime_error("The AVX2 backend does not provide XNNPACK QD8");
+#else
       check_xnn(xnn_run_operator(convert_.get(), nullptr), "xnn_run_operator(convert)");
+#endif
     }
+#if defined(CPU_PTQ_AVX2_ONLY)
+    throw std::runtime_error("Unsupported AVX2 fully-connected mode");
+#else
     check_xnn(xnn_run_operator(op_.get(), nullptr), "xnn_run_operator(fully_connected)");
+#endif
   }
 
  private:
+#if defined(CPU_PTQ_AVX2_ONLY)
+  void initialize_avx2_fp32(const float* input, float* output) {
+    fp32_input_ = input;
+    fp32_output_ = output;
+    const size_t packed_size = MlasGemmPackBSize(
+        CblasNoTrans, CblasTrans, output_channels_, input_channels_);
+    if (packed_size == 0) {
+      throw std::runtime_error("MLAS FP32 packed GEMM is unavailable on this CPU");
+    }
+    fp32_mlas_packed_weights_ = allocate_mlas_buffer(packed_size);
+    MlasGemmPackB(
+        CblasNoTrans, CblasTrans, output_channels_, input_channels_,
+        weights_.data(), input_channels_, fp32_mlas_packed_weights_.get());
+    fp32_bias_ = std::move(bias_);
+    weights_.clear();
+    weights_.shrink_to_fit();
+  }
+
+  void run_avx2_fp32() const {
+    for (size_t row = 0; row < rows_; ++row) {
+      float* output = fp32_output_ + row * output_channels_;
+      std::copy(fp32_bias_.begin(), fp32_bias_.end(), output);
+    }
+    MlasGemm(
+        CblasNoTrans, rows_, output_channels_, input_channels_, 1.0f,
+        fp32_input_, input_channels_, fp32_mlas_packed_weights_.get(),
+        1.0f, fp32_output_, output_channels_, nullptr);
+  }
+#endif
+
   void initialize_mlas(
-      CanonicalS8Weights weights,
+      CanonicalQuantizedWeights weights,
       const float* input,
       float* output,
       QkvRopeOutput qkv_rope_output,
@@ -899,12 +1067,20 @@ class FullyConnected {
   std::vector<uint8_t> mlas_packed_weights_;
   std::vector<int32_t> mlas_accumulator_;
   std::vector<float> mlas_output_scales_;
+#if defined(CPU_PTQ_AVX2_ONLY)
+  const float* fp32_input_ = nullptr;
+  float* fp32_output_ = nullptr;
+  AlignedByteBuffer fp32_mlas_packed_weights_;
+  std::vector<float> fp32_bias_;
+#endif
   uint8_t mlas_weight_zero_point_ = 0;
   MLAS_GEMM_QUANT_SHAPE_PARAMS mlas_shape_;
   MLAS_GEMM_QUANT_DATA_PARAMS mlas_data_;
   std::unique_ptr<MLAS_QGEMM_OUTPUT_PROCESSOR> mlas_output_processor_;
+#if !defined(CPU_PTQ_AVX2_ONLY)
   Operator convert_;
   Operator op_;
+#endif
 };
 
 class StemConvolution {
@@ -912,12 +1088,40 @@ class StemConvolution {
   StemConvolution(
       const std::vector<float>& pytorch_kernel,
       const float* input,
-      float* output) {
+      float* output)
+      : input_(input), output_(output) {
     constexpr size_t input_channels = KTCP_SPATIAL_INPUTS;
     constexpr size_t output_channels = kC;
     if (pytorch_kernel.size() != output_channels * input_channels * 3 * 3) {
       throw std::runtime_error("Unexpected stem kernel size");
     }
+#if defined(CPU_PTQ_AVX2_ONLY)
+    constexpr size_t kernel_channels = 3 * 3 * input_channels;
+    std::vector<float> weights_kn(kernel_channels * output_channels);
+    for (size_t ky = 0; ky < 3; ++ky) {
+      for (size_t kx = 0; kx < 3; ++kx) {
+        for (size_t ic = 0; ic < input_channels; ++ic) {
+          for (size_t oc = 0; oc < output_channels; ++oc) {
+            const size_t source =
+                ((oc * input_channels + ic) * 3 + ky) * 3 + kx;
+            const size_t destination =
+                ((ky * 3 + kx) * input_channels + ic) * output_channels + oc;
+            weights_kn[destination] = pytorch_kernel[source];
+          }
+        }
+      }
+    }
+    const size_t packed_size = MlasGemmPackBSize(
+        CblasNoTrans, CblasNoTrans, output_channels, kernel_channels);
+    if (packed_size == 0) {
+      throw std::runtime_error("MLAS FP32 packed stem GEMM is unavailable");
+    }
+    packed_kernel_ = allocate_mlas_buffer(packed_size);
+    MlasGemmPackB(
+        CblasNoTrans, CblasNoTrans, output_channels, kernel_channels,
+        weights_kn.data(), output_channels, packed_kernel_.get());
+    im2col_.resize(kS * kernel_channels);
+#else
     // XNNPACK uses [output, kernel_y, kernel_x, input] for an ungrouped NHWC conv.
     kernel_.resize(pytorch_kernel.size());
     for (size_t oc = 0; oc < output_channels; ++oc) {
@@ -966,27 +1170,70 @@ class StemConvolution {
     check_xnn(
         xnn_setup_convolution2d_nhwc_f32(op_.get(), workspace_, input, output),
         "xnn_setup_convolution2d_nhwc_f32");
+#endif
   }
 
   ~StemConvolution() {
+#if !defined(CPU_PTQ_AVX2_ONLY)
 #ifdef _WIN32
     _aligned_free(workspace_);
 #else
     std::free(workspace_);
 #endif
+#endif
   }
 
-  void run() const {
+  void run() {
+#if defined(CPU_PTQ_AVX2_ONLY)
+    constexpr size_t input_channels = KTCP_SPATIAL_INPUTS;
+    constexpr size_t output_channels = kC;
+    constexpr size_t kernel_channels = 3 * 3 * input_channels;
+    std::fill(im2col_.begin(), im2col_.end(), 0.0f);
+    for (size_t y = 0; y < KTCP_BOARD_LEN; ++y) {
+      for (size_t x = 0; x < KTCP_BOARD_LEN; ++x) {
+        const size_t row = y * KTCP_BOARD_LEN + x;
+        float* destination = im2col_.data() + row * kernel_channels;
+        for (size_t ky = 0; ky < 3; ++ky) {
+          const ptrdiff_t input_y =
+              static_cast<ptrdiff_t>(y) + static_cast<ptrdiff_t>(ky) - 1;
+          if (input_y < 0 || input_y >= KTCP_BOARD_LEN) continue;
+          for (size_t kx = 0; kx < 3; ++kx) {
+            const ptrdiff_t input_x =
+                static_cast<ptrdiff_t>(x) + static_cast<ptrdiff_t>(kx) - 1;
+            if (input_x < 0 || input_x >= KTCP_BOARD_LEN) continue;
+            const float* source = input_ +
+                (static_cast<size_t>(input_y) * KTCP_BOARD_LEN +
+                 static_cast<size_t>(input_x)) * input_channels;
+            std::copy_n(
+                source, input_channels,
+                destination + (ky * 3 + kx) * input_channels);
+          }
+        }
+      }
+    }
+    MlasGemm(
+        CblasNoTrans, kS, output_channels, kernel_channels, 1.0f,
+        im2col_.data(), kernel_channels, packed_kernel_.get(), 0.0f,
+        output_, output_channels, nullptr);
+#else
     check_xnn(xnn_run_operator(op_.get(), nullptr), "xnn_run_operator(stem_conv)");
+#endif
   }
 
  private:
+#if defined(CPU_PTQ_AVX2_ONLY)
+  AlignedByteBuffer packed_kernel_;
+  std::vector<float> im2col_;
+#else
   std::vector<float> kernel_;
   std::vector<float> bias_;
   Operator op_;
   size_t workspace_size_ = 0;
   size_t workspace_alignment_ = 1;
   void* workspace_ = nullptr;
+#endif
+  const float* input_ = nullptr;
+  float* output_ = nullptr;
 };
 
 inline float horizontal_sum(__m256 value) {
@@ -1170,6 +1417,8 @@ class BatchedAttention {
   void run(Profile* profile = nullptr) const {
 #if defined(KTCP_ATTENTION_VNNI)
     run_vnni(profile);
+#elif defined(KTCP_ATTENTION_AVX2_INT8)
+    run_avx2_int8(profile);
 #else
     auto started = Clock::now();
 #if defined(KTCP_ATTENTION_AVX512)
@@ -1213,6 +1462,645 @@ class BatchedAttention {
     exponent = _mm512_add_epi32(exponent, _mm512_set1_epi32(0x7f));
     exponent = _mm512_slli_epi32(exponent, 23);
     return _mm512_mul_ps(y, _mm512_castsi512_ps(exponent));
+  }
+#endif
+
+#if defined(KTCP_ATTENTION_AVX2_INT8)
+  static float quantize_s8_32_avx2(
+      const float* source,
+      int8_t* destination,
+      int quantized_maximum,
+      int32_t* quantized_sum = nullptr) {
+    const __m256 absolute_mask =
+        _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+    __m256 maximum = _mm256_setzero_ps();
+    for (size_t channel = 0; channel < kHeadDim; channel += 8) {
+      maximum = _mm256_max_ps(
+          maximum,
+          _mm256_and_ps(_mm256_loadu_ps(source + channel), absolute_mask));
+    }
+    const float maximum_value = horizontal_max(maximum);
+    if (!(maximum_value > 0.0f)) {
+      std::memset(destination, 0, kHeadDim);
+      if (quantized_sum != nullptr) *quantized_sum = 0;
+      return 1.0f;
+    }
+
+    const float scale = maximum_value / static_cast<float>(quantized_maximum);
+    const __m256 inverse = _mm256_set1_ps(
+        static_cast<float>(quantized_maximum) / maximum_value);
+    const __m256i minimum_i32 = _mm256_set1_epi32(-quantized_maximum);
+    const __m256i maximum_i32 = _mm256_set1_epi32(quantized_maximum);
+    const __m128i zero = _mm_setzero_si128();
+    for (size_t channel = 0; channel < kHeadDim; channel += 8) {
+      const __m256i quantized = _mm256_min_epi32(
+          maximum_i32,
+          _mm256_max_epi32(
+              minimum_i32,
+              _mm256_cvtps_epi32(
+                  _mm256_mul_ps(_mm256_loadu_ps(source + channel), inverse))));
+      const __m128i packed_i16 = _mm_packs_epi32(
+          _mm256_castsi256_si128(quantized),
+          _mm256_extracti128_si256(quantized, 1));
+      const __m128i packed_i8 = _mm_packs_epi16(packed_i16, zero);
+      _mm_storel_epi64(
+          reinterpret_cast<__m128i*>(destination + channel), packed_i8);
+    }
+    if (quantized_sum != nullptr) {
+      int32_t sum = 0;
+      for (size_t channel = 0; channel < kHeadDim; ++channel) {
+        sum += destination[channel];
+      }
+      *quantized_sum = sum;
+    }
+    return scale;
+  }
+
+  void pack_avx2_keys() const {
+    constexpr size_t key_blocks = (kS + 7) / 8;
+    constexpr size_t groups = kHeadDim / 4;
+    for (size_t head = 0; head < kHeads; ++head) {
+      const float* head_key = k_ + head * kS * kHeadDim;
+      int8_t* packed_head = avx2_packed_keys_.data() +
+          head * key_blocks * groups * 32;
+      for (size_t token = 0; token < kS; ++token) {
+        alignas(32) int8_t quantized[kHeadDim];
+        int32_t sum = 0;
+        const float scale = quantize_s8_32_avx2(
+            head_key + token * kHeadDim, quantized,
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+            127,
+#else
+            63,
+#endif
+            &sum);
+        const size_t padded_token = head * kAttentionPaddedS + token;
+        avx2_key_scales_[padded_token] = scale;
+        avx2_key_sums_[padded_token] = sum;
+        const size_t block = token / 8;
+        const size_t lane = token % 8;
+        for (size_t group = 0; group < groups; ++group) {
+          std::memcpy(
+              packed_head + (block * groups + group) * 32 + lane * 4,
+              quantized + group * 4,
+              4);
+        }
+      }
+    }
+  }
+
+  static float prepare_avx2_query(
+      const float* query,
+      __m256i* broadcasts) {
+    constexpr size_t groups = kHeadDim / 4;
+    alignas(32) int8_t quantized_query[kHeadDim];
+    const float scale = quantize_s8_32_avx2(
+        query, quantized_query,
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+        63
+#else
+        127
+#endif
+    );
+    for (size_t group = 0; group < groups; ++group) {
+      uint32_t pattern;
+      std::memcpy(&pattern, quantized_query + group * 4, 4);
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+      broadcasts[group] = _mm256_add_epi8(
+          _mm256_set1_epi32(static_cast<int32_t>(pattern)),
+          _mm256_set1_epi8(64));
+#else
+      broadcasts[group] = _mm256_set1_epi32(
+          static_cast<int32_t>(pattern ^ 0x80808080u));
+#endif
+    }
+    return scale;
+  }
+
+  static float exponentiate_avx2_score_row(
+      float* scores,
+      __m256 maximum,
+      __m256 tail_score) {
+    constexpr size_t full_key_blocks = kS / 8;
+    constexpr size_t tail_keys = kS % 8;
+    const __m256i tail_mask_i = _mm256_set_epi32(
+        tail_keys > 7 ? -1 : 0,
+        tail_keys > 6 ? -1 : 0,
+        tail_keys > 5 ? -1 : 0,
+        tail_keys > 4 ? -1 : 0,
+        tail_keys > 3 ? -1 : 0,
+        tail_keys > 2 ? -1 : 0,
+        tail_keys > 1 ? -1 : 0,
+        tail_keys > 0 ? -1 : 0);
+    const __m256 tail_mask = _mm256_castsi256_ps(tail_mask_i);
+    const __m256 row_maximum =
+        _mm256_set1_ps(horizontal_max(maximum));
+    __m256 exponential_sum = _mm256_setzero_ps();
+    for (size_t block = 0; block < full_key_blocks; ++block) {
+      const __m256 exponentials = exp256_ps(_mm256_sub_ps(
+          _mm256_loadu_ps(scores + block * 8), row_maximum));
+      _mm256_storeu_ps(scores + block * 8, exponentials);
+      exponential_sum = _mm256_add_ps(exponential_sum, exponentials);
+    }
+    const __m256 tail_exponentials = _mm256_and_ps(
+        exp256_ps(_mm256_sub_ps(tail_score, row_maximum)), tail_mask);
+    _mm256_maskstore_ps(
+        scores + full_key_blocks * 8, tail_mask_i, tail_exponentials);
+    exponential_sum = _mm256_add_ps(
+        exponential_sum, tail_exponentials);
+    return 1.0f / horizontal_sum(exponential_sum);
+  }
+
+  static __forceinline __m128i pack_avx2_s8x8(__m256i quantized) {
+    const __m128i packed_i16 = _mm_packs_epi32(
+        _mm256_castsi256_si128(quantized),
+        _mm256_extracti128_si256(quantized, 1));
+    return _mm_packs_epi16(packed_i16, _mm_setzero_si128());
+  }
+
+  void pack_avx2_values_fast(const float* values) const {
+    constexpr size_t value_blocks = kHeadDim / 8;
+    constexpr size_t key_groups = (kS + 3) / 4;
+    const __m256 absolute_mask =
+        _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 one = _mm256_set1_ps(1.0f);
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+    constexpr float value_quantized_maximum = 63.0f;
+    constexpr int value_quantized_maximum_i32 = 63;
+#else
+    constexpr float value_quantized_maximum = 127.0f;
+    constexpr int value_quantized_maximum_i32 = 127;
+#endif
+    const __m256 quantized_maximum =
+        _mm256_set1_ps(value_quantized_maximum);
+    const __m256i minimum_i32 =
+        _mm256_set1_epi32(-value_quantized_maximum_i32);
+    const __m256i maximum_i32 =
+        _mm256_set1_epi32(value_quantized_maximum_i32);
+
+    __m256 inverses[value_blocks];
+    for (size_t value_block = 0; value_block < value_blocks; ++value_block) {
+      __m256 maximum = zero;
+      for (size_t token = 0; token < kS; ++token) {
+        maximum = _mm256_max_ps(
+            maximum,
+            _mm256_and_ps(
+                _mm256_loadu_ps(
+                    values + token * kHeadDim + value_block * 8),
+                absolute_mask));
+      }
+      const __m256 nonzero = _mm256_cmp_ps(maximum, zero, _CMP_GT_OQ);
+      const __m256 scale = _mm256_blendv_ps(
+          one, _mm256_div_ps(maximum, quantized_maximum), nonzero);
+      inverses[value_block] = _mm256_blendv_ps(
+          zero, _mm256_div_ps(quantized_maximum, maximum), nonzero);
+      _mm256_storeu_ps(
+          avx2_value_scales_.data() + value_block * 8, scale);
+    }
+
+    for (size_t group = 0; group < key_groups; ++group) {
+      for (size_t value_block = 0; value_block < value_blocks; ++value_block) {
+        __m128i rows[4];
+        for (size_t byte = 0; byte < 4; ++byte) {
+          const size_t token = group * 4 + byte;
+          if (token < kS) {
+            const __m256i quantized = _mm256_min_epi32(
+                maximum_i32,
+                _mm256_max_epi32(
+                    minimum_i32,
+                    _mm256_cvtps_epi32(_mm256_mul_ps(
+                        _mm256_loadu_ps(
+                            values + token * kHeadDim + value_block * 8),
+                        inverses[value_block]))));
+            rows[byte] = pack_avx2_s8x8(quantized);
+          } else {
+            rows[byte] = _mm_setzero_si128();
+          }
+        }
+        const __m128i pairs01 = _mm_unpacklo_epi8(rows[0], rows[1]);
+        const __m128i pairs23 = _mm_unpacklo_epi8(rows[2], rows[3]);
+        int8_t* destination = avx2_packed_values_.data() +
+            (group * value_blocks + value_block) * 32;
+        _mm_storeu_si128(
+            reinterpret_cast<__m128i*>(destination),
+            _mm_unpacklo_epi16(pairs01, pairs23));
+        _mm_storeu_si128(
+            reinterpret_cast<__m128i*>(destination + 16),
+            _mm_unpackhi_epi16(pairs01, pairs23));
+      }
+    }
+  }
+
+  static void quantize_avx2_probabilities(
+      const float* exponentials,
+      uint8_t* quantized_probabilities) {
+    constexpr size_t full_key_blocks = kS / 8;
+    constexpr size_t tail_keys = kS % 8;
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+    constexpr float probability_quantized_maximum = 255.0f;
+#else
+    constexpr float probability_quantized_maximum = 127.0f;
+#endif
+    const __m256 multiplier =
+        _mm256_set1_ps(probability_quantized_maximum);
+    const __m128i zero = _mm_setzero_si128();
+    for (size_t block = 0; block < full_key_blocks; ++block) {
+      const __m256i quantized = _mm256_cvtps_epi32(_mm256_mul_ps(
+          _mm256_loadu_ps(exponentials + block * 8), multiplier));
+      const __m128i packed_i16 = _mm_packs_epi32(
+          _mm256_castsi256_si128(quantized),
+          _mm256_extracti128_si256(quantized, 1));
+      const __m128i packed_u8 = _mm_packus_epi16(packed_i16, zero);
+      _mm_storel_epi64(
+          reinterpret_cast<__m128i*>(
+              quantized_probabilities + block * 8),
+          packed_u8);
+    }
+    for (size_t key = full_key_blocks * 8; key < kS; ++key) {
+      const int rounded = static_cast<int>(
+          std::nearbyint(
+              exponentials[key] * probability_quantized_maximum));
+      quantized_probabilities[key] =
+          static_cast<uint8_t>(std::clamp(
+              rounded, 0,
+              static_cast<int>(probability_quantized_maximum)));
+    }
+    std::fill(
+        quantized_probabilities + kS,
+        quantized_probabilities + kAttentionPaddedS,
+        uint8_t{0});
+  }
+
+  void run_avx2_int8_pv_pair(
+      const float* exponentials0,
+      float inverse_sum0,
+      float* output0,
+      const float* exponentials1,
+      float inverse_sum1,
+      float* output1) const {
+    constexpr size_t key_groups = (kS + 3) / 4;
+    constexpr size_t value_blocks = kHeadDim / 8;
+    alignas(32) uint8_t quantized_probabilities0[kAttentionPaddedS]{};
+    alignas(32) uint8_t quantized_probabilities1[kAttentionPaddedS]{};
+    quantize_avx2_probabilities(
+        exponentials0, quantized_probabilities0);
+    quantize_avx2_probabilities(
+        exponentials1, quantized_probabilities1);
+
+    const __m256i ones = _mm256_set1_epi16(1);
+    for (size_t value_block = 0; value_block < value_blocks; ++value_block) {
+      __m256i accumulator00 = _mm256_setzero_si256();
+      __m256i accumulator01 = _mm256_setzero_si256();
+      __m256i accumulator02 = _mm256_setzero_si256();
+      __m256i accumulator03 = _mm256_setzero_si256();
+      __m256i accumulator10 = _mm256_setzero_si256();
+      __m256i accumulator11 = _mm256_setzero_si256();
+      __m256i accumulator12 = _mm256_setzero_si256();
+      __m256i accumulator13 = _mm256_setzero_si256();
+      size_t group = 0;
+      for (; group + 4 <= key_groups; group += 4) {
+        uint32_t patterns0[4];
+        uint32_t patterns1[4];
+        std::memcpy(patterns0, quantized_probabilities0 + group * 4, 16);
+        std::memcpy(patterns1, quantized_probabilities1 + group * 4, 16);
+        const int8_t* packed_group = avx2_packed_values_.data() +
+            (group * value_blocks + value_block) * 32;
+        const __m256i value0 =
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(packed_group));
+        accumulator00 = _mm256_add_epi32(
+            accumulator00,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns0[0])),
+                    value0),
+                ones));
+        accumulator10 = _mm256_add_epi32(
+            accumulator10,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns1[0])),
+                    value0),
+                ones));
+
+        const __m256i value1 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(
+                packed_group + value_blocks * 32));
+        accumulator01 = _mm256_add_epi32(
+            accumulator01,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns0[1])),
+                    value1),
+                ones));
+        accumulator11 = _mm256_add_epi32(
+            accumulator11,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns1[1])),
+                    value1),
+                ones));
+
+        const __m256i value2 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(
+                packed_group + 2 * value_blocks * 32));
+        accumulator02 = _mm256_add_epi32(
+            accumulator02,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns0[2])),
+                    value2),
+                ones));
+        accumulator12 = _mm256_add_epi32(
+            accumulator12,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns1[2])),
+                    value2),
+                ones));
+
+        const __m256i value3 = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(
+                packed_group + 3 * value_blocks * 32));
+        accumulator03 = _mm256_add_epi32(
+            accumulator03,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns0[3])),
+                    value3),
+                ones));
+        accumulator13 = _mm256_add_epi32(
+            accumulator13,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(patterns1[3])),
+                    value3),
+                ones));
+      }
+      if (group < key_groups) {
+        uint32_t pattern0;
+        uint32_t pattern1;
+        std::memcpy(&pattern0, quantized_probabilities0 + group * 4, 4);
+        std::memcpy(&pattern1, quantized_probabilities1 + group * 4, 4);
+        const __m256i value = _mm256_loadu_si256(
+            reinterpret_cast<const __m256i*>(
+                avx2_packed_values_.data() +
+                (group * value_blocks + value_block) * 32));
+        accumulator00 = _mm256_add_epi32(
+            accumulator00,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(pattern0)), value),
+                ones));
+        accumulator10 = _mm256_add_epi32(
+            accumulator10,
+            _mm256_madd_epi16(
+                _mm256_maddubs_epi16(
+                    _mm256_set1_epi32(static_cast<int32_t>(pattern1)), value),
+                ones));
+      }
+
+      const __m256i accumulator0 = _mm256_add_epi32(
+          _mm256_add_epi32(accumulator00, accumulator01),
+          _mm256_add_epi32(accumulator02, accumulator03));
+      const __m256i accumulator1 = _mm256_add_epi32(
+          _mm256_add_epi32(accumulator10, accumulator11),
+          _mm256_add_epi32(accumulator12, accumulator13));
+      const __m256 value_scale =
+          _mm256_loadu_ps(avx2_value_scales_.data() + value_block * 8);
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+      constexpr float probability_quantized_maximum = 255.0f;
+#else
+      constexpr float probability_quantized_maximum = 127.0f;
+#endif
+      _mm256_storeu_ps(
+          output0 + value_block * 8,
+          _mm256_mul_ps(
+              _mm256_cvtepi32_ps(accumulator0),
+              _mm256_mul_ps(
+                  _mm256_set1_ps(
+                      inverse_sum0 / probability_quantized_maximum),
+                  value_scale)));
+      _mm256_storeu_ps(
+          output1 + value_block * 8,
+          _mm256_mul_ps(
+              _mm256_cvtepi32_ps(accumulator1),
+              _mm256_mul_ps(
+                  _mm256_set1_ps(
+                      inverse_sum1 / probability_quantized_maximum),
+                  value_scale)));
+    }
+  }
+
+  void run_avx2_int8(Profile* profile) const {
+    constexpr size_t full_key_blocks = kS / 8;
+    constexpr size_t key_blocks = (kS + 7) / 8;
+    constexpr size_t groups = kHeadDim / 4;
+    constexpr size_t tail_keys = kS % 8;
+    static_assert(groups == 8, "The fixed AVX2 QK unroll expects 32 channels");
+    const __m256i tail_mask_i = _mm256_set_epi32(
+        tail_keys > 7 ? -1 : 0,
+        tail_keys > 6 ? -1 : 0,
+        tail_keys > 5 ? -1 : 0,
+        tail_keys > 4 ? -1 : 0,
+        tail_keys > 3 ? -1 : 0,
+        tail_keys > 2 ? -1 : 0,
+        tail_keys > 1 ? -1 : 0,
+        tail_keys > 0 ? -1 : 0);
+    const __m256 tail_mask = _mm256_castsi256_ps(tail_mask_i);
+    const __m256 negative_infinity =
+        _mm256_set1_ps(-std::numeric_limits<float>::infinity());
+    const __m256i ones = _mm256_set1_epi16(1);
+
+    auto pack_started = Clock::time_point{};
+    if (profile != nullptr) pack_started = Clock::now();
+    pack_avx2_keys();
+    if (profile != nullptr) {
+      profile->add(kProfileAttentionTranspose, pack_started, Clock::now());
+    }
+
+    float* probabilities = workspace_;
+    for (size_t head = 0; head < kHeads; ++head) {
+      const float* head_query = q_ + head * kS * kHeadDim;
+      const float* head_value = v_ + head * kS * kHeadDim;
+      const int8_t* packed_head = avx2_packed_keys_.data() +
+          head * key_blocks * groups * 32;
+      const float* key_scales =
+          avx2_key_scales_.data() + head * kAttentionPaddedS;
+      const int32_t* key_sums =
+          avx2_key_sums_.data() + head * kAttentionPaddedS;
+      float* head_probabilities = probabilities;
+      alignas(32) float inverse_sums[kS];
+
+      auto value_pack_started = Clock::time_point{};
+      if (profile != nullptr) value_pack_started = Clock::now();
+      pack_avx2_values_fast(head_value);
+      if (profile != nullptr) {
+        profile->add(
+            kProfileAttentionTranspose, value_pack_started, Clock::now());
+      }
+
+      auto qk_started = Clock::time_point{};
+      if (profile != nullptr) qk_started = Clock::now();
+      for (size_t token = 0; token < kS; token += 2) {
+        const bool has_second = token + 1 < kS;
+        const size_t second_token = has_second ? token + 1 : token;
+        __m256i query_broadcasts0[groups];
+        __m256i query_broadcasts1[groups];
+        const float query_scale0 = prepare_avx2_query(
+            head_query + token * kHeadDim, query_broadcasts0);
+        const float query_scale1 = prepare_avx2_query(
+            head_query + second_token * kHeadDim, query_broadcasts1);
+        const __m256 query_multiplier0 =
+            _mm256_set1_ps(query_scale0 * kAttentionScale);
+        const __m256 query_multiplier1 =
+            _mm256_set1_ps(query_scale1 * kAttentionScale);
+
+        float* scores0 = head_probabilities + token * kS;
+        float* scores1 = has_second
+            ? head_probabilities + second_token * kS
+            : head_probabilities + kS * kS;
+        __m256 maximum0 = negative_infinity;
+        __m256 maximum1 = negative_infinity;
+        __m256 tail_score0 = negative_infinity;
+        __m256 tail_score1 = negative_infinity;
+        for (size_t block = 0; block < key_blocks; ++block) {
+          const int8_t* packed_block =
+              packed_head + block * groups * 32;
+          const __m256i key0 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block));
+          __m256i accumulator00 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts0[0], key0), ones);
+          __m256i accumulator10 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts1[0], key0), ones);
+          const __m256i key1 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 32));
+          __m256i accumulator01 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts0[1], key1), ones);
+          __m256i accumulator11 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts1[1], key1), ones);
+          const __m256i key2 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 64));
+          __m256i accumulator02 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts0[2], key2), ones);
+          __m256i accumulator12 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts1[2], key2), ones);
+          const __m256i key3 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 96));
+          __m256i accumulator03 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts0[3], key3), ones);
+          __m256i accumulator13 = _mm256_madd_epi16(
+              _mm256_maddubs_epi16(query_broadcasts1[3], key3), ones);
+          const __m256i key4 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 128));
+          accumulator00 = _mm256_add_epi32(
+              accumulator00,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts0[4], key4), ones));
+          accumulator10 = _mm256_add_epi32(
+              accumulator10,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts1[4], key4), ones));
+          const __m256i key5 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 160));
+          accumulator01 = _mm256_add_epi32(
+              accumulator01,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts0[5], key5), ones));
+          accumulator11 = _mm256_add_epi32(
+              accumulator11,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts1[5], key5), ones));
+          const __m256i key6 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 192));
+          accumulator02 = _mm256_add_epi32(
+              accumulator02,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts0[6], key6), ones));
+          accumulator12 = _mm256_add_epi32(
+              accumulator12,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts1[6], key6), ones));
+          const __m256i key7 = _mm256_loadu_si256(
+              reinterpret_cast<const __m256i*>(packed_block + 224));
+          accumulator03 = _mm256_add_epi32(
+              accumulator03,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts0[7], key7), ones));
+          accumulator13 = _mm256_add_epi32(
+              accumulator13,
+              _mm256_madd_epi16(
+                  _mm256_maddubs_epi16(query_broadcasts1[7], key7), ones));
+
+          __m256i accumulator0 = _mm256_add_epi32(
+              _mm256_add_epi32(accumulator00, accumulator01),
+              _mm256_add_epi32(accumulator02, accumulator03));
+          __m256i accumulator1 = _mm256_add_epi32(
+              _mm256_add_epi32(accumulator10, accumulator11),
+              _mm256_add_epi32(accumulator12, accumulator13));
+          const __m256i correction = _mm256_slli_epi32(
+              _mm256_loadu_si256(
+                  reinterpret_cast<const __m256i*>(key_sums + block * 8)),
+#if defined(KTCP_ATTENTION_AVX2_Q7K8_P8V7)
+              6);
+#else
+              7);
+#endif
+          accumulator0 = _mm256_sub_epi32(accumulator0, correction);
+          accumulator1 = _mm256_sub_epi32(accumulator1, correction);
+          const __m256 key_scale =
+              _mm256_loadu_ps(key_scales + block * 8);
+          const __m256 score0 = _mm256_mul_ps(
+              _mm256_cvtepi32_ps(accumulator0),
+              _mm256_mul_ps(key_scale, query_multiplier0));
+          const __m256 score1 = _mm256_mul_ps(
+              _mm256_cvtepi32_ps(accumulator1),
+              _mm256_mul_ps(key_scale, query_multiplier1));
+          if (block < full_key_blocks) {
+            _mm256_storeu_ps(scores0 + block * 8, score0);
+            _mm256_storeu_ps(scores1 + block * 8, score1);
+            maximum0 = _mm256_max_ps(maximum0, score0);
+            maximum1 = _mm256_max_ps(maximum1, score1);
+          } else {
+            tail_score0 = score0;
+            tail_score1 = score1;
+            _mm256_maskstore_ps(scores0 + block * 8, tail_mask_i, score0);
+            _mm256_maskstore_ps(scores1 + block * 8, tail_mask_i, score1);
+            maximum0 = _mm256_max_ps(
+                maximum0,
+                _mm256_blendv_ps(negative_infinity, score0, tail_mask));
+            maximum1 = _mm256_max_ps(
+                maximum1,
+                _mm256_blendv_ps(negative_infinity, score1, tail_mask));
+          }
+        }
+        inverse_sums[token] =
+            exponentiate_avx2_score_row(scores0, maximum0, tail_score0);
+        if (has_second) {
+          inverse_sums[second_token] =
+              exponentiate_avx2_score_row(scores1, maximum1, tail_score1);
+        }
+      }
+      if (profile != nullptr) {
+        profile->add(kProfileAttentionQk, qk_started, Clock::now());
+      }
+
+      auto pv_started = Clock::time_point{};
+      if (profile != nullptr) pv_started = Clock::now();
+      for (size_t token = 0; token < kS; token += 2) {
+        const size_t second_token = token + 1 < kS ? token + 1 : token;
+        run_avx2_int8_pv_pair(
+            head_probabilities + token * kS,
+            inverse_sums[token],
+            output_tokens_ + (token * kHeads + head) * kHeadDim,
+            head_probabilities + second_token * kS,
+            inverse_sums[second_token],
+            output_tokens_ + (second_token * kHeads + head) * kHeadDim);
+      }
+      if (profile != nullptr) {
+        profile->add(kProfileAttentionPv, pv_started, Clock::now());
+      }
+    }
   }
 #endif
 
@@ -1403,6 +2291,13 @@ class BatchedAttention {
           static_cast<int32_t>(pattern ^ 0x80808080u));
     }
     return scale;
+  }
+
+  static __forceinline __m512i vnni_qk_dot4(
+      __m512i accumulator,
+      __m512i query,
+      __m512i key) {
+    return _mm512_dpbusd_epi32(accumulator, query, key);
   }
 
   static float exponentiate_vnni_score_row(
@@ -1675,6 +2570,192 @@ class BatchedAttention {
                   _mm512_set1_ps(inverse_sum1 / 255.0f), value_scale)));
     }
   }
+
+#if defined(KTCP_ATTENTION_VNNI_PV_QUAD)
+  __forceinline void run_vnni_int8_pv_quad(
+      const float* exponentials0,
+      float inverse_sum0,
+      float* output0,
+      const float* exponentials1,
+      float inverse_sum1,
+      float* output1,
+      const float* exponentials2,
+      float inverse_sum2,
+      float* output2,
+      const float* exponentials3,
+      float inverse_sum3,
+      float* output3) const {
+    constexpr size_t key_groups = (kS + 3) / 4;
+    constexpr size_t value_blocks = kHeadDim / 16;
+    alignas(64) uint8_t quantized_probabilities0[kAttentionPaddedS];
+    alignas(64) uint8_t quantized_probabilities1[kAttentionPaddedS];
+    alignas(64) uint8_t quantized_probabilities2[kAttentionPaddedS];
+    alignas(64) uint8_t quantized_probabilities3[kAttentionPaddedS];
+    quantize_vnni_probabilities(
+        exponentials0, quantized_probabilities0);
+    quantize_vnni_probabilities(
+        exponentials1, quantized_probabilities1);
+    quantize_vnni_probabilities(
+        exponentials2, quantized_probabilities2);
+    quantize_vnni_probabilities(
+        exponentials3, quantized_probabilities3);
+
+    const int8_t* packed_values = vnni_packed_values_.data();
+    for (size_t value_block = 0; value_block < value_blocks; ++value_block) {
+      __m512i accumulator00 = _mm512_setzero_si512();
+      __m512i accumulator01 = _mm512_setzero_si512();
+      __m512i accumulator02 = _mm512_setzero_si512();
+      __m512i accumulator03 = _mm512_setzero_si512();
+      __m512i accumulator10 = _mm512_setzero_si512();
+      __m512i accumulator11 = _mm512_setzero_si512();
+      __m512i accumulator12 = _mm512_setzero_si512();
+      __m512i accumulator13 = _mm512_setzero_si512();
+      __m512i accumulator20 = _mm512_setzero_si512();
+      __m512i accumulator21 = _mm512_setzero_si512();
+      __m512i accumulator22 = _mm512_setzero_si512();
+      __m512i accumulator23 = _mm512_setzero_si512();
+      __m512i accumulator30 = _mm512_setzero_si512();
+      __m512i accumulator31 = _mm512_setzero_si512();
+      __m512i accumulator32 = _mm512_setzero_si512();
+      __m512i accumulator33 = _mm512_setzero_si512();
+      size_t group = 0;
+      for (; group + 4 <= key_groups; group += 4) {
+        uint32_t patterns0[4];
+        uint32_t patterns1[4];
+        uint32_t patterns2[4];
+        uint32_t patterns3[4];
+        std::memcpy(patterns0, quantized_probabilities0 + group * 4, 16);
+        std::memcpy(patterns1, quantized_probabilities1 + group * 4, 16);
+        std::memcpy(patterns2, quantized_probabilities2 + group * 4, 16);
+        std::memcpy(patterns3, quantized_probabilities3 + group * 4, 16);
+        const int8_t* packed_group = packed_values +
+            (group * value_blocks + value_block) * 64;
+
+        const __m512i value0 = _mm512_loadu_si512(packed_group);
+        accumulator00 = _mm512_dpbusd_epi32(
+            accumulator00,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns0[0])), value0);
+        accumulator10 = _mm512_dpbusd_epi32(
+            accumulator10,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns1[0])), value0);
+        accumulator20 = _mm512_dpbusd_epi32(
+            accumulator20,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns2[0])), value0);
+        accumulator30 = _mm512_dpbusd_epi32(
+            accumulator30,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns3[0])), value0);
+
+        const __m512i value1 =
+            _mm512_loadu_si512(packed_group + value_blocks * 64);
+        accumulator01 = _mm512_dpbusd_epi32(
+            accumulator01,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns0[1])), value1);
+        accumulator11 = _mm512_dpbusd_epi32(
+            accumulator11,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns1[1])), value1);
+        accumulator21 = _mm512_dpbusd_epi32(
+            accumulator21,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns2[1])), value1);
+        accumulator31 = _mm512_dpbusd_epi32(
+            accumulator31,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns3[1])), value1);
+
+        const __m512i value2 =
+            _mm512_loadu_si512(packed_group + 2 * value_blocks * 64);
+        accumulator02 = _mm512_dpbusd_epi32(
+            accumulator02,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns0[2])), value2);
+        accumulator12 = _mm512_dpbusd_epi32(
+            accumulator12,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns1[2])), value2);
+        accumulator22 = _mm512_dpbusd_epi32(
+            accumulator22,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns2[2])), value2);
+        accumulator32 = _mm512_dpbusd_epi32(
+            accumulator32,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns3[2])), value2);
+
+        const __m512i value3 =
+            _mm512_loadu_si512(packed_group + 3 * value_blocks * 64);
+        accumulator03 = _mm512_dpbusd_epi32(
+            accumulator03,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns0[3])), value3);
+        accumulator13 = _mm512_dpbusd_epi32(
+            accumulator13,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns1[3])), value3);
+        accumulator23 = _mm512_dpbusd_epi32(
+            accumulator23,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns2[3])), value3);
+        accumulator33 = _mm512_dpbusd_epi32(
+            accumulator33,
+            _mm512_set1_epi32(static_cast<int32_t>(patterns3[3])), value3);
+      }
+      if (group < key_groups) {
+        uint32_t pattern0;
+        uint32_t pattern1;
+        uint32_t pattern2;
+        uint32_t pattern3;
+        std::memcpy(&pattern0, quantized_probabilities0 + group * 4, 4);
+        std::memcpy(&pattern1, quantized_probabilities1 + group * 4, 4);
+        std::memcpy(&pattern2, quantized_probabilities2 + group * 4, 4);
+        std::memcpy(&pattern3, quantized_probabilities3 + group * 4, 4);
+        const __m512i value = _mm512_loadu_si512(
+            packed_values + (group * value_blocks + value_block) * 64);
+        accumulator00 = _mm512_dpbusd_epi32(
+            accumulator00,
+            _mm512_set1_epi32(static_cast<int32_t>(pattern0)), value);
+        accumulator10 = _mm512_dpbusd_epi32(
+            accumulator10,
+            _mm512_set1_epi32(static_cast<int32_t>(pattern1)), value);
+        accumulator20 = _mm512_dpbusd_epi32(
+            accumulator20,
+            _mm512_set1_epi32(static_cast<int32_t>(pattern2)), value);
+        accumulator30 = _mm512_dpbusd_epi32(
+            accumulator30,
+            _mm512_set1_epi32(static_cast<int32_t>(pattern3)), value);
+      }
+
+      const __m512i accumulator0 = _mm512_add_epi32(
+          _mm512_add_epi32(accumulator00, accumulator01),
+          _mm512_add_epi32(accumulator02, accumulator03));
+      const __m512i accumulator1 = _mm512_add_epi32(
+          _mm512_add_epi32(accumulator10, accumulator11),
+          _mm512_add_epi32(accumulator12, accumulator13));
+      const __m512i accumulator2 = _mm512_add_epi32(
+          _mm512_add_epi32(accumulator20, accumulator21),
+          _mm512_add_epi32(accumulator22, accumulator23));
+      const __m512i accumulator3 = _mm512_add_epi32(
+          _mm512_add_epi32(accumulator30, accumulator31),
+          _mm512_add_epi32(accumulator32, accumulator33));
+      const __m512 value_scale =
+          _mm512_loadu_ps(vnni_value_scales_.data() + value_block * 16);
+      _mm512_storeu_ps(
+          output0 + value_block * 16,
+          _mm512_mul_ps(
+              _mm512_cvtepi32_ps(accumulator0),
+              _mm512_mul_ps(
+                  _mm512_set1_ps(inverse_sum0 / 255.0f), value_scale)));
+      _mm512_storeu_ps(
+          output1 + value_block * 16,
+          _mm512_mul_ps(
+              _mm512_cvtepi32_ps(accumulator1),
+              _mm512_mul_ps(
+                  _mm512_set1_ps(inverse_sum1 / 255.0f), value_scale)));
+      _mm512_storeu_ps(
+          output2 + value_block * 16,
+          _mm512_mul_ps(
+              _mm512_cvtepi32_ps(accumulator2),
+              _mm512_mul_ps(
+                  _mm512_set1_ps(inverse_sum2 / 255.0f), value_scale)));
+      _mm512_storeu_ps(
+          output3 + value_block * 16,
+          _mm512_mul_ps(
+              _mm512_cvtepi32_ps(accumulator3),
+              _mm512_mul_ps(
+                  _mm512_set1_ps(inverse_sum3 / 255.0f), value_scale)));
+    }
+  }
+#endif
 #endif
 
   void run_vnni(Profile* profile) const {
@@ -1748,44 +2829,44 @@ class BatchedAttention {
           const int8_t* packed_block =
               packed_head + block * groups * 64;
           const __m512i key0 = _mm512_loadu_si512(packed_block);
-          __m512i accumulator00 = _mm512_dpbusd_epi32(
+          __m512i accumulator00 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts0[0], key0);
-          __m512i accumulator10 = _mm512_dpbusd_epi32(
+          __m512i accumulator10 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts1[0], key0);
           const __m512i key1 = _mm512_loadu_si512(packed_block + 64);
-          __m512i accumulator01 = _mm512_dpbusd_epi32(
+          __m512i accumulator01 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts0[1], key1);
-          __m512i accumulator11 = _mm512_dpbusd_epi32(
+          __m512i accumulator11 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts1[1], key1);
           const __m512i key2 = _mm512_loadu_si512(packed_block + 128);
-          __m512i accumulator02 = _mm512_dpbusd_epi32(
+          __m512i accumulator02 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts0[2], key2);
-          __m512i accumulator12 = _mm512_dpbusd_epi32(
+          __m512i accumulator12 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts1[2], key2);
           const __m512i key3 = _mm512_loadu_si512(packed_block + 192);
-          __m512i accumulator03 = _mm512_dpbusd_epi32(
+          __m512i accumulator03 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts0[3], key3);
-          __m512i accumulator13 = _mm512_dpbusd_epi32(
+          __m512i accumulator13 = vnni_qk_dot4(
               _mm512_setzero_si512(), query_broadcasts1[3], key3);
           const __m512i key4 = _mm512_loadu_si512(packed_block + 256);
-          accumulator00 = _mm512_dpbusd_epi32(
+          accumulator00 = vnni_qk_dot4(
               accumulator00, query_broadcasts0[4], key4);
-          accumulator10 = _mm512_dpbusd_epi32(
+          accumulator10 = vnni_qk_dot4(
               accumulator10, query_broadcasts1[4], key4);
           const __m512i key5 = _mm512_loadu_si512(packed_block + 320);
-          accumulator01 = _mm512_dpbusd_epi32(
+          accumulator01 = vnni_qk_dot4(
               accumulator01, query_broadcasts0[5], key5);
-          accumulator11 = _mm512_dpbusd_epi32(
+          accumulator11 = vnni_qk_dot4(
               accumulator11, query_broadcasts1[5], key5);
           const __m512i key6 = _mm512_loadu_si512(packed_block + 384);
-          accumulator02 = _mm512_dpbusd_epi32(
+          accumulator02 = vnni_qk_dot4(
               accumulator02, query_broadcasts0[6], key6);
-          accumulator12 = _mm512_dpbusd_epi32(
+          accumulator12 = vnni_qk_dot4(
               accumulator12, query_broadcasts1[6], key6);
           const __m512i key7 = _mm512_loadu_si512(packed_block + 448);
-          accumulator03 = _mm512_dpbusd_epi32(
+          accumulator03 = vnni_qk_dot4(
               accumulator03, query_broadcasts0[7], key7);
-          accumulator13 = _mm512_dpbusd_epi32(
+          accumulator13 = vnni_qk_dot4(
               accumulator13, query_broadcasts1[7], key7);
           __m512i accumulator0 = _mm512_add_epi32(
               _mm512_add_epi32(accumulator00, accumulator01),
@@ -1849,6 +2930,33 @@ class BatchedAttention {
       auto pv_started = Clock::time_point{};
       if (profile != nullptr) pv_started = Clock::now();
 #if defined(KTCP_ATTENTION_PV_INT8)
+#if defined(KTCP_ATTENTION_VNNI_PV_QUAD)
+      size_t token = 0;
+      for (; token + 4 <= kS; token += 4) {
+        run_vnni_int8_pv_quad(
+            head_probabilities + token * kS,
+            inverse_sums[token],
+            output_tokens_ + (token * kHeads + head) * kHeadDim,
+            head_probabilities + (token + 1) * kS,
+            inverse_sums[token + 1],
+            output_tokens_ + ((token + 1) * kHeads + head) * kHeadDim,
+            head_probabilities + (token + 2) * kS,
+            inverse_sums[token + 2],
+            output_tokens_ + ((token + 2) * kHeads + head) * kHeadDim,
+            head_probabilities + (token + 3) * kS,
+            inverse_sums[token + 3],
+            output_tokens_ + ((token + 3) * kHeads + head) * kHeadDim);
+      }
+      if (token < kS) {
+        run_vnni_int8_pv_pair(
+            head_probabilities + token * kS,
+            inverse_sums[token],
+            output_tokens_ + (token * kHeads + head) * kHeadDim,
+            head_probabilities + token * kS,
+            inverse_sums[token],
+            output_tokens_ + (token * kHeads + head) * kHeadDim);
+      }
+#else
       for (size_t token = 0; token < kS; token += 2) {
         const size_t second_token = token + 1 < kS ? token + 1 : token;
         run_vnni_int8_pv_pair(
@@ -1859,6 +2967,7 @@ class BatchedAttention {
             inverse_sums[second_token],
             output_tokens_ + (second_token * kHeads + head) * kHeadDim);
       }
+#endif
 #else
       MlasGemm(
           CBLAS_TRANSPOSE::CblasNoTrans,
@@ -1890,6 +2999,18 @@ class BatchedAttention {
   float* workspace_ = nullptr;
   float* output_tokens_ = nullptr;
   MlasFlashAttentionThreadedArgs flash_{};
+#if defined(KTCP_ATTENTION_AVX2_INT8)
+  mutable std::vector<int8_t> avx2_packed_keys_ = std::vector<int8_t>(
+      kHeads * ((kS + 7) / 8) * (kHeadDim / 4) * 32, 0);
+  mutable std::vector<float> avx2_key_scales_ =
+      std::vector<float>(kHeads * kAttentionPaddedS, 0.0f);
+  mutable std::vector<int32_t> avx2_key_sums_ =
+      std::vector<int32_t>(kHeads * kAttentionPaddedS, 0);
+  mutable std::vector<int8_t> avx2_packed_values_ = std::vector<int8_t>(
+      ((kS + 3) / 4) * (kHeadDim / 8) * 32, 0);
+  mutable std::vector<float> avx2_value_scales_ =
+      std::vector<float>(kHeadDim, 0.0f);
+#endif
 #if defined(KTCP_ATTENTION_VNNI)
   mutable std::vector<int8_t> vnni_packed_keys_ = std::vector<int8_t>(
       kHeads * ((kS + 15) / 16) * (kHeadDim / 4) * 64, 0);
@@ -1975,7 +3096,7 @@ class TransformerBlock {
 
     const auto& frequencies =
         require_values(tensors, prefix + "rope_freqs", {kHeads, kPairs, 2});
-#if defined(KTCP_POSTOPS_AVX512)
+#if defined(KTCP_POSTOPS_AVX512) || defined(KTCP_POSTOPS_AVX2)
     rope_cos_.resize(kS * kHeads * kHeadDim);
     rope_sin_.resize(kS * kHeads * kHeadDim);
 #else
@@ -1992,7 +3113,7 @@ class TransformerBlock {
                               y * frequencies[frequency_index + 1];
           const float cosine = std::cos(angle);
           const float sine = std::sin(angle);
-#if defined(KTCP_POSTOPS_AVX512)
+#if defined(KTCP_POSTOPS_AVX512) || defined(KTCP_POSTOPS_AVX2)
           const size_t table_index =
               (token * kHeads + head) * kHeadDim + pair * 2;
           rope_cos_[table_index] = cosine;
@@ -2027,24 +3148,24 @@ class TransformerBlock {
     }
 
     qkv_fc_ = std::make_unique<FullyConnected>(
-        qkv_mode, kS, kC, 3 * kC, concatenate_s8_rows({&q, &k, &v}, kC),
+        qkv_mode, kS, kC, 3 * kC, concatenate_quantized_rows({&q, &k, &v}, kC),
         zero_bias(3 * kC), norm1_.data(), qkv_.data(), qkv_rope_output);
     out_fc_ = std::make_unique<FullyConnected>(
         mode, kS, kC, kC,
-        copy_s8_weights(tensors, prefix + "out_proj.weight", {kC, kC}),
+        copy_quantized_weights(tensors, prefix + "out_proj.weight", {kC, kC}),
         zero_bias(kC), attention_.data(), projected_.data(),
         QkvRopeOutput{}, SwiGluOutput{},
         mode == KTCP_MODE_MLAS_U8S8
             ? ResidualOutput{trunk_, norm2_.data(), gamma2_.data()}
             : ResidualOutput{});
     up_gate_fc_ = std::make_unique<FullyConnected>(
-        mode, kS, kC, 2 * kFfn, concatenate_s8_rows({&up, &gate}, kC),
+        mode, kS, kC, 2 * kFfn, concatenate_quantized_rows({&up, &gate}, kC),
         zero_bias(2 * kFfn), norm2_.data(), up_gate_.data(),
         QkvRopeOutput{},
         mode == KTCP_MODE_MLAS_U8S8 ? SwiGluOutput{swiglu_.data()} : SwiGluOutput{});
     down_fc_ = std::make_unique<FullyConnected>(
         mode, kS, kFfn, kC,
-        copy_s8_weights(tensors, prefix + "ffn_linear2.weight", {kC, kFfn}),
+        copy_quantized_weights(tensors, prefix + "ffn_linear2.weight", {kC, kFfn}),
         zero_bias(kC), swiglu_.data(), down_.data(),
         QkvRopeOutput{}, SwiGluOutput{},
         mode == KTCP_MODE_MLAS_U8S8
@@ -2302,7 +3423,9 @@ class Model final : public Kernel {
         value_out_(padded_vector<float>(KTCP_VALUE_SIZE)),
         score_value_out_(padded_vector<float>(KTCP_SCORE_VALUE_SIZE)),
         ownership_(padded_vector<float>(KTCP_OWNERSHIP_SIZE)) {
+#if !defined(CPU_PTQ_AVX2_ONLY)
     check_xnn(xnn_initialize(nullptr), "xnn_initialize");
+#endif
 
     stem_ = std::make_unique<StemConvolution>(
         require_values(tensors, "conv_spatial.weight", {kC, KTCP_SPATIAL_INPUTS, 3, 3}),
@@ -2400,9 +3523,44 @@ class Model final : public Kernel {
       float* out_value,
       float* out_score_value,
       float* out_ownership) override {
+#if defined(CPU_PTQ_ENABLE_PROFILING)
+    Profile sample;
+    inferProfile(
+        input_spatial, input_global, out_policy, out_value, out_score_value,
+        out_ownership, &sample);
+    ++profile_seen_rows_;
+    constexpr size_t warmup_rows = 8;
+    constexpr size_t measured_rows = 64;
+    if (profile_seen_rows_ > warmup_rows &&
+        profile_measured_rows_ < measured_rows) {
+      for (size_t stage = 0; stage < sample.milliseconds.size(); ++stage) {
+        profile_sum_.milliseconds[stage] += sample.milliseconds[stage];
+      }
+      ++profile_measured_rows_;
+      if (profile_measured_rows_ == measured_rows) {
+        static constexpr const char* stage_names[] = {
+            "input_stem", "norm1", "qkv", "rope", "attention_qk",
+            "attention_softmax", "attention_pv", "attention_transpose",
+            "out_projection", "residual_norm2", "up_gate", "swiglu",
+            "down", "residual_add", "heads"};
+        double total = 0.0;
+        std::fprintf(
+            stderr, "CPU-PTQ profile %s (%zu rows, milliseconds/row):\n",
+            CPU_PTQ_PROFILE_FUNCTION().name, measured_rows);
+        for (size_t stage = 0; stage < profile_sum_.milliseconds.size(); ++stage) {
+          const double average =
+              profile_sum_.milliseconds[stage] / measured_rows;
+          total += average;
+          std::fprintf(stderr, "  %s=%.6f\n", stage_names[stage], average);
+        }
+        std::fprintf(stderr, "  total=%.6f\n", total);
+      }
+    }
+#else
     inferProfile(
         input_spatial, input_global, out_policy, out_value, out_score_value,
         out_ownership, nullptr);
+#endif
   }
 
  private:
@@ -2498,6 +3656,11 @@ class Model final : public Kernel {
   }
 
   int mode_ = KTCP_MODE_FP32;
+#if defined(CPU_PTQ_ENABLE_PROFILING)
+  size_t profile_seen_rows_ = 0;
+  size_t profile_measured_rows_ = 0;
+  Profile profile_sum_;
+#endif
   std::vector<float> spatial_nhwc_;
   std::vector<float> global_input_;
   std::vector<float> trunk_;

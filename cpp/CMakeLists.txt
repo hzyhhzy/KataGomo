@@ -651,20 +651,62 @@ elseif(USE_BACKEND STREQUAL "ONNX-DIRECTML")
     neuralnet/onnxbackend_directml.cpp
     )
 elseif(USE_BACKEND STREQUAL "CPU-PTQ")
-  message(STATUS "-DUSE_BACKEND=CPU-PTQ, using the fixed-shape AVX-512 VNNI single-thread backend.")
   if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "CPU-PTQ currently requires 64-bit Windows/MSVC.")
   endif()
   enable_language(ASM_MASM)
+
+  set(CPU_PTQ_ISA "AVX2" CACHE STRING
+    "CPU-PTQ instruction-set implementation (AVX2 or AVX512VNNI)")
+  set_property(CACHE CPU_PTQ_ISA PROPERTY STRINGS AVX2 AVX512VNNI)
+  if(NOT CPU_PTQ_ISA STREQUAL "AVX2" AND NOT CPU_PTQ_ISA STREQUAL "AVX512VNNI")
+    message(FATAL_ERROR "CPU_PTQ_ISA must be AVX2 or AVX512VNNI")
+  endif()
+  if(CPU_PTQ_ISA STREQUAL "AVX2")
+    message(STATUS "-DUSE_BACKEND=CPU-PTQ, using the fixed-shape AVX2-only single-thread backend.")
+  else()
+    message(STATUS "-DUSE_BACKEND=CPU-PTQ, using the fixed-shape AVX-512 VNNI single-thread backend.")
+  endif()
 
   set(CPU_PTQ_TORCH_ROOT "" CACHE PATH
     "PyTorch wheel root containing matched XNNPACK headers and static libraries")
   set(CPU_PTQ_ONNXRUNTIME_SOURCE_ROOT "" CACHE PATH
     "ONNX Runtime source checkout used only to build its standalone MLAS kernels")
   set(CPU_PTQ_MLAS_PACKED_STRIDE_N "768" CACHE STRING
-    "MLAS packed U8S8 N panel, qualified on AMD EPYC 9K65")
+    "MLAS packed U8S8 N panel for ordinary projections")
+  set(CPU_PTQ_MLAS_PACKED_STRIDE_N_LARGE "1024" CACHE STRING
+    "MLAS packed U8S8 N panel for large projections")
+  set(CPU_PTQ_MLAS_PACKED_STRIDE_N_LARGE_THRESHOLD "1024" CACHE STRING
+    "Output width at which MLAS selects the large packed N panel")
+  if(CPU_PTQ_MLAS_PACKED_STRIDE_N_LARGE LESS CPU_PTQ_MLAS_PACKED_STRIDE_N)
+    message(FATAL_ERROR
+      "CPU_PTQ_MLAS_PACKED_STRIDE_N_LARGE must be at least the ordinary N panel")
+  endif()
   set(CPU_PTQ_MLAS_PACKED_STRIDE_M "48" CACHE STRING
     "MLAS packed U8S8 M panel, qualified on AMD EPYC 9K65")
+  if(CPU_PTQ_ISA STREQUAL "AVX2")
+    set(CPU_PTQ_MLAS_PACKED_STRIDE_K_DEFAULT "512")
+  else()
+    set(CPU_PTQ_MLAS_PACKED_STRIDE_K_DEFAULT "384")
+  endif()
+  set(CPU_PTQ_MLAS_PACKED_STRIDE_K
+    "${CPU_PTQ_MLAS_PACKED_STRIDE_K_DEFAULT}" CACHE STRING
+    "MLAS packed U8S8 K panel (qualified defaults: AVX2=512, VNNI=384)")
+  option(CPU_PTQ_ENABLE_PROFILING
+    "Collect and print a short CPU-PTQ per-stage inference profile" OFF)
+  option(CPU_PTQ_AVX2_INT8_ATTENTION
+    "Use the fixed-shape AVX2 INT8 attention kernel" ON)
+  option(CPU_PTQ_AVX2_VECTOR_POSTOPS
+    "Use AVX2 vector QKV/RoPE post-processing" ON)
+  option(CPU_PTQ_VNNI_PV_QUAD
+    "Reuse each packed V load across four VNNI attention queries" ON)
+  set(CPU_PTQ_AVX2_PROJECTION_RECIPE "A8W7" CACHE STRING
+    "AVX2 saturation-safe projection recipe (A8W7 or A7W8)")
+  set_property(CACHE CPU_PTQ_AVX2_PROJECTION_RECIPE PROPERTY STRINGS A8W7 A7W8)
+  set(CPU_PTQ_AVX2_ATTENTION_RECIPE "Q7K8_P8V7" CACHE STRING
+    "AVX2 saturation-safe attention recipe (Q7K8_P8V7 or Q8K7_P7V8)")
+  set_property(CACHE CPU_PTQ_AVX2_ATTENTION_RECIPE PROPERTY STRINGS
+    Q7K8_P8V7 Q8K7_P7V8)
 
   set(CPU_PTQ_XNNPACK_INCLUDE "${CPU_PTQ_TORCH_ROOT}/include")
   set(CPU_PTQ_XNNPACK_LIB_DIR "${CPU_PTQ_TORCH_ROOT}/lib")
@@ -696,21 +738,35 @@ elseif(USE_BACKEND STREQUAL "CPU-PTQ")
   endfunction()
   include("${CMAKE_CURRENT_SOURCE_DIR}/neuralnet/cpuptq/patch_mlas.cmake")
   cpu_ptq_prepare_mlas_qgemm(CPU_PTQ_MLAS_QGEMM_SOURCE)
+  cpu_ptq_prepare_mlas_platform(CPU_PTQ_MLAS_PLATFORM_SOURCE)
   include("${CPU_PTQ_ONNXRUNTIME_SOURCE_ROOT}/cmake/onnxruntime_mlas.cmake")
   set(CPU_PTQ_MLAS_QGEMM_ORIGINAL
     "${ONNXRUNTIME_ROOT}/core/mlas/lib/qgemm_kernel_avx2.cpp")
   set_source_files_properties(
     "${CPU_PTQ_MLAS_QGEMM_ORIGINAL}" PROPERTIES HEADER_FILE_ONLY TRUE)
+  set(CPU_PTQ_MLAS_PLATFORM_ORIGINAL
+    "${ONNXRUNTIME_ROOT}/core/mlas/lib/platform.cpp")
+  set_source_files_properties(
+    "${CPU_PTQ_MLAS_PLATFORM_ORIGINAL}" PROPERTIES HEADER_FILE_ONLY TRUE)
   target_sources(onnxruntime_mlas PRIVATE "${CPU_PTQ_MLAS_QGEMM_SOURCE}")
+  target_sources(onnxruntime_mlas PRIVATE "${CPU_PTQ_MLAS_PLATFORM_SOURCE}")
   target_sources(onnxruntime_mlas PRIVATE
     "${ONNXRUNTIME_ROOT}/core/mlas/lib/q4_dq.cpp"
     "${ONNXRUNTIME_ROOT}/core/mlas/lib/q4gemm.cpp"
     "${ONNXRUNTIME_ROOT}/core/mlas/lib/q4gemm_avx512.cpp")
   target_compile_definitions(onnxruntime_mlas PRIVATE BUILD_MLAS_NO_ONNXRUNTIME)
+  if(CPU_PTQ_ISA STREQUAL "AVX2")
+    target_compile_definitions(onnxruntime_mlas PRIVATE
+      ORT_MINIMAL_BUILD
+      KTCP_MLAS_ALLOW_AVXVNNI=0)
+  else()
+    target_compile_definitions(onnxruntime_mlas PRIVATE
+      KTCP_MLAS_ALLOW_AVXVNNI=1)
+  endif()
   set_source_files_properties(
     "${CPU_PTQ_MLAS_QGEMM_SOURCE}"
     PROPERTIES COMPILE_DEFINITIONS
-    "KTCP_MLAS_PACKED_STRIDE_N=${CPU_PTQ_MLAS_PACKED_STRIDE_N};KTCP_MLAS_PACKED_STRIDE_M=${CPU_PTQ_MLAS_PACKED_STRIDE_M}")
+    "KTCP_MLAS_PACKED_STRIDE_N=${CPU_PTQ_MLAS_PACKED_STRIDE_N_LARGE};KTCP_MLAS_PACKED_STRIDE_M=${CPU_PTQ_MLAS_PACKED_STRIDE_M};KTCP_MLAS_PACKED_STRIDE_K=${CPU_PTQ_MLAS_PACKED_STRIDE_K}")
   target_include_directories(onnxruntime_mlas
     PUBLIC "${ONNXRUNTIME_ROOT}/core/mlas/inc"
     PRIVATE
@@ -720,6 +776,7 @@ elseif(USE_BACKEND STREQUAL "CPU-PTQ")
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/cpuptqbackend.cpp
     neuralnet/cpuptq/model.cpp
+    neuralnet/cpuptq/profile_b24.cpp
     neuralnet/cpuptq/profile_b16.cpp
     neuralnet/cpuptq/profile_b11.cpp)
 elseif(USE_BACKEND STREQUAL "")
@@ -1114,6 +1171,51 @@ elseif(USE_BACKEND STREQUAL "ONNX-DIRECTML")
   target_compile_definitions(katago PRIVATE USE_ONNX_DIRECTML_BACKEND)
 elseif(USE_BACKEND STREQUAL "CPU-PTQ")
   target_compile_definitions(katago PRIVATE USE_CPU_PTQ_BACKEND)
+  set(CPU_PTQ_PROFILE_COMPILE_DEFINITIONS "")
+  if(CPU_PTQ_ENABLE_PROFILING)
+    list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+      CPU_PTQ_ENABLE_PROFILING=1)
+  endif()
+  if(CPU_PTQ_ISA STREQUAL "AVX2")
+    target_compile_definitions(katago PRIVATE CPU_PTQ_AVX2_ONLY)
+    if(CPU_PTQ_AVX2_PROJECTION_RECIPE STREQUAL "A8W7")
+      list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+        KTCP_MLAS_AVX2_S7_WEIGHTS=1)
+    elseif(CPU_PTQ_AVX2_PROJECTION_RECIPE STREQUAL "A7W8")
+      list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+        KTCP_MLAS_AVX2_SAFE_U8=1)
+    else()
+      message(FATAL_ERROR
+        "CPU_PTQ_AVX2_PROJECTION_RECIPE must be A8W7 or A7W8")
+    endif()
+    if(CPU_PTQ_AVX2_INT8_ATTENTION)
+      list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+        KTCP_ATTENTION_AVX2_INT8=1)
+      if(CPU_PTQ_AVX2_ATTENTION_RECIPE STREQUAL "Q7K8_P8V7")
+        list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+          KTCP_ATTENTION_AVX2_Q7K8_P8V7=1)
+      elseif(NOT CPU_PTQ_AVX2_ATTENTION_RECIPE STREQUAL "Q8K7_P7V8")
+        message(FATAL_ERROR
+          "CPU_PTQ_AVX2_ATTENTION_RECIPE must be Q7K8_P8V7 or Q8K7_P7V8")
+      endif()
+    endif()
+    if(CPU_PTQ_AVX2_VECTOR_POSTOPS)
+      list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+        KTCP_POSTOPS_AVX2=1)
+    endif()
+    set(CPU_PTQ_MSVC_ARCH AVX2)
+  else()
+    target_compile_definitions(katago PRIVATE CPU_PTQ_AVX512VNNI)
+    list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+      KTCP_ATTENTION_VNNI=1
+      KTCP_ATTENTION_PV_INT8=1
+      KTCP_POSTOPS_AVX512=1)
+    if(CPU_PTQ_VNNI_PV_QUAD)
+      list(APPEND CPU_PTQ_PROFILE_COMPILE_DEFINITIONS
+        KTCP_ATTENTION_VNNI_PV_QUAD=1)
+    endif()
+    set(CPU_PTQ_MSVC_ARCH AVX512)
+  endif()
   target_include_directories(katago PRIVATE
     "${CPU_PTQ_XNNPACK_INCLUDE}"
     "${ONNXRUNTIME_ROOT}/core/mlas/inc")
@@ -1124,11 +1226,14 @@ elseif(USE_BACKEND STREQUAL "CPU-PTQ")
     "${CPU_PTQ_XNNPACK_LIB_DIR}/pthreadpool.lib"
     "${CPU_PTQ_XNNPACK_LIB_DIR}/cpuinfo.lib")
   set_source_files_properties(
+    neuralnet/cpuptq/profile_b24.cpp
     neuralnet/cpuptq/profile_b16.cpp
     neuralnet/cpuptq/profile_b11.cpp
-    PROPERTIES COMPILE_OPTIONS "/O2;/Ob3;/Oi;/Ot;/arch:AVX512;/fp:fast")
+    PROPERTIES
+      COMPILE_DEFINITIONS "${CPU_PTQ_PROFILE_COMPILE_DEFINITIONS}"
+      COMPILE_OPTIONS "/O2;/Ob3;/Oi;/Ot;/arch:${CPU_PTQ_MSVC_ARCH};/fp:fast")
   target_compile_options(onnxruntime_mlas PRIVATE
-    $<$<COMPILE_LANGUAGE:CXX>:/O2;/Ob3;/Oi;/Ot;/arch:AVX512;/EHsc;/fp:fast>)
+    $<$<COMPILE_LANGUAGE:CXX>:/O2;/Ob3;/Oi;/Ot;/arch:${CPU_PTQ_MSVC_ARCH};/EHsc;/fp:fast>)
   target_link_options(onnxruntime_mlas PRIVATE /INCREMENTAL:NO)
 endif()
 
