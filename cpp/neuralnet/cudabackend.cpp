@@ -1697,6 +1697,7 @@ struct TransformerAttentionBlock {
   const int vHeadDim;
   const bool useRope;
   const bool learnableRope;
+  const bool useQKNorm;
   const int inChannels;
 
   const int nnXLen;
@@ -1705,6 +1706,8 @@ struct TransformerAttentionBlock {
   const bool usingNHWC;
 
   const TransformerRMSNormLayer preLN;
+  std::unique_ptr<TransformerRMSNormLayer> qNorm;
+  std::unique_ptr<TransformerRMSNormLayer> kNorm;
   const MatMulLayer outProj;
 
   // Official projection plan. On an MMA-capable FP16 device use one interleaved
@@ -1730,21 +1733,13 @@ struct TransformerAttentionBlock {
   ) {
     return
       useFP16 &&
+      !desc->useQKNorm &&
       cudaHandles->mmaAttentionEnabled &&
       desc->qProj.inChannels == desc->kProj.inChannels &&
       desc->qProj.inChannels == desc->vProj.inChannels &&
       customCudaFlashAttentionMmaSupportsShape(
         desc->numHeads,desc->numKVHeads,desc->qHeadDim,desc->vHeadDim
       );
-  }
-
-  static bool scalarAttentionSupportsShape(int qDim,int vDim) {
-    return
-      (qDim == 32 && vDim == 32) ||
-      (qDim == 32 && vDim == 16) ||
-      (qDim == 64 && vDim == 64) ||
-      (qDim == 64 && vDim == 32) ||
-      (qDim == 32 && vDim == 64);
   }
 
   TransformerAttentionBlock() = delete;
@@ -1767,12 +1762,15 @@ struct TransformerAttentionBlock {
     vHeadDim(desc->vHeadDim),
     useRope(desc->useRope),
     learnableRope(desc->learnableRope),
+    useQKNorm(desc->useQKNorm),
     inChannels(desc->qProj.inChannels),
     nnXLen(nnX),
     nnYLen(nnY),
     usingFP16(useFP16),
     usingNHWC(useNHWC),
     preLN(cudaHandles,&desc->preLN,useFP16),
+    qNorm(nullptr),
+    kNorm(nullptr),
     outProj(cudaHandles,&desc->outProj,useFP16),
     sameQKVShapes(
       desc->qProj.inChannels == desc->kProj.inChannels &&
@@ -1792,6 +1790,20 @@ struct TransformerAttentionBlock {
     if(qTotalDim % 8 != 0 || kTotalDim % 8 != 0 || vTotalDim % 8 != 0)
       throw StringError(name + ": CUDA attention projection widths must be multiples of 8");
 
+    if(useQKNorm) {
+      if(useCombinedQKV)
+        throw StringError(name + ": Q/K normalization requires planar Q/K/V buffers");
+      const long long seqLen = (long long)nnXLen * nnYLen;
+      const long long maxQElements =
+        (long long)maxBatchSize * seqLen * numHeads * qHeadDim;
+      const long long maxKElements =
+        (long long)maxBatchSize * seqLen * numKVHeads * qHeadDim;
+      if(maxQElements >= 2147483647LL || maxKElements >= 2147483647LL)
+        throw StringError(name + ": Q/K normalization exceeds the CUDA 32-bit index limit");
+      qNorm = std::make_unique<TransformerRMSNormLayer>(cudaHandles,&desc->qNorm,useFP16);
+      kNorm = std::make_unique<TransformerRMSNormLayer>(cudaHandles,&desc->kNorm,useFP16);
+    }
+
     // Fail closed during model construction, before adapter-specific QKV/RoPE
     // allocations and before any inference work. The scalar attention kernel
     // flattens batch and query-head into grid.y, while RoPE uses
@@ -1807,11 +1819,6 @@ struct TransformerAttentionBlock {
       if(headPairs > 1024)
         throw StringError(name + ": numHeads * RoPE coordinate pairs exceeds 1024 threads");
     }
-    if(!useCombinedQKV && !scalarAttentionSupportsShape(qHeadDim,vHeadDim))
-      throw StringError(
-        name + ": attention shape has neither a committed MMA plan nor an official scalar kernel"
-      );
-
     if(useCombinedQKV) {
       if(!cudaHandles->loggedUsingCombinedQKV) {
         cudaHandles->loggedUsingCombinedQKV = true;
@@ -1955,6 +1962,16 @@ struct TransformerAttentionBlock {
         kProj->apply(cudaHandles,scratch,matBatchSize,trunkScratchBuf,kPtr,workspaceBuf,workspaceBytes);
         vProj->apply(cudaHandles,scratch,matBatchSize,trunkScratchBuf,vPtr,workspaceBuf,workspaceBytes);
       }
+    }
+
+    // Q/K RMSNorm is per token and per head, after projection and before RoPE.
+    // Viewing contiguous [M,H,D] as [M*H,1,D] applies the learned D-vector
+    // independently to each head and works for both FP32 and FP16 execution.
+    if(useQKNorm) {
+      if(qNorm == nullptr || kNorm == nullptr)
+        throw StringError(name + ": Q/K normalization descriptors were not prepared");
+      qNorm->apply(cudaHandles,matBatchSize * numHeads,1,qPtr,qPtr,nullptr);
+      kNorm->apply(cudaHandles,matBatchSize * numKVHeads,1,kPtr,kPtr,nullptr);
     }
 
     if(useRope) {
@@ -2120,6 +2137,7 @@ struct TransformerFFNBlock {
   const int numChannels;
   const int ffnChannels;
   const bool useSwiGLU;
+  const float swigluClip;
 
   const int nnXLen;
   const int nnYLen;
@@ -2146,6 +2164,7 @@ struct TransformerFFNBlock {
     numChannels(desc->numChannels),
     ffnChannels(desc->ffnChannels),
     useSwiGLU(desc->useSwiGLU),
+    swigluClip(desc->swigluClip),
     nnXLen(nnX),
     nnYLen(nnY),
     usingFP16(useFP16),
@@ -2208,10 +2227,28 @@ struct TransformerFFNBlock {
     );
 
     const int totalSize = (int)((size_t)ffnChannels * matBatchSize);
-    if(!usingFP16)
-      customCudaSwiGLU((const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,totalSize);
-    else
-      customCudaSwiGLU((const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,totalSize);
+    if(!usingFP16) {
+      if(swigluClip > 0.0f)
+        customCudaSwiGLUClipped(
+          (const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,
+          totalSize,swigluClip,KATAGO_LEGACY_STREAM
+        );
+      else
+        customCudaSwiGLU(
+          (const float*)linearBuf,(const float*)gateBuf,(float*)linearBuf,totalSize
+        );
+    }
+    else {
+      if(swigluClip > 0.0f)
+        customCudaSwiGLUClipped(
+          (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,
+          totalSize,swigluClip,KATAGO_LEGACY_STREAM
+        );
+      else
+        customCudaSwiGLU(
+          (const half*)linearBuf,(const half*)gateBuf,(half*)linearBuf,totalSize
+        );
+    }
     CUDA_ERR(name.c_str(),cudaPeekAtLastError());
 
     if(maskBuf == NULL) {
@@ -3426,8 +3463,11 @@ struct ComputeHandle {
     cudaHandles->logger = logger;
     // Probe before constructing the model because an enabled MMA path commits
     // attention weights to the official interleaved combined-QKV layout.
+    const bool hasMmaAttention =
+      majorComputeCapability >= 8 ||
+      (majorComputeCapability == 7 && minorComputeCapability >= 5);
     const bool wantMmaAttention =
-      useFP16 && majorComputeCapability >= 8 && loadedModel->modelDesc.trunk.hasAnyTransformerBlocks();
+      useFP16 && hasMmaAttention && loadedModel->modelDesc.trunk.hasAnyTransformerBlocks();
     cudaHandles->mmaAttentionEnabled =
       wantMmaAttention && customCudaFlashAttentionMmaSupported();
     if(wantMmaAttention && !cudaHandles->mmaAttentionEnabled) {
@@ -3662,8 +3702,7 @@ void NeuralNet::getOutput(
   InputBuffers* inputBuffers,
   int numBatchEltsFilled,
   NNResultBuf** inputBufs,
-  vector<NNOutput*>& outputs,
-  float* outputPolicys
+  vector<NNOutput*>& outputs
 ) {
   assert(numBatchEltsFilled <= inputBuffers->maxBatchSize);
   assert(numBatchEltsFilled > 0);
@@ -3765,7 +3804,7 @@ void NeuralNet::getOutput(
     assert(output->nnYLen == nnYLen);
 
     const float* policySrcBuf = inputBuffers->policyResults + row * gpuHandle->policySize;
-    float* policyProbs = outputPolicys + row * NNPos::MAX_NN_POLICY_SIZE;
+    float* policyProbs = output->policyProbs;
 
     //These are not actually correct, the client does the postprocessing to turn them into
     //policy probabilities and white game outcome probabilities

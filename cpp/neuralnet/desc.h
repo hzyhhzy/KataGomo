@@ -108,6 +108,11 @@ struct TransformerRMSNormDesc {
 
   TransformerRMSNormDesc();
   TransformerRMSNormDesc(std::istream& in, bool binaryFloats);
+  TransformerRMSNormDesc(
+    std::istream& in,
+    bool binaryFloats,
+    const std::string& prefetchedName
+  );
   TransformerRMSNormDesc(TransformerRMSNormDesc&& other);
 
   TransformerRMSNormDesc(const TransformerRMSNormDesc&) = delete;
@@ -123,12 +128,18 @@ struct TransformerAttentionDesc {
   int vHeadDim;
   bool useRope;
   bool learnableRope;
+  bool useQKNorm;
+  // v205 carries calibrated CUDA INT8 ranges. Floating v11 leaves them zero.
+  float attentionInputQuantMaxAbs;
+  float attentionOutputQuantMaxAbs;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc qProj;
   MatMulLayerDesc kProj;
   MatMulLayerDesc vProj;
   MatMulLayerDesc outProj;
+  TransformerRMSNormDesc qNorm;
+  TransformerRMSNormDesc kNorm;
 
   int ropeNumKVHeads;
   int ropeNumPairs;
@@ -136,7 +147,7 @@ struct TransformerAttentionDesc {
   float ropeTheta;
 
   TransformerAttentionDesc();
-  TransformerAttentionDesc(std::istream& in, bool binaryFloats);
+  TransformerAttentionDesc(std::istream& in, int modelVersion, bool binaryFloats);
   TransformerAttentionDesc(TransformerAttentionDesc&& other);
 
   TransformerAttentionDesc(const TransformerAttentionDesc&) = delete;
@@ -157,6 +168,12 @@ struct TransformerFFNDesc {
   int numChannels;
   int ffnChannels;
   bool useSwiGLU;
+  // Zero disables clipping. Positive values clamp the activated linear branch
+  // and gate independently before their SwiGLU product.
+  float swigluClip;
+  // v205 calibration metadata. Floating v11 leaves both values zero.
+  float ffnInputQuantMaxAbs;
+  float productQuantMaxAbs;
 
   TransformerRMSNormDesc preLN;
   MatMulLayerDesc linear1;
@@ -164,7 +181,7 @@ struct TransformerFFNDesc {
   MatMulLayerDesc linear2;
 
   TransformerFFNDesc();
-  TransformerFFNDesc(std::istream& in, bool binaryFloats);
+  TransformerFFNDesc(std::istream& in, int modelVersion, bool binaryFloats);
   TransformerFFNDesc(TransformerFFNDesc&& other);
 
   TransformerFFNDesc(const TransformerFFNDesc&) = delete;

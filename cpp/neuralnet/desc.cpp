@@ -371,6 +371,24 @@ TransformerRMSNormDesc::TransformerRMSNormDesc(istream& in, bool binaryFloats) {
     throw StringError(name + ": transformer rmsnorm failed to parse weights");
 }
 
+TransformerRMSNormDesc::TransformerRMSNormDesc(
+  istream& in,
+  bool binaryFloats,
+  const string& prefetchedName
+) : name(prefetchedName) {
+  in >> numChannels;
+  in >> epsilon;
+  if(in.fail())
+    throw StringError(name + ": transformer rmsnorm failed to parse parameters");
+  if(numChannels < 1)
+    throw StringError(name + ": transformer rmsnorm numChannels must be positive");
+  if(!isfinite(epsilon) || epsilon <= 0.0f || epsilon > 1.0f)
+    throw StringError(name + ": transformer rmsnorm epsilon must be positive and at most 1");
+  readFloats(in, (size_t)numChannels, binaryFloats, name, weight);
+  if(in.fail())
+    throw StringError(name + ": transformer rmsnorm failed to parse weights");
+}
+
 TransformerRMSNormDesc::TransformerRMSNormDesc(TransformerRMSNormDesc&& other) {
   *this = std::move(other);
 }
@@ -385,12 +403,22 @@ TransformerRMSNormDesc& TransformerRMSNormDesc::operator=(TransformerRMSNormDesc
 
 //-----------------------------------------------------------------------------
 
+// The marker spelling is retained for cross-engine wire compatibility. It is
+// used by both the v102 and v11 floating Transformer families.
+static constexpr const char* TRANSFORMER_EXTENSION_MARKER =
+  "@V102_QKN_CLIP@";
+
 TransformerAttentionDesc::TransformerAttentionDesc()
   : numHeads(0), numKVHeads(0), qHeadDim(0), vHeadDim(0),
-    useRope(false), learnableRope(false),
+    useRope(false), learnableRope(false), useQKNorm(false),
+    attentionInputQuantMaxAbs(0.0f), attentionOutputQuantMaxAbs(0.0f),
     ropeNumKVHeads(0), ropeNumPairs(0), ropeTheta(0.0f) {}
 
-TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloats) {
+TransformerAttentionDesc::TransformerAttentionDesc(
+  istream& in,
+  int modelVersion,
+  bool binaryFloats
+) {
   in >> name;
   in >> numHeads;
   in >> numKVHeads;
@@ -405,6 +433,45 @@ TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloat
     throw StringError(name + ": transformer attention rope flags must be 0 or 1");
   useRope = useRopeInt != 0;
   learnableRope = learnableRopeInt != 0;
+  useQKNorm = false;
+  attentionInputQuantMaxAbs = 0.0f;
+  attentionOutputQuantMaxAbs = 0.0f;
+  string prefetchedPreLNName;
+  bool hasPrefetchedPreLNName = false;
+  if(modelVersion == 11) {
+    string extensionOrPreLNName;
+    in >> extensionOrPreLNName;
+    if(extensionOrPreLNName == TRANSFORMER_EXTENSION_MARKER) {
+      int useQKNormInt = -1;
+      in >> useQKNormInt;
+      if(useQKNormInt != 0 && useQKNormInt != 1)
+        throw StringError(name + ": extended v11 attention useQKNorm flag must be 0 or 1");
+      useQKNorm = useQKNormInt != 0;
+    }
+    else {
+      prefetchedPreLNName = extensionOrPreLNName;
+      hasPrefetchedPreLNName = true;
+    }
+  }
+  else if(modelVersion == 205) {
+    int useQKNormInt = -1;
+    in >> useQKNormInt;
+    if(useQKNormInt != 0 && useQKNormInt != 1)
+      throw StringError(name + ": v205 attention useQKNorm flag must be 0 or 1");
+    useQKNorm = useQKNormInt != 0;
+    in >> attentionInputQuantMaxAbs;
+    in >> attentionOutputQuantMaxAbs;
+    if(in.fail() || !isfinite(attentionInputQuantMaxAbs) ||
+       attentionInputQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / attentionInputQuantMaxAbs))
+      throw StringError(
+        name + ": attentionInputQuantMaxAbs must be finite and positive");
+    if(!isfinite(attentionOutputQuantMaxAbs) ||
+       attentionOutputQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / attentionOutputQuantMaxAbs))
+      throw StringError(
+        name + ": attentionOutputQuantMaxAbs must be finite and positive");
+  }
 
   if(in.fail())
     throw StringError(name + ": transformer attention block failed to parse header");
@@ -415,11 +482,17 @@ TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloat
   if(learnableRope && !useRope)
     throw StringError(name + ": learnableRope requires useRope");
 
-  preLN = TransformerRMSNormDesc(in, binaryFloats);
+  preLN = hasPrefetchedPreLNName ?
+    TransformerRMSNormDesc(in,binaryFloats,prefetchedPreLNName) :
+    TransformerRMSNormDesc(in,binaryFloats);
   qProj = MatMulLayerDesc(in, binaryFloats);
   kProj = MatMulLayerDesc(in, binaryFloats);
   vProj = MatMulLayerDesc(in, binaryFloats);
   outProj = MatMulLayerDesc(in, binaryFloats);
+  if(useQKNorm) {
+    qNorm = TransformerRMSNormDesc(in, binaryFloats);
+    kNorm = TransformerRMSNormDesc(in, binaryFloats);
+  }
 
   if(qProj.inChannels != preLN.numChannels ||
      kProj.inChannels != preLN.numChannels ||
@@ -433,6 +506,9 @@ TransformerAttentionDesc::TransformerAttentionDesc(istream& in, bool binaryFloat
     throw StringError(name + ": v projection output channels do not match attention geometry");
   if(outProj.inChannels != numHeads * vHeadDim || outProj.outChannels != preLN.numChannels)
     throw StringError(name + ": output projection channels do not match attention geometry");
+  if(useQKNorm &&
+     (qNorm.numChannels != qHeadDim || kNorm.numChannels != qHeadDim))
+    throw StringError(name + ": q/k RMSNorm channels do not match qHeadDim");
 
   ropeNumKVHeads = 0;
   ropeNumPairs = 0;
@@ -481,11 +557,16 @@ TransformerAttentionDesc& TransformerAttentionDesc::operator=(TransformerAttenti
   vHeadDim = other.vHeadDim;
   useRope = other.useRope;
   learnableRope = other.learnableRope;
+  useQKNorm = other.useQKNorm;
+  attentionInputQuantMaxAbs = other.attentionInputQuantMaxAbs;
+  attentionOutputQuantMaxAbs = other.attentionOutputQuantMaxAbs;
   preLN = std::move(other.preLN);
   qProj = std::move(other.qProj);
   kProj = std::move(other.kProj);
   vProj = std::move(other.vProj);
   outProj = std::move(other.outProj);
+  qNorm = std::move(other.qNorm);
+  kNorm = std::move(other.kNorm);
   ropeNumKVHeads = other.ropeNumKVHeads;
   ropeNumPairs = other.ropeNumPairs;
   ropeFreqs = std::move(other.ropeFreqs);
@@ -556,9 +637,14 @@ void TransformerAttentionDesc::computeRopeCosSin(
 //-----------------------------------------------------------------------------
 
 TransformerFFNDesc::TransformerFFNDesc()
-  : numChannels(0), ffnChannels(0), useSwiGLU(false) {}
+  : numChannels(0), ffnChannels(0), useSwiGLU(false),
+    swigluClip(0.0f), ffnInputQuantMaxAbs(0.0f), productQuantMaxAbs(0.0f) {}
 
-TransformerFFNDesc::TransformerFFNDesc(istream& in, bool binaryFloats) {
+TransformerFFNDesc::TransformerFFNDesc(
+  istream& in,
+  int modelVersion,
+  bool binaryFloats
+) {
   in >> name;
   in >> numChannels;
   in >> ffnChannels;
@@ -567,12 +653,52 @@ TransformerFFNDesc::TransformerFFNDesc(istream& in, bool binaryFloats) {
   if(useSwiGLUInt != 0 && useSwiGLUInt != 1)
     throw StringError(name + ": transformer ffn useSwiGLU flag must be 0 or 1");
   useSwiGLU = useSwiGLUInt != 0;
+  swigluClip = 0.0f;
+  ffnInputQuantMaxAbs = 0.0f;
+  productQuantMaxAbs = 0.0f;
+  string prefetchedPreLNName;
+  bool hasPrefetchedPreLNName = false;
+  if(modelVersion == 11) {
+    string extensionOrPreLNName;
+    in >> extensionOrPreLNName;
+    if(extensionOrPreLNName == TRANSFORMER_EXTENSION_MARKER) {
+      in >> swigluClip;
+      if(in.fail() || !isfinite(swigluClip) || swigluClip <= 0.0f)
+        throw StringError(name + ": extended v11 swigluClip must be finite and positive");
+      if(!useSwiGLU)
+        throw StringError(name + ": extended v11 swigluClip requires SwiGLU");
+    }
+    else {
+      prefetchedPreLNName = extensionOrPreLNName;
+      hasPrefetchedPreLNName = true;
+    }
+  }
+  else if(modelVersion == 205) {
+    in >> swigluClip;
+    if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
+      throw StringError(name + ": v205 swigluClip must be finite and nonnegative");
+    if(swigluClip > 0.0f && !useSwiGLU)
+      throw StringError(name + ": v205 swigluClip requires SwiGLU");
+    in >> ffnInputQuantMaxAbs;
+    in >> productQuantMaxAbs;
+    if(in.fail() || !isfinite(ffnInputQuantMaxAbs) ||
+       ffnInputQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / ffnInputQuantMaxAbs))
+      throw StringError(name + ": ffnInputQuantMaxAbs must be finite and positive");
+    if(!isfinite(productQuantMaxAbs) || productQuantMaxAbs <= 0.0f ||
+       !isfinite(127.0f / productQuantMaxAbs))
+      throw StringError(name + ": productQuantMaxAbs must be finite and positive");
+    if(!useSwiGLU)
+      throw StringError(name + ": productQuantMaxAbs requires SwiGLU");
+  }
   if(in.fail())
     throw StringError(name + ": transformer ffn block failed to parse header");
   if(numChannels < 1 || ffnChannels < 1)
     throw StringError(name + ": transformer ffn channel counts must be positive");
 
-  preLN = TransformerRMSNormDesc(in, binaryFloats);
+  preLN = hasPrefetchedPreLNName ?
+    TransformerRMSNormDesc(in,binaryFloats,prefetchedPreLNName) :
+    TransformerRMSNormDesc(in,binaryFloats);
   linear1 = MatMulLayerDesc(in, binaryFloats);
   if(useSwiGLU)
     linearGate = MatMulLayerDesc(in, binaryFloats);
@@ -600,6 +726,9 @@ TransformerFFNDesc& TransformerFFNDesc::operator=(TransformerFFNDesc&& other) {
   numChannels = other.numChannels;
   ffnChannels = other.ffnChannels;
   useSwiGLU = other.useSwiGLU;
+  swigluClip = other.swigluClip;
+  ffnInputQuantMaxAbs = other.ffnInputQuantMaxAbs;
+  productQuantMaxAbs = other.productQuantMaxAbs;
   preLN = std::move(other.preLN);
   linear1 = std::move(other.linear1);
   linearGate = std::move(other.linearGate);
@@ -906,7 +1035,7 @@ static void parseResidualBlockStack(
       blocks.push_back(make_pair(NESTED_BOTTLENECK_BLOCK_KIND, std::move(descPtr)));
     }
     else if(kind == "transformer_attention_block") {
-      unique_ptr_void descPtr = make_unique_void(new TransformerAttentionDesc(in,binaryFloats));
+      unique_ptr_void descPtr = make_unique_void(new TransformerAttentionDesc(in,version,binaryFloats));
       TransformerAttentionDesc& desc = *((TransformerAttentionDesc*)descPtr.get());
       if(desc.preLN.numChannels != trunkNumChannels ||
          desc.qProj.inChannels != trunkNumChannels ||
@@ -919,7 +1048,7 @@ static void parseResidualBlockStack(
       blocks.push_back(make_pair(TRANSFORMER_ATTENTION_BLOCK_KIND, std::move(descPtr)));
     }
     else if(kind == "transformer_ffn_block") {
-      unique_ptr_void descPtr = make_unique_void(new TransformerFFNDesc(in,binaryFloats));
+      unique_ptr_void descPtr = make_unique_void(new TransformerFFNDesc(in,version,binaryFloats));
       TransformerFFNDesc& desc = *((TransformerFFNDesc*)descPtr.get());
       if(desc.numChannels != trunkNumChannels)
         throw StringError(
@@ -1308,7 +1437,7 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net is from an extremely old version of KataGo and is no longer supported by the engine. Model version: " + Global::intToString(version));
   if(version == 206)
     throw StringError("Native v206 models require the CPU-PTQ backend");
-  if(version > 11)
+  if(version > 11 && version != 205)
     throw StringError("This native descriptor version is not supported by this backend. Model version: " + Global::intToString(version));
   if(version > NNModelVersion::latestModelVersionImplemented)
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));

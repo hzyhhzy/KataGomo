@@ -2946,7 +2946,94 @@ void flashAttentionKernelHalf(
 #endif
 }
 
-// Dispatch: pick template instantiation by (qHeadDim, vHeadDim). Add more shapes as needed.
+// Fully dynamic fallback for valid head dimensions that do not have one of the
+// register-tiled specializations below. One block owns one (batch, head,
+// query) row. It computes each QK score once, keeps the softmax row in shared
+// memory, and then reduces V for all output dimensions. This is intentionally
+// a general correctness path rather than a model-shape specialization: normal
+// 32/64-dimensional KataGo heads still use the faster tiled or MMA kernels.
+template<typename T>
+__global__
+void flashAttentionGenericKernel(
+  const T* Q, const T* K, const T* V, const T* mask, T* output,
+  int seqLen, int numHeads, int numKVHeads, int qHeadDim, int vHeadDim, float scale
+) {
+  extern __shared__ float sharedFloats[];
+  float* probs = sharedFloats;
+  float* reduction = sharedFloats + seqLen;
+
+  const int qPos = blockIdx.x;
+  const int bh = blockIdx.y;
+  const int n = bh / numHeads;
+  const int h = bh % numHeads;
+  const int kvh = h * numKVHeads / numHeads;
+  const int tid = threadIdx.x;
+
+  const int qTotalDim = numHeads * qHeadDim;
+  const int kTotalDim = numKVHeads * qHeadDim;
+  const int vTotalDim = numKVHeads * vHeadDim;
+  const int oTotalDim = numHeads * vHeadDim;
+  const T* qPtr = Q + ((size_t)n * seqLen + qPos) * qTotalDim + h * qHeadDim;
+  T* outPtr = output + ((size_t)n * seqLen + qPos) * oTotalDim + h * vHeadDim;
+
+  const bool queryEnabled = mask == NULL || (float)mask[n * seqLen + qPos] != 0.0f;
+  if(!queryEnabled) {
+    for(int d = tid; d < vHeadDim; d += blockDim.x)
+      outPtr[d] = (T)0.0f;
+    return;
+  }
+
+  float localMax = -1.0e30f;
+  for(int kPos = tid; kPos < seqLen; kPos += blockDim.x) {
+    const bool keyEnabled = mask == NULL || (float)mask[n * seqLen + kPos] != 0.0f;
+    float score = -1.0e30f;
+    if(keyEnabled) {
+      const T* kPtr = K + ((size_t)n * seqLen + kPos) * kTotalDim + kvh * qHeadDim;
+      float dot = 0.0f;
+      for(int d = 0; d < qHeadDim; d++)
+        dot += (float)qPtr[d] * (float)kPtr[d];
+      score = dot * scale;
+      localMax = fmaxf(localMax,score);
+    }
+    probs[kPos] = score;
+  }
+  reduction[tid] = localMax;
+  __syncthreads();
+  for(int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if(tid < offset)
+      reduction[tid] = fmaxf(reduction[tid],reduction[tid + offset]);
+    __syncthreads();
+  }
+  const float rowMax = reduction[0];
+
+  float localSum = 0.0f;
+  for(int kPos = tid; kPos < seqLen; kPos += blockDim.x) {
+    const bool keyEnabled = mask == NULL || (float)mask[n * seqLen + kPos] != 0.0f;
+    const float p = keyEnabled ? __expf(probs[kPos] - rowMax) : 0.0f;
+    probs[kPos] = p;
+    localSum += p;
+  }
+  reduction[tid] = localSum;
+  __syncthreads();
+  for(int offset = blockDim.x / 2; offset > 0; offset >>= 1) {
+    if(tid < offset)
+      reduction[tid] += reduction[tid + offset];
+    __syncthreads();
+  }
+  const float invSum = reduction[0] > 0.0f ? 1.0f / reduction[0] : 0.0f;
+
+  for(int d = tid; d < vHeadDim; d += blockDim.x) {
+    float acc = 0.0f;
+    for(int kPos = 0; kPos < seqLen; kPos++) {
+      const T* vPtr = V + ((size_t)n * seqLen + kPos) * vTotalDim + kvh * vHeadDim;
+      acc += probs[kPos] * (float)vPtr[d];
+    }
+    outPtr[d] = (T)(acc * invSum);
+  }
+}
+
+// Dispatch: use a register-tiled specialization when available and the fully
+// dynamic kernel for every other positive head-dimension pair.
 
 #define FA_LAUNCH_FLOAT(QD, VD, BQ, BKV, QPT)                                   \
   do {                                                                          \
@@ -2962,6 +3049,15 @@ void flashAttentionKernelHalf(
     dim3 grid((seqLen + totalQPerBlock - 1) / totalQPerBlock, batchSize * numHeads); \
     flashAttentionKernelHalf<(QD), (VD), (BQ), (BKV), (QPT)><<<grid, (BQ), 0, stream>>>(  \
       Q, K, V, mask, output, seqLen, numHeads, numKVHeads, scale);              \
+  } while(0)
+
+#define FA_LAUNCH_GENERIC(T)                                                     \
+  do {                                                                           \
+    constexpr int THREADS = 128;                                                 \
+    dim3 grid(seqLen, batchSize * numHeads);                                     \
+    size_t sharedBytes = (size_t)(seqLen + THREADS) * sizeof(float);             \
+    flashAttentionGenericKernel<T><<<grid, THREADS, sharedBytes, stream>>>(      \
+      Q, K, V, mask, output, seqLen, numHeads, numKVHeads, qHeadDim, vHeadDim, scale); \
   } while(0)
 
 void customCudaFlashAttention(
@@ -2983,7 +3079,7 @@ void customCudaFlashAttention(
   else if(qHeadDim == 64 && vHeadDim == 64) FA_LAUNCH_FLOAT(64, 64, 128, 32, 1);
   else if(qHeadDim == 64 && vHeadDim == 32) FA_LAUNCH_FLOAT(64, 32, 128, 32, 1);
   else if(qHeadDim == 32 && vHeadDim == 64) FA_LAUNCH_FLOAT(32, 64, 128, 32, 1);
-  else throw std::runtime_error("customCudaFlashAttention: unsupported (qHeadDim,vHeadDim) combination");
+  else FA_LAUNCH_GENERIC(float);
 }
 void customCudaFlashAttention(
   const half* Q, const half* K, const half* V, const half* mask, half* output,
@@ -2999,11 +3095,12 @@ void customCudaFlashAttention(
   else if(qHeadDim == 64 && vHeadDim == 64) FA_LAUNCH_HALF(64, 64, 128, 32, 1);
   else if(qHeadDim == 64 && vHeadDim == 32) FA_LAUNCH_HALF(64, 32, 128, 32, 1);
   else if(qHeadDim == 32 && vHeadDim == 64) FA_LAUNCH_HALF(32, 64, 128, 32, 1);
-  else throw std::runtime_error("customCudaFlashAttention: unsupported (qHeadDim,vHeadDim) combination");
+  else FA_LAUNCH_GENERIC(half);
 }
 
 #undef FA_LAUNCH_FLOAT
 #undef FA_LAUNCH_HALF
+#undef FA_LAUNCH_GENERIC
 
 //--------------------------------------------------------------------------------------------------------------
 // Convert mask [batchSize, seqLen] (0/1) into a fully-materialized additive attention bias of shape
