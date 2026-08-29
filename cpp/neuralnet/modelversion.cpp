@@ -16,7 +16,7 @@
 //9 = V7 features, shortterm value error
 //10 = V7 features, shortterm value error done more properly
 //11 = V7 features, supports mish activations by desc actually reading the activations
-//205 = V11 inputs and outputs, native Ataxx CPU-PTQ FP32 staging format
+//205 = V11 inputs and outputs, native calibrated CUDA INT8 format
 //206 = V11 inputs and outputs, native Ataxx CPU-PTQ S7/S8 format
 
 static void fail(int modelVersion) {

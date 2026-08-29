@@ -17,8 +17,10 @@ namespace CpuPtq {
 namespace {
 
 [[noreturn]] void fail(const string& message) {
-  throw StringError("CPU-PTQ native v205/v206: " + message);
+  throw StringError("CPU-PTQ native v11/v206: " + message);
 }
+
+const char* const TRANSFORMER_EXTENSION_MARKER = "@V102_QKN_CLIP@";
 
 void require(bool condition, const string& message) {
   if(!condition)
@@ -85,6 +87,20 @@ class Reader {
     if(value != 0 && value != 1)
       fail(field + " must be zero or one");
     return value != 0;
+  }
+
+  bool consumeToken(const string& expected) {
+    skipWhitespace();
+    const size_t length = expected.size();
+    if(static_cast<size_t>(end - current) < length)
+      return false;
+    if(std::memcmp(current,expected.data(),length) != 0)
+      return false;
+    if(static_cast<size_t>(end - current) > length &&
+       !std::isspace(static_cast<unsigned char>(current[length])))
+      return false;
+    current += length;
+    return true;
   }
 
   string marker(const string& field) {
@@ -335,7 +351,7 @@ Tensor readProjection(
     static_cast<uint32_t>(outputs),static_cast<uint32_t>(inputs)
   };
   if(modelVersion == BASE_MODEL_VERSION) {
-    require(marker == "@BIN@",expectedName + " v205 projection is not FP32");
+    require(marker == "@BIN@",expectedName + " v11 projection is not FP32");
     tensor.kind = TensorKind::FP32;
     tensor.quantizedMax = 0;
     tensor.values = inputMajorToOutputMajor(
@@ -395,7 +411,7 @@ Model parseNativeModel(const string& payload, const string& sha256) {
   model.name = reader.token("model name");
   model.version = reader.integer("model version");
   require(model.version == BASE_MODEL_VERSION || model.version == MODEL_VERSION,
-          "model version must be v205 or v206");
+          "model version must be v11 or v206");
   require(reader.integer("spatial input count") == SPATIAL_INPUTS,
           "spatial input count must be 22");
   require(reader.integer("global input count") == GLOBAL_INPUTS,
@@ -436,6 +452,9 @@ Model parseNativeModel(const string& payload, const string& sha256) {
     const int vDim = reader.integer("value head dimension");
     const bool useRope = reader.flag("use RoPE");
     const bool learnableRope = reader.flag("learnable RoPE");
+    bool useQKNorm = false;
+    if(reader.consumeToken(TRANSFORMER_EXTENSION_MARKER))
+      useQKNorm = reader.flag("use Q/K RMSNorm");
     require(blockHeads > 0 && kvHeads == blockHeads && qDim == 32 && vDim == 32 &&
             channels == blockHeads * qDim,
             "attention geometry mismatch");
@@ -459,6 +478,14 @@ Model parseNativeModel(const string& payload, const string& sha256) {
     addTensor(model,tensorPrefix + "out_proj",readProjection(
       reader,nativePrefix + "attention.out_proj",channels,channels,
       model.version,uniformQmax));
+    if(useQKNorm) {
+      addFP32(
+        model,tensorPrefix + "q_norm",{static_cast<uint32_t>(qDim)},
+        readRmsNorm(reader,nativePrefix + "attention.q_norm",qDim));
+      addFP32(
+        model,tensorPrefix + "k_norm",{static_cast<uint32_t>(qDim)},
+        readRmsNorm(reader,nativePrefix + "attention.k_norm",qDim));
+    }
     reader.expect(nativePrefix + "attention.rope_theta","RoPE theta name");
     require(std::abs(reader.floating("RoPE theta") - 100.0f) <= 1.0e-5f,
             "Ataxx CPU-PTQ requires RoPE theta 100");
@@ -469,6 +496,13 @@ Model parseNativeModel(const string& payload, const string& sha256) {
             "FFN input channel mismatch");
     const int blockFfn = reader.integer("FFN channels");
     require(reader.flag("use SwiGLU"),"Ataxx CPU-PTQ requires SwiGLU");
+    float swigluClip = 0.0f;
+    if(reader.consumeToken(TRANSFORMER_EXTENSION_MARKER)) {
+      swigluClip = reader.floating("SwiGLU clip");
+      require(
+        std::isfinite(swigluClip) && swigluClip > 0.0f,
+        "SwiGLU clip must be finite and positive");
+    }
     if(ffnChannels == 0)
       ffnChannels = blockFfn;
     require(ffnChannels == blockFfn,"FFN width changes between blocks");
@@ -484,6 +518,7 @@ Model parseNativeModel(const string& payload, const string& sha256) {
     addTensor(model,tensorPrefix + "ffn_linear2",readProjection(
       reader,nativePrefix + "ffn.ffn_linear2",ffnChannels,channels,
       model.version,uniformQmax));
+    model.transformerBlocks.push_back({useQKNorm,swigluClip});
   }
 
   const FoldedNorm trunk = readBatchNorm(
@@ -561,7 +596,7 @@ Model parseNativeModel(const string& payload, const string& sha256) {
   model.profile = &selectProfile(
     blocks,channels,heads,ffnChannels,valueHidden);
   if(model.version == BASE_MODEL_VERSION)
-    require(uniformQmax == 0,"v205 unexpectedly contains quantized projections");
+    require(uniformQmax == 0,"v11 unexpectedly contains quantized projections");
   else
     require(uniformQmax == 63 || uniformQmax == 127,
             "v206 has no declared projection qmax");

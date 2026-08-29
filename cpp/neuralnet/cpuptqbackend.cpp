@@ -171,7 +171,7 @@ ComputeContext* NeuralNet::createComputeContext(
   requireBoundary(loadedModel != nullptr,"loaded model is null");
   requireBoundary(
     loadedModel->cpuModel.version == CpuPtq::MODEL_VERSION,
-    "v205 is an FP32 staging model; inference requires quantized v206");
+    "v11 is a floating staging model; inference requires quantized v206");
   requireBoundary(
     nnXLen == CpuPtq::BOARD_LEN && nnYLen == CpuPtq::BOARD_LEN,
     "board must be exactly 7x7");

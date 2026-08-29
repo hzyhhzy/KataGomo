@@ -3,8 +3,9 @@
 `CPU-PTQ` is a deliberately specialized batch-1 backend for Intel Ice Lake
 server CPUs. It requires AVX-512F/DQ/BW/VL and AVX-512 VNNI, consumes native
 model version 206, and implements the Ataxx v11 input contract on an unmasked
-7x7 board. Native v205 is the matching FP32 staging format and is parsed for
-validation, but is deliberately rejected for inference.
+7x7 board. Native v11 is the matching floating staging format and is parsed for
+validation, but is deliberately rejected for inference. Native v205 is reserved
+for the calibrated CUDA INT8 format.
 
 Supported profiles are kept in `model.cpp` and selected from model metadata:
 
@@ -21,6 +22,9 @@ current tile size.
 The convolutional stem, normalization parameters, and required policy/value
 head weights remain FP32. Activations are quantized per token at runtime and
 executed as U8 x S8 `VPDPBUSD` dot products with zero-point correction.
+The v102/v11 `@V102_QKN_CLIP@` extension is preserved in v106/v206. For either
+supported Ataxx profile, Q/K RMSNorm is applied before RoPE and SwiGLU clipping
+is applied independently to `SiLU(up)` and `gate` before their product.
 
 Build from the repository root with Clang 8 or newer. GCC also compiles the
 backend, but is not recommended for release binaries: GCC 12 generated a
@@ -47,11 +51,11 @@ after producing a matching GPTQ manifest:
 ```sh
 python train/export_cpu_ptq.py \
   --checkpoint CHECKPOINT.ckpt --manifest MANIFEST.npz \
-  --output MODEL-v206.bin.gz --base-output MODEL-v205.bin.gz \
+  --output MODEL-v206.bin.gz --base-output MODEL-v11.bin.gz \
   --model-name MODEL_NAME --pos-len 7
 ```
 
-The same script also accepts `--source MODEL-v205.bin.gz`; its v105/v106 path
+The same script also accepts `--source MODEL-v11.bin.gz`; its v102/v106 path
 serves source-v102 models. The wire body is the normal KataGo native schema,
 with only the seven Transformer projections per block changed from `@BIN@` to
 `@S7P@`/`@S8P@`. The file itself does not store a board size.

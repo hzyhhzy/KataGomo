@@ -9,7 +9,7 @@
 
 namespace CpuPtq {
 
-constexpr int BASE_MODEL_VERSION = 205;
+constexpr int BASE_MODEL_VERSION = 11;
 constexpr int MODEL_VERSION = 206;
 constexpr int SOURCE_MODEL_VERSION = 11;
 constexpr int BOARD_LEN = 7;
@@ -53,11 +53,17 @@ struct Tensor {
   std::vector<float> scales;
 };
 
+struct TransformerBlockSemantics {
+  bool useQKNorm;
+  float swigluClip;
+};
+
 struct Model {
   std::string name;
   std::string sha256;
   int version;
   const ProfileSpec* profile;
+  std::vector<TransformerBlockSemantics> transformerBlocks;
   std::unordered_map<std::string,Tensor> tensors;
 };
 

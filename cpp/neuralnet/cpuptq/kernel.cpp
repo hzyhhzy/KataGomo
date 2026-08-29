@@ -602,8 +602,12 @@ void addInPlace(float* destination, const float* source, size_t count) {
 }
 
 struct BlockWeights {
+  bool useQKNorm;
+  float swigluClip;
   vector<float> norm1;
   vector<float> norm2;
+  vector<float> qNorm;
+  vector<float> kNorm;
   PackedS8Matrix qkv;
   PackedS8Matrix attentionOut;
   PackedS8Matrix upGate;
@@ -738,14 +742,23 @@ class IceLakeKernel final : public Kernel {
       requireFP32(model,"global.weight",{static_cast<uint32_t>(c),GLOBAL_INPUTS}),
       c,GLOBAL_INPUTS);
 
+    if(model.transformerBlocks.size() != static_cast<size_t>(profile_.blocks))
+      fail("Transformer semantic descriptor count mismatch");
     blocks.reserve(profile_.blocks);
     for(int block = 0; block < profile_.blocks; block++) {
       const string prefix = "blocks." + std::to_string(block) + ".";
       BlockWeights weights;
+      const TransformerBlockSemantics& semantics = model.transformerBlocks[block];
+      weights.useQKNorm = semantics.useQKNorm;
+      weights.swigluClip = semantics.swigluClip;
       weights.norm1 = requireFP32(
         model,prefix + "norm1",{static_cast<uint32_t>(c)});
       weights.norm2 = requireFP32(
         model,prefix + "norm2",{static_cast<uint32_t>(c)});
+      if(weights.useQKNorm) {
+        weights.qNorm = requireFP32(model,prefix + "q_norm",{HEAD_DIM});
+        weights.kNorm = requireFP32(model,prefix + "k_norm",{HEAD_DIM});
+      }
       const Tensor& qProjection = requireS8(
         model,prefix + "q_proj",{static_cast<uint32_t>(c),static_cast<uint32_t>(c)});
       const Tensor& kProjection = requireS8(
@@ -921,7 +934,10 @@ class IceLakeKernel final : public Kernel {
       quantizedInput.data(),quantizedScales.data());
     gemmPackedU8S8<true>(
       quantizedInput.data(),quantizedScales.data(),weights.qkv,qkv.data(),3 * c);
-    applyRopeAndAttention();
+    if(weights.useQKNorm)
+      applyRopeAndAttention<true>(weights);
+    else
+      applyRopeAndAttention<false>(weights);
 
     quantizeRowsU8<false>(
       attentionOutput.data(),S,c,weights.attentionOut.inputsPadded,
@@ -938,22 +954,10 @@ class IceLakeKernel final : public Kernel {
     gemmPackedU8S8<true>(
       quantizedInput.data(),quantizedScales.data(),weights.upGate,
       upGate.data(),2 * ffn);
-    for(size_t row = 0; row < S; row++) {
-      const float* up = upGate.data() + row * 2 * ffn;
-      const float* gate = up + ffn;
-      float* destination = product.data() + row * ffn;
-      const __m512 absMask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffff));
-      __m512 maximum = _mm512_setzero_ps();
-      for(size_t channel = 0; channel < ffn; channel += 16) {
-        const __m512 multiplied = _mm512_mul_ps(
-          silu512_ps(_mm512_loadu_ps(up + channel)),
-          _mm512_loadu_ps(gate + channel));
-        _mm512_storeu_ps(
-          destination + channel,multiplied);
-        maximum = _mm512_max_ps(maximum,_mm512_and_ps(multiplied,absMask));
-      }
-      quantizedScales[row] = _mm512_reduce_max_ps(maximum);
-    }
+    if(weights.swigluClip > 0.0f)
+      swigluProduct<true>(weights.swigluClip);
+    else
+      swigluProduct<false>(0.0f);
     quantizeRowsU8<true>(
       product.data(),S,ffn,weights.down.inputsPadded,
       quantizedInput.data(),quantizedScales.data());
@@ -963,7 +967,33 @@ class IceLakeKernel final : public Kernel {
     addInPlace(trunk.data(),projection.data(),S * c);
   }
 
-  void applyRopeAndAttention() {
+  template<bool UseClip>
+  void swigluProduct(float clip) {
+    const __m512 absMask = _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffff));
+    const __m512 lower = _mm512_set1_ps(-clip);
+    const __m512 upper = _mm512_set1_ps(clip);
+    for(size_t row = 0; row < S; row++) {
+      const float* up = upGate.data() + row * 2 * ffn;
+      const float* gate = up + ffn;
+      float* destination = product.data() + row * ffn;
+      __m512 maximum = _mm512_setzero_ps();
+      for(size_t channel = 0; channel < ffn; channel += 16) {
+        __m512 activated = silu512_ps(_mm512_loadu_ps(up + channel));
+        __m512 gateValues = _mm512_loadu_ps(gate + channel);
+        if(UseClip) {
+          activated = _mm512_max_ps(lower,_mm512_min_ps(upper,activated));
+          gateValues = _mm512_max_ps(lower,_mm512_min_ps(upper,gateValues));
+        }
+        const __m512 multiplied = _mm512_mul_ps(activated,gateValues);
+        _mm512_storeu_ps(destination + channel,multiplied);
+        maximum = _mm512_max_ps(maximum,_mm512_and_ps(multiplied,absMask));
+      }
+      quantizedScales[row] = _mm512_reduce_max_ps(maximum);
+    }
+  }
+
+  template<bool UseQKNorm>
+  void applyRopeAndAttention(const BlockWeights& weights) {
     for(size_t position = 0; position < S; position++) {
       const float* source = qkv.data() + position * 3 * c;
       const float* cosine = ropeCos.data() + position * HEAD_DIM;
@@ -971,9 +1001,40 @@ class IceLakeKernel final : public Kernel {
       for(size_t head = 0; head < heads; head++) {
         const size_t destinationBase = (head * S + position) * HEAD_DIM;
         const size_t channelBase = head * HEAD_DIM;
-        for(size_t channel = 0; channel < HEAD_DIM; channel += 16) {
-          const __m512 query = _mm512_loadu_ps(source + channelBase + channel);
-          const __m512 key = _mm512_loadu_ps(source + c + channelBase + channel);
+        __m512 queryParts[2] = {
+          _mm512_loadu_ps(source + channelBase),
+          _mm512_loadu_ps(source + channelBase + 16),
+        };
+        __m512 keyParts[2] = {
+          _mm512_loadu_ps(source + c + channelBase),
+          _mm512_loadu_ps(source + c + channelBase + 16),
+        };
+        if(UseQKNorm) {
+          const float queryMultiplier = 1.0f / std::sqrt(
+            _mm512_reduce_add_ps(_mm512_fmadd_ps(
+              queryParts[0],queryParts[0],
+              _mm512_mul_ps(queryParts[1],queryParts[1]))) /
+              static_cast<float>(HEAD_DIM) + RMS_EPSILON);
+          const float keyMultiplier = 1.0f / std::sqrt(
+            _mm512_reduce_add_ps(_mm512_fmadd_ps(
+              keyParts[0],keyParts[0],
+              _mm512_mul_ps(keyParts[1],keyParts[1]))) /
+              static_cast<float>(HEAD_DIM) + RMS_EPSILON);
+          const __m512 queryScale = _mm512_set1_ps(queryMultiplier);
+          const __m512 keyScale = _mm512_set1_ps(keyMultiplier);
+          for(size_t part = 0; part < 2; part++) {
+            queryParts[part] = _mm512_mul_ps(
+              _mm512_mul_ps(queryParts[part],queryScale),
+              _mm512_loadu_ps(weights.qNorm.data() + part * 16));
+            keyParts[part] = _mm512_mul_ps(
+              _mm512_mul_ps(keyParts[part],keyScale),
+              _mm512_loadu_ps(weights.kNorm.data() + part * 16));
+          }
+        }
+        for(size_t part = 0; part < 2; part++) {
+          const size_t channel = part * 16;
+          const __m512 query = queryParts[part];
+          const __m512 key = keyParts[part];
           const __m512 cosineVector = _mm512_loadu_ps(cosine + channel);
           const __m512 sineVector = _mm512_loadu_ps(signedSine + channel);
           _mm512_storeu_ps(
