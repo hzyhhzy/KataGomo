@@ -776,7 +776,8 @@ void NNEvaluator::evaluate(
     //Fix up the value as well. Note that the neural net gives us back the value from the perspective
     //of the player so we need to negate that to make it the white value.
     static_assert(NNModelVersion::latestModelVersionImplemented == 206, "");
-    if((modelVersion >= 4 && modelVersion <= 11) || modelVersion == 206) {
+    if((modelVersion >= 4 && modelVersion <= 11) ||
+       modelVersion == 205 || modelVersion == 206) {
       double winProb;
       double lossProb;
       double noResultProb;

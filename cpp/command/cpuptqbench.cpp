@@ -93,12 +93,16 @@ int MainCmds::cpuptqbench(const vector<string>& args) {
   string tracePath;
   int warmup = 20;
   int iterations = 1000;
+  bool checkModelOnly = false;
 
   for(size_t index = 0; index < args.size(); index++) {
     const string& option = args[index];
     if(index == 0 && option == "cpuptqbench")
       continue;
-    if(option == "-model" || option == "-input" || option == "-output" || option == "-trace" ||
+    if(option == "-check-model-only") {
+      checkModelOnly = true;
+    }
+    else if(option == "-model" || option == "-input" || option == "-output" || option == "-trace" ||
        option == "-warmup" || option == "-iters") {
       if(index + 1 >= args.size())
         fail("missing value after " + option);
@@ -113,7 +117,8 @@ int MainCmds::cpuptqbench(const vector<string>& args) {
     else if(option == "-help" || option == "--help" || option == "-h") {
       cout << "Usage: katago cpuptqbench -model MODEL.bin.gz "
            << "[-input INPUT.f32 -output OUTPUT.f32] "
-           << "[-trace TRACES.f32] [-warmup N] [-iters N]" << endl;
+           << "[-trace TRACES.f32] [-warmup N] [-iters N] "
+           << "[-check-model-only]" << endl;
       return 0;
     }
     else
@@ -126,12 +131,33 @@ int MainCmds::cpuptqbench(const vector<string>& args) {
   if(!tracePath.empty() && inputPath.empty())
     fail("-trace requires -input");
 
+  CpuPtq::Model model = CpuPtq::loadModelFile(modelPath,"");
+  if(checkModelOnly) {
+    int quantizedMax = 0;
+    for(const auto& item: model.tensors) {
+      const CpuPtq::Tensor& tensor = item.second;
+      if(tensor.kind == CpuPtq::TensorKind::S8PerOutput) {
+        if(quantizedMax == 0)
+          quantizedMax = tensor.quantizedMax;
+        else if(quantizedMax != tensor.quantizedMax)
+          fail("model contains mixed projection qmax values");
+      }
+    }
+    cout << "model=" << model.name << '\n'
+         << "version=" << model.version << '\n'
+         << "profile=" << model.profile->name << '\n'
+         << "projection_storage="
+         << (quantizedMax == 0 ? "fp32" : quantizedMax == 63 ? "s7" : "s8")
+         << '\n'
+         << "tensor_count=" << model.tensors.size() << endl;
+    return 0;
+  }
+
   vector<float> input = inputPath.empty() ? makeDeterministicInput() : readFloats(inputPath);
   if(input.size() % INPUT_FLOATS != 0)
     fail("input row width must be exactly " + Global::uint64ToString(INPUT_FLOATS));
   const size_t rows = input.size() / INPUT_FLOATS;
 
-  CpuPtq::Model model = CpuPtq::loadModelFile(modelPath,"");
   unique_ptr<CpuPtq::Kernel> kernel = CpuPtq::createKernel(model);
   vector<float> output(OUTPUT_FLOATS);
 

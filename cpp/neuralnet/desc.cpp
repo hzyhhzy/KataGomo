@@ -1184,7 +1184,7 @@ Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) c
   static_assert(NNModelVersion::latestModelVersionImplemented == 206, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 11 || version == 206) {
+  if(version <= 11 || version == 205 || version == 206) {
   }
   else {
     ASSERT_UNREACHABLE;

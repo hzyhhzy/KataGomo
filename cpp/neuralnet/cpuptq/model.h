@@ -9,6 +9,7 @@
 
 namespace CpuPtq {
 
+constexpr int BASE_MODEL_VERSION = 205;
 constexpr int MODEL_VERSION = 206;
 constexpr int SOURCE_MODEL_VERSION = 11;
 constexpr int BOARD_LEN = 7;
@@ -45,6 +46,7 @@ enum class TensorKind : uint8_t {
 
 struct Tensor {
   TensorKind kind;
+  int quantizedMax;
   std::vector<uint32_t> shape;
   std::vector<float> values;
   std::vector<int8_t> codes;
@@ -54,6 +56,7 @@ struct Tensor {
 struct Model {
   std::string name;
   std::string sha256;
+  int version;
   const ProfileSpec* profile;
   std::unordered_map<std::string,Tensor> tensors;
 };

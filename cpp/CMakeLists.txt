@@ -105,7 +105,7 @@ elseif(USE_BACKEND STREQUAL "EIGEN")
     neuralnet/eigenbackend.cpp
     )
 elseif(USE_BACKEND STREQUAL "CPU-PTQ")
-  message(STATUS "-DUSE_BACKEND=CPU-PTQ, using the Ice Lake AVX-512 VNNI S8 backend.")
+  message(STATUS "-DUSE_BACKEND=CPU-PTQ, using the Ice Lake AVX-512 VNNI S7/S8 backend.")
   if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
     message(FATAL_ERROR "CPU-PTQ is specialized for x86-64 Ice Lake CPUs.")
   endif()

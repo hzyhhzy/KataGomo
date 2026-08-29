@@ -72,7 +72,7 @@ struct LoadedModel {
     : cpuModel(CpuPtq::loadModelFile(fileName,expectedSha256)) {
     modelDesc.name = cpuModel.name;
     modelDesc.sha256 = cpuModel.sha256;
-    modelDesc.version = CpuPtq::MODEL_VERSION;
+    modelDesc.version = cpuModel.version;
     modelDesc.numInputChannels = CpuPtq::SPATIAL_INPUTS;
     modelDesc.numInputGlobalChannels = CpuPtq::GLOBAL_INPUTS;
     modelDesc.numValueChannels = CpuPtq::VALUE_SIZE;
@@ -101,8 +101,7 @@ string NeuralNet::getModelName(const LoadedModel* loadedModel) {
 }
 
 int NeuralNet::getModelVersion(const LoadedModel* loadedModel) {
-  (void)loadedModel;
-  return CpuPtq::MODEL_VERSION;
+  return loadedModel->cpuModel.version;
 }
 
 Rules NeuralNet::getSupportedRules(
@@ -150,7 +149,7 @@ void NeuralNet::globalInitialize() {}
 void NeuralNet::globalCleanup() {}
 
 void NeuralNet::printDevices() {
-  cout << "CPU-PTQ device 0: Ice Lake AVX-512 VNNI S8 single-thread" << endl;
+  cout << "CPU-PTQ device 0: Ice Lake AVX-512 VNNI S7/S8 single-thread" << endl;
 }
 
 ComputeContext* NeuralNet::createComputeContext(
@@ -170,6 +169,9 @@ ComputeContext* NeuralNet::createComputeContext(
   (void)homeDataDirOverride;
   (void)openCLReTunePerBoardSize;
   requireBoundary(loadedModel != nullptr,"loaded model is null");
+  requireBoundary(
+    loadedModel->cpuModel.version == CpuPtq::MODEL_VERSION,
+    "v205 is an FP32 staging model; inference requires quantized v206");
   requireBoundary(
     nnXLen == CpuPtq::BOARD_LEN && nnYLen == CpuPtq::BOARD_LEN,
     "board must be exactly 7x7");
