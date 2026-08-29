@@ -101,5 +101,6 @@ katago_contribute/
 tmpsgf/
 watchgame.txt
 models/
+/runtime_data/
 python/startposesupload.txt
 

@@ -988,6 +988,10 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net has an invalid version, you probably specified the wrong file. Supposed model version: " + Global::intToString(version));
   if(version < 3)
     throw StringError("This neural net is from an extremely old version of KataGo and is no longer supported by the engine. Model version: " + Global::intToString(version));
+  if(version == 206)
+    throw StringError("Native v206 models require the CPU-PTQ backend");
+  if(version > 11)
+    throw StringError("This native descriptor version is not supported by this backend. Model version: " + Global::intToString(version));
   if(version > NNModelVersion::latestModelVersionImplemented)
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));
 
@@ -1177,10 +1181,10 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
 }
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 11, "");
+  static_assert(NNModelVersion::latestModelVersionImplemented == 206, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 11) {
+  if(version <= 11 || version == 206) {
   }
   else {
     ASSERT_UNREACHABLE;

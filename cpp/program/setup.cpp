@@ -17,6 +17,7 @@ std::vector<std::string> Setup::getBackendPrefixes() {
   prefixes.push_back("trt");
   prefixes.push_back("opencl");
   prefixes.push_back("eigen");
+  prefixes.push_back("cpuptq");
   prefixes.push_back("onnxcpu");
   prefixes.push_back("onnxdml");
   prefixes.push_back("dummybackend");
@@ -88,6 +89,8 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
   string backendPrefix = "opencl";
   #elif defined(USE_EIGEN_BACKEND)
   string backendPrefix = "eigen";
+  #elif defined(USE_CPU_PTQ_BACKEND)
+  string backendPrefix = "cpuptq";
   #elif defined(USE_ONNX_CPU_BACKEND)
   string backendPrefix = "onnxcpu";
   #elif defined(USE_ONNX_DIRECTML_BACKEND)
@@ -145,7 +148,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
         requireExactNNLen = cfg.getBool("requireMaxBoardSize");
     }
 
-    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "onnxcpu"|| backendPrefix == "onnxdml" ? false : true;
+    bool inputsUseNHWC = backendPrefix == "opencl" || backendPrefix == "trt" || backendPrefix == "cpuptq" || backendPrefix == "onnxcpu" || backendPrefix == "onnxdml" ? false : true;
     if(cfg.contains(backendPrefix+"InputsUseNHWC"+idxStr))
       inputsUseNHWC = cfg.getBool(backendPrefix+"InputsUseNHWC"+idxStr);
     else if(cfg.contains("inputsUseNHWC"+idxStr))
@@ -171,7 +174,12 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       nnRandSeed = Global::uint64ToString(seedRand.nextUInt64());
     logger.write("nnRandSeed" + idxStr + " = " + nnRandSeed);
 
-#ifndef USE_EIGEN_BACKEND
+#if defined(USE_CPU_PTQ_BACKEND)
+    (void)expectedConcurrentEvals;
+    cfg.markAllKeysUsedWithPrefix("numEigenThreadsPerModel");
+    cfg.markAllKeysUsedWithPrefix("numNNServerThreadsPerModel");
+    int numNNServerThreadsPerModel = 1;
+#elif !defined(USE_EIGEN_BACKEND)
     (void)expectedConcurrentEvals;
     cfg.markAllKeysUsedWithPrefix("numEigenThreadsPerModel");
     int numNNServerThreadsPerModel =
@@ -292,7 +300,7 @@ vector<NNEvaluator*> Setup::initializeNNEvaluators(
       setupFor == SETUP_FOR_ANALYSIS ? 17 :
       cfg.getInt("nnMutexPoolSizePowerOfTwo", -1, 24);
 
-#if defined(USE_ONNX_CPU_BACKEND)
+#if defined(USE_ONNX_CPU_BACKEND) || defined(USE_CPU_PTQ_BACKEND)
     // Large batches don't really help CPUs the way they do GPUs because a single CPU on its own is single-threaded
     // and doesn't greatly benefit from having a bigger chunk of parallelizable work to do on the large scale.
     // So we just fix a size here that isn't crazy and saves memory, completely ignore what the user would have

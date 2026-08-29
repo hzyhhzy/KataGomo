@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18.2)
+cmake_minimum_required(VERSION 3.5)
 project(katago)
 
 set(CMAKE_CXX_STANDARD 14)
@@ -28,11 +28,16 @@ endif()
 set(BUILD_DISTRIBUTED 0 CACHE BOOL "Build with http support for contributing to distributed training")
 set(USE_BACKEND CACHE STRING "Neural net backend")
 string(TOUPPER "${USE_BACKEND}" USE_BACKEND)
-set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN ONNX-CPU ONNX-DIRECTML)
+set_property(CACHE USE_BACKEND PROPERTY STRINGS "" CUDA TENSORRT OPENCL EIGEN CPU-PTQ ONNX-CPU ONNX-DIRECTML)
+
+if((USE_BACKEND STREQUAL "CUDA" OR USE_BACKEND STREQUAL "TENSORRT") AND CMAKE_VERSION VERSION_LESS 3.18.2)
+  message(FATAL_ERROR "CUDA and TensorRT builds require CMake 3.18.2 or newer.")
+endif()
 
 set(USE_TCMALLOC 0 CACHE BOOL "Use TCMalloc")
 set(NO_GIT_REVISION 0 CACHE BOOL "Disable embedding the git revision into the compiled exe")
 set(USE_AVX2 0 CACHE BOOL "Compile with AVX2")
+set(CPU_PTQ_EXACT_MATH 0 CACHE BOOL "Use scalar libm exp in CPU-PTQ for numerical diagnostics")
 set(USE_BIGGER_BOARDS_EXPENSIVE 0 CACHE BOOL "Allow boards up to size 29. Compiling with this will use more memory and slow down KataGo, even when playing on boards of size 19.")
 
 #--------------------------- NEURAL NET BACKEND ------------------------------------------------------------------------
@@ -98,6 +103,20 @@ elseif(USE_BACKEND STREQUAL "EIGEN")
   endif()
   set(NEURALNET_BACKEND_SOURCES
     neuralnet/eigenbackend.cpp
+    )
+elseif(USE_BACKEND STREQUAL "CPU-PTQ")
+  message(STATUS "-DUSE_BACKEND=CPU-PTQ, using the Ice Lake AVX-512 VNNI S8 backend.")
+  if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    message(FATAL_ERROR "CPU-PTQ is specialized for x86-64 Ice Lake CPUs.")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "CPU-PTQ currently requires GCC or Clang.")
+  endif()
+  set(NEURALNET_BACKEND_SOURCES
+    command/cpuptqbench.cpp
+    neuralnet/cpuptqbackend.cpp
+    neuralnet/cpuptq/model.cpp
+    neuralnet/cpuptq/kernel.cpp
     )
 elseif(USE_BACKEND STREQUAL "ONNX-CPU")
   message(STATUS "-DUSE_BACKEND=ONNX-CPU, using ONNX Runtime CPU backend.")
@@ -381,6 +400,20 @@ elseif(USE_BACKEND STREQUAL "EIGEN")
         message(STATUS "Found Eigen3 at ${EIGEN3_INCLUDE_DIRS}")
       endif()
     endif()
+  endif()
+elseif(USE_BACKEND STREQUAL "CPU-PTQ")
+  target_compile_definitions(katago PRIVATE USE_CPU_PTQ_BACKEND)
+  target_compile_options(katago PRIVATE
+    -O3
+    -march=icelake-server
+    -mtune=icelake-server
+  )
+
+  if(CPU_PTQ_EXACT_MATH)
+    set_source_files_properties(
+      neuralnet/cpuptq/kernel.cpp
+      PROPERTIES COMPILE_DEFINITIONS CPU_PTQ_EXACT_MATH
+    )
   endif()
 elseif(USE_BACKEND STREQUAL "ONNX-CPU")
   target_compile_definitions(katago PRIVATE USE_ONNX_CPU_BACKEND)

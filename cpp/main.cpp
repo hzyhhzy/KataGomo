@@ -49,13 +49,21 @@ evalsgf : Utility/debug tool, analyze a single position of a game from an SGF fi
 testgpuerror : Print the average error of the neural net between current config and fp32 config.
 
 
-)%%" << endl;
+)%%";
+#if defined(USE_CPU_PTQ_BACKEND)
+  cout << "cpuptqbench : Directly validate and benchmark the specialized CPU-PTQ kernel." << endl;
+#endif
+  cout << endl;
 }
 
 static int handleSubcommand(const string& subcommand, const vector<string>& args) {
   vector<string> subArgs(args.begin()+1,args.end());
   if(subcommand == "analysis")
     return MainCmds::analysis(subArgs);
+#if defined(USE_CPU_PTQ_BACKEND)
+  if(subcommand == "cpuptqbench")
+    return MainCmds::cpuptqbench(subArgs);
+#endif
   if(subcommand == "benchmark")
     return MainCmds::benchmark(subArgs);
   if(subcommand == "contribute")
@@ -175,6 +183,8 @@ string Version::getKataGoVersionFullInfo() {
   out << "Using OpenCL backend" << endl;
 #elif defined(USE_EIGEN_BACKEND)
   out << "Using Eigen(CPU) backend" << endl;
+#elif defined(USE_CPU_PTQ_BACKEND)
+  out << "Using Ice Lake AVX-512 VNNI CPU-PTQ backend" << endl;
 #elif defined(USE_ONNX_CPU_BACKEND) 
   out << "Using ONNX CPU backend" << endl;
 #elif defined(USE_ONNX_DIRECTML_BACKEND)

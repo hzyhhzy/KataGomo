@@ -14,6 +14,10 @@ namespace MainCmds {
   int matchauto(const std::vector<std::string>& args);
   int selfplay(const std::vector<std::string>& args);
 
+#if defined(USE_CPU_PTQ_BACKEND)
+  int cpuptqbench(const std::vector<std::string>& args);
+#endif
+
   int testgpuerror(const std::vector<std::string>& args);
 
 
