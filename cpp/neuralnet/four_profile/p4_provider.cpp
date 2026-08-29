@@ -239,6 +239,8 @@ public:
   float preEpsilon = 0.0f;
   float qEpsilon = 0.0f;
   float kEpsilon = 0.0f;
+  float inputQuantMaxAbs = 0.0f;
+  float outputQuantMaxAbs = 0.0f;
   DeviceBuffer preGamma;
   DeviceBuffer qkvWeights;
   DeviceBuffer qGamma;
@@ -254,6 +256,7 @@ public:
   size_t layer = 0;
   const void* officialAnchor = nullptr;
   float preEpsilon = 0.0f;
+  float inputQuantMaxAbs = 0.0f;
   DeviceBuffer preGamma;
   DeviceBuffer upWeights;
   DeviceBuffer gateWeights;
@@ -326,6 +329,8 @@ public:
     prepared->preEpsilon = desc->preLN.epsilon;
     prepared->qEpsilon = desc->qNorm.epsilon;
     prepared->kEpsilon = desc->kNorm.epsilon;
+    prepared->inputQuantMaxAbs = desc->attentionInputQuantMaxAbs;
+    prepared->outputQuantMaxAbs = desc->attentionOutputQuantMaxAbs;
     prepared->preGamma = uploadFp16(desc->name + ":p4-preln",desc->preLN.weight);
     prepared->qGamma = uploadFp16(desc->name + ":p4-qgamma",desc->qNorm.weight);
     prepared->kGamma = uploadFp16(desc->name + ":p4-kgamma",desc->kNorm.weight);
@@ -349,9 +354,12 @@ public:
     projectionConfig.packedWeights =
       static_cast<const int8_t*>(prepared->qkvWeights.get());
     projectionConfig.weightScale = packedQkv.scale;
+    projectionConfig.inputQuantMaxAbs = prepared->inputQuantMaxAbs;
     prepared->projection.reset(
       C384Int8Experiment::createProjection(projectionConfig));
     if(prepared->projection == nullptr ||
+       !C384Int8Experiment::projectionInputQuantizationMatches(
+         prepared->projection.get(),prepared->inputQuantMaxAbs) ||
        !C384Int8Experiment::projectionQknormRopeSupports(
          prepared->projection.get(),tokenRows,kChannels,kPackedQkvChannels,
          prepared->qEpsilon,prepared->kEpsilon)) {
@@ -369,9 +377,12 @@ public:
     outConfig.packedWeights =
       static_cast<const int8_t*>(prepared->outWeights.get());
     outConfig.weightScale = packedOut.scale;
+    outConfig.inputQuantMaxAbs = prepared->outputQuantMaxAbs;
     prepared->attentionOut.reset(
       C384Int8Experiment::createAttentionOut(outConfig));
     if(prepared->attentionOut == nullptr ||
+       !C384Int8Experiment::attentionOutInputQuantizationMatches(
+         prepared->attentionOut.get(),prepared->outputQuantMaxAbs) ||
        !C384Int8Experiment::attentionOutSupports(
          prepared->attentionOut.get(),tokenRows)) {
       result.detail = "P4 INT8 attention-out preparation failed";
@@ -402,6 +413,7 @@ public:
     prepared->layer = layer;
     prepared->officialAnchor = official.executable;
     prepared->preEpsilon = desc->preLN.epsilon;
+    prepared->inputQuantMaxAbs = desc->ffnInputQuantMaxAbs;
     prepared->preGamma = uploadFp16(desc->name + ":p4-preln",desc->preLN.weight);
 
     const C384Int8Experiment::PackedWeights packedUp =
@@ -427,10 +439,13 @@ public:
       static_cast<const int8_t*>(prepared->gateWeights.get());
     dualConfig.upWeightScale = packedUp.scale;
     dualConfig.gateWeightScale = packedGate.scale;
+    dualConfig.inputQuantMaxAbs = prepared->inputQuantMaxAbs;
     dualConfig.swigluClip = desc->swigluClip;
     dualConfig.productQuantMaxAbs = desc->productQuantMaxAbs;
     prepared->dual.reset(C384Int8Experiment::createDualFfn(dualConfig));
     if(prepared->dual == nullptr ||
+       !C384Int8Experiment::dualFfnInputQuantizationMatches(
+         prepared->dual.get(),prepared->inputQuantMaxAbs) ||
        !C384Int8Experiment::dualFfnSupports(
          prepared->dual.get(),
          C384Int8Experiment::DualFfnOutputMode::Int8Product,tokenRows)) {
@@ -548,6 +563,10 @@ public:
       if(!C384Int8Experiment::projectionQknormRopeSupports(
            a->projection.get(),activeRows,kChannels,kPackedQkvChannels,
            a->qEpsilon,a->kEpsilon) ||
+         !C384Int8Experiment::projectionInputQuantizationMatches(
+           a->projection.get(),a->inputQuantMaxAbs) ||
+         !C384Int8Experiment::attentionOutInputQuantizationMatches(
+           a->attentionOut.get(),a->outputQuantMaxAbs) ||
          !C384Int8Experiment::attentionOutSupports(a->attentionOut.get(),activeRows))
         return ProviderOpResultV1::failure(
           "P4 attention layer failed kernel preflight");
@@ -556,6 +575,8 @@ public:
       if(!C384Int8Experiment::dualFfnSupports(
            f->dual.get(),C384Int8Experiment::DualFfnOutputMode::Int8Product,
            activeRows) ||
+         !C384Int8Experiment::dualFfnInputQuantizationMatches(
+           f->dual.get(),f->inputQuantMaxAbs) ||
          !C384Int8Experiment::downSupports(f->down.get(),activeRows) ||
          !C384Int8Experiment::dualFfnDownProductQuantizationMatches(
            f->dual.get(),f->down.get()))
@@ -597,7 +618,7 @@ public:
       enqueued++;
       cudaError_t status = C384Int8Experiment::launchRmsNormInt8(
         trunk,activation,static_cast<const half*>(a.preGamma.get()),
-        activeRows,a.preEpsilon,stream);
+        activeRows,a.preEpsilon,a.inputQuantMaxAbs,stream);
       if(status != cudaSuccess)
         return cudaFailure("attention RMS-to-INT8",status,enqueued);
 
@@ -634,7 +655,7 @@ public:
 
       enqueued++;
       status = C384Int8Experiment::launchQuantizeAttentionOutput(
-        attentionOutput,activation,activeRows,stream);
+        a.attentionOut.get(),attentionOutput,activation,activeRows,stream);
       if(status != cudaSuccess)
         return cudaFailure("attention output quantization",status,enqueued);
 
@@ -648,7 +669,7 @@ public:
       enqueued++;
       status = C384Int8Experiment::launchRmsNormInt8(
         trunk,activation,static_cast<const half*>(f.preGamma.get()),
-        activeRows,f.preEpsilon,stream);
+        activeRows,f.preEpsilon,f.inputQuantMaxAbs,stream);
       if(status != cudaSuccess)
         return cudaFailure("FFN RMS-to-INT8",status,enqueued);
 

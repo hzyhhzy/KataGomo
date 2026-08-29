@@ -1586,7 +1586,9 @@ __global__ void rmsNorm384Int8Kernel(
   uint32_t* __restrict__ outputInt8,
   const uint2* __restrict__ gamma,
   int tokenRows,
-  float epsilon
+  float epsilon,
+  float activationQuantMaxAbs,
+  float activationQuantMultiplier
 ) {
   const int warp = int(threadIdx.x) >> 5;
   const int lane = int(threadIdx.x) & 31;
@@ -1626,10 +1628,12 @@ __global__ void rmsNorm384Int8Kernel(
         values[round][2 * pair] * scale * gammaValues.x,
         values[round][2 * pair + 1] * scale * gammaValues.y);
       const float2 rounded = __half22float2(out[round].values[pair]);
-      const float x0 = fminf(4.0f,fmaxf(-4.0f,rounded.x));
-      const float x1 = fminf(4.0f,fmaxf(-4.0f,rounded.y));
-      int q0 = __float2int_rn(x0 * (127.0f / 4.0f));
-      int q1 = __float2int_rn(x1 * (127.0f / 4.0f));
+      const float x0 = fminf(activationQuantMaxAbs,
+        fmaxf(-activationQuantMaxAbs,rounded.x));
+      const float x1 = fminf(activationQuantMaxAbs,
+        fmaxf(-activationQuantMaxAbs,rounded.y));
+      int q0 = __float2int_rn(x0 * activationQuantMultiplier);
+      int q1 = __float2int_rn(x1 * activationQuantMultiplier);
       q0 = q0 < -127 ? -127 : (q0 > 127 ? 127 : q0);
       q1 = q1 < -127 ? -127 : (q1 > 127 ? 127 : q1);
       quantized[round].values[2 * pair] = static_cast<int8_t>(q0);
@@ -1672,7 +1676,9 @@ __global__ void quantizeClip7ProductKernel(
 __global__ void quantizeAttentionOutputKernel(
   const uint2* __restrict__ input,
   uint32_t* __restrict__ output,
-  std::size_t vectors
+  std::size_t vectors,
+  float activationQuantMaxAbs,
+  float activationQuantMultiplier
 ) {
   for(std::size_t vector = std::size_t(blockIdx.x) * blockDim.x + threadIdx.x;
       vector < vectors; vector += std::size_t(gridDim.x) * blockDim.x) {
@@ -1682,12 +1688,12 @@ __global__ void quantizeAttentionOutputKernel(
     #pragma unroll
     for(int pair = 0; pair < 2; pair++) {
       const float2 value = __half22float2(in.values[pair]);
-      const float x0 = fminf(kNormActivationClip,
-        fmaxf(-kNormActivationClip,value.x));
-      const float x1 = fminf(kNormActivationClip,
-        fmaxf(-kNormActivationClip,value.y));
-      int q0 = __float2int_rn(x0 * (127.0f / kNormActivationClip));
-      int q1 = __float2int_rn(x1 * (127.0f / kNormActivationClip));
+      const float x0 = fminf(activationQuantMaxAbs,
+        fmaxf(-activationQuantMaxAbs,value.x));
+      const float x1 = fminf(activationQuantMaxAbs,
+        fmaxf(-activationQuantMaxAbs,value.y));
+      int q0 = __float2int_rn(x0 * activationQuantMultiplier);
+      int q1 = __float2int_rn(x1 * activationQuantMultiplier);
       q0 = q0 < -127 ? -127 : (q0 > 127 ? 127 : q0);
       q1 = q1 < -127 ? -127 : (q1 > 127 ? 127 : q1);
       out.values[2 * pair] = static_cast<int8_t>(q0);
@@ -1723,19 +1729,25 @@ cudaError_t launchRmsNormFp16Int8(
   const half* gamma,
   int tokenRows,
   float epsilon,
+  float activationQuantMaxAbs,
   cudaStream_t stream
 ) {
   if(input == nullptr || outputFp16 == nullptr || outputInt8 == nullptr ||
      gamma == nullptr || tokenRows <= 0 || tokenRows > kMaxTokenRows ||
-     !finitePositive(epsilon) || !aligned16(input) ||
+     !finitePositive(epsilon) || !finitePositive(activationQuantMaxAbs) ||
+     !aligned16(input) ||
      !aligned16(outputFp16) || !aligned16(outputInt8) || !aligned16(gamma))
+    return cudaErrorInvalidValue;
+  const float multiplier = 127.0f / activationQuantMaxAbs;
+  if(!finitePositive(multiplier))
     return cudaErrorInvalidValue;
   rmsNorm384Int8Kernel<true><<<
     (tokenRows + 3) / 4,kThreadsPerRmsBlock,0,stream>>>(
       reinterpret_cast<const uint2*>(input),
       reinterpret_cast<uint2*>(outputFp16),
       reinterpret_cast<uint32_t*>(outputInt8),
-      reinterpret_cast<const uint2*>(gamma),tokenRows,epsilon);
+      reinterpret_cast<const uint2*>(gamma),tokenRows,epsilon,
+      activationQuantMaxAbs,multiplier);
   return cudaPeekAtLastError();
 }
 
@@ -1745,18 +1757,24 @@ cudaError_t launchRmsNormInt8(
   const half* gamma,
   int tokenRows,
   float epsilon,
+  float activationQuantMaxAbs,
   cudaStream_t stream
 ) {
   if(input == nullptr || outputInt8 == nullptr || gamma == nullptr ||
      tokenRows <= 0 || tokenRows > kMaxTokenRows ||
-     !finitePositive(epsilon) || !aligned16(input) ||
+     !finitePositive(epsilon) || !finitePositive(activationQuantMaxAbs) ||
+     !aligned16(input) ||
      !aligned16(outputInt8) || !aligned16(gamma))
+    return cudaErrorInvalidValue;
+  const float multiplier = 127.0f / activationQuantMaxAbs;
+  if(!finitePositive(multiplier))
     return cudaErrorInvalidValue;
   rmsNorm384Int8Kernel<false><<<
     (tokenRows + 3) / 4,kThreadsPerRmsBlock,0,stream>>>(
       reinterpret_cast<const uint2*>(input),nullptr,
       reinterpret_cast<uint32_t*>(outputInt8),
-      reinterpret_cast<const uint2*>(gamma),tokenRows,epsilon);
+      reinterpret_cast<const uint2*>(gamma),tokenRows,epsilon,
+      activationQuantMaxAbs,multiplier);
   return cudaPeekAtLastError();
 }
 
@@ -1769,10 +1787,17 @@ void* createProjection(const ProjectionConfig& config) {
      config.sequenceSize <= 0 ||
      config.maxTokenRows % config.sequenceSize != 0 ||
      !aligned16(config.packedWeights) || !finitePositive(config.weightScale) ||
+     !finitePositive(config.inputQuantMaxAbs) ||
      !isSm120Compatible())
     return nullptr;
-  ProjectionHandle handle{config,outputChannels,
-    kNormActivationScale * config.weightScale,false};
+  const float inputQuantMultiplier = 127.0f / config.inputQuantMaxAbs;
+  if(!finitePositive(inputQuantMultiplier))
+    return nullptr;
+  const float alpha =
+    (config.inputQuantMaxAbs / 127.0f) * config.weightScale;
+  if(!finitePositive(alpha))
+    return nullptr;
+  ProjectionHandle handle{config,outputChannels,alpha,false};
   cudaError_t status = cudaErrorNotSupported;
   switch(config.tactic) {
   case ProjectionTactic::M128N128K64S2Sw1:
@@ -1812,6 +1837,16 @@ bool projectionSupports(
   return handle != nullptr && handle->config.mode == mode && tokenRows > 0 &&
     tokenRows <= handle->config.maxTokenRows && inputChannels == kChannels &&
     outputRowStride == kQkvChannels;
+}
+
+bool projectionInputQuantizationMatches(
+  const void* opaque,
+  float inputQuantMaxAbs
+) noexcept {
+  const ProjectionHandle* handle =
+    static_cast<const ProjectionHandle*>(opaque);
+  return handle != nullptr &&
+    sameFloatBits(handle->config.inputQuantMaxAbs,inputQuantMaxAbs);
 }
 
 cudaError_t launchProjection(
@@ -1917,6 +1952,7 @@ void* createDualFfn(const DualFfnConfig& config) {
      !aligned16(config.packedUpWeights) || !aligned16(config.packedGateWeights) ||
      !finitePositive(config.upWeightScale) ||
      !finitePositive(config.gateWeightScale) ||
+     !finitePositive(config.inputQuantMaxAbs) ||
      !finitePositive(config.swigluClip) ||
      !finitePositive(config.productQuantMaxAbs) ||
      (config.outputMode != DualFfnOutputMode::Fp16Product &&
@@ -1978,18 +2014,25 @@ void* createDualFfn(const DualFfnConfig& config) {
       ProductQuantPath::FixedFactorAdjustableProductFloat :
     (squaredProductDomain ? ProductQuantPath::FixedFactorSquaredExact :
      fixedClip ? ProductQuantPath::FixedFactorAdjustableProductFloat :
-      ProductQuantPath::AdjustableFloat);
+     ProductQuantPath::AdjustableFloat);
+  const float inputQuantMultiplier = 127.0f / config.inputQuantMaxAbs;
   const float factorQuantMultiplier = 127.0f / config.swigluClip;
   const double productQuantMultiplierDouble =
     double(config.swigluClip) * double(config.swigluClip) /
     (127.0 * double(config.productQuantMaxAbs));
   const float productQuantMultiplier = float(productQuantMultiplierDouble);
-  if(!finitePositive(factorQuantMultiplier) ||
+  if(!finitePositive(inputQuantMultiplier) ||
+     !finitePositive(factorQuantMultiplier) ||
      !finitePositive(productQuantMultiplier))
     return nullptr;
+  const float inputScale = config.inputQuantMaxAbs / 127.0f;
+  const float upAlpha = inputScale * config.upWeightScale;
+  const float gateAlpha = inputScale * config.gateWeightScale;
+  if(!finitePositive(inputScale) || !finitePositive(upAlpha) ||
+     !finitePositive(gateAlpha))
+    return nullptr;
   DualFfnHandle handle{resolvedConfig,
-    kNormActivationScale * config.upWeightScale,
-    kNormActivationScale * config.gateWeightScale,
+    upAlpha,gateAlpha,
     factorQuantMultiplier,productQuantMultiplier,productQuantPath,nullptr};
   cudaError_t status = cudaErrorNotSupported;
   if(useInterleavedTactic) {
@@ -2100,6 +2143,15 @@ bool dualFfnSupports(
   return handle != nullptr && handle->config.outputMode == outputMode &&
     tokenRows > 0 &&
     tokenRows <= handle->config.maxTokenRows;
+}
+
+bool dualFfnInputQuantizationMatches(
+  const void* opaque,
+  float inputQuantMaxAbs
+) noexcept {
+  const DualFfnHandle* handle = static_cast<const DualFfnHandle*>(opaque);
+  return handle != nullptr &&
+    sameFloatBits(handle->config.inputQuantMaxAbs,inputQuantMaxAbs);
 }
 
 cudaError_t launchDualFfnHalf(
@@ -2343,14 +2395,22 @@ cudaError_t launchQuantizeClip7Product(
 }
 
 cudaError_t launchQuantizeAttentionOutput(
+  const void* attentionOutOpaque,
   const half* attentionFp16,
   int8_t* attentionInt8,
   int tokenRows,
   cudaStream_t stream
 ) {
-  if(attentionFp16 == nullptr || attentionInt8 == nullptr || tokenRows <= 0 ||
-     tokenRows > kMaxTokenRows || !aligned16(attentionFp16) ||
+  const AttentionOutHandle* handle =
+    static_cast<const AttentionOutHandle*>(attentionOutOpaque);
+  if(handle == nullptr || attentionFp16 == nullptr ||
+     attentionInt8 == nullptr || tokenRows <= 0 ||
+     tokenRows > handle->config.maxTokenRows || !aligned16(attentionFp16) ||
      !aligned16(attentionInt8))
+    return cudaErrorInvalidValue;
+  const float maxAbs = handle->config.inputQuantMaxAbs;
+  const float multiplier = 127.0f / maxAbs;
+  if(!finitePositive(maxAbs) || !finitePositive(multiplier))
     return cudaErrorInvalidValue;
   const std::size_t vectors = std::size_t(tokenRows) * kChannels / 4;
   // Keep the lightweight conversion from flooding the scheduler ahead of the
@@ -2364,7 +2424,7 @@ cudaError_t launchQuantizeAttentionOutput(
   quantizeAttentionOutputKernel<<<
     blocks,kThreadsPerQuantBlock,0,stream>>>(
       reinterpret_cast<const uint2*>(attentionFp16),
-      reinterpret_cast<uint32_t*>(attentionInt8),vectors);
+      reinterpret_cast<uint32_t*>(attentionInt8),vectors,maxAbs,multiplier);
   return cudaPeekAtLastError();
 }
 
@@ -2464,10 +2524,17 @@ cudaError_t launchDownResidual(
 void* createAttentionOut(const AttentionOutConfig& config) {
   if(config.maxTokenRows <= 0 || config.maxTokenRows > kMaxTokenRows ||
      config.packedWeights == nullptr || !aligned16(config.packedWeights) ||
-     !finitePositive(config.weightScale) || !isSm120Compatible())
+     !finitePositive(config.weightScale) ||
+     !finitePositive(config.inputQuantMaxAbs) || !isSm120Compatible())
     return nullptr;
-  AttentionOutHandle handle{
-    config,kNormActivationScale * config.weightScale};
+  const float inputQuantMultiplier = 127.0f / config.inputQuantMaxAbs;
+  if(!finitePositive(inputQuantMultiplier))
+    return nullptr;
+  const float alpha =
+    (config.inputQuantMaxAbs / 127.0f) * config.weightScale;
+  if(!finitePositive(alpha))
+    return nullptr;
+  AttentionOutHandle handle{config,alpha};
   cudaError_t status = cudaErrorNotSupported;
   switch(config.tactic) {
   case AttentionOutTactic::M128N128K64S2Sw1:
@@ -2497,6 +2564,16 @@ bool attentionOutSupports(const void* opaque, int tokenRows) noexcept {
     static_cast<const AttentionOutHandle*>(opaque);
   return handle != nullptr && tokenRows > 0 &&
     tokenRows <= handle->config.maxTokenRows;
+}
+
+bool attentionOutInputQuantizationMatches(
+  const void* opaque,
+  float inputQuantMaxAbs
+) noexcept {
+  const AttentionOutHandle* handle =
+    static_cast<const AttentionOutHandle*>(opaque);
+  return handle != nullptr &&
+    sameFloatBits(handle->config.inputQuantMaxAbs,inputQuantMaxAbs);
 }
 
 cudaError_t launchAttentionOutResidual(
