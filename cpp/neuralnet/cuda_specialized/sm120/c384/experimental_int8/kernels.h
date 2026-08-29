@@ -19,8 +19,6 @@ constexpr int kHeads = 12;
 constexpr int kHeadDim = 32;
 constexpr int kRopePairsPerHead = kHeadDim / 2;
 constexpr float kRmsEpsilon = 1.0e-6f;
-constexpr float kNormActivationClip = 4.0f;
-constexpr float kNormActivationScale = kNormActivationClip / 127.0f;
 constexpr float kClip7ProductClip = 49.0f;
 constexpr float kClip7ProductScale = kClip7ProductClip / 127.0f;
 
@@ -84,8 +82,8 @@ enum class DownTactic : uint32_t {
 };
 
 // Kept distinct from DownTactic even though the initial candidates share the
-// same CUTLASS tile family. Attention out is K=384,N=384 and consumes clip4
-// activations; FFN down is K=1024,N=384 and consumes the per-layer calibrated
+// same CUTLASS tile family. Attention out is K=384,N=384 and consumes a
+// per-layer PTQ domain; FFN down is K=1024,N=384 and consumes the calibrated
 // product domain (with clip7/productMax49 as its exact fast-path case).
 enum class AttentionOutTactic : uint32_t {
   M128N128K64S2Sw1 = 1,
@@ -95,8 +93,8 @@ enum class AttentionOutTactic : uint32_t {
 
 // Mirrors the production C384 Warp4Vec4x3 FP16 RMSNorm arithmetic and emits
 // a second row-major signed-INT8 tensor. Quantization occurs after the FP16
-// rounding boundary using clip4, round-to-nearest-even, zero point 0, and a
-// saturated range of [-127,127].
+// rounding boundary using the mandatory per-layer PTQ range,
+// round-to-nearest-even, zero point 0, and a saturated range of [-127,127].
 cudaError_t launchRmsNormFp16Int8(
   const half* input,
   half* outputFp16,
@@ -104,6 +102,7 @@ cudaError_t launchRmsNormFp16Int8(
   const half* gamma,
   int tokenRows,
   float epsilon,
+  float activationQuantMaxAbs,
   cudaStream_t stream
 );
 
@@ -116,6 +115,7 @@ struct ProjectionConfig {
   // [384,768], aggressive mode owns [384,1152].
   const int8_t* packedWeights = nullptr;
   float weightScale = 0.0f;
+  float inputQuantMaxAbs = 0.0f;
 };
 
 void* createProjection(const ProjectionConfig& config);
@@ -126,6 +126,10 @@ bool projectionSupports(
   int tokenRows,
   int inputChannels,
   int outputRowStride
+) noexcept;
+bool projectionInputQuantizationMatches(
+  const void* opaque,
+  float inputQuantMaxAbs
 ) noexcept;
 
 // Writes raw packed token rows. Conservative QK writes columns [0,768) with
@@ -194,6 +198,9 @@ struct DualFfnConfig {
   const int8_t* packedGateWeights = nullptr;
   float upWeightScale = 0.0f;
   float gateWeightScale = 0.0f;
+  // Mandatory per-layer PTQ range for the pre-FFN RMS output. Independent of
+  // swigluClip, which remains the model's SwiGLU clipping semantic.
+  float inputQuantMaxAbs = 0.0f;
   // Serialized v105 FFN semantics. The aggressive path quantizes each
   // clipped factor with swigluClip/127, then requantizes their product with
   // productQuantMaxAbs/127. Keeping both values on the prepared handle makes
@@ -208,6 +215,10 @@ bool dualFfnSupports(
   const void* opaque,
   DualFfnOutputMode outputMode,
   int tokenRows
+) noexcept;
+bool dualFfnInputQuantizationMatches(
+  const void* opaque,
+  float inputQuantMaxAbs
 ) noexcept;
 
 // Shared-A INT8 up/gate GEMM. Each projection dequantizes to FP16 before the
@@ -269,7 +280,7 @@ bool interleavedDualFfnKernelResources(
 ) noexcept;
 
 // Aggressive-engine RMSNorm. It preserves the same FP16 rounding boundary,
-// clip4, RNE, and [-127,127] quantization contract as
+// RNE, and [-127,127] quantization contract as
 // launchRmsNormFp16Int8, but does not materialize an unused FP16 tensor.
 cudaError_t launchRmsNormInt8(
   const half* input,
@@ -277,6 +288,7 @@ cudaError_t launchRmsNormInt8(
   const half* gamma,
   int tokenRows,
   float epsilon,
+  float activationQuantMaxAbs,
   cudaStream_t stream
 );
 
@@ -289,10 +301,11 @@ cudaError_t launchQuantizeClip7Product(
   cudaStream_t stream
 );
 
-// Quantizes the FP16 attention output [M,384] using clip4, RNE, zero point 0,
-// and saturation [-127,127]. The output may reuse the attention RMS INT8
-// scratch only after QKV projection has consumed it.
+// Quantizes the FP16 attention output [M,384] using the prepared per-layer
+// PTQ range, RNE, zero point 0, and saturation [-127,127]. The output may
+// reuse the attention RMS INT8 scratch only after QKV projection consumed it.
 cudaError_t launchQuantizeAttentionOutput(
+  const void* attentionOutOpaque,
   const half* attentionFp16,
   int8_t* attentionInt8,
   int tokenRows,
@@ -332,14 +345,20 @@ struct AttentionOutConfig {
   // Output-major K-contiguous signed-INT8 [384,384].
   const int8_t* packedWeights = nullptr;
   float weightScale = 0.0f;
+  // Mandatory per-layer PTQ range for the packed attention output.
+  float inputQuantMaxAbs = 0.0f;
 };
 
 void* createAttentionOut(const AttentionOutConfig& config);
 void destroyAttentionOut(void* opaque) noexcept;
 bool attentionOutSupports(const void* opaque, int tokenRows) noexcept;
+bool attentionOutInputQuantizationMatches(
+  const void* opaque,
+  float inputQuantMaxAbs
+) noexcept;
 
 // Computes half(alpha * S8[M,384] * S8[384,384] + residual), with
-// alpha=(4/127)*weightScale and beta=1 in the CUTLASS epilogue.
+// alpha=(inputQuantMaxAbs/127)*weightScale and beta=1 in the CUTLASS epilogue.
 cudaError_t launchAttentionOutResidual(
   void* opaque,
   int tokenRows,
