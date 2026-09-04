@@ -137,7 +137,7 @@ string attentionWire(const AttentionWireOptions& options) {
       options.qkNormFlag : (options.useQKNorm ? 1 : 0);
     out << "@V102_QKN_CLIP@\n" << qkNormFlag << '\n';
   }
-  else if(options.modelVersion >= 105) {
+  else if(options.modelVersion == 105) {
     const int qkNormFlag = options.qkNormFlag >= 0 ?
       options.qkNormFlag : (options.useQKNorm ? 1 : 0);
     out << qkNormFlag << '\n';
@@ -151,7 +151,7 @@ string attentionWire(const AttentionWireOptions& options) {
   appendMatMul(out,"attention.k",8,8);
   appendMatMul(out,"attention.v",8,8);
   appendMatMul(out,"attention.out",8,8);
-  if((options.modelVersion >= 105 ||
+  if((options.modelVersion == 105 ||
       (options.modelVersion == 102 && options.extendedV102)) &&
      options.useQKNorm && options.qkNormFlag != 0) {
     appendRMSNorm(out,"attention.qnorm",options.qNormChannels,"0.000001");
@@ -187,7 +187,7 @@ string ffnWire(const FfnWireOptions& options) {
     if(options.includeClip)
       out << options.clip << '\n';
   }
-  else if(options.modelVersion >= 105) {
+  else if(options.modelVersion == 105) {
     if(options.includeClip)
       out << options.clip << '\n';
     if(options.includeInputRange)
@@ -224,9 +224,200 @@ string prefixWire(const vector<string>& tokens, size_t count) {
   return out.str();
 }
 
+string quantizedMatMulWire(
+  const vector<float>& scales,
+  const vector<int8_t>& weights,
+  int quantizedMax = 127
+) {
+  requireContract(scales.size() == 3,"v106 test scale size is wrong");
+  requireContract(weights.size() == 6,"v106 test weight size is wrong");
+  ostringstream out(ios::out | ios::binary);
+  requireContract(quantizedMax == 63 || quantizedMax == 127,
+    "v106 test quantized maximum is invalid");
+  out << "quantized.projection\n2\n3\n@S" << (quantizedMax == 63 ? 7 : 8) << "P@";
+  out.write(reinterpret_cast<const char*>(scales.data()),
+            (streamsize)(scales.size() * sizeof(float)));
+  out.write(reinterpret_cast<const char*>(weights.data()),
+            (streamsize)weights.size());
+  out << '\n';
+  return out.str();
+}
+
+void testV106QuantizedMatMul() {
+  const vector<float> scales = {0.25f,0.5f,0.75f};
+  const vector<int8_t> weights = {-127,-3,0,2,17,127};
+  istringstream in(quantizedMatMulWire(scales,weights),ios::in | ios::binary);
+  MatMulLayerDesc layer(in,true,true);
+  requireFullyConsumed(in,"v106 S8 matmul");
+  requireContract(layer.name == "quantized.projection","v106 S8 name changed");
+  requireContract(layer.inChannels == 2 && layer.outChannels == 3,
+    "v106 S8 shape changed");
+  requireContract(layer.isQuantized,"v106 S8 flag was not retained");
+  requireContract(layer.quantizedMax == 127,"v106 S8 range changed");
+  requireContract(layer.weights.empty(),"v106 S8 layer retained FP32 weights");
+  requireContract(layer.weightScales == scales,"v106 S8 scales changed");
+  requireContract(layer.quantizedWeights == weights,"v106 S8 weights changed");
+
+  const vector<int8_t> s7Weights = {-63,-3,0,2,17,63};
+  istringstream s7In(quantizedMatMulWire(scales,s7Weights,63),ios::in | ios::binary);
+  MatMulLayerDesc s7Layer(s7In,true,true);
+  requireFullyConsumed(s7In,"v106 S7 matmul");
+  requireContract(s7Layer.quantizedMax == 63,"v106 S7 range changed");
+  requireContract(s7Layer.quantizedWeights == s7Weights,"v106 S7 weights changed");
+
+  vector<int8_t> withNegative128 = weights;
+  withNegative128[2] = numeric_limits<int8_t>::min();
+  expectStringError([&](){
+    istringstream bad(quantizedMatMulWire(scales,withNegative128),ios::in | ios::binary);
+    (void)MatMulLayerDesc(bad,true,true);
+  },"v106 S8 -128 sentinel");
+
+  vector<int8_t> outOfS7Range = s7Weights;
+  outOfS7Range[2] = 64;
+  expectStringError([&](){
+    istringstream bad(quantizedMatMulWire(scales,outOfS7Range,63),ios::in | ios::binary);
+    (void)MatMulLayerDesc(bad,true,true);
+  },"v106 S7 range");
+
+  vector<float> zeroScale = scales;
+  zeroScale[1] = 0.0f;
+  expectStringError([&](){
+    istringstream bad(quantizedMatMulWire(zeroScale,weights),ios::in | ios::binary);
+    (void)MatMulLayerDesc(bad,true,true);
+  },"v106 S8 zero scale");
+
+  expectStringError([&](){
+    istringstream text(quantizedMatMulWire(scales,weights),ios::in | ios::binary);
+    (void)MatMulLayerDesc(text,false,true);
+  },"v106 S8 text container");
+}
+
+void appendBinaryFloats(ostringstream& out, size_t count, float value) {
+  const vector<float> values(count,value);
+  out << "@BIN@";
+  out.write(reinterpret_cast<const char*>(values.data()),(streamsize)(count * sizeof(float)));
+  out << '\n';
+}
+
+void appendBinaryRmsNorm(ostringstream& out, const string& name, int channels) {
+  out << name << '\n' << channels << "\n0.000001\n";
+  appendBinaryFloats(out,(size_t)channels,1.0f);
+}
+
+void appendBinaryProjection(
+  ostringstream& out, const string& name, int inputs, int outputs, int qmax
+) {
+  out << name << '\n' << inputs << '\n' << outputs << '\n';
+  out << (qmax == 63 ? "@S7P@" : "@S8P@");
+  const vector<float> scales((size_t)outputs,0.125f);
+  const vector<int8_t> codes((size_t)inputs * outputs,(int8_t)-qmax);
+  out.write(reinterpret_cast<const char*>(scales.data()),(streamsize)(scales.size() * sizeof(float)));
+  out.write(reinterpret_cast<const char*>(codes.data()),(streamsize)codes.size());
+  out << '\n';
+}
+
+string cpuAttentionWire(int qmax, bool qkn, RopeKind rope, bool legacyShell = false) {
+  ostringstream out(ios::out | ios::binary);
+  out << "attention\n2\n2\n4\n4\n" << (rope != RopeKind::None ? 1 : 0) << '\n'
+      << (rope == RopeKind::Learned ? 1 : 0) << '\n';
+  if(legacyShell)
+    out << (qkn ? 1 : 0) << "\n3.25\n5.5\n";
+  else if(qkn)
+    out << "@V102_QKN_CLIP@\n1\n";
+  appendBinaryRmsNorm(out,"attention.norm1",8);
+  for(const char* role: {"q", "k", "v", "out"})
+    appendBinaryProjection(out,string("attention.") + role,8,8,qmax);
+  if(qkn) {
+    appendBinaryRmsNorm(out,"attention.qnorm",4);
+    appendBinaryRmsNorm(out,"attention.knorm",4);
+  }
+  if(rope == RopeKind::Learned) {
+    out << "attention.rope\n2\n2\n2\n";
+    appendBinaryFloats(out,8,0.0625f);
+  }
+  else if(rope == RopeKind::Fixed)
+    out << "attention.theta\n10000\n";
+  return out.str();
+}
+
+string cpuFfnWire(int qmax, float clip, bool legacyShell = false) {
+  ostringstream out(ios::out | ios::binary);
+  out << "ffn\n8\n12\n1\n";
+  if(legacyShell)
+    out << clip << "\n2.75\n23.5\n";
+  else if(clip > 0.0f)
+    out << "@V102_QKN_CLIP@\n" << clip << '\n';
+  appendBinaryRmsNorm(out,"ffn.norm",8);
+  appendBinaryProjection(out,"ffn.up",8,12,qmax);
+  appendBinaryProjection(out,"ffn.gate",8,12,qmax);
+  appendBinaryProjection(out,"ffn.down",12,8,qmax);
+  return out.str();
+}
+
+void requireCpuProjection(const MatMulLayerDesc& layer, int qmax) {
+  requireContract(layer.isQuantized && layer.quantizedMax == qmax,
+    "v106 projection encoding changed");
+  requireContract(layer.weights.empty(),"v106 projection retained an FP32 master");
+  requireContract(layer.weightScales.size() == (size_t)layer.outChannels &&
+                  layer.quantizedWeights.size() == (size_t)layer.inChannels * layer.outChannels,
+    "v106 projection storage has the wrong size");
+}
+
+void requireCpuAttention(const TransformerAttentionDesc& attention, int qmax) {
+  requireContract(attention.attentionInputQuantMaxAbs == 0.0f &&
+                  attention.attentionOutputQuantMaxAbs == 0.0f,
+    "v106 attention retained unused CUDA calibration");
+  requireCpuProjection(attention.qProj,qmax);
+  requireCpuProjection(attention.kProj,qmax);
+  requireCpuProjection(attention.vProj,qmax);
+  requireCpuProjection(attention.outProj,qmax);
+}
+
+void requireCpuFfn(const TransformerFFNDesc& ffn, int qmax) {
+  requireContract(ffn.ffnInputQuantMaxAbs == 0.0f && ffn.productQuantMaxAbs == 0.0f,
+    "v106 FFN retained unused CUDA calibration");
+  requireCpuProjection(ffn.linear1,qmax);
+  requireCpuProjection(ffn.linearGate,qmax);
+  requireCpuProjection(ffn.linear2,qmax);
+}
+
+void testV106WithoutCudaCalibration() {
+  for(int qmax: {63,127}) {
+    for(bool qkn: {false,true}) {
+      for(RopeKind rope: {RopeKind::None,RopeKind::Fixed,RopeKind::Learned}) {
+        istringstream in(cpuAttentionWire(qmax,qkn,rope),ios::in | ios::binary);
+        TransformerAttentionDesc attention(in,106,true);
+        requireFullyConsumed(in,"v106 attention");
+        requireContract(attention.useQKNorm == qkn &&
+                        attention.useRope == (rope != RopeKind::None) &&
+                        attention.learnableRope == (rope == RopeKind::Learned),
+          "v106 QKN/RoPE semantics changed");
+        requireCpuAttention(attention,qmax);
+      }
+    }
+    for(float clip: {0.0f,4.0f,7.0f}) {
+      istringstream in(cpuFfnWire(qmax,clip),ios::in | ios::binary);
+      TransformerFFNDesc ffn(in,106,true);
+      requireFullyConsumed(in,"v106 FFN");
+      requireContract(ffn.swigluClip == clip,"v106 clipping semantics changed");
+      requireCpuFfn(ffn,qmax);
+    }
+    expectStringError([&](){
+      istringstream in(cpuAttentionWire(qmax,true,RopeKind::Learned,true),ios::in | ios::binary);
+      (void)TransformerAttentionDesc(in,106,true);
+    },"retired v105-shell v106 attention");
+    expectStringError([&](){
+      istringstream in(cpuFfnWire(qmax,4.0f,true),ios::in | ios::binary);
+      (void)TransformerFFNDesc(in,106,true);
+    },"retired v105-shell v106 FFN");
+  }
+}
+
 void testVersions() {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 105,
-    "native v105 must be the latest implemented wire version");
+  // CPU v106 retains the v102 body/extension, not CUDA-v105 calibration.
+  // Both formats share the V101 input ABI but have distinct wire contracts.
+  static_assert(NNModelVersion::latestModelVersionImplemented == 106,
+    "v105 wire contract needs an explicit audit when the latest version changes");
   static_assert(NNModelVersion::defaultModelVersion == 102,
     "v105 must not silently replace the ordinary v102 default");
   requireContract(NNModelVersion::getInputsVersion(102) == 101,"v102 input version changed");
@@ -238,6 +429,9 @@ void testVersions() {
   requireContract(NNModelVersion::getNumGlobalFeatures(103) == 64,"v103 global ABI changed");
   requireContract(NNModelVersion::getNumSpatialFeatures(105) == 22,"v105 spatial ABI is not V101");
   requireContract(NNModelVersion::getNumGlobalFeatures(105) == 39,"v105 global ABI is not V101");
+  requireContract(NNModelVersion::getInputsVersion(106) == 101,"v106 must use V101 inputs");
+  requireContract(NNModelVersion::getNumSpatialFeatures(106) == 22,"v106 spatial ABI is not V101");
+  requireContract(NNModelVersion::getNumGlobalFeatures(106) == 39,"v106 global ABI is not V101");
 
   expectStringError([](){ (void)NNModelVersion::getInputsVersion(104); },"v104 input mapping");
   expectStringError([](){ (void)NNModelVersion::getNumSpatialFeatures(104); },"v104 spatial mapping");
@@ -764,6 +958,28 @@ void testInvalidScalarsAndGeometry() {
 }  // namespace
 
 int MainCmds::testv105wire(const vector<string>& args) {
+  if(args.size() == 4 && args[0] == "testv105wire" && args[1] == "--model-v106") {
+    ModelDesc model;
+    ModelDesc::loadFromFileMaybeGZipped(args[2],model,args[3]);
+    requireContract(model.version == 106,"loader fixture is not canonical v106");
+    size_t attentions = 0;
+    size_t ffns = 0;
+    for(const auto& entry: model.trunk.blocks) {
+      if(entry.first == TRANSFORMER_ATTENTION_BLOCK_KIND) {
+        const auto& attention = *(const TransformerAttentionDesc*)entry.second.get();
+        requireCpuAttention(attention,attention.qProj.quantizedMax);
+        attentions++;
+      }
+      else if(entry.first == TRANSFORMER_FFN_BLOCK_KIND) {
+        const auto& ffn = *(const TransformerFFNDesc*)entry.second.get();
+        requireCpuFfn(ffn,ffn.linear1.quantizedMax);
+        ffns++;
+      }
+    }
+    requireContract(attentions > 0 && attentions == ffns,"v106 fixture has no attention/FFN pairs");
+    cout << "V106_MODEL_LOADER_PASS layers=" << attentions << endl;
+    return 0;
+  }
   if(args.size() == 4 && args[0] == "testv105wire" && args[1] == "--model") {
     ModelDesc model;
     ModelDesc::loadFromFileMaybeGZipped(args[2],model,args[3]);
@@ -776,9 +992,11 @@ int MainCmds::testv105wire(const vector<string>& args) {
     return 0;
   }
   if(args.size() != 1 || args[0] != "testv105wire")
-    throw StringError("testv105wire takes no arguments or --model FILE SHA256");
+    throw StringError("testv105wire takes no arguments, --model FILE SHA256, or --model-v106 FILE SHA256");
 
   testVersions();
+  testV106QuantizedMatMul();
+  testV106WithoutCudaCalibration();
   testProjectedScratchLayout();
   testLegacyV102();
   testExtendedV102QKNAndClip();

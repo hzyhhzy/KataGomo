@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <zlib.h>
 
 #include "../core/global.h"
@@ -84,6 +85,66 @@ static void readFloats(istream& in, size_t numFloats, bool binaryFloats, const s
       CHECKFINITE(buf[i],name);
     }
   }
+}
+
+static void readPerOutputQuantized(
+  istream& in,
+  size_t inChannels,
+  size_t outChannels,
+  bool binaryFloats,
+  const string& name,
+  int& quantizedMax,
+  vector<float>& scales,
+  vector<int8_t>& weights
+) {
+  if(!binaryFloats)
+    throw StringError(name + ": v106 quantized projection requires a binary .bin.gz model");
+
+  int numCharsBeforeAt = 0;
+  while((char)in.get() != '@') {
+    numCharsBeforeAt++;
+    if(numCharsBeforeAt > 100 || in.fail())
+      throw StringError(name + ": could not find v106 quantized projection block");
+  }
+  string marker;
+  marker += (char)in.get();
+  marker += (char)in.get();
+  marker += (char)in.get();
+  marker += (char)in.get();
+  if(marker == "S7P@")
+    quantizedMax = 63;
+  else if(marker == "S8P@")
+    quantizedMax = 127;
+  else
+    throw StringError(name + ": did not find expected v106 @S7P@ or @S8P@ projection block");
+
+  scales.resize(outChannels);
+  static_assert(sizeof(float) == 4,"v106 requires 32-bit float scales");
+  in.read(reinterpret_cast<char*>(scales.data()),outChannels*sizeof(float));
+  if(in.fail())
+    throw StringError(name + ": truncated v106 projection scale block");
+#if BYTE_ORDER == BIG_ENDIAN
+  char* scaleBytes = reinterpret_cast<char*>(scales.data());
+  for(size_t i = 0; i < outChannels; i++) {
+    std::swap(scaleBytes[i*4 + 0],scaleBytes[i*4 + 3]);
+    std::swap(scaleBytes[i*4 + 1],scaleBytes[i*4 + 2]);
+  }
+#endif
+  for(float scale: scales) {
+    if(!isfinite(scale) || !(scale > 0.0f))
+      throw StringError(name + ": v106 projection scale must be finite and positive");
+  }
+
+  if(inChannels > numeric_limits<size_t>::max() / outChannels)
+    throw StringError(name + ": v106 projection element count overflow");
+  const size_t numWeights = inChannels * outChannels;
+  weights.resize(numWeights);
+  in.read(reinterpret_cast<char*>(weights.data()),numWeights);
+  if(in.fail())
+    throw StringError(name + ": truncated v106 S7/S8 projection weights");
+  for(int8_t weight: weights)
+    if(weight < -quantizedMax || weight > quantizedMax)
+      throw StringError(name + ": v106 symmetric projection code exceeds its declared range");
 }
 
 //-----------------------------------------------------------------------------
@@ -273,32 +334,38 @@ ActivationLayerDesc& ActivationLayerDesc::operator=(ActivationLayerDesc&& other)
 
 //-----------------------------------------------------------------------------
 
-MatMulLayerDesc::MatMulLayerDesc() : inChannels(0), outChannels(0) {}
+MatMulLayerDesc::MatMulLayerDesc()
+  : inChannels(0), outChannels(0), isQuantized(false), quantizedMax(0) {}
 
-MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats) {
+MatMulLayerDesc::MatMulLayerDesc(istream& in, bool binaryFloats, bool quantized) {
   in >> name;
   in >> inChannels;
   in >> outChannels;
+  isQuantized = quantized;
+  quantizedMax = 0;
 
   if(in.fail())
     throw StringError(name + ": matmullayer failed to parse num channels");
   if(inChannels <= 0 || outChannels <= 0)
     throw StringError(name + ": number of in and out channels must be positive");
 
-  // Model file order is ic,oc
-  // Cublas order used is also ic,oc since we transpose
-  int numWeights = inChannels * outChannels;
-  weights.resize(numWeights);
-  int icStride = outChannels;
-  int ocStride = 1;
-
-  vector<float> floats;
-  readFloats(in, (size_t)inChannels * outChannels, binaryFloats, name, floats);
-  size_t idx = 0;
-  for(int ic = 0; ic < inChannels; ic++) {
-    for(int oc = 0; oc < outChannels; oc++) {
-      float w = floats[idx++];
-      weights[oc * ocStride + ic * icStride] = w;
+  if(isQuantized) {
+    readPerOutputQuantized(
+      in,(size_t)inChannels,(size_t)outChannels,binaryFloats,name,
+      quantizedMax,weightScales,quantizedWeights);
+  }
+  else {
+    // Model file order is ic,oc. Cublas order used is also ic,oc since
+    // ordinary backends transpose the operation.
+    weights.resize((size_t)inChannels * outChannels);
+    vector<float> floats;
+    readFloats(in, (size_t)inChannels * outChannels, binaryFloats, name, floats);
+    size_t idx = 0;
+    for(int ic = 0; ic < inChannels; ic++) {
+      for(int oc = 0; oc < outChannels; oc++) {
+        float w = floats[idx++];
+        weights[(size_t)ic * outChannels + oc] = w;
+      }
     }
   }
   if(in.fail())
@@ -313,7 +380,11 @@ MatMulLayerDesc& MatMulLayerDesc::operator=(MatMulLayerDesc&& other) {
   name = std::move(other.name);
   inChannels = other.inChannels;
   outChannels = other.outChannels;
+  isQuantized = other.isQuantized;
+  quantizedMax = other.quantizedMax;
   weights = std::move(other.weights);
+  quantizedWeights = std::move(other.quantizedWeights);
+  weightScales = std::move(other.weightScales);
   return *this;
 }
 
@@ -436,14 +507,15 @@ TransformerAttentionDesc::TransformerAttentionDesc(
   attentionOutputQuantMaxAbs = 0.0f;
   string prefetchedPreLNName;
   bool hasPrefetchedPreLNName = false;
-  if(modelVersion == 102) {
+  // CPU v106 keeps the floating v102 semantics, not CUDA v105 ranges.
+  if(modelVersion == 102 || modelVersion == 106) {
     string extensionOrPreLNName;
     in >> extensionOrPreLNName;
     if(extensionOrPreLNName == V102_TRANSFORMER_EXTENSION_MARKER) {
       int useQKNormInt = -1;
       in >> useQKNormInt;
       if(useQKNormInt != 0 && useQKNormInt != 1)
-        throw StringError(name + ": extended v102 attention useQKNorm flag must be 0 or 1");
+        throw StringError(name + ": extended v102/v106 attention useQKNorm flag must be 0 or 1");
       useQKNorm = useQKNormInt != 0;
     }
     else {
@@ -451,7 +523,7 @@ TransformerAttentionDesc::TransformerAttentionDesc(
       hasPrefetchedPreLNName = true;
     }
   }
-  else if(modelVersion >= 105) {
+  else if(modelVersion == 105) {
     int useQKNormInt = -1;
     in >> useQKNormInt;
     if(useQKNormInt != 0 && useQKNormInt != 1)
@@ -483,10 +555,11 @@ TransformerAttentionDesc::TransformerAttentionDesc(
   preLN = hasPrefetchedPreLNName ?
     TransformerRMSNormDesc(in,binaryFloats,prefetchedPreLNName) :
     TransformerRMSNormDesc(in,binaryFloats);
-  qProj = MatMulLayerDesc(in, binaryFloats);
-  kProj = MatMulLayerDesc(in, binaryFloats);
-  vProj = MatMulLayerDesc(in, binaryFloats);
-  outProj = MatMulLayerDesc(in, binaryFloats);
+  const bool quantizedProjections = modelVersion == 106;
+  qProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  kProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  vProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  outProj = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
   if(useQKNorm) {
     qNorm = TransformerRMSNormDesc(in, binaryFloats);
     kNorm = TransformerRMSNormDesc(in, binaryFloats);
@@ -656,22 +729,22 @@ TransformerFFNDesc::TransformerFFNDesc(
   productQuantMaxAbs = 0.0f;
   string prefetchedPreLNName;
   bool hasPrefetchedPreLNName = false;
-  if(modelVersion == 102) {
+  if(modelVersion == 102 || modelVersion == 106) {
     string extensionOrPreLNName;
     in >> extensionOrPreLNName;
     if(extensionOrPreLNName == V102_TRANSFORMER_EXTENSION_MARKER) {
       in >> swigluClip;
       if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
-        throw StringError(name + ": extended v102 transformer ffn swigluClip must be finite and nonnegative");
+        throw StringError(name + ": extended v102/v106 transformer ffn swigluClip must be finite and nonnegative");
       if(swigluClip > 0.0f && !useSwiGLU)
-        throw StringError(name + ": extended v102 transformer ffn swigluClip requires SwiGLU");
+        throw StringError(name + ": extended v102/v106 transformer ffn swigluClip requires SwiGLU");
     }
     else {
       prefetchedPreLNName = extensionOrPreLNName;
       hasPrefetchedPreLNName = true;
     }
   }
-  else if(modelVersion >= 105) {
+  else if(modelVersion == 105) {
     in >> swigluClip;
     if(in.fail() || !isfinite(swigluClip) || swigluClip < 0.0f)
       throw StringError(name + ": transformer ffn swigluClip must be finite and nonnegative");
@@ -699,10 +772,11 @@ TransformerFFNDesc::TransformerFFNDesc(
   preLN = hasPrefetchedPreLNName ?
     TransformerRMSNormDesc(in,binaryFloats,prefetchedPreLNName) :
     TransformerRMSNormDesc(in,binaryFloats);
-  linear1 = MatMulLayerDesc(in, binaryFloats);
+  const bool quantizedProjections = modelVersion == 106;
+  linear1 = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
   if(useSwiGLU)
-    linearGate = MatMulLayerDesc(in, binaryFloats);
-  linear2 = MatMulLayerDesc(in, binaryFloats);
+    linearGate = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
+  linear2 = MatMulLayerDesc(in, binaryFloats, quantizedProjections);
 
   if(preLN.numChannels != numChannels)
     throw StringError(name + ": ffn preLN channels do not match trunk channels");
@@ -1439,6 +1513,10 @@ ModelDesc::ModelDesc(istream& in, const string& sha256_, bool binaryFloats) {
     throw StringError("This neural net requires a newer KataGo version. Obtain a newer KataGo at https://github.com/lightvector/KataGo. Model version: " + Global::intToString(version));
   if(version == 104)
     throw StringError("Model version 104 is deliberately unsupported; use canonical v102 or v105 instead");
+#ifndef USE_CPU_PTQ_BACKEND
+  if(version == 106)
+    throw StringError("Model version 106 is reserved for the CPU-PTQ backend");
+#endif
 
   in >> numInputChannels;
   if(in.fail())
@@ -1645,10 +1723,10 @@ void ModelDesc::loadFromONNX(const string& onnxFile, ModelDesc& descBuf) {
 }
 
 Rules ModelDesc::getSupportedRules(const Rules& desiredRules, bool& supported) const {
-  static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
+  static_assert(NNModelVersion::latestModelVersionImplemented == 106, "");
   Rules rules = desiredRules;
   supported = true;
-  if(version <= 103 || version == 105) {
+  if(version <= 103 || version == 105 || version == 106) {
   }
   else {
     ASSERT_UNREACHABLE;

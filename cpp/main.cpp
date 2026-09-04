@@ -220,6 +220,14 @@ string Version::getKataGoVersionFullInfo() {
   out << "Using ONNX CPU backend" << endl;
 #elif defined(USE_ONNX_DIRECTML_BACKEND)
   out << "Using ONNX DirectML backend" << endl;
+#elif defined(USE_CPU_PTQ_BACKEND)
+#if defined(CPU_PTQ_AVX2_ONLY)
+  out << "Using CPU-PTQ backend (AVX2/FMA)" << endl;
+#elif defined(CPU_PTQ_AVX512VNNI)
+  out << "Using CPU-PTQ backend (AVX-512 VNNI)" << endl;
+#else
+#error "CPU-PTQ builds must select a supported ISA"
+#endif
 #else
   out << "Using dummy backend" << endl;
 #endif

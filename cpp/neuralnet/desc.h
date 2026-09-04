@@ -4,6 +4,7 @@
 #ifndef DESC_H
 #define DESC_H
 
+#include <cstdint>
 #include <istream>
 #include <string>
 #include <vector>
@@ -72,10 +73,18 @@ struct MatMulLayerDesc {
   std::string name;
   int inChannels;
   int outChannels;
+  // Ordinary native models use FP32 weights in input-major/output-minor
+  // order. CPU-PTQ v106 transformer projections instead use canonical
+  // output-major symmetric S7/S8 weights with one positive FP32 scale per
+  // output. quantizedMax is 63 for S7 and 127 for S8.
+  bool isQuantized;
+  int quantizedMax;
   std::vector<float> weights;
+  std::vector<int8_t> quantizedWeights;
+  std::vector<float> weightScales;
 
   MatMulLayerDesc();
-  MatMulLayerDesc(std::istream& in, bool binaryFloats);
+  MatMulLayerDesc(std::istream& in, bool binaryFloats, bool quantized = false);
   MatMulLayerDesc(MatMulLayerDesc&& other);
 
   MatMulLayerDesc(const MatMulLayerDesc&) = delete;
@@ -129,9 +138,9 @@ struct TransformerAttentionDesc {
   bool useRope;
   bool learnableRope;
   bool useQKNorm;
-  // Extended v102 can store optional Q/K norm without PTQ ranges. Native v105
-  // additionally stores these mandatory per-attention PTQ ranges. They are
-  // metadata and do not change FP16 semantics.
+  // CUDA-v105-only activation ranges. Floating v102 and CPU v106 carry Q/K
+  // norm via the marker-delimited extension, without these fields on the wire.
+  // They stay zero for v102/v106 and are never used by CPU-PTQ inference.
   float attentionInputQuantMaxAbs;
   float attentionOutputQuantMaxAbs;
 
@@ -175,8 +184,8 @@ struct TransformerFFNDesc {
   // Zero disables clipping. Positive values clip the activated linear branch
   // and the gate independently before their SwiGLU product.
   float swigluClip;
-  // Mandatory positive native-v105 PTQ metadata. Extended v102 may carry
-  // swigluClip while leaving these two PTQ range fields at zero.
+  // CUDA-v105-only activation ranges. v102/v106 encode only swigluClip in the
+  // optional extension; these fields stay zero and are not used by CPU-PTQ.
   float ffnInputQuantMaxAbs;
   float productQuantMaxAbs;
 

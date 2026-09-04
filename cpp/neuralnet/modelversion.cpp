@@ -22,6 +22,9 @@
 //104 = deliberately unsupported in this CUDA transformer line
 //105 = V102 transformer topology/semantics and V101 inputs, extended with
 //      mandatory positive per-layer PTQ activation ranges for INT8 execution.
+//106 = Native-v102 body and QKN/clip extension, without CUDA activation ranges.
+//      CPU Transformer projections use canonical per-output-channel symmetric
+//      S7/S8 storage; remaining weights retain native FP32 blocks.
 
 static void fail(int modelVersion) {
   throw StringError("NNModelVersion: Model version not currently implemented or supported: " + Global::intToString(modelVersion));
@@ -29,13 +32,13 @@ static void fail(int modelVersion) {
 
 static_assert(NNModelVersion::oldestModelVersionImplemented == 8, "");
 static_assert(NNModelVersion::oldestInputsVersionImplemented == 7, "");
-static_assert(NNModelVersion::latestModelVersionImplemented == 105, "");
+static_assert(NNModelVersion::latestModelVersionImplemented == 106, "");
 static_assert(NNModelVersion::latestInputsVersionImplemented == 102, "");
 
 int NNModelVersion::getInputsVersion(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return 7; //old v97/v7/v10
-  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105)
+  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105 || modelVersion == 106)
     return 101;
   else if(modelVersion == 103)
     return 102;
@@ -47,7 +50,7 @@ int NNModelVersion::getInputsVersion(int modelVersion) {
 int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return NNInputs::NUM_FEATURES_SPATIAL_V7;
-  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105)
+  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105 || modelVersion == 106)
     return NNInputs::NUM_FEATURES_SPATIAL_V101;
   else if(modelVersion == 103)
     return NNInputs::NUM_FEATURES_SPATIAL_V102;
@@ -59,7 +62,7 @@ int NNModelVersion::getNumSpatialFeatures(int modelVersion) {
 int NNModelVersion::getNumGlobalFeatures(int modelVersion) {
   if(modelVersion >= 8 && modelVersion <= 11)
     return NNInputs::NUM_FEATURES_GLOBAL_V7;
-  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105)
+  else if(modelVersion == 101 || modelVersion == 102 || modelVersion == 105 || modelVersion == 106)
     return NNInputs::NUM_FEATURES_GLOBAL_V101;
   else if(modelVersion == 103)
     return NNInputs::NUM_FEATURES_GLOBAL_V102;

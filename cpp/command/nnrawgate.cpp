@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -34,6 +35,7 @@ constexpr int V105_LAYER_COUNT = 36;
 enum class ModelContract {
   V102,
   V105,
+  V106,
 };
 
 enum class RouteContract : uint32_t {
@@ -243,9 +245,23 @@ string normalizeSha256(const string& raw) {
   return normalized;
 }
 
-vector<int> parseSchedule(const string& raw, int maxBatchSize) {
+vector<int> parseSchedule(const string& raw, int maxBatchSize, bool singleBatchOnly) {
   vector<int> schedule;
   const bool usingDefaultSchedule = raw.empty();
+  if(singleBatchOnly) {
+    if(maxBatchSize != 1)
+      throw StringError("nnrawgate: v106 CPU-PTQ contract requires max batch size one");
+    if(usingDefaultSchedule)
+      return {1};
+    for(const string& piece: Global::split(raw,',')) {
+      if(piece.empty() || Global::stringToInt(piece) != 1)
+        throw StringError("nnrawgate: v106 CPU-PTQ schedule may contain only batch one");
+      schedule.push_back(1);
+    }
+    if(schedule.empty())
+      throw StringError("nnrawgate: batch-schedule must not be empty");
+    return schedule;
+  }
   if(usingDefaultSchedule)
     schedule = {maxBatchSize,1,maxBatchSize-1,2,7,maxBatchSize};
   else {
@@ -517,7 +533,7 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       "","batch-schedule","Same-handle actual-batch sequence (default B,1,B-1,2,7,B)",false,"","LIST"
     );
     TCLAP::ValueArg<string> modelContractArg(
-      "","model-contract","Exact model contract: v102 or v105 (default v102)",false,"v102","NAME"
+      "","model-contract","Exact model contract: v102, v105, or v106 (default v102)",false,"v102","NAME"
     );
     TCLAP::SwitchArg expectedOfficialArg(
       "","expected-official-stage1","Require official FP16/NHWC attention+FFN route after every call",false
@@ -553,8 +569,10 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       modelContract = ModelContract::V102;
     else if(modelContractArg.getValue() == "v105")
       modelContract = ModelContract::V105;
+    else if(modelContractArg.getValue() == "v106")
+      modelContract = ModelContract::V106;
     else
-      throw StringError("nnrawgate: model-contract must be v102 or v105");
+      throw StringError("nnrawgate: model-contract must be v102, v105, or v106");
     if(expectedOfficialArg.getValue() && expectedOfficialV105Arg.getValue())
       throw StringError("nnrawgate: expected route flags are mutually exclusive");
     if(expectedOfficialArg.getValue())
@@ -563,7 +581,11 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       routeContract = RouteContract::OFFICIAL_V105_QKN_CLIP4;
     if(boardSize != 15 && boardSize != 19)
       throw StringError("nnrawgate: board must be 15 or 19");
-    if(maxBatchSize < 8 || maxBatchSize > 1024)
+    if(modelContract == ModelContract::V106) {
+      if(maxBatchSize != 1)
+        throw StringError("nnrawgate: v106 CPU-PTQ batch-size must be one");
+    }
+    else if(maxBatchSize < 8 || maxBatchSize > 1024)
       throw StringError("nnrawgate: batch-size must be between 8 and 1024");
     if(sameGpuConcurrency < 1 || sameGpuConcurrency > 64)
       throw StringError("nnrawgate: same-gpu-concurrency must be between 1 and 64");
@@ -582,7 +604,8 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     return 1;
   }
 
-  const vector<int> schedule = parseSchedule(scheduleText,maxBatchSize);
+  const vector<int> schedule = parseSchedule(
+    scheduleText,maxBatchSize,modelContract == ModelContract::V106);
   Corpus corpus = corpusFile.empty() ?
     makeSyntheticCorpus(boardSize,max(syntheticRows,maxBatchSize)) : readLabeledCorpus(corpusFile);
   if(corpus.boardSize != boardSize)
@@ -641,7 +664,9 @@ int MainCmds::nnrawgate(const vector<string>& args) {
   LoadedModel* loadedModel = nnEval->getRawGateLoadedModel();
   const int modelVersion = NeuralNet::getModelVersion(loadedModel);
   const int inputsVersion = NNModelVersion::getInputsVersion(modelVersion);
-  const int requiredModelVersion = modelContract == ModelContract::V105 ? 105 : 102;
+  const int requiredModelVersion =
+    modelContract == ModelContract::V105 ? 105 :
+    modelContract == ModelContract::V106 ? 106 : 102;
   if(modelVersion != requiredModelVersion || inputsVersion != 101 ||
      NNModelVersion::getNumSpatialFeatures(modelVersion) != SPATIAL_FEATURES ||
      NNModelVersion::getNumGlobalFeatures(modelVersion) != GLOBAL_FEATURES)
@@ -707,6 +732,14 @@ int MainCmds::nnrawgate(const vector<string>& args) {
     full.scoreValue.resize((size_t)corpus.numRows*scoreValueDim);
     full.ownership.resize((size_t)corpus.numRows*ownershipDim);
     vector<int> fullBatchSizes;
+#ifdef USE_CPU_PTQ_BACKEND
+    // Exclude one-time XNNPACK/MLAS lazy initialization from the replay timing.
+    (void)runRawCall(
+      handle,inputBuffers,corpus,0,1,useNHWC,routeContract,
+      routeSerial,ownedRows,rowPointers,ownedOutputs,postPolicy
+    );
+    const auto fullReplayStarted = std::chrono::steady_clock::now();
+#endif
     for(uint32_t rowStart = 0; rowStart < corpus.numRows; rowStart += (uint32_t)maxBatchSize) {
       const int actualBatch = (int)min<uint32_t>(
         (uint32_t)maxBatchSize,corpus.numRows-rowStart
@@ -721,6 +754,17 @@ int MainCmds::nnrawgate(const vector<string>& args) {
       copyFullSection(full.scoreValue,call.scoreValue,rowStart,scoreValueDim);
       copyFullSection(full.ownership,call.ownership,rowStart,ownershipDim);
     }
+#ifdef USE_CPU_PTQ_BACKEND
+    const double fullReplaySeconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - fullReplayStarted).count();
+    logger.write(
+      "nnrawgate CPU-PTQ full replay: rows=" + Global::uint64ToString(corpus.numRows) +
+      " seconds=" + Global::doubleToString(fullReplaySeconds) +
+      " millisecondsPerRow=" +
+      Global::doubleToString(fullReplaySeconds * 1000.0 / (double)corpus.numRows) +
+      " rowsPerSecond=" +
+      Global::doubleToString((double)corpus.numRows / fullReplaySeconds));
+#endif
 
     vector<RawSections> dynamicCalls;
     dynamicCalls.reserve(schedule.size());
