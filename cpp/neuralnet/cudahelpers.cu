@@ -19,3 +19,5 @@
 #define KATAGO_HAS_FLASH_MMA 1
 
 #include "../neuralnet/cudaandrocmhelpers.inc"
+#include "../neuralnet/cudab11kernels.cuh"
+#include "../neuralnet/cudab11affine.cuh"

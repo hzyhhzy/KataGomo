@@ -1,0 +1,12 @@
+# Exact build-time package versions observed in the validated Linux environment.
+# Some are development/nightly wheels; use matching archived wheel sources when
+# unavailable from the configured index. Do not silently substitute versions.
+flash-attn-4==4.0.0b25
+nvidia-cutlass-dsl==4.6.0.dev0
+nvidia-cutlass-dsl-libs-base==4.6.0.dev0
+nvidia-cutlass-dsl-libs-cu13==4.6.0.dev0
+quack-kernels==0.5.3
+cuda-python==13.3.1
+cuda-bindings==13.3.1
+apache-tvm-ffi==0.1.12
+torch==2.13.0

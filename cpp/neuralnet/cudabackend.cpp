@@ -24,6 +24,10 @@
 
 #include "../neuralnet/cudahelpers.h"
 #include "../neuralnet/cudautils.h"
+#include "../neuralnet/cudab11.h"
+#ifdef USE_B11_GEMM
+#include "../neuralnet/cudab11gemm.h"
+#endif
 
 #ifdef USE_CUTLASS_FUSED_FFN
 #include "../neuralnet/cudafusedffn.h"

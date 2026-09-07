@@ -1,0 +1,182 @@
+diff --git a/flash_attn/cute/flash_fwd.py b/flash_attn/cute/flash_fwd.py
+--- a/flash_attn/cute/flash_fwd.py
++++ b/flash_attn/cute/flash_fwd.py
+@@ -57,6 +57,8 @@ class FlashAttentionForwardBase:
+         mask_mod: Optional[cutlass.Constexpr] = None,
+         has_aux_tensors: bool = False,
+         q_subtile_factor: int = 1,
++        qk_acc_dtype: Type[cutlass.Numeric] = Float32,
++        pv_acc_dtype: Type[cutlass.Numeric] = Float32,
+     ):
+         """Initializes the configuration for a flash attention kernel.
+ 
+@@ -99,7 +101,8 @@ class FlashAttentionForwardBase:
+         self.Q_in_regs = Q_in_regs
+         self.score_mod = score_mod
+         self.mask_mod = mask_mod
+-        self.qk_acc_dtype = Float32
++        self.qk_acc_dtype = qk_acc_dtype
++        self.pv_acc_dtype = pv_acc_dtype
+         self.score_vec_size: cutlass.Constexpr = getattr(
+             score_mod, "__vec_size__", 1 if cutlass.const_expr(has_aux_tensors) else 2
+         )
+@@ -587,12 +590,12 @@ class FlashAttentionForwardBase:
+ 
+     def _get_tiled_mma(self):
+         tiled_mma_qk = cute.make_tiled_mma(
+-            warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16)),
++            warp.MmaF16BF16Op(self.dtype, self.qk_acc_dtype, (16, 8, 16)),
+             (self.num_threads // 32, 1, 1),
+             permutation_mnk=(self.num_threads // 32 * 16, 16, 16),
+         )
+         tiled_mma_pv = cute.make_tiled_mma(
+-            warp.MmaF16BF16Op(self.dtype, Float32, (16, 8, 16)),
++            warp.MmaF16BF16Op(self.dtype, self.pv_acc_dtype, (16, 8, 16)),
+             (self.num_threads // 32, 1, 1),
+             permutation_mnk=(self.num_threads // 32 * 16, 16, 16),
+         )
+@@ -866,7 +869,7 @@ class FlashAttentionForwardBase:
+         tSrK = thr_mma_qk.make_fragment_B(thr_mma_qk.partition_B(sK[None, None, 0]))
+         tOrVt = thr_mma_pv.make_fragment_B(thr_mma_pv.partition_B(sVt[None, None, 0]))
+         acc_shape_O = thr_mma_pv.partition_shape_C((self.tile_m, self.tile_hdimv))
+-        acc_O = cute.make_rmem_tensor(acc_shape_O, Float32)
++        acc_O = cute.make_rmem_tensor(acc_shape_O, self.pv_acc_dtype)
+         acc_O.fill(0.0)
+ 
+         # ///////////////////////////////////////////////////////////////////////////////
+@@ -1125,7 +1128,7 @@ class FlashAttentionForwardBase:
+             cute.arch.barrier()
+ 
+         acc_shape_S = mma_params.thr_mma_qk.partition_shape_C((self.tile_m, self.tile_n))
+-        acc_S = cute.make_rmem_tensor(acc_shape_S, Float32)
++        acc_S = cute.make_rmem_tensor(acc_shape_S, self.qk_acc_dtype)
+         acc_S.fill(0.0)
+         # wait for smem tile QK before mma calculation for S
+         sync()
+diff --git a/flash_attn/cute/mask.py b/flash_attn/cute/mask.py
+--- a/flash_attn/cute/mask.py
++++ b/flash_attn/cute/mask.py
+@@ -6,7 +6,14 @@ from typing import Callable, Optional
+ 
+ import cutlass
+ import cutlass.cute as cute
+-from cutlass import Float32, Int32, Uint32, const_expr
++from cutlass import Float16, Float32, Int32, Uint32, const_expr
++
++
++def _neg_inf(t):
++    """-inf literal matching the tensor's element dtype (fp16 accumulators)."""
++    if t.element_type == Float16:
++        return Float16(float("-inf"))
++    return -Float32.inf
+ from cutlass.cutlass_dsl import min as dsl_min
+ 
+ from quack import layout_utils
+@@ -94,10 +101,10 @@ def mask_r2p_lambda(
+             in_bound = cutlass.Boolean(mask & (Uint32(1) << i))
+             c = s * CHUNK_SIZE + i
+             if const_expr(rank1):
+-                X[c] = X[c] if in_bound else -Float32.inf
++                X[c] = X[c] if in_bound else _neg_inf(X)
+             else:
+                 for r in cutlass.range_constexpr(cute.size(X.shape[0])):
+-                    X[r, c] = X[r, c] if in_bound else -Float32.inf
++                    X[r, c] = X[r, c] if in_bound else _neg_inf(X)
+ 
+ 
+ @cute.jit
+@@ -152,7 +159,7 @@ def mask_r2p(
+         ):
+             in_bound = cutlass.Boolean(mask & (Uint32(1) << i))
+             c = col_base + s * MASK_R2P_CHUNK_SIZE + i
+-            X[c] = X[c] if in_bound else -Float32.inf
++            X[c] = X[c] if in_bound else _neg_inf(X)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -216,7 +223,7 @@ class AttentionMask:
+                     for c in cutlass.range(cute.size(tScS_mn.shape[1]), unroll_full=True):
+                         oob = t0ScS_mn[0, c][COL] >= seqlenk_col_limit
+                         for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
+-                            acc_S_mn[r, c] = -Float32.inf if oob else acc_S_mn[r, c]
++                            acc_S_mn[r, c] = _neg_inf(acc_S_mn) if oob else acc_S_mn[r, c]
+                 else:
+                     seqlenk_col_limit_r2p = sm90_col_to_r2p_idx(seqlenk_col_limit)
+                     mask_r2p_lambda(acc_S_mn, lambda s: r2p_bitmask_below(seqlenk_col_limit_r2p, s))
+@@ -276,11 +283,11 @@ class AttentionMask:
+                             global_col_idx >= self.seqlen_k
+                         )
+                         if out_of_bounds:
+-                            acc_S_mn[r, col] = -cutlass.Float32.inf
++                            acc_S_mn[r, col] = _neg_inf(acc_S_mn)
+                         else:
+-                            acc_S_mn[r, col] = acc_S_mn[r, col] if cond else -cutlass.Float32.inf
++                            acc_S_mn[r, col] = acc_S_mn[r, col] if cond else _neg_inf(acc_S_mn)
+                     else:
+-                        acc_S_mn[r, col] = acc_S_mn[r, col] if cond else -cutlass.Float32.inf
++                        acc_S_mn[r, col] = acc_S_mn[r, col] if cond else _neg_inf(acc_S_mn)
+ 
+         else:  # Causal or local
+             if const_expr(not self.swap_AB):
+@@ -317,7 +324,7 @@ class AttentionMask:
+                             # traverse column index.
+                             for c in cutlass.range(cute.size(tScS_mn.shape[1]), unroll_full=True):
+                                 acc_S_mn[r, c] = (
+-                                    -Float32.inf
++                                    _neg_inf(acc_S_mn)
+                                     if t0ScS_mn[0, c][1] >= col_limit_right
+                                     else acc_S_mn[r, c]
+                                 )
+@@ -363,7 +370,7 @@ class AttentionMask:
+                             for c in cutlass.range(cute.size(tScS_mn.shape[1]), unroll_full=True):
+                                 col_idx = t0ScS_mn[0, c][1]
+                                 if col_idx >= col_limit_right or col_idx < col_limit_left:
+-                                    acc_S_mn[r, c] = -Float32.inf
++                                    acc_S_mn[r, c] = _neg_inf(acc_S_mn)
+                         else:
+                             col_limit_right_r2p = sm90_col_to_r2p_idx(col_limit_right)
+                             col_limit_left_r2p = sm90_col_to_r2p_idx(col_limit_left)
+@@ -392,7 +399,7 @@ class AttentionMask:
+                         )
+                         for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
+                             acc_S_mn[r, c] = (
+-                                -Float32.inf
++                                _neg_inf(acc_S_mn)
+                                 if t0ScS_mn[r, 0][ROW] < row_limit_top
+                                 else acc_S_mn[r, c]
+                             )
+@@ -418,7 +425,7 @@ class AttentionMask:
+                         for r in cutlass.range(cute.size(tScS_mn.shape[0]), unroll_full=True):
+                             row_idx = t0ScS_mn[r, 0][ROW]
+                             acc_S_mn[r, c] = (
+-                                -Float32.inf
++                                _neg_inf(acc_S_mn)
+                                 if row_idx < row_limit_top or row_idx > row_limit_bot
+                                 else acc_S_mn[r, c]
+                             )
+@@ -487,11 +494,11 @@ class AttentionMask:
+                 aux_data,
+             )
+             cond = cutlass.Boolean(utils.ssa_to_scalar(mask_value))
+-            acc_S[i] = acc_S[i] if cond else -Float32.inf
++            acc_S[i] = acc_S[i] if cond else _neg_inf(acc_S)
+             if const_expr(mask_seqlen):
+-                acc_S[i] = -Float32.inf if global_col >= self.seqlen_k else acc_S[i]
++                acc_S[i] = _neg_inf(acc_S) if global_col >= self.seqlen_k else acc_S[i]
+             if check_q_boundary:
+-                acc_S[i] = -Float32.inf if mask_row >= self.seqlen_q else acc_S[i]
++                acc_S[i] = _neg_inf(acc_S) if mask_row >= self.seqlen_q else acc_S[i]
+ 
+     @cute.jit
+     def apply_mask_mod_sm100_vector(
+diff --git a/flash_attn/cute/softmax.py b/flash_attn/cute/softmax.py
+--- a/flash_attn/cute/softmax.py
++++ b/flash_attn/cute/softmax.py
+@@ -185,7 +185,7 @@ class Softmax:
+                 )
+ 
+             row_sum[r] = acc_S_row_sum
+-            acc_S_mn[r, None].store(acc_S_row_exp)
++            acc_S_mn[r, None].store(acc_S_row_exp.to(acc_S_mn.element_type))
+ 
+         return row_scale

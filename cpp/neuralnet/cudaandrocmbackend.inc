@@ -543,6 +543,17 @@ struct CudaHandles {
   enabled_t use1x1MatmulMode;
   // Whether attention blocks try the tensor-core mma flash kernel first (requires sm_80+).
   bool mmaAttentionEnabled;
+  int b11AttentionTile = 0;
+  bool b11FastNorm = false;
+  bool b11FastRope = false;
+  int b11GemmMask = 0;
+  int b11Affine384 = 0;
+  int b11Affine768 = 0;
+  int b11AffineThreads = 128;
+  bool b11FullMask = false;
+  bool loggedB11Norm = false;
+  int b11BatchSize = 0;
+  bool loggedB11Attention = false;
   // Fuse each transformer block's masked residual add into the next block's pre-norm kernel.
   // Numerically identical to the unfused path, kept as an escape hatch for debugging and
   // benchmarking.
@@ -677,6 +688,19 @@ struct CudaHandles {
 #endif
 
 //---------------------------------------------------------------------------------
+
+#ifdef USE_B11_GEMM
+// Tuned projection GEMM. The whole-model/device/board gate is resolved before
+// construction; the actual token count must still match the selected capacity.
+static bool tryB11Gemm(CudaHandles* h,const string& name,int bit,
+  const void* input,const void* weights,void* output,int M,int N,int K,bool accumulate) {
+  if((h->b11GemmMask & bit) == 0 || M != h->b11BatchSize * 361)
+    return false;
+  CUDA_ERR(name.c_str(),launchB11Gemm((const half*)input,(const half*)weights,(half*)output,
+    M,N,K,accumulate,h->stream));
+  return true;
+}
+#endif
 
 //Destructor helpers for ByBatchSize. Descriptor-style entries are opaque pointers and may be
 //null if construction threw partway, while non-pointer entries (algo/solution structs) never
@@ -1162,6 +1186,12 @@ struct ConvLayer {
       // where tokens = batchSize * spatial. NHWC buffers are [tokens, C] row-major = [C, tokens] column-major
       // matching cuBLAS's expectation. Same as MatMulLayer.
       int tokens = batchSize * matmulSpatialSize;
+#ifdef USE_B11_GEMM
+      const int b11Bit = outChannels == 384 && inChannels == 768 ? 4 :
+        (outChannels == 768 && inChannels == 384 ? 8 : 0);
+      if(usingFP16 && tryB11Gemm(cudaHandles,name,b11Bit,inputBuf,matmulWeightBuf.buf,
+          outputBuf,tokens,outChannels,inChannels,accumulate)) return;
+#endif
       if(!usingFP16) {
         const float alpha = 1.0f;
         const float beta = accumulate ? 1.0f : 0.0f;
@@ -1740,6 +1770,18 @@ struct BatchNormLayer {
     const void* maskBuf, //ok to be null
     void* outputBuf
   ) const {
+#ifdef KATAGO_GPU_CUDA
+    const int b11Width = numChannels == 384 ? cudaHandles->b11Affine384 :
+      (numChannels == 768 ? cudaHandles->b11Affine768 : 0);
+    if(b11Width != 0 && usingFP16 && usingNHWC && nnXLen == 19 && nnYLen == 19 &&
+       activation == ACTIVATION_SILU && batchSize == cudaHandles->b11BatchSize &&
+       launchB11AffineSiluCandidate((const half*)inputBuf,(half*)outputBuf,
+         (const half*)mergedScaleBuf.buf,(const half*)mergedBiasBuf.buf,(const half*)maskBuf,
+         batchSize*361,numChannels,b11Width,cudaHandles->b11AffineThreads,cudaHandles->stream)) {
+      CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+      return;
+    }
+#endif
     if(!usingFP16) {
       if(!usingNHWC)
         customCudaApplyCScaleBiasNCHW((const float*)inputBuf,(float*)outputBuf,(const float*)mergedScaleBuf.buf,(const float*)mergedBiasBuf.buf,
@@ -1821,6 +1863,13 @@ struct MatMulLayer {
     (void)workspaceBuf;
     (void)workspaceBytes;
     assert(inChannels > 0 && outChannels > 0);
+
+#ifdef USE_B11_GEMM
+    const int b11Bit = outChannels == 384 && inChannels == 384 ? 1 :
+      (outChannels == 384 && inChannels == 1152 ? 2 : 0);
+    if(usingFP16 && tryB11Gemm(cudaHandles,name,b11Bit,inputBuf,matBuf.buf,
+        outputBuf,batchSize,outChannels,inChannels,accumulate)) return;
+#endif
 
     if(!usingFP16) {
       const float alpha = 1.0f;
@@ -1910,6 +1959,11 @@ static void applySharedInputStridedMatMuls(
   int count
 ) {
   const long long weightStrideElts = (long long)inChannels * outChannels;
+#ifdef USE_B11_GEMM
+  if(usingFP16 && count == 1 && outChannels == 1152 && inChannels == 384 &&
+     tryB11Gemm(cudaHandles,name,16,inputBuf,packedWeights,outputBuf,
+       batchSize,outChannels,inChannels,false)) return;
+#endif
   if(!usingFP16) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
@@ -2453,6 +2507,19 @@ struct TransformerRMSNormLayer {
     const void* residualDeltaBuf = NULL
   ) const {
     // RMSNormGammaBetaNHWC with gamma=weight, beta=zero, mask, identity activation.
+#ifdef KATAGO_GPU_CUDA
+    if(usingFP16 && cudaHandles->b11FastNorm && numChannels == 384 && xySize == 361 &&
+       batchSize == cudaHandles->b11BatchSize) {
+      launchB11RmsNorm((half*)inputBuf,(const half*)residualDeltaBuf,(half*)outputBuf,
+        (const half*)weightBuf.buf,(const half*)maskBuf,batchSize*xySize,epsilon,cudaHandles->stream);
+      CUDA_ERR(name.c_str(),cudaPeekAtLastError());
+      if(!cudaHandles->loggedB11Norm) {
+        cudaHandles->loggedB11Norm = true;
+        if(cudaHandles->logger) cudaHandles->logger->write("CUDA B11 specialization: warp RMSNorm");
+      }
+      return;
+    }
+#endif
     if(!usingFP16) {
       if(residualDeltaBuf != NULL)
         customCudaMaskedResidualAddRMSNormNHWC(
@@ -2901,6 +2968,15 @@ struct TransformerAttentionBlock {
       // the combined layout requires an mma-supported shape, which requires divisibility, but
       // assert so that widening mma shape support cannot silently break this.
       testAssert(fuseQK || !useCombinedQKV);
+#ifdef KATAGO_GPU_CUDA
+      if(usingFP16 && cudaHandles->b11FastRope && learnableRope && seqLen == 361 &&
+         numHeads == 12 && numKVHeads == 12 && qHeadDim == 32 &&
+         batchSize == cudaHandles->b11BatchSize && qStrideElts == kvStrideElts) {
+        launchB11Rope((half*)qPtr,(half*)kPtr,(const float*)ropeFreqsBuf.buf,
+          batchSize,qStrideElts,cudaHandles->stream);
+      }
+      else
+#endif
       if(learnableRope) {
         // Table-free recompute path (cos/sin computed in-kernel from ropeFreqsBuf).
         if(!usingFP16) {
@@ -2965,7 +3041,33 @@ struct TransformerAttentionBlock {
     bool usedSDPA = false;
     // The mma kernel consumes the raw per-position mask directly, so unlike cudnn SDPA the
     // masked path needs no materialized [B,S,S] attention bias at all.
-    if(usingFP16 && cudaHandles->mmaAttentionEnabled) {
+    if(usingFP16 && cudaHandles->mmaAttentionEnabled && cudaHandles->b11AttentionTile != 0 &&
+       batchSize == cudaHandles->b11BatchSize && seqLen == 361 && numHeads == 12 &&
+       numKVHeads == 12 && qHeadDim == 32 && vHeadDim == 32) {
+#ifdef USE_B11_FA4
+      if((cudaHandles->b11AttentionTile == 6 || cudaHandles->b11AttentionTile == 8) && maskBuf == nullptr && batchSize >= 1 && batchSize <= 96 &&
+         qStrideElts == kvStrideElts && (qStrideElts == 384 || qStrideElts == 1152)) {
+        CUDA_ERR(name.c_str(),b11_fa4_exact_m128_n96_s1_launch(qPtr,kPtr,vPtr,attnOutBuf.buf,nullptr,
+          batchSize,1.0f/sqrtf(32.0f),qStrideElts == 1152,cudaHandles->stream));
+        usedSDPA = true;
+      }
+#endif
+#ifdef USE_B11_MASKED_FA4
+      if((cudaHandles->b11AttentionTile == 7 || cudaHandles->b11AttentionTile == 8) && maskBuf != nullptr && batchSize >= 1 && batchSize <= 96 &&
+         qStrideElts == kvStrideElts && (qStrideElts == 384 || qStrideElts == 1152)) {
+        CUDA_ERR(name.c_str(),b11_fa4_mask_m128_n96_s1_launch(qPtr,kPtr,vPtr,attnOutBuf.buf,(void*)maskBuf,
+          batchSize,1.0f/sqrtf(32.0f),qStrideElts == 1152,cudaHandles->stream));
+        usedSDPA = true;
+      }
+#endif
+      if(usedSDPA && !cudaHandles->loggedB11Attention) {
+        cudaHandles->loggedB11Attention = true;
+        if(cudaHandles->logger) cudaHandles->logger->write("CUDA B11 specialization: attention tile " +
+          Global::intToString(cudaHandles->b11AttentionTile) +
+          (maskBuf == nullptr ? " (FA4 N96 exact)" : " (FA4 N96 masked)"));
+      }
+    }
+    if(!usedSDPA && usingFP16 && cudaHandles->mmaAttentionEnabled) {
       usedSDPA = customCudaFlashAttentionMma(
         (const half*)qPtr, (const half*)kPtr, (const half*)vPtr, (const half*)maskBuf, (half*)attnOutBuf.buf,
         batchSize, seqLen, numHeads, numKVHeads, qHeadDim, vHeadDim,
@@ -4821,6 +4923,15 @@ struct ComputeContext {
   // CUTLASS fused FFN (dual GEMM + SwiGLU epilogue). Auto = on when the build has CUTLASS and
   // the GPU and model are eligible (FP16, sm_80+).
   enabled_t useFusedFFNMode;
+  // Automatic structural/device/batch specialization, with a single escape hatch.
+  bool b11Enabled;
+  int b11AttentionTile;
+  bool b11FastNorm;
+  bool b11FastRope;
+  int b11GemmMask;
+  int b11Affine384;
+  int b11Affine768;
+  int b11AffineThreads;
 };
 #else  // KATAGO_GPU_HIP
 struct ComputeContext {
@@ -4876,6 +4987,23 @@ ComputeContext* NeuralNet::createComputeContext(
     cfg.contains("cudaCombineQKV") ? cfg.getBool("cudaCombineQKV") : true;
   context->useFusedFFNMode =
     cfg.contains("cudaUseFusedFFN") ? cfg.getEnabled("cudaUseFusedFFN") : enabled_t::Auto;
+  context->b11Enabled = !cfg.contains("cudaUseB11RTX5090") || cfg.getBool("cudaUseB11RTX5090");
+  // Advanced per-kernel overrides are for reproducible ablations only. They
+  // never bypass the model/device/shape gate or the master escape hatch.
+  context->b11AttentionTile = cfg.contains("cudaB11AttentionTile") ? cfg.getInt("cudaB11AttentionTile",0,8) : 8;
+  // Only the retained N96 FA4 modes remain: off, exact, mask, or both/full-mask elision.
+  if(context->b11AttentionTile != 0 && context->b11AttentionTile < 6)
+    throw StringError("cudaB11AttentionTile must be 0, 6 (exact), 7 (mask), or 8 (both)");
+  context->b11FastNorm = !cfg.contains("cudaB11FastNorm") || cfg.getBool("cudaB11FastNorm");
+  context->b11FastRope = !cfg.contains("cudaB11FastRope") || cfg.getBool("cudaB11FastRope");
+  context->b11GemmMask = cfg.contains("cudaB11GemmMask") ? cfg.getInt("cudaB11GemmMask",0,31) : 31;
+  context->b11Affine384 = cfg.contains("cudaB11Affine384") ? cfg.getInt("cudaB11Affine384",0,8) : 8;
+  context->b11Affine768 = cfg.contains("cudaB11Affine768") ? cfg.getInt("cudaB11Affine768",0,8) : 8;
+  context->b11AffineThreads = cfg.contains("cudaB11AffineThreads") ? cfg.getInt("cudaB11AffineThreads",128,256) : 128;
+  if((context->b11Affine384 != 0 && context->b11Affine384 != 4 && context->b11Affine384 != 8) ||
+     (context->b11Affine768 != 0 && context->b11Affine768 != 4 && context->b11Affine768 != 8) ||
+     (context->b11AffineThreads != 128 && context->b11AffineThreads != 256))
+    throw StringError("cudaB11Affine384/768 must be 0, 4, or 8; cudaB11AffineThreads must be 128 or 256");
   return context;
 }
 #else  // KATAGO_GPU_HIP
@@ -4989,6 +5117,31 @@ struct ComputeHandle {
             "WARNING: Cuda backend: mma flash attention kernel not functional on this GPU/driver/build, transformer models will fall back to slower attention paths");
       }
     }
+#if defined(USE_B11_FA4) && defined(USE_B11_MASKED_FA4) && defined(USE_B11_GEMM)
+    // Builds without the complete optional bundle retain the original backend.
+    // Activate only after the original MMA availability probe has succeeded.
+    int b11Device = 0;
+    cudaDeviceProp b11Prop;
+    CUDA_ERR("B11 device",cudaGetDevice(&b11Device));
+    CUDA_ERR("B11 device",cudaGetDeviceProperties(&b11Prop,b11Device));
+    if(context->b11Enabled && cudaHandles->mmaAttentionEnabled &&
+       isB11CudaHardwareLayoutEligible(b11Prop.name,majorComputeCapability,minorComputeCapability,
+         useFP16,useNHWC,nnXLen,nnYLen) && isB11OptimizedBatch(maxBatchSize) &&
+       isOfficialB11C768(loadedModel->modelDesc)) {
+      cudaHandles->b11AttentionTile = context->b11AttentionTile;
+      cudaHandles->b11FastNorm = context->b11FastNorm;
+      cudaHandles->b11FastRope = context->b11FastRope;
+      cudaHandles->b11GemmMask = context->b11GemmMask;
+      cudaHandles->b11Affine384 = context->b11Affine384;
+      cudaHandles->b11Affine768 = context->b11Affine768;
+      cudaHandles->b11AffineThreads = context->b11AffineThreads;
+      cudaHandles->b11BatchSize = maxBatchSize;
+      if(context->b11AttentionTile == 6 || context->b11AttentionTile == 8)
+        CUDA_ERR("B11 exact AOT prepare",b11_fa4_exact_m128_n96_s1_prepare());
+      if(context->b11AttentionTile == 7 || context->b11AttentionTile == 8)
+        CUDA_ERR("B11 masked AOT prepare",b11_fa4_mask_m128_n96_s1_prepare());
+    }
+#endif
 #ifdef USE_CUTLASS_FUSED_FFN
     // Decided before Model construction because TransformerFFNBlock commits to a weight layout
     // based on it. The probe runs a real tiny dual GEMM, guarding the same empty-stub JIT
@@ -5525,6 +5678,24 @@ void NeuralNet::getOutput(
   CudaHandles* cudaHandles = gpuHandle->cudaHandles.get();
   cudaStream_t stream = cudaHandles->stream;
 
+#ifdef USE_B11_FA4
+  // Prove a masked request is a full 19x19 board before eliding mask operations.
+  // Recomputed on every input batch; any padding or non-one value retains masking.
+  cudaHandles->b11FullMask = false;
+  if(cudaHandles->b11AttentionTile == 8 && batchSize == cudaHandles->b11BatchSize &&
+     batchSize >= 1 && batchSize <= 96 && nnXLen == 19 && nnYLen == 19 && numSpatialFeatures == 22) {
+    bool full = true;
+    for(int n=0;n<batchSize && full;n++) {
+      const float* row = inputBuffers->userInputBuffer + n*inputBuffers->singleInputElts;
+      const int stride = gpuHandle->inputsUseNHWC ? 22 : 1;
+      for(int xy=0;xy<361;xy++) {
+        if(row[xy*stride] != 1.0f) { full=false; break; }
+      }
+    }
+    cudaHandles->b11FullMask = full;
+  }
+#endif
+
   if(!gpuHandle->usingFP16) {
     assert(inputBuffers->userInputBufferBytes == buffers->inputBufBytes);
     assert(inputBuffers->userInputGlobalBufferBytes == buffers->inputGlobalBufBytes);
@@ -5591,7 +5762,11 @@ void NeuralNet::getOutput(
     gpuHandle->cudaHandles.get(),
     scratch,
     batchSize,
-    gpuHandle->requireExactNNLen,
+    gpuHandle->requireExactNNLen
+#ifdef KATAGO_GPU_CUDA
+      || cudaHandles->b11FullMask
+#endif
+    ,
 
     buffers->inputBuf,
     buffers->inputGlobalBuf,

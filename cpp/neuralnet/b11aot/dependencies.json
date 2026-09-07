@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "python": "3.12.13",
+  "cuda_toolkit": "13.0.48",
+  "packages": {
+    "flash-attn-4": "4.0.0b25",
+    "nvidia-cutlass-dsl": "4.6.0.dev0",
+    "nvidia-cutlass-dsl-libs-base": "4.6.0.dev0",
+    "nvidia-cutlass-dsl-libs-cu13": "4.6.0.dev0",
+    "quack-kernels": "0.5.3",
+    "cuda-bindings": "13.3.1",
+    "cuda-python": "13.3.1",
+    "apache-tvm-ffi": "0.1.12",
+    "torch": "2.13.0"
+  },
+  "sources": {
+    "flash_attn/cute/flash_fwd.py": {
+      "unpatched_sha256": "e9d890e10611ce48dc57c40570a7b65d1ab802c508f785e5536fb10044db65f3",
+      "validated_sha256": "0313c9e1709db45e3fea44897b6d8df463b4868abf750fcd078711f70e6d49b3",
+      "canonical_lf_sha256": "3b97ed4cb20bb867d97fdea7eb03a86ccf32fc4b6f0c8e1ef0302ff1b4728045"
+    },
+    "flash_attn/cute/flash_fwd_sm120.py": {
+      "validated_sha256": "abd017add69914e46f0fcfc017ad51c3d07d79fd87d15f969036ddd82bcc7da2",
+      "canonical_lf_sha256": "abd017add69914e46f0fcfc017ad51c3d07d79fd87d15f969036ddd82bcc7da2"
+    },
+    "flash_attn/cute/mask.py": {
+      "unpatched_sha256": "700209e91543f51b11d3bf7020885ef7442136b31dbc9e74b4c668f07d2cc6c7",
+      "validated_sha256": "1dc016d1e680cca28b00abdf6bc8f49d53e5a408facb33c743b22943eabeedf6",
+      "canonical_lf_sha256": "93f265c7a02295c4b63027fc8c10fe3a371669f579415e2f3a0480d069a6558b"
+    },
+    "flash_attn/cute/softmax.py": {
+      "unpatched_sha256": "827540f2a2bc1eb9c85a2216fde6e53d39a57df9514aca520de98591fe263233",
+      "validated_sha256": "96ea7a8604ba30cb3c0cdf89a49683fb7804fe21d08fa82d136ab8d2b9c1d394",
+      "canonical_lf_sha256": "a09b2a118c26c0547938ffbc302f376076b27aae5689a390bc7e5cfb574c21d2"
+    }
+  }
+}
