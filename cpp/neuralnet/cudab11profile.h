@@ -90,6 +90,15 @@ inline bool isB11OptimizedBatch(int batch) {
   return isB11SupportedBatch(batch,supported);
 }
 
+// A prepared handle still has to reject a partial batch at every FFN launch.
+// Do not switch its packed weight layout: fallback uses the original fused FFN.
+inline bool isB11TanhFFNLaunchEligible(bool prepared,int actualBatch,int capacity,
+  int nnXLen,int nnYLen,int channels,int ffnChannels,bool useFP16,bool useNHWC) {
+  return prepared && isB11OptimizedBatch(capacity) && actualBatch == capacity &&
+    nnXLen == 19 && nnYLen == 19 && channels == 384 && ffnChannels == 1152 &&
+    useFP16 && useNHWC;
+}
+
 // A complete planned mapping, not createComputeContext's deduplicated device
 // inventory. Match the CUDA backend's explicit rule that -1 selects GPU 0.
 // Zero means unknown/invalid/not used and must never be replaced by a guessed

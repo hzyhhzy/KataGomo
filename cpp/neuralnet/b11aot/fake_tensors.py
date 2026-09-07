@@ -67,3 +67,13 @@ def dynamic_fp16_tensor(shape, strides, address, leading_dim):
     _keepalive.append(spec)
     return from_dlpack(spec, assumed_align=16, enable_tvm_ffi=False).mark_layout_dynamic(
         leading_dim=leading_dim)
+
+
+def static_fp16_tensor(shape, strides, address, leading_dim):
+    """Fully static layout; the exported tensor ABI contains only a data pointer."""
+    from cutlass.cute.runtime import from_dlpack
+    if leading_dim != len(shape) - 1:
+        raise ValueError("static FP16 tensors require a contiguous final dimension")
+    spec = StaticCudaTensorSpec(shape, strides, address)
+    _keepalive.append(spec)
+    return from_dlpack(spec, assumed_align=16, enable_tvm_ffi=False)

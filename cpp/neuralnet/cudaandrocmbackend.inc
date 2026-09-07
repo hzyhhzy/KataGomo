@@ -740,6 +740,8 @@ struct CudaHandles {
   bool loggedB11Norm = false;
   int b11BatchSize = 0;
   bool b11QkvRope = false;
+  bool b11TanhFFN = false;
+  bool loggedB11TanhFFN = false;
   bool loggedB11Attention = false;
   std::unique_ptr<B11PersistingL2> b11L2;
   // Fuse each transformer block's masked residual add into the next block's pre-norm kernel.
@@ -3250,6 +3252,9 @@ struct TransformerAttentionBlock {
     // The mma kernel consumes the raw per-position mask directly, so unlike cudnn SDPA the
     // masked path needs no materialized [B,S,S] attention bias at all.
     if(usingFP16 && cudaHandles->mmaAttentionEnabled && cudaHandles->b11AttentionTile != 0 &&
+#ifdef USE_B11_STATIC_FA4
+       b11aot::supportsStaticFa4(batchSize,qStrideElts == 1152) &&
+#endif
        batchSize == cudaHandles->b11BatchSize && seqLen == 361 && numHeads == 12 &&
        numKVHeads == 12 && qHeadDim == 32 && vHeadDim == 32) {
 #ifdef USE_B11_FA4
@@ -3728,9 +3733,25 @@ struct TransformerFFNBlock {
         throw StringError(KATAGO_GPU_BACKEND_NAME " fused FFN element count exceeds the 32-bit limit");
       const half* w1 = (const half*)ffnPackedWeights.buf;
       const half* wGate = w1 + (size_t)ffnChannels * numChannels;
-      CudaFusedFFN::runSwiGLU(
-        (const half*)trunkScratchBuf, w1, wGate, (half*)ffnBuf.buf,
-        matBatchSize, ffnChannels, numChannels, cudaHandles->stream);
+#if defined(USE_B11_FA4) && defined(USE_B11_MASKED_FA4) && defined(USE_B11_GEMM)
+      if(isB11TanhFFNLaunchEligible(cudaHandles->b11TanhFFN,batchSize,cudaHandles->b11BatchSize,
+           nnXLen,nnYLen,numChannels,ffnChannels,usingFP16,usingNHWC)) {
+        CudaB11FFN::runSwiGLU(
+          (const half*)trunkScratchBuf,w1,wGate,(half*)ffnBuf.buf,
+          matBatchSize,ffnChannels,numChannels,cudaHandles->stream);
+        if(!cudaHandles->loggedB11TanhFFN) {
+          cudaHandles->loggedB11TanhFFN = true;
+          if(cudaHandles->logger != nullptr)
+            cudaHandles->logger->write("CUDA B11 specialization: tanh SwiGLU");
+        }
+      }
+      else
+#endif
+      {
+        CudaFusedFFN::runSwiGLU(
+          (const half*)trunkScratchBuf, w1, wGate, (half*)ffnBuf.buf,
+          matBatchSize, ffnChannels, numChannels, cudaHandles->stream);
+      }
       CUDA_ERR(name.c_str(), cudaPeekAtLastError());
       usedFusedFFN = true;
     }
@@ -5149,6 +5170,7 @@ struct ComputeContext {
   int b11L2Mode;
   double b11L2HitRatio;
   bool b11QkvRope;
+  bool b11TanhFFN;
   std::vector<int> expectedGpuThreads;
 };
 #else  // KATAGO_GPU_HIP
@@ -5223,6 +5245,7 @@ ComputeContext* NeuralNet::createComputeContext(
   context->b11L2Mode = cfg.contains("cudaB11L2Mode") ? cfg.getInt("cudaB11L2Mode",-1,3) : -1;
   context->b11L2HitRatio = cfg.contains("cudaB11L2HitRatio") ? cfg.getDouble("cudaB11L2HitRatio",0.01,1.0) : 1.0;
   context->b11QkvRope = !cfg.contains("cudaB11QkvRope") || cfg.getBool("cudaB11QkvRope");
+  context->b11TanhFFN = !cfg.contains("cudaB11TanhFFN") || cfg.getBool("cudaB11TanhFFN");
   if((context->b11Affine384 != 0 && context->b11Affine384 != 4 && context->b11Affine384 != 8) ||
      (context->b11Affine768 != 0 && context->b11Affine768 != 4 && context->b11Affine768 != 8) ||
      (context->b11AffineThreads != 128 && context->b11AffineThreads != 256))
@@ -5358,6 +5381,7 @@ struct ComputeHandle {
     cudaDeviceProp b11Prop;
     CUDA_ERR("B11 device",cudaGetDevice(&b11Device));
     CUDA_ERR("B11 device",cudaGetDeviceProperties(&b11Prop,b11Device));
+    bool b11ProfilePrepared = false;
     if(context->b11Enabled && cudaHandles->mmaAttentionEnabled &&
        isB11CudaHardwareLayoutEligible(b11Prop.name,majorComputeCapability,minorComputeCapability,
          useFP16,useNHWC,nnXLen,nnYLen) && isB11OptimizedBatch(maxBatchSize) &&
@@ -5386,6 +5410,7 @@ struct ComputeHandle {
         CUDA_ERR("B11 exact AOT prepare",b11_fa4_exact_m128_n96_s1_prepare());
       if(context->b11AttentionTile == 7 || context->b11AttentionTile == 8)
         CUDA_ERR("B11 masked AOT prepare",b11_fa4_mask_m128_n96_s1_prepare());
+      b11ProfilePrepared = true;
     }
 #endif
 #ifdef USE_CUTLASS_FUSED_FFN
@@ -5410,6 +5435,16 @@ struct ComputeHandle {
 #else
     if(context->useFusedFFNMode == enabled_t::True)
       throw StringError("Cuda backend: cudaUseFusedFFN=true but this build was compiled without CUTLASS (external/cutlass missing at build time)");
+#endif
+    // This optional arithmetic variant is independent of the original probe and
+    // weight-layout decision. A failed B11 probe must leave generic FFN intact.
+#if defined(USE_CUTLASS_FUSED_FFN) && defined(USE_B11_FA4) && defined(USE_B11_MASKED_FA4) && defined(USE_B11_GEMM)
+    if(b11ProfilePrepared && context->b11TanhFFN && cudaHandles->fusedFFNEnabled &&
+       CudaB11FFN::supportsShape(1152,384)) {
+      cudaHandles->b11TanhFFN = CudaB11FFN::supportedOnCurrentDevice();
+      if(!cudaHandles->b11TanhFFN && logger != nullptr)
+        logger->write("WARNING: CUDA B11 tanh FFN probe failed; keeping original CUTLASS FFN");
+    }
 #endif
     model = std::make_unique<Model>(
       cudaHandles.get(), &(loadedModel->modelDesc), maxBatchSize,

@@ -171,6 +171,28 @@ void testConcurrencyAndL2() {
   require(!isB11AutoL2Eligible(INT_MAX,3),"L2 rejects huge batch");
   require(!isB11AutoL2Eligible(INT_MIN,3),"L2 rejects invalid batch");
 }
+
+void testTanhFFNLaunch() {
+  for(int capacity=-2;capacity<=100;capacity++) {
+    for(int actual=-2;actual<=100;actual++) {
+      const bool expected=(capacity==13 || capacity==16) && actual==capacity;
+      require(isB11TanhFFNLaunchEligible(true,actual,capacity,19,19,384,1152,true,true)==expected,
+        "tanh FFN exact actual/capacity contract");
+      require(!isB11TanhFFNLaunchEligible(false,actual,capacity,19,19,384,1152,true,true),
+        "tanh FFN requires completed preparation");
+    }
+  }
+  for(int batch : {13,16}) {
+    require(!isB11TanhFFNLaunchEligible(true,batch,batch,13,19,384,1152,true,true),"FFN wrong X");
+    require(!isB11TanhFFNLaunchEligible(true,batch,batch,19,13,384,1152,true,true),"FFN wrong Y");
+    require(!isB11TanhFFNLaunchEligible(true,batch,batch,19,19,768,1152,true,true),"FFN wrong C");
+    require(!isB11TanhFFNLaunchEligible(true,batch,batch,19,19,384,768,true,true),"FFN wrong expansion");
+    require(!isB11TanhFFNLaunchEligible(true,batch,batch,19,19,384,1152,false,true),"FFN FP32");
+    require(!isB11TanhFFNLaunchEligible(true,batch,batch,19,19,384,1152,true,false),"FFN NCHW");
+    require(!isB11TanhFFNLaunchEligible(true,INT_MAX,batch,19,19,384,1152,true,true),"FFN huge actual");
+    require(!isB11TanhFFNLaunchEligible(true,INT_MIN,batch,19,19,384,1152,true,true),"FFN invalid actual");
+  }
+}
 }
 
 int main(int argc,char** argv) {
@@ -178,6 +200,7 @@ int main(int argc,char** argv) {
     if(argc < 2) throw std::runtime_error("usage: b11_profile_test B11_MODEL [DIFFERENT_VALID_MODEL ...]");
     testHardwareAndBatch();
     testConcurrencyAndL2();
+    testTanhFFNLaunch();
     ModelDesc d;
     ModelDesc::loadFromFileMaybeGZipped(argv[1],d,"");
     std::cout << "MODEL " << d.name << " version=" << d.modelVersion << '\n';

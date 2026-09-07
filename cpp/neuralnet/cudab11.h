@@ -3,6 +3,9 @@
 #include "cudab11profile.h"
 #include "cudaincludes.h"
 #include "cudab11affine.h"
+#ifdef USE_B11_STATIC_FA4
+#include "b11aot/static_fa4_profile.h"
+#endif
 
 void launchB11RmsNorm(half* trunk,const half* delta,half* output,const half* gamma,
   const half* mask,int rows,float epsilon,cudaStream_t stream);
