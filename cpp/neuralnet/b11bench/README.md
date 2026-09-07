@@ -72,3 +72,61 @@ python3 cpp/neuralnet/b11bench/compare_outputs.py official.raw optimized.raw \
 ```
 
 These probability/ownership checks are not a held-out training-loss measurement.
+
+## CPU-only batching regression
+
+The queue dispatcher tests run as part of the normal `katago runtests` suite
+(`tests/testnnbatchdispatch.cpp`). They cover busy/idle devices, partial/full
+batches, independent GPUs, mixed worker policies, row-cap changes, shutdown,
+restart and concurrent request accounting. They do not initialize a GPU.
+
+An additional isolated target runs the real `NNEvaluator::serve()` with a fake
+backend, rather than the debug-skip path. It exercises physical padding and
+checks that input masks, metadata and symmetry survive, dummy outputs do not
+alias real outputs, and row statistics count only real requests:
+
+```sh
+python3 cpp/neuralnet/b11bench/batching_cpu_test.py \
+  --build /absolute/path/to/ignored/batching-cpu-tests
+```
+
+The script requires CMake, a local C++ compiler and zlib. On Windows it defaults
+to Visual Studio 2022 x64; `--generator`, `--cmake`, `--zlib-include` and
+`--zlib-library` can select existing local tools. It uses bounded subprocesses
+and suppresses Windows crash dialogs. Reports and binaries stay in `--build`.
+The fake backend is linked only into standalone test targets, never the engine.
+No model file, CUDA toolkit, GPU or server is needed. These tests establish
+scheduling/data-flow behavior, not GPU numerical equivalence or a speedup.
+
+## Real CUDA queued-output regression
+
+`batching_cuda_test.py` links a separate diagnostic against a fully built Linux
+Ninja CUDA engine, retaining its real backend objects. It never rewrites the
+engine or executes CUDA during compilation:
+
+```sh
+python3 cpp/neuralnet/b11bench/batching_cuda_test.py /absolute/path/to/build
+timeout 600 /absolute/path/to/build/b11_batching_cuda_test \
+  /absolute/path/to/b11c768.bin.gz /absolute/path/to/config.cfg \
+  0 0 all 0 > /absolute/path/to/ignored/queued-cuda-results.jsonl
+```
+
+The selectors are capacity (0=13 and16), actual rows (0=all tested sizes),
+case (`all`, `exact`, `fullmask`, `partialmask`) and GPU index. The full run
+compares 27 groups of old `false` versus new `auto` dispatch, actual1/3/12/full
+(plus13 at capacity16), using deterministic legal positions and fixed symmetries.
+It stages requests through public `evaluate()` before starting a worker, then
+uses the production queue, CUDA call and output postprocessing. The test friend
+only observes queue depth/counters; it injects neither inputs nor outputs.
+Auto must actually select B11. Real rows, physical padding and delivered outputs
+are checked independently, including cache-disabled evaluation and ownership.
+
+JSON lines report observed policy/value/ownership differences and tolerances,
+score-point and auxiliary metrics, plus a final pass/fail summary. RMSE uses the
+full NN output tensor, including constant illegal-policy and off-board ownership
+entries; it is not a valid-cells-only metric. Maximum differences and per-entry
+tolerance checks are unaffected by those constant entries. Different
+physical batch sizes may select different FP16 kernels, so short-batch output
+comparisons are not required to be bitwise identical. This is an output
+regression, not a speed, training-loss or playing-strength test. Run it serially
+and separately from throughput measurement on the explicitly authorized GPU.

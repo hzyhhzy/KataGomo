@@ -1075,6 +1075,7 @@ add_executable(katago
   tests/testconfig.cpp
   tests/testmisc.cpp
   tests/testnnevalcanary.cpp
+  tests/testnnbatchdispatch.cpp
   tests/testbackendreference.cpp
   tests/backendreferencedata.cpp
   tests/testpassalivesuicide.cpp

@@ -82,6 +82,7 @@ NNEvaluator::NNEvaluator(
    gpuIdxByServerThread(gpuIdxByServerThr),
    randSeed(rSeed),
    debugSkipNeuralNet(skipNeuralNet),
+   batchAwareDispatchMode(cfg.contains("nnBatchAwareDispatch") ? cfg.getEnabled("nnBatchAwareDispatch") : enabled_t::Auto),
    computeContext(NULL),
    loadedModel(NULL),
    nnCacheTable(NULL),
@@ -101,6 +102,7 @@ NNEvaluator::NNEvaluator(
    bufferMutex(),
    isKilled(false),
    numServerThreadsStartingUp(0),
+   anyBatchAwareDispatch(false),
    mainThreadWaitingForSpawn(),
    numOngoingEvals(0),
    numWaitingEvals(0),
@@ -109,7 +111,8 @@ NNEvaluator::NNEvaluator(
    currentDoRandomize(doRandomize),
    currentDefaultSymmetry(defaultSymmetry),
    maxRowsToSendPerBatch(maxBatchSz),
-   queryQueue()
+   queryQueue(),
+   batchingDispatcher(false,gpuIdxByServerThr)
 {
   if(nnXLen > NNPos::MAX_BOARD_LEN)
     throw StringError("Maximum supported nnEval board size is " + Global::intToString(NNPos::MAX_BOARD_LEN));
@@ -250,6 +253,7 @@ void NNEvaluator::setMaxRowsToSendPerBatch(int maxRows) {
   if(maxRows <= 0 || maxRows > maxBatchSize)
     throw StringError("Invalid setting for max rows to send per batch");
   maxRowsToSendPerBatch.store(maxRows,std::memory_order_release);
+  batchingDispatcher.notify();
 }
 bool NNEvaluator::requiresSGFMetadata() const {
   return numInputMetaChannels > 0;
@@ -417,11 +421,14 @@ void NNEvaluator::setNumThreads(const vector<int>& gpuIdxByServerThr) {
     throw StringError("NNEvaluator::setNumThreads called when threads were already running!");
   numThreads = (int)gpuIdxByServerThr.size();
   gpuIdxByServerThread = gpuIdxByServerThr;
+  batchingDispatcher.resetGpuIdxByServerThread(gpuIdxByServerThr);
 }
 
 void NNEvaluator::spawnServerThreads() {
   if(serverThreads.size() != 0)
     throw StringError("NNEvaluator::spawnServerThreads called when threads were already running!");
+
+  batchingDispatcher.resetGpuIdxByServerThread(gpuIdxByServerThread);
 
 #ifdef USE_CUDA_BACKEND
   // setNumThreads() may have replaced the mapping since context construction.
@@ -434,19 +441,36 @@ void NNEvaluator::spawnServerThreads() {
   {
     lock_guard<std::mutex> lock(bufferMutex);
     serverThreadsIsUsingFP16.resize(numThreads,0);
+    anyBatchAwareDispatch = false;
+    numServerThreadsStartingUp = numThreads;
   }
 
   queryQueue.unsetReadOnly();
+  batchingDispatcher.notify();
 
-  numServerThreadsStartingUp = numThreads;
-  for(int i = 0; i<numThreads; i++) {
-    int gpuIdxForThisThread = gpuIdxByServerThread[i];
-    string randSeedThisThread = randSeed + ":NNEvalServerThread:" + Global::intToString(numServerThreadsEverSpawned);
-    numServerThreadsEverSpawned++;
-    std::thread* thread = new std::thread(
-      &serveEvals,randSeedThisThread,this,gpuIdxForThisThread,i
-    );
-    serverThreads.push_back(thread);
+  try {
+    // Reserve before starting any thread so recording a started thread cannot throw.
+    serverThreads.reserve(numThreads);
+    for(int i = 0; i<numThreads; i++) {
+      int gpuIdxForThisThread = gpuIdxByServerThread[i];
+      string randSeedThisThread = randSeed + ":NNEvalServerThread:" + Global::intToString(numServerThreadsEverSpawned);
+      numServerThreadsEverSpawned++;
+      std::thread* thread = new std::thread(
+        &serveEvals,randSeedThisThread,this,gpuIdxForThisThread,i
+      );
+      serverThreads.push_back(thread);
+    }
+  }
+  catch(...) {
+    // A partial std::thread creation failure must not leave started workers
+    // waiting forever for handles belonging to threads that were never created.
+    {
+      lock_guard<std::mutex> lock(bufferMutex);
+      numServerThreadsStartingUp = -1;
+    }
+    mainThreadWaitingForSpawn.notify_all();
+    killServerThreads();
+    throw;
   }
 
   unique_lock<std::mutex> lock(bufferMutex);
@@ -459,6 +483,7 @@ void NNEvaluator::killServerThreads() {
   isKilled = true;
   lock.unlock();
   queryQueue.setReadOnly();
+  batchingDispatcher.notify();
 
   waitingForFinish.notify_all();
 
@@ -808,6 +833,7 @@ void NNEvaluator::serve(
 ) {
   int64_t numBatchesHandledThisThread = 0;
   int64_t numRowsHandledThisThread = 0;
+  int64_t numPaddingRowsHandledThisThread = 0;
 
   ComputeHandle* gpuHandle = NULL;
   if(loadedModel != NULL) {
@@ -826,6 +852,19 @@ void NNEvaluator::serve(
     maybeWarmupComputeHandle(gpuHandle, serverThreadIdx);
   }
 
+  bool batchAwareDispatch = batchAwareDispatchMode == enabled_t::True;
+#ifdef USE_CUDA_BACKEND
+  if(batchAwareDispatchMode == enabled_t::Auto)
+    batchAwareDispatch = NeuralNet::isB11BatchingEligible(gpuHandle);
+#endif
+  if(logger != NULL) {
+    logger->write(
+      "NN batch-aware dispatch thread " + Global::intToString(serverThreadIdx) + ": " +
+      (batchAwareDispatch ? "enabled, busy-device coalescing and idle partial padding to " +
+        Global::intToString(maxBatchSize) : "disabled, immediate actual batch")
+    );
+  }
+
   // Allocate input buffers only after createComputeHandle, which binds this thread to its GPU.
   // On the CUDA backend the pinned host allocation in the buffers initializes a context on the
   // thread's current device, so doing it before the GPU binding would leave a stray context
@@ -833,27 +872,56 @@ void NNEvaluator::serve(
   NNServerBuf buf(*this, loadedModel);
 
   {
-    lock_guard<std::mutex> lock(bufferMutex);
+    unique_lock<std::mutex> startupLock(bufferMutex);
+    if(numServerThreadsStartingUp < 0) {
+      startupLock.unlock();
+      NeuralNet::freeComputeHandle(gpuHandle);
+      return;
+    }
     testAssert(serverThreadIdx < serverThreadsIsUsingFP16.size());
     serverThreadsIsUsingFP16[serverThreadIdx] = gpuHandle == NULL ? 0 : NeuralNet::isUsingFP16(gpuHandle) ? 1 : 0;
+    anyBatchAwareDispatch = anyBatchAwareDispatch || batchAwareDispatch;
     numServerThreadsStartingUp--;
-    if(numServerThreadsStartingUp <= 0)
+    if(numServerThreadsStartingUp <= 0) {
+      // No consumer enters dispatch until every handle has reported eligibility.
+      // Entirely generic runs keep the original queue fast path, including no-AOT
+      // CUDA builds. Mixed runs must coordinate ALL consumers to prevent stealing.
+      batchingDispatcher.setEnabled(anyBatchAwareDispatch);
       mainThreadWaitingForSpawn.notify_all();
+    }
+    else {
+      while(numServerThreadsStartingUp > 0)
+        mainThreadWaitingForSpawn.wait(startupLock);
+      if(numServerThreadsStartingUp < 0) {
+        startupLock.unlock();
+        NeuralNet::freeComputeHandle(gpuHandle);
+        return;
+      }
+    }
   }
 
   vector<NNResultBuf*> resultBufs;
   resultBufs.reserve(maxBatchSize);
 
   vector<NNOutput*> outputBuf;
+  outputBuf.reserve(maxBatchSize);
+  vector<NNResultBuf*> inferenceResultBufs;
+  inferenceResultBufs.reserve(maxBatchSize);
+  // Reuse dummy outputs instead of allocating/discarding them on every partial batch.
+  vector<unique_ptr<NNOutput>> paddingOutputs;
+  paddingOutputs.reserve(maxBatchSize);
 
   unique_lock<std::mutex> lock(bufferMutex,std::defer_lock);
   while(true) {
     resultBufs.clear();
-    int desiredBatchSize = std::min(maxBatchSize, maxRowsToSendPerBatch.load(std::memory_order_acquire));
-    bool gotAnything = queryQueue.waitPopUpToN(resultBufs,desiredBatchSize);
+    bool gotAnything = batchingDispatcher.waitForBatch(
+      queryQueue,resultBufs,maxBatchSize,maxRowsToSendPerBatch,serverThreadIdx,batchAwareDispatch
+    );
     // Queue being closed is a signal that we're done.
     if(!gotAnything)
       break;
+
+    Global::CustomScopeGuard batchCompletion([&]() { batchingDispatcher.completeBatch(serverThreadIdx); });
 
     int numRows = (int)resultBufs.size();
     testAssert(numRows > 0);
@@ -954,8 +1022,31 @@ void NNEvaluator::serve(
         }
       }
 
-      NeuralNet::getOutput(gpuHandle, buf.inputBuffers, numRows, resultBufs.data(), outputBuf);
-      testAssert(outputBuf.size() == numRows);
+      const int inferenceRows = batchAwareDispatch ? maxBatchSize : numRows;
+      NNResultBuf** inferenceResultData = resultBufs.data();
+      if(inferenceRows > numRows) {
+        // Doom-style fixed physical shape: duplicate a valid request, never an all-zero
+        // dummy board. Its spatial mask, metadata and selected symmetry stay intact.
+        inferenceResultBufs.assign(resultBufs.begin(),resultBufs.end());
+        inferenceResultBufs.resize(inferenceRows,resultBufs.back());
+        inferenceResultData = inferenceResultBufs.data();
+        const int paddingRows = inferenceRows - numRows;
+        while((int)paddingOutputs.size() < paddingRows) {
+          unique_ptr<NNOutput> dummy(new NNOutput());
+          dummy->nnXLen = nnXLen;
+          dummy->nnYLen = nnYLen;
+          dummy->whiteOwnerMap = new float[nnXLen*nnYLen];
+          paddingOutputs.push_back(std::move(dummy));
+        }
+        for(int row = 0; row < paddingRows; row++)
+          outputBuf.push_back(paddingOutputs[row].get());
+      }
+
+      NeuralNet::getOutput(gpuHandle, buf.inputBuffers, inferenceRows, inferenceResultData, outputBuf);
+      testAssert(outputBuf.size() == inferenceRows);
+      // Dummy outputs remain owned by this server thread and are never delivered/cached.
+      outputBuf.resize(numRows);
+      numPaddingRowsHandledThisThread += inferenceRows - numRows;
 
       m_numRowsProcessed.fetch_add(numRows, std::memory_order_relaxed);
       m_numBatchesProcessed.fetch_add(1, std::memory_order_relaxed);
@@ -994,7 +1085,8 @@ void NNEvaluator::serve(
     logger->write(
       "GPU " + Global::intToString(gpuIdxForThisThread) + " finishing, processed " +
       Global::int64ToString(numRowsHandledThisThread) + " rows " +
-      Global::int64ToString(numBatchesHandledThisThread) + " batches"
+      Global::int64ToString(numBatchesHandledThisThread) + " batches, " +
+      Global::int64ToString(numPaddingRowsHandledThisThread) + " padding rows"
     );
   }
 }
@@ -1177,6 +1269,7 @@ void NNEvaluator::evaluate(
 
   bool suc = queryQueue.forcePush(&buf);
   testAssert(suc);
+  batchingDispatcher.notify();
 
   unique_lock<std::mutex> resultLock(buf.resultMutex);
   while(!buf.hasResult)

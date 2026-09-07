@@ -227,6 +227,7 @@ class ThreadSafeQueue final : public ThreadSafeContainer<T>
   inline void clearUnsynchronized() override {
     eltsDequeue.clear();
     eltsEnqueue.clear();
+    headIdx = 0;
   }
 
   inline size_t sizeUnsynchronized() override {

@@ -13,6 +13,7 @@
 #include "../neuralnet/nninputs.h"
 #include "../neuralnet/sgfmetadata.h"
 #include "../neuralnet/nninterface.h"
+#include "../neuralnet/nnbatchdispatch.h"
 #include "../search/mutexpool.h"
 
 class NNEvaluator;
@@ -264,6 +265,9 @@ class NNEvaluator {
   void clearStats();
 
  private:
+  // Deterministic queue/padding regression tests; no runtime test mode.
+  friend struct NNBatchingCpuTestAccess;
+
   const std::string modelName;
   const std::string modelFileName;
   const int nnXLen;
@@ -276,6 +280,8 @@ class NNEvaluator {
   std::vector<int> gpuIdxByServerThread;
   const std::string randSeed;
   const bool debugSkipNeuralNet;
+  // Auto follows the prepared CUDA B11 handle; true explicitly requests fixed-batch dispatch.
+  const enabled_t batchAwareDispatchMode;
 
   ComputeContext* computeContext;
   LoadedModel* loadedModel;
@@ -307,6 +313,7 @@ class NNEvaluator {
 
   bool isKilled; // Flag used for killing server threads
   int numServerThreadsStartingUp; // Counter for waiting until server threads are spawned
+  bool anyBatchAwareDispatch; // OR of this generation's prepared worker policies
   std::condition_variable mainThreadWaitingForSpawn; // Condvar for waiting until server threads are spawned
 
   std::vector<int> serverThreadsIsUsingFP16;
@@ -326,6 +333,7 @@ class NNEvaluator {
 
   // Queued up requests
   ThreadSafeQueue<NNResultBuf*> queryQueue;
+  NNBatchingDispatcher batchingDispatcher;
 
   // Fill buf.row{Spatial,Global,Meta}Buf from a position. Shared by evaluate() and warmup.
   void fillRowBufs(

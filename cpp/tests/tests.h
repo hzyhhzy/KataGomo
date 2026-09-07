@@ -14,6 +14,9 @@
 class NNEvaluator;
 
 namespace Tests {
+  //testnnbatchdispatch.cpp (CPU-only scheduling regression tests)
+  void runNNBatchDispatchTests();
+
   //testboardbasic.cpp
   void runBoardIOTests();
   void runBoardBasicTests();

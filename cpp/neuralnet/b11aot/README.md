@@ -156,7 +156,12 @@ With a schema-2 bundle selected at build time, the matching B11/RTX5090/19x19
 FP16-NHWC B13/B16 profile now selects static FA4 and the local tanh-based SwiGLU
 functor by default. Omitting the optional bundle still builds the generic
 backend; this is not an unconditional change to every model or GPU. Unsupported
-actual batches use the original FFN. Planar QKV bypasses static attention, while
+actual batches passed directly to the backend use the original FFN. Normal
+queued evaluation now defaults to Doom-style coalescing and physical batch
+padding for eligible handles (`nnBatchAwareDispatch=auto`); see
+[`B11_RTX5090.md`](../B11_RTX5090.md#queued-evaluation-doom-style-batching).
+That scheduling policy does not change the AOT ABI or require regenerating
+the bundle. Planar QKV bypasses static attention, while
 the independently eligible FFN may still use the B11 functor. The original
 generic CUTLASS implementation, probe and packed weight layout are unchanged.
 `cudaB11TanhFFN=false` disables the arithmetic variant without disabling FA4.

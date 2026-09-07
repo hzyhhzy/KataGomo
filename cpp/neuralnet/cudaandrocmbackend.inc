@@ -5700,6 +5700,10 @@ bool NeuralNet::isUsingFP16(const ComputeHandle* handle) {
 }
 
 #ifdef KATAGO_GPU_CUDA
+bool NeuralNet::isB11BatchingEligible(const ComputeHandle* handle) {
+  return handle != nullptr && handle->cudaHandles->b11BatchSize > 0;
+}
+
 bool NeuralNet::setIsWarmup(const ComputeHandle* handle, bool isWarmup) {
   CudaHandles* cudaHandles = handle->cudaHandles.get();
   bool prev = cudaHandles->isWarmup;

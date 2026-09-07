@@ -110,6 +110,10 @@ namespace NeuralNet {
   void setExpectedConcurrentGpuThreads(
     ComputeContext* computeContext, const std::vector<int>& gpuIdxByServerThread
   );
+
+  // Query an already-prepared handle, reusing the full model/device/layout/probe gate.
+  // Only the optional B11 bundle benefits from automatic fixed-batch dispatch.
+  bool isB11BatchingEligible(const ComputeHandle* computeHandle);
 #endif
 
   // Compute Handle -----------------------------------------------------------------
