@@ -49,6 +49,7 @@
 #endif
 
 #include <atomic>
+#include <cmath>
 #include <map>
 #include <mutex>
 #include <tuple>
@@ -518,6 +519,191 @@ static SharedDeviceBuf mallocAndCopyToDeviceMaybeShared(
 }
 
 #ifdef KATAGO_GPU_CUDA
+#if defined(USE_B11_FA4) && defined(USE_B11_MASKED_FA4) && defined(USE_B11_GEMM)
+// B11-only eager cache policy. No arithmetic, buffer layout, or kernel is
+// changed. One access-policy window follows the long-lived outer/inner residual.
+// The quota is device-global, so matching handles share a lease and the final
+// owner restores the preceding quota. A second context does not join this
+// quota, since its independently declared concurrency is not our stream budget.
+struct B11PersistingL2 {
+  struct Quota {
+    size_t original = 0;
+    size_t requested = 0;
+    size_t actual = 0;
+    int users = 0;
+    const void* owner = nullptr;
+  };
+  static std::mutex& quotaMutex() { static std::mutex value; return value; }
+  static std::map<int,Quota>& quotas() { static std::map<int,Quota> value; return value; }
+
+  int device = -1;
+  int batch = 0;
+  int mode = 0; // bit 1: outer C768, bit 2: inner C384
+  size_t trunkBytes = 0;
+  size_t innerBytes = 0;
+  float hitRatio = 0.0f;
+  bool leased = false;
+  bool forwardActive = false;
+  bool windowSet = false;
+  cudaStream_t forwardStream = nullptr;
+
+  B11PersistingL2() = default;
+  B11PersistingL2(const B11PersistingL2&) = delete;
+  B11PersistingL2& operator=(const B11PersistingL2&) = delete;
+
+  void configure(int device_, int batch_, int mode_, int streams, double ratio, const void* owner, Logger* logger) {
+    testAssert(!leased && mode_ >= 1 && mode_ <= 3 && batch_ > 0 && streams > 0 && ratio > 0.0 && ratio <= 1.0);
+    int maxPersisting = 0, maxWindow = 0;
+    CUDA_ERR("B11 L2",cudaDeviceGetAttribute(&maxPersisting,cudaDevAttrMaxPersistingL2CacheSize,device_));
+    CUDA_ERR("B11 L2",cudaDeviceGetAttribute(&maxWindow,cudaDevAttrMaxAccessPolicyWindowSize,device_));
+    const size_t outer = (mode_ & 1) ? (size_t)batch_ * 361 * 768 * sizeof(half) : 0;
+    const size_t inner = (mode_ & 2) ? (size_t)batch_ * 361 * 384 * sizeof(half) : 0;
+    if(maxPersisting <= 0 || outer > (size_t)maxWindow || inner > (size_t)maxWindow)
+      return;
+    const size_t total = (size_t)streams * (outer + inner);
+    // A lower hit ratio also requests a smaller set-aside, leaving more normal
+    // L2 capacity for shared weights and concurrent GEMM/FFN intermediates.
+    const size_t requested = std::min((size_t)maxPersisting, (size_t)std::ceil((double)total * ratio));
+    size_t actual = 0;
+    {
+      std::lock_guard<std::mutex> lock(quotaMutex());
+      auto& registry = quotas();
+      auto found = registry.find(device_);
+      if(found != registry.end()) {
+        if(found->second.requested != requested || found->second.owner != owner) {
+          if(logger != nullptr) logger->write("CUDA B11 L2 disabled: another context owns the device cache quota");
+          return;
+        }
+        actual = found->second.actual;
+        found->second.users++;
+      }
+      else {
+        // Insert before changing CUDA state so a host allocation failure has no
+        // device-global side effect. Roll back any failed CUDA setup transaction.
+        auto inserted = registry.emplace(device_,Quota{}).first;
+        Quota& q = inserted->second;
+        bool changedLimit = false;
+        try {
+          CUDA_ERR("B11 L2",cudaDeviceGetLimit(&q.original,cudaLimitPersistingL2CacheSize));
+          // A fresh CUDA context may already have a nonzero default (18 MiB on
+          // the measured 5090). That value is not an ownership signal: borrow
+          // the limit and restore its exact original value on final release.
+          CUDA_ERR("B11 L2",cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize,requested));
+          changedLimit = true;
+          CUDA_ERR("B11 L2",cudaDeviceGetLimit(&q.actual,cudaLimitPersistingL2CacheSize));
+          q.requested = requested;
+          q.users = 1;
+          q.owner = owner;
+          actual = q.actual;
+        }
+        catch(...) {
+          if(changedLimit) (void)cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize,q.original);
+          registry.erase(inserted);
+          throw;
+        }
+      }
+      device = device_;
+      leased = true;
+    }
+    batch = batch_;
+    mode = mode_;
+    trunkBytes = outer;
+    innerBytes = inner;
+    hitRatio = (float)std::min(ratio,std::min(1.0,(double)actual/(double)total));
+    if(logger != nullptr)
+      logger->write("CUDA B11 L2 active: mode=" + Global::intToString(mode) +
+        " streams=" + Global::intToString(streams) +
+        " trunkBytes=" + Global::uint64ToString((uint64_t)trunkBytes) +
+        " innerBytes=" + Global::uint64ToString((uint64_t)innerBytes) +
+        " requested=" + Global::uint64ToString((uint64_t)requested) +
+        " actual=" + Global::uint64ToString((uint64_t)actual) +
+        " hitRatio=" + Global::doubleToString(hitRatio) + " eager-only");
+  }
+
+  ~B11PersistingL2() {
+    if(!leased) return;
+    std::lock_guard<std::mutex> lock(quotaMutex());
+    auto& registry = quotas();
+    auto found = registry.find(device);
+    if(found == registry.end() || --found->second.users > 0) return;
+    int precedingDevice = -1;
+    if(cudaGetDevice(&precedingDevice) == cudaSuccess &&
+       (precedingDevice == device || cudaSetDevice(device) == cudaSuccess)) {
+      size_t current = 0;
+      // Do not overwrite a limit explicitly changed by an outside owner.
+      if(cudaDeviceGetLimit(&current,cudaLimitPersistingL2CacheSize) == cudaSuccess && current == found->second.actual)
+        (void)cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize,found->second.original);
+      if(precedingDevice != device) (void)cudaSetDevice(precedingDevice);
+    }
+    registry.erase(found);
+  }
+
+  void begin(cudaStream_t stream, int actualBatch) {
+    testAssert(!forwardActive && !windowSet);
+    if(!leased || actualBatch != batch || hitRatio <= 0.0f) return;
+    // Stream-attribute transitions are not a graph-node policy implementation.
+    // Keep this policy explicitly eager-only, without capture-time mutation.
+    cudaStreamCaptureStatus capture;
+    CUDA_ERR("B11 L2",cudaStreamIsCapturing(stream,&capture));
+    if(capture != cudaStreamCaptureStatusNone) return;
+    forwardStream = stream;
+    forwardActive = true;
+  }
+
+  void stage(void* base, int channels) {
+    if(!forwardActive) return;
+    testAssert(channels == 384 || channels == 768);
+    const size_t bytes = channels == 768 ? trunkBytes : innerBytes;
+    if(bytes == 0 && !windowSet) return;
+    cudaStreamAttrValue attr = {};
+    attr.accessPolicyWindow.base_ptr = bytes == 0 ? nullptr : base;
+    attr.accessPolicyWindow.num_bytes = bytes;
+    attr.accessPolicyWindow.hitRatio = bytes == 0 ? 0.0f : hitRatio;
+    attr.accessPolicyWindow.hitProp = bytes == 0 ? cudaAccessPropertyNormal : cudaAccessPropertyPersisting;
+    attr.accessPolicyWindow.missProp = bytes == 0 ? cudaAccessPropertyNormal : cudaAccessPropertyStreaming;
+    CUDA_ERR("B11 L2",cudaStreamSetAttribute(forwardStream,cudaStreamAttributeAccessPolicyWindow,&attr));
+    windowSet = bytes != 0;
+  }
+
+  cudaError_t finish() {
+    cudaError_t status = cudaSuccess;
+    if(windowSet) {
+      cudaStreamAttrValue attr = {};
+      attr.accessPolicyWindow.hitProp = cudaAccessPropertyNormal;
+      attr.accessPolicyWindow.missProp = cudaAccessPropertyNormal;
+      status = cudaStreamSetAttribute(forwardStream,cudaStreamAttributeAccessPolicyWindow,&attr);
+      // Preserve state on failure so exception unwinding can retry cleanup.
+      if(status != cudaSuccess) return status;
+    }
+    windowSet = false;
+    forwardActive = false;
+    return status;
+  }
+};
+
+#else
+// The optional AOT bundle requires CUDA 13. Generic/older-toolkit builds must
+// not even reference CUDA 11's persisting-cache APIs.
+struct B11PersistingL2 {
+  int mode = 0;
+  void begin(cudaStream_t, int) {}
+  void stage(void*, int) {}
+  cudaError_t finish() { return cudaSuccess; }
+};
+#endif
+
+struct B11L2ForwardScope {
+  B11PersistingL2* state;
+  B11L2ForwardScope(B11PersistingL2* s, cudaStream_t stream, int batch) : state(s) {
+    if(state != nullptr) state->begin(stream,batch);
+  }
+  ~B11L2ForwardScope() { if(state != nullptr) (void)state->finish(); }
+  void finish() {
+    if(state != nullptr) CUDA_ERR("B11 L2",state->finish());
+    state = nullptr;
+  }
+};
+
 struct CudaHandles {
   // All kernels, library calls, and inference-time transfers for this handle are issued on this
   // stream, so that multiple NN server threads on one GPU can overlap. The constructor body
@@ -553,7 +739,9 @@ struct CudaHandles {
   bool b11FullMask = false;
   bool loggedB11Norm = false;
   int b11BatchSize = 0;
+  bool b11QkvRope = false;
   bool loggedB11Attention = false;
+  std::unique_ptr<B11PersistingL2> b11L2;
   // Fuse each transformer block's masked residual add into the next block's pre-norm kernel.
   // Numerically identical to the unfused path, kept as an escape hatch for debugging and
   // benchmarking.
@@ -2137,11 +2325,20 @@ struct NormActConv {
     void* outBuf,
     void* maskBuf,
     void* workspaceBuf,
-    size_t workspaceBytes
+    size_t workspaceBytes,
+    void* b11L2NextWindow = nullptr,
+    int b11L2NextChannels = 0
   ) const {
     norm.apply(cudaHandles,batchSize,inBuf,maskBuf,inScratchBuf);
 #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D(string("AFTER NORM "), inScratchBuf, batchSize, inChannels, nnXLen*nnYLen, usingNHWC, usingFP16);
+#endif
+#ifdef KATAGO_GPU_CUDA
+    if(b11L2NextWindow != nullptr && cudaHandles->b11L2 != nullptr && (cudaHandles->b11L2->mode & 2))
+      cudaHandles->b11L2->stage(b11L2NextWindow,b11L2NextChannels);
+#else
+    (void)b11L2NextWindow;
+    (void)b11L2NextChannels;
 #endif
     conv.apply(cudaHandles,scratch,batchSize,accumulate,inScratchBuf,outBuf,workspaceBuf,workspaceBytes);
   }
@@ -2442,7 +2639,7 @@ struct NestedBottleneckResidualBlock {
     SizedBuf<void*> mid(scratch->allocator, scratch->getBufSizeXY(normActConv1.outChannels));
     SizedBuf<void*> midScratch(scratch->allocator, scratch->getBufSizeXY(normActConv1.outChannels));
     assert(normActConv1.outChannels == normActConv2.inChannels);
-    normActConv1.apply(cudaHandles,scratch,batchSize,false,trunkBuf,trunkScratchBuf,mid.buf,maskBuf,workspaceBuf,workspaceBytes);
+    normActConv1.apply(cudaHandles,scratch,batchSize,false,trunkBuf,trunkScratchBuf,mid.buf,maskBuf,workspaceBuf,workspaceBytes,mid.buf,384);
     blocks.apply(
       cudaHandles,
       scratch,
@@ -2454,7 +2651,7 @@ struct NestedBottleneckResidualBlock {
       workspaceBuf,
       workspaceBytes
     );
-    normActConv2.apply(cudaHandles,scratch,batchSize,true,mid.buf,midScratch.buf,trunkBuf,maskBuf,workspaceBuf,workspaceBytes);
+    normActConv2.apply(cudaHandles,scratch,batchSize,true,mid.buf,midScratch.buf,trunkBuf,maskBuf,workspaceBuf,workspaceBytes,trunkBuf,768);
   }
 
 };
@@ -2907,6 +3104,7 @@ struct TransformerAttentionBlock {
     // the RoPE and mma attention kernels.
     int qStrideElts;
     int kvStrideElts;
+    bool b11QkvRopeApplied = false;
     if(useCombinedQKV) {
       // One combined GEMM writes an interleaved [tokens, q|k|v] buffer, and Q/K/V are interior
       // column slices read via the combined row stride. FP16-only by construction.
@@ -2919,6 +3117,16 @@ struct TransformerAttentionBlock {
       // The mma kernel wants 16-byte-aligned slice pointers, so the interior offsets must be
       // multiples of 8 halfs. True for every real head configuration, so assert.
       testAssert(qTotalDim % 8 == 0 && kTotalDim % 8 == 0);
+#ifdef USE_B11_GEMM
+      if(cudaHandles->b11QkvRope && batchSize == cudaHandles->b11BatchSize &&
+         combinedN == 1152 && inChannels == 384 && useRope && learnableRope && seqLen == 361) {
+        CUDA_ERR(name.c_str(),CudaB11QkvRope::run((const half*)trunkScratchBuf,
+          (const half*)qkvPackedWeights.buf,(half*)qkvBuf.buf,matBatchSize,
+          (const float*)ropeFreqsBuf.buf,cudaHandles->stream));
+        b11QkvRopeApplied = true;
+      }
+      else
+#endif
       applySharedInputStridedMatMuls(
         cudaHandles, scratch, usingFP16, name,
         combinedN, matBatchSize, inChannels,
@@ -2959,7 +3167,7 @@ struct TransformerAttentionBlock {
 
     // Step 3: Apply RoPE to Q and K
     // Q is [qTotalDim, seqLen*batchSize] column-major = [batchSize*seqLen, qTotalDim] row-major
-    if(useRope) {
+    if(useRope && !b11QkvRopeApplied) {
       // The fused Q+K kernels assume each KV head maps to a whole number of query heads.
       // Models always satisfy this, but fall back to separate launches if not.
       bool fuseQK = (numHeads % numKVHeads == 0);
@@ -4063,6 +4271,8 @@ struct Trunk {
     SizedBuf<void*> trunkScratch(scratch->allocator, scratch->getBufSizeXY(trunkNumChannels));
 
 #ifdef KATAGO_GPU_CUDA
+    B11L2ForwardScope b11L2Scope(cudaHandles->b11L2.get(),cudaHandles->stream,batchSize);
+    if(cudaHandles->b11L2 != nullptr) cudaHandles->b11L2->stage(trunkScratch.buf,768);
     //Feed the conv into trunkScratch.buf, not trunkBuf
     initialConv->apply(cudaHandles,scratch,batchSize,false,inputBuf,trunkScratch.buf,workspaceBuf,workspaceBytes);
 #else  // KATAGO_GPU_HIP
@@ -4164,6 +4374,10 @@ struct Trunk {
     #ifdef DEBUG_INTERMEDIATE_VALUES
     CudaUtils::debugPrint3D(string("Trunk tip"), trunkBuf, batchSize, trunkNumChannels, nnXLen*nnYLen, usingNHWC, usingFP16);
     #endif
+#ifdef KATAGO_GPU_CUDA
+    // Head kernels and later generic-batch calls must not inherit this window.
+    b11L2Scope.finish();
+#endif
   }
 
 };
@@ -4932,6 +5146,10 @@ struct ComputeContext {
   int b11Affine384;
   int b11Affine768;
   int b11AffineThreads;
+  int b11L2Mode;
+  double b11L2HitRatio;
+  bool b11QkvRope;
+  std::vector<int> expectedGpuThreads;
 };
 #else  // KATAGO_GPU_HIP
 struct ComputeContext {
@@ -5000,6 +5218,11 @@ ComputeContext* NeuralNet::createComputeContext(
   context->b11Affine384 = cfg.contains("cudaB11Affine384") ? cfg.getInt("cudaB11Affine384",0,8) : 8;
   context->b11Affine768 = cfg.contains("cudaB11Affine768") ? cfg.getInt("cudaB11Affine768",0,8) : 8;
   context->b11AffineThreads = cfg.contains("cudaB11AffineThreads") ? cfg.getInt("cudaB11AffineThreads",128,256) : 128;
+  // -1 = automatic only for validated per-device concurrency. Unknown topology
+  // is always off, including custom callers which do not submit the thread map.
+  context->b11L2Mode = cfg.contains("cudaB11L2Mode") ? cfg.getInt("cudaB11L2Mode",-1,3) : -1;
+  context->b11L2HitRatio = cfg.contains("cudaB11L2HitRatio") ? cfg.getDouble("cudaB11L2HitRatio",0.01,1.0) : 1.0;
+  context->b11QkvRope = !cfg.contains("cudaB11QkvRope") || cfg.getBool("cudaB11QkvRope");
   if((context->b11Affine384 != 0 && context->b11Affine384 != 4 && context->b11Affine384 != 8) ||
      (context->b11Affine768 != 0 && context->b11Affine768 != 4 && context->b11Affine768 != 8) ||
      (context->b11AffineThreads != 128 && context->b11AffineThreads != 256))
@@ -5052,6 +5275,17 @@ ComputeContext* NeuralNet::createComputeContext(
 void NeuralNet::freeComputeContext(ComputeContext* computeContext) {
   delete computeContext;
 }
+
+#ifdef KATAGO_GPU_CUDA
+void NeuralNet::setExpectedConcurrentGpuThreads(
+  ComputeContext* context, const std::vector<int>& gpuIdxByServerThread
+) {
+  testAssert(context != nullptr);
+  // Caller updates only between worker generations, with no live handles.
+  // This is a full map, not createComputeContext's deduplicated device list.
+  context->expectedGpuThreads = gpuIdxByServerThread;
+}
+#endif
 
 //------------------------------------------------------------------------------
 
@@ -5136,6 +5370,18 @@ struct ComputeHandle {
       cudaHandles->b11Affine768 = context->b11Affine768;
       cudaHandles->b11AffineThreads = context->b11AffineThreads;
       cudaHandles->b11BatchSize = maxBatchSize;
+      if(context->b11QkvRope && context->b11FastRope && (context->b11GemmMask & 16)) {
+        CUDA_ERR("B11 QKV RoPE",CudaB11QkvRope::prepareForCurrentDevice());
+        cudaHandles->b11QkvRope = true;
+        if(logger != nullptr) logger->write("CUDA B11 specialization: fused QKV RoPE");
+      }
+      const int streams = getB11ExpectedConcurrentGpuThreads(context->expectedGpuThreads,b11Device);
+      const int l2Mode = context->b11L2Mode < 0 ? (isB11AutoL2Eligible(maxBatchSize,streams) ? 3 : 0) : context->b11L2Mode;
+      if(l2Mode != 0 && streams > 0) {
+        cudaHandles->b11L2 = std::make_unique<B11PersistingL2>();
+        cudaHandles->b11L2->configure(b11Device,maxBatchSize,l2Mode,
+          streams,context->b11L2HitRatio,context,logger);
+      }
       if(context->b11AttentionTile == 6 || context->b11AttentionTile == 8)
         CUDA_ERR("B11 exact AOT prepare",b11_fa4_exact_m128_n96_s1_prepare());
       if(context->b11AttentionTile == 7 || context->b11AttentionTile == 8)

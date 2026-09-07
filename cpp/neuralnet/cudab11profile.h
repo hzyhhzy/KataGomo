@@ -4,8 +4,10 @@
 // Pure dispatch predicates. Deliberately independent of CUDA headers/runtime so
 // the profile and synthetic device cases can be tested on CPU-only machines.
 #include "desc.h"
+#include <climits>
 #include <cstddef>
 #include <cstring>
+#include <vector>
 
 // Structural profile, independent of checkpoint name and weight values. Do not
 // inspect weight-vector sizes: callers may retain the descriptor after releasing
@@ -86,6 +88,29 @@ inline bool isB11SupportedBatch(int batch, const int (&supported)[N]) {
 inline bool isB11OptimizedBatch(int batch) {
   constexpr int supported[] = {13,16};
   return isB11SupportedBatch(batch,supported);
+}
+
+// A complete planned mapping, not createComputeContext's deduplicated device
+// inventory. Match the CUDA backend's explicit rule that -1 selects GPU 0.
+// Zero means unknown/invalid/not used and must never be replaced by a guessed
+// stream count. No CUDA calls or inspection of unrelated devices is needed.
+inline int getB11ExpectedConcurrentGpuThreads(const std::vector<int>& mapping, int actualDevice) {
+  if(actualDevice < 0 || mapping.empty() || mapping.size() > static_cast<std::size_t>(INT_MAX))
+    return 0;
+  int count = 0;
+  for(int requestedDevice : mapping) {
+    if(requestedDevice < -1) return 0;
+    const int resolvedDevice = requestedDevice == -1 ? 0 : requestedDevice;
+    if(resolvedDevice == actualDevice) count++;
+  }
+  return count;
+}
+
+// Only measured per-GPU concurrency profiles enable the automatic cache policy.
+// The complete model/device/layout gate and actualBatch == capacity check are
+// separate requirements. Deliberately unaffected by research batch expansion.
+inline bool isB11AutoL2Eligible(int batch, int expectedConcurrentGpuThreads) {
+  return (batch == 13 || batch == 16) && expectedConcurrentGpuThreads == 3;
 }
 
 #endif

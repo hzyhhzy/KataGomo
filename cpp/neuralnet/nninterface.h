@@ -101,6 +101,17 @@ namespace NeuralNet {
   // A ComputeContext should NOT be freed until all ComputeHandles created using it have also been freed.
   void freeComputeContext(ComputeContext* computeContext);
 
+#ifdef USE_CUDA_BACKEND
+  // Supply the final, complete server-thread mapping before creating any handles.
+  // This is planned concurrency within this context, not a device inventory or a
+  // machine-wide count. Preserve duplicates; CUDA resolves -1 to device 0. An
+  // empty mapping means unknown. Update only after all preceding handles have
+  // been freed, including when a benchmark changes its server-thread topology.
+  void setExpectedConcurrentGpuThreads(
+    ComputeContext* computeContext, const std::vector<int>& gpuIdxByServerThread
+  );
+#endif
+
   // Compute Handle -----------------------------------------------------------------
 
   // Any given thread should only ever create one of these at a time.

@@ -1133,7 +1133,7 @@ if(USE_BACKEND STREQUAL "CUDA")
   include_directories(SYSTEM external/cudnn-frontend/include) #SYSTEM suppresses warnings inside the vendored header-only cudnn_frontend library
   if(KATAGO_USE_CUTLASS_FUSED_FFN)
     target_compile_definitions(katago PRIVATE USE_CUTLASS_FUSED_FFN)
-    target_sources(katago PRIVATE neuralnet/cudab11gemm.cu)
+    target_sources(katago PRIVATE neuralnet/cudab11gemm.cu neuralnet/cudab11qkvrope.cu)
     target_compile_definitions(katago PRIVATE USE_B11_GEMM)
     target_include_directories(katago SYSTEM PRIVATE
       external/cutlass/include

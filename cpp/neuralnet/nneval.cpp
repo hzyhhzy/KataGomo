@@ -423,6 +423,14 @@ void NNEvaluator::spawnServerThreads() {
   if(serverThreads.size() != 0)
     throw StringError("NNEvaluator::spawnServerThreads called when threads were already running!");
 
+#ifdef USE_CUDA_BACKEND
+  // setNumThreads() may have replaced the mapping since context construction.
+  // Supply it before workers create handles; never infer counts from the
+  // deduplicated device inventory passed to createComputeContext().
+  if(computeContext != NULL)
+    NeuralNet::setExpectedConcurrentGpuThreads(computeContext,gpuIdxByServerThread);
+#endif
+
   {
     lock_guard<std::mutex> lock(bufferMutex);
     serverThreadsIsUsingFP16.resize(numThreads,0);
@@ -622,6 +630,11 @@ NNEvalBenchmarkResult NNEvaluator::benchmarkPureForward(
   const int numThreadsToUse = (int)gpuIdxByServerThread.size();
   const int batchSize = maxBatchSize;
   testAssert(numThreadsToUse > 0);
+
+#ifdef USE_CUDA_BACKEND
+  if(computeContext != NULL)
+    NeuralNet::setExpectedConcurrentGpuThreads(computeContext,gpuIdxByServerThread);
+#endif
 
   // Left populated after the benchmark returns, deliberately: callers query
   // isAnyThreadUsingFP16() afterward to report what precision was measured.

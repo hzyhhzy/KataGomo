@@ -27,6 +27,7 @@
 #include "../neuralnet/cudab11.h"
 #ifdef USE_B11_GEMM
 #include "../neuralnet/cudab11gemm.h"
+#include "../neuralnet/cudab11qkvrope.h"
 #endif
 
 #ifdef USE_CUTLASS_FUSED_FFN

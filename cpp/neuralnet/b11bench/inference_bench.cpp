@@ -88,6 +88,11 @@ int main(int argc,char**argv) {
       if(!out)throw std::runtime_error("corpus write failed");
     }
     auto context=NeuralNet::createComputeContext({0},&logger,len,len,"",fp32?enabled_t::False:enabled_t::True,model,cfg);
+#if defined(USE_CUDA_BACKEND) && defined(USE_B11_FA4) && defined(USE_B11_MASKED_FA4) && !defined(DOOM_REFERENCE)
+    // Official/doom reference sources do not expose this optional CUDA API.
+    if(context != nullptr)
+      NeuralNet::setExpectedConcurrentGpuThreads(context,std::vector<int>(streams,0));
+#endif
     std::atomic<int> ready(0),done(0);std::atomic<bool> go(false),failed(false);
     std::mutex errorMutex;std::exception_ptr error;
     std::vector<double> durations(streams),gpuMs(streams);std::vector<std::thread> workers;

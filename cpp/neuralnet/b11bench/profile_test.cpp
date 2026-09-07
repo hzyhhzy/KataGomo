@@ -141,12 +141,43 @@ void testHardwareAndBatch() {
   require(!isB11SupportedBatch(16,96,1),"reversed range");
   require(isB11SupportedBatch(INT_MAX,INT_MAX,INT_MAX),"range has no overflow arithmetic");
 }
+
+void testConcurrencyAndL2() {
+  require(getB11ExpectedConcurrentGpuThreads({},0) == 0,"unknown topology");
+  require(getB11ExpectedConcurrentGpuThreads({0},0) == 1,"one explicit thread is not three");
+  require(getB11ExpectedConcurrentGpuThreads({0,0,0},0) == 3,"three threads on GPU 0");
+  require(getB11ExpectedConcurrentGpuThreads({-1,-1,-1},0) == 3,"default CUDA device is GPU 0");
+  require(getB11ExpectedConcurrentGpuThreads({-1,0,-1},0) == 3,"default and explicit GPU 0 aliases");
+  require(getB11ExpectedConcurrentGpuThreads({-1,-1,-1},1) == 0,"default does not mean any GPU");
+  require(getB11ExpectedConcurrentGpuThreads({0,1,2},0) == 1,"three devices are not three streams each");
+  require(getB11ExpectedConcurrentGpuThreads({0,1,0,1,0},0) == 3,"multi-GPU count for GPU 0");
+  require(getB11ExpectedConcurrentGpuThreads({0,1,0,1,0},1) == 2,"multi-GPU count for GPU 1");
+  require(getB11ExpectedConcurrentGpuThreads({0,1,0,1,0},2) == 0,"unused device");
+  require(getB11ExpectedConcurrentGpuThreads({2,2,2,1},2) == 3,"nonzero device index");
+  require(getB11ExpectedConcurrentGpuThreads({0,0,0,-2},0) == 0,"invalid mapping rejected as a whole");
+  require(getB11ExpectedConcurrentGpuThreads({INT_MIN,0},0) == 0,"INT_MIN mapping rejected");
+  require(getB11ExpectedConcurrentGpuThreads({0,0,0},-1) == 0,"actual device must be resolved");
+  require(getB11ExpectedConcurrentGpuThreads({0},INT_MIN) == 0,"invalid actual device");
+  require(getB11ExpectedConcurrentGpuThreads(std::vector<int>(1024,0),0) == 1024,"full Setup thread-count range");
+  require(getB11ExpectedConcurrentGpuThreads({0,1},0) == 1,"deduplicated inventory cannot imply concurrency");
+  for(int batch=-2;batch<=100;batch++) {
+    for(int count=-1;count<=17;count++) {
+      require(isB11AutoL2Eligible(batch,count) == ((batch==13 || batch==16) && count==3),
+        "automatic L2 has explicit batch and concurrency pair");
+    }
+  }
+  require(!isB11AutoL2Eligible(13,INT_MAX),"L2 rejects huge count");
+  require(!isB11AutoL2Eligible(16,INT_MIN),"L2 rejects invalid count");
+  require(!isB11AutoL2Eligible(INT_MAX,3),"L2 rejects huge batch");
+  require(!isB11AutoL2Eligible(INT_MIN,3),"L2 rejects invalid batch");
+}
 }
 
 int main(int argc,char** argv) {
   try {
     if(argc < 2) throw std::runtime_error("usage: b11_profile_test B11_MODEL [DIFFERENT_VALID_MODEL ...]");
     testHardwareAndBatch();
+    testConcurrencyAndL2();
     ModelDesc d;
     ModelDesc::loadFromFileMaybeGZipped(argv[1],d,"");
     std::cout << "MODEL " << d.name << " version=" << d.modelVersion << '\n';
