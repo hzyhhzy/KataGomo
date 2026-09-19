@@ -163,12 +163,17 @@ bool ConfigParser::parseKeyValue(const std::string& trimmedLine, std::string& ke
     foundEquals = true;
     i++;
   }
+  // This optional path explicitly uses an empty value to disable match openings.
+  // Keep the historical rejection of empty assignments for all other keys.
+  const bool allowEmptyValue = foundAnyKey && foundEquals && key == "matchOpeningFile";
   // Skip whitespace after equals sign
   for(; i<trimmedLine.size(); i++) {
     char c = trimmedLine[i];
     if(Global::isWhitespace(c))
       continue;
     else if(c == '#') {
+      if(allowEmptyValue)
+        return true;
       if(foundAnyKey || foundEquals)
         throw ConfigParsingError("Could not parse key value pair" + lineAndFileInfo());
       return false;
@@ -234,6 +239,8 @@ bool ConfigParser::parseKeyValue(const std::string& trimmedLine, std::string& ke
     value = Global::trim(value);
   }
 
+  if(allowEmptyValue && value.empty())
+    return true;
   if(isDoubleQuotes && !(foundAnyKey && foundAnyValue))
     throw ConfigParsingError("Could not parse key value pair" + lineAndFileInfo());
   if(foundEquals && !(foundAnyKey && foundAnyValue))

@@ -943,10 +943,12 @@ add_executable(katago
   program/playutils.cpp
   program/playsettings.cpp
   program/play.cpp
+  program/matchopenings.cpp
   program/selfplaymanager.cpp
   ${GIT_HEADER_FILE_ALWAYS_UPDATED}
   tests/testcommon.cpp
   tests/testforbiddenbulk.cpp
+  tests/testmatchopenings.cpp
   tests/testnnevalcanary.cpp
   distributed/client.cpp
   command/commandline.cpp

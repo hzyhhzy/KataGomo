@@ -344,6 +344,7 @@ void GameInitializer::createGameSharedUnsynchronized(
     otherGameProps.isSgfPos = false;
     otherGameProps.isHintPos = false;
     otherGameProps.allowPolicyInit = false; //On fork positions, don't play extra moves at start
+    otherGameProps.allowRandomOpening = false;
     otherGameProps.hintLoc = Board::NULL_LOC;
     otherGameProps.hintTurn = -1;
     return;
@@ -1259,7 +1260,7 @@ FinishedGameData* Play::runGame(
 
   double balanceOpeningProb = playSettings.forSelfPlay ? 0.99 : 1.0;
 
-  if(gameRand.nextBool(balanceOpeningProb)) {
+  if(otherGameProps.allowRandomOpening && gameRand.nextBool(balanceOpeningProb)) {
     if(board.numStonesOnBoard() != 0)
       cout << "board not empty when initialize opening" << endl;
     else {
@@ -1822,6 +1823,10 @@ GameRunner::~GameRunner() {
   delete gameInit;
 }
 
+GameInitializer* GameRunner::getGameInitializer() {
+  return gameInit;
+}
+
 const GameInitializer* GameRunner::getGameInitializer() const {
   return gameInit;
 }
@@ -1836,14 +1841,13 @@ FinishedGameData* GameRunner::runGame(
   const WaitableFlag* shouldPause,
   std::function<NNEvaluator*()> checkForNewNNEval,
   std::function<void(const MatchPairer::BotSpec&, Search*)> afterInitialization,
-  std::function<void(const Board&, const BoardHistory&, Player, Loc, const std::vector<double>&, const std::vector<double>&, const Search*)> onEachMove
+  std::function<void(const Board&, const BoardHistory&, Player, Loc, const std::vector<double>&, const std::vector<double>&, const Search*)> onEachMove,
+  const InitialPosition* initialPosition
 ) {
   MatchPairer::BotSpec botSpecB = bSpecB;
   MatchPairer::BotSpec botSpecW = bSpecW;
 
   Rand gameRand(seed + ":" + "forGameRand");
-
-  const InitialPosition* initialPosition = NULL;
 
   Board board;
   Player pla;
@@ -1931,9 +1935,6 @@ FinishedGameData* GameRunner::runGame(
   if(botW != botB)
     delete botW;
   delete botB;
-
-  if(initialPosition != NULL)
-    delete initialPosition;
 
   return finishedGameData;
 }

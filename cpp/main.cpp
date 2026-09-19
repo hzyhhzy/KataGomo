@@ -60,6 +60,7 @@ evalsgf : Utility/debug tool, analyze a single position of a game from an SGF fi
 
 testgpuerror : Print the average error of the neural net between current config and fp32 config.
  testforbiddenbulk : CPU-only legacy-oracle tests for bulk Renju forbidden features.
+ testmatchopenings : CPU-only ordered match opening loader and scheduler tests.
 
 
 )%%" << endl;
@@ -105,6 +106,8 @@ static int handleSubcommand(const string& subcommand, const vector<string>& args
     return MainCmds::testgpuerror(subArgs);
   else if(subcommand == "testforbiddenbulk")
     return MainCmds::testforbiddenbulk(subArgs);
+  else if(subcommand == "testmatchopenings")
+    return MainCmds::testmatchopenings(subArgs);
 #ifdef KATAGO_BUILD_V105_WIRE_CONTRACT
   else if(subcommand == "testv105wire")
     return MainCmds::testv105wire(subArgs);

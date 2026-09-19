@@ -8,6 +8,7 @@
 #include "../search/patternbonustable.h"
 #include "../program/setup.h"
 #include "../program/play.h"
+#include "../program/matchopenings.h"
 #include "../command/commandline.h"
 #include "../main.h"
 
@@ -38,13 +39,13 @@ struct MatchResultOneBot {
 
 
 std::string getCurrentTimeString() {
-  // ªÒ»°µ±«∞ ±º‰µ„
+  // Ëé∑ÂèñÂΩìÂâçÊó∂Èó¥ÁÇπ
   auto now = std::chrono::system_clock::now();
 
-  // ◊™ªªŒ™ time_t ¿‡–Õ
+  // ËΩ¨Êç¢‰∏∫ time_t Á±ªÂûã
   std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
 
-  // ◊™ªªŒ™ tm Ω·ππ
+  // ËΩ¨Êç¢‰∏∫ tm ÁªìÊûÑ
   std::tm now_tm;
 #if defined(_MSC_VER)  // MSVC (Visual Studio)
   localtime_s(&now_tm, &now_time_t);
@@ -52,11 +53,11 @@ std::string getCurrentTimeString() {
   localtime_r(&now_time_t, &now_tm);
 #endif
 
-  // ªÒ»°∫¡√Î≤ø∑÷
+  // Ëé∑ÂèñÊØ´ÁßíÈÉ®ÂàÜ
   auto duration = now.time_since_epoch();
   auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration) % 1000;
 
-  // ∏Ò ΩªØ ±º‰◊÷∑˚¥Æ
+  // Ê†ºÂºèÂåñÊó∂Èó¥Â≠óÁ¨¶‰∏≤
   std::ostringstream oss;
   oss << std::put_time(&now_tm, "%Y-%m-%d-%H-%M-%S");
   oss << '-' << std::setfill('0') << std::setw(3) << millis.count();
@@ -115,8 +116,12 @@ int MainCmds::match(const vector<string>& args) {
   vector<SearchParams> paramss = Setup::loadParams(cfg,Setup::SETUP_FOR_MATCH);
   assert(paramss.size() > 0);
   int numBots = (int)paramss.size();
+  const string matchOpeningFile = cfg.contains("matchOpeningFile") ? Global::trim(cfg.getString("matchOpeningFile")) : string();
   if(numBots!=2)
-    throw StringError("numBots should = 2");
+    throw StringError(matchOpeningFile.empty() ? "numBots should = 2" : "matchOpeningFile requires exactly two bots (numBots=2)");
+  vector<MatchOpening> matchOpenings;
+  if(!matchOpeningFile.empty())
+    matchOpenings = MatchOpenings::load(matchOpeningFile);
 
   //Load a filter on what bots we actually want to run
   vector<bool> excludeBot(numBots);
@@ -125,6 +130,16 @@ int MainCmds::match(const vector<string>& args) {
     for(int i = 0; i<numBots; i++) {
       if(!contains(includeBots,i))
         excludeBot[i] = true;
+    }
+  }
+
+  if(!matchOpenings.empty()) {
+    if(excludeBot[0] || excludeBot[1])
+      throw StringError("matchOpeningFile requires both bots in includeBots");
+    // Ordered color pairs replace these randomized tournament scheduling options.
+    for(const string& key : {"secondaryBots", "extraPairs", "blackPriority0", "blackPriority1", "matchRepFactor"}) {
+      if(cfg.contains(key))
+        throw StringError("matchOpeningFile cannot be combined with " + key);
     }
   }
 
@@ -196,6 +211,15 @@ int MainCmds::match(const vector<string>& args) {
   const int minBoardYSizeUsed = gameRunner->getGameInitializer()->getMinBoardYSize();
   const int maxBoardXSizeUsed = gameRunner->getGameInitializer()->getMaxBoardXSize();
   const int maxBoardYSizeUsed = gameRunner->getGameInitializer()->getMaxBoardYSize();
+  vector<InitialPosition> matchPositions;
+  for(const MatchOpening& opening : matchOpenings) {
+    if(!gameRunner->getGameInitializer()->isAllowedBSize(opening.boardSize,opening.boardSize))
+      throw StringError("matchOpeningFile " + opening.source + ":" + std::to_string(opening.lineNumber) + ": board size is not in bSizes");
+    // Sample rules once per library entry: both colors and all cyclic uses share them.
+    matchPositions.push_back(opening.createPosition(gameRunner->getGameInitializer()->createRules()));
+  }
+  if(!matchPositions.empty())
+    logger.write("Validated matchOpeningFile: " + matchOpeningFile + " (" + std::to_string(matchPositions.size()) + " openings, ordered color-swapped pairs)");
 
   //Initialize neural net inference engine globals, and load models
   Setup::initializeSession(cfg);
@@ -224,7 +248,11 @@ int MainCmds::match(const vector<string>& args) {
   //Initialize object for randomly pairing bots
   bool forSelfPlay = false;
   bool forGateKeeper = false;
-  MatchPairer* matchPairer = new MatchPairer(cfg,numBots,botNames,nnEvalsByBot,paramss,forSelfPlay,forGateKeeper,excludeBot);
+  MatchPairer* matchPairer = matchPositions.empty() ?
+    new MatchPairer(cfg,numBots,botNames,nnEvalsByBot,paramss,forSelfPlay,forGateKeeper,excludeBot) : nullptr;
+  const int64_t numOpeningGames = matchPositions.empty() ? 0 : cfg.getInt64("numGamesTotal",1,((int64_t)1) << 62);
+  const int64_t openingLogEvery = matchPositions.empty() ? 1 : cfg.getInt64("logGamesEvery",1,1000000);
+  std::atomic<int64_t> nextOpeningGame(0);
 
   //Check for unused config keys
   cfg.warnUnusedKeys(cerr,&logger);
@@ -236,9 +264,9 @@ int MainCmds::match(const vector<string>& args) {
     cout << "Loaded all config stuff, starting matches" << endl;
 
   string resultOutputDir = "./matchresult";
+  MakeDir::make(resultOutputDir);
   if(sgfOutputDir != string()) {
     MakeDir::make(sgfOutputDir);
-    MakeDir::make(resultOutputDir);
   }
 
   if(!std::atomic_is_lock_free(&shouldStop))
@@ -254,6 +282,7 @@ int MainCmds::match(const vector<string>& args) {
   std::map<string, MatchResultOneBot> resultsByBotMap;
   auto runMatchLoop = [
     &gameRunner,&matchPairer,&sgfOutputDir,&logger,&gameSeedBase,&patternBonusTables,
+    &matchPositions,&nextOpeningGame,&numOpeningGames,&openingLogEvery,&botNames,&nnEvalsByBot,&paramss,
     &statsMutex, &gameCount, &timeUsedByBotMap, &movesByBotMap,&resultsByBotMap
   ](
     uint64_t threadHash
@@ -277,7 +306,29 @@ int MainCmds::match(const vector<string>& args) {
 
       MatchPairer::BotSpec botSpecB;
       MatchPairer::BotSpec botSpecW;
-      if(matchPairer->getMatchup(botSpecB, botSpecW, logger)) {
+      const InitialPosition* initialPosition = nullptr;
+      int64_t openingGameIndex = -1;
+      size_t openingIndex = 0;
+      bool hasMatchup;
+      if(!matchPositions.empty()) {
+        openingGameIndex = nextOpeningGame.fetch_add(1);
+        hasMatchup = openingGameIndex < numOpeningGames;
+        if(hasMatchup) {
+          if((openingGameIndex+1) % openingLogEvery == 0)
+            logger.write("Started " + std::to_string(openingGameIndex+1) + " games (ordered openings)");
+          auto assignment = MatchOpenings::assignmentForGame(openingGameIndex,matchPositions.size());
+          openingIndex = assignment.openingIndex;
+          auto specFor = [&](int bot) {
+            return MatchPairer::BotSpec{bot,botNames[bot],nnEvalsByBot[bot],paramss[bot]};
+          };
+          botSpecB = specFor(assignment.blackBotIndex);
+          botSpecW = specFor(assignment.whiteBotIndex);
+          initialPosition = &matchPositions[openingIndex];
+        }
+      }
+      else
+        hasMatchup = matchPairer->getMatchup(botSpecB, botSpecW, logger);
+      if(hasMatchup) {
         string seed = gameSeedBase + ":" + Global::uint64ToHexString(thisLoopSeedRand.nextUInt64());
         std::function<void(const MatchPairer::BotSpec&, Search*)> afterInitialization = [&patternBonusTables](const MatchPairer::BotSpec& spec, Search* search) {
           assert(spec.botIdx < patternBonusTables.size());
@@ -285,12 +336,17 @@ int MainCmds::match(const vector<string>& args) {
         };
         gameData = gameRunner->runGame(
           seed, botSpecB, botSpecW, NULL, logger,
-          shouldStopFunc, shouldPause, nullptr, afterInitialization, nullptr
+          shouldStopFunc, shouldPause, nullptr, afterInitialization, nullptr, initialPosition
         );
       }
 
       bool shouldContinue = gameData != NULL;
       if(gameData != NULL) {
+        if(openingGameIndex >= 0) {
+          logger.write("Match opening finished: game=" + std::to_string(openingGameIndex+1) +
+            " opening=" + std::to_string(openingIndex+1) + " black=" + gameData->bName +
+            " white=" + gameData->wName + " hash=" + gameData->gameHash.toString());
+        }
         if(sgfOut != NULL) {
           WriteSgf::writeSgf(*sgfOut,gameData->bName,gameData->wName,gameData->endHist,gameData,false,true);
           (*sgfOut) << endl;
@@ -378,8 +434,13 @@ int MainCmds::match(const vector<string>& args) {
     json j;
     j["bot0name"] = botNames[0];
     j["bot1name"] = botNames[1];
-    j["bot0model"] = nnModelFiles[0];
-    j["bot1model"] = nnModelFiles[1];
+    j["bot0model"] = nnModelFilesByBot[0];
+    j["bot1model"] = nnModelFilesByBot[1];
+    if(!matchOpeningFile.empty()) {
+      j["matchOpeningFile"] = matchOpeningFile;
+      j["numLibraryOpenings"] = matchPositions.size();
+      j["numGamesRequested"] = numOpeningGames;
+    }
     auto& r0 = resultsByBotMap[botNames[0]];
     auto& r1 = resultsByBotMap[botNames[1]];
     if(r0.win != r1.lose || r0.draw != r1.draw || r0.lose != r1.win)
