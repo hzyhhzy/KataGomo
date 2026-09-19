@@ -342,11 +342,6 @@ int MainCmds::match(const vector<string>& args) {
 
       bool shouldContinue = gameData != NULL;
       if(gameData != NULL) {
-        if(openingGameIndex >= 0) {
-          logger.write("Match opening finished: game=" + std::to_string(openingGameIndex+1) +
-            " opening=" + std::to_string(openingIndex+1) + " black=" + gameData->bName +
-            " white=" + gameData->wName + " hash=" + gameData->gameHash.toString());
-        }
         if(sgfOut != NULL) {
           WriteSgf::writeSgf(*sgfOut,gameData->bName,gameData->wName,gameData->endHist,gameData,false,true);
           (*sgfOut) << endl;

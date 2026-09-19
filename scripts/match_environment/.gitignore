@@ -1,0 +1,11 @@
+engine/
+lib/
+modelsGroupA/
+modelsGroupB/
+openings/
+results/
+matchresult/
+elo_all/
+plans/
+run_matches.sh
+match_plan.json
