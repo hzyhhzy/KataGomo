@@ -23,6 +23,7 @@ namespace MainCmds {
 
   int testgpuerror(const std::vector<std::string>& args);
   int testforbiddenbulk(const std::vector<std::string>& args);
+  int testmatchopenings(const std::vector<std::string>& args);
 #ifdef KATAGO_BUILD_V105_WIRE_CONTRACT
   int testv105wire(const std::vector<std::string>& args);
 #endif

@@ -30,6 +30,7 @@ struct OtherGameProperties {
   bool isSgfPos = false;
   bool isHintPos = false;
   bool allowPolicyInit = true;
+  bool allowRandomOpening = true;
 
   int hintTurn = -1;
   Hash128 hintPosHash;
@@ -267,9 +268,12 @@ public:
     const WaitableFlag* shouldPause,
     std::function<NNEvaluator*()> checkForNewNNEval,
     std::function<void(const MatchPairer::BotSpec&, Search*)> afterInitialization,
-    std::function<void(const Board&, const BoardHistory&, Player, Loc, const std::vector<double>&, const std::vector<double>&, const Search*)> onEachMove
+    std::function<void(const Board&, const BoardHistory&, Player, Loc, const std::vector<double>&, const std::vector<double>&, const Search*)> onEachMove,
+    // Borrowed for this call; an exact initial position skips all opening generation.
+    const InitialPosition* initialPosition = nullptr
   );
 
+  GameInitializer* getGameInitializer();
   const GameInitializer* getGameInitializer() const;
 
 };
