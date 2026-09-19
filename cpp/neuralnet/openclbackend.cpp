@@ -401,6 +401,10 @@ struct ComputeContext {
         useFP16TensorCoresFor1x1 = tuneParams.shouldUseFP16TensorCoresFor1x1;
       }
 
+      // Padding and an extra kernel launch can outweigh the 1x1 WMMA benefit on small boards.
+      // Use the current neural-net dimensions, not the compiled maximum board size.
+      useFP16TensorCoresFor1x1 = useFP16TensorCoresFor1x1 && (nnXLen > 19 || nnYLen > 19);
+
       CompiledPrograms* compiledPrograms = new CompiledPrograms(
         device->context, deviceIds, tuneParams,
         useFP16Storage, useFP16Compute, useFP16TensorCores, useFP16TensorCoresFor1x1
@@ -526,6 +530,7 @@ struct ComputeHandleInternal {
   CLKernel xgemmDirectStridedBatchedNNKernel;
   CLKernel xgemmBatchedNNKernel;
   CLKernel hgemmWmmaNCHWKernel;
+  CLKernel padHalfInputNCHWKernel;
 
   std::vector<const char*> profileAddeds;
   std::map<const char*, int*> counters;
@@ -608,8 +613,11 @@ struct ComputeHandleInternal {
       xgemmBatchedNNKernel = clCreateKernel(progs->xgemmProgram, "hgemmWmmaBatched", &err);
     else
       xgemmBatchedNNKernel = clCreateKernel(progs->xgemmProgram, "XgemmBatched", &err);
-    if(usingFP16TensorCoresFor1x1)
+    if(usingFP16TensorCoresFor1x1) {
       hgemmWmmaNCHWKernel = clCreateKernel(progs->hgemmWmmaNCHWProgram, "hgemmWmmaNCHW", &err);
+      CHECK_ERR(err);
+      padHalfInputNCHWKernel = clCreateKernel(progs->hgemmWmmaNCHWProgram, "padHalfInputNCHW", &err);
+    }
     CHECK_ERR(err);
   }
 
@@ -1131,14 +1139,23 @@ struct ConvLayer {
   }
 
   ConvWorkspaceEltsNeeded requiredConvWorkspaceElts(ComputeHandleInternal* handle, size_t maxBatchSize) const {
+    ConvWorkspaceEltsNeeded elts;
+    // Winograd workspace for 3x3/5x5 convolutions
     int numTilesTotalPadded = roundUpToMultipleInt(maxBatchSize * numTilesX * numTilesY, handle->getXGemmMPaddingMult());
     int outChannelsPadded = roundUpToMultipleInt(outChannels, handle->getXGemmNPaddingMult());
     int inChannelsPadded = roundUpToMultipleInt(inChannels, handle->getXGemmKPaddingMult());
-    return
-      ConvWorkspaceEltsNeeded(
-        numTilesTotalPadded * inChannelsPadded * inTileXYSize,
-        numTilesTotalPadded * outChannelsPadded * inTileXYSize
-      );
+    elts = ConvWorkspaceEltsNeeded(
+      numTilesTotalPadded * inChannelsPadded * inTileXYSize,
+      numTilesTotalPadded * outChannelsPadded * inTileXYSize
+    );
+    // Padded input buffer for 1x1 WMMA convolutions
+    if(usingHGemmWmmaNHCW) {
+      int MWG = handle->tuneParams.hGemmWmmaNCHW.MWG;
+      int hwSizePadded = roundUpToMultipleInt(nnXLen * nnYLen, MWG);
+      size_t paddedElts = (size_t)maxBatchSize * inChannels * hwSizePadded;
+      elts = ConvWorkspaceEltsNeeded::getMax(elts, ConvWorkspaceEltsNeeded(paddedElts, 0));
+    }
+    return elts;
   }
 
   void apply(ComputeHandleInternal* handle, int batchSize, cl_mem input, cl_mem output, cl_mem convWorkspace, cl_mem convWorkspace2) const {
@@ -1164,19 +1181,39 @@ struct ConvLayer {
         MAYBE_FREE_EVENT;
       }
       else {
-        cl_int err;
-        MAYBE_EVENT;
-        err = doHGemmWmma_NCHW_ICOC(
-          handle->hgemmWmmaNCHWKernel,
-          handle->commandQueue,
-          handle->tuneParams,
-          batchSize, inChannels, nnXLen*nnYLen, outChannels,
-          input, filter, output,
-          MAYBE_EVENTREF
-        );
-        CHECK_ERR(err);
-        MAYBE_PROFILE("HGEMM1x1");
-        MAYBE_FREE_EVENT;
+        int hwSizePadded = roundUpToMultipleInt(nnXLen*nnYLen, handle->tuneParams.hGemmWmmaNCHW.MWG);
+        // Pad input: [batchSize, inChannels, hwSize] -> [batchSize, inChannels, hwSizePadded]
+        {
+          cl_int err;
+          MAYBE_EVENT;
+          err = doPadHalfInputNCHW(
+            handle->padHalfInputNCHWKernel,
+            handle->commandQueue,
+            handle->tuneParams,
+            batchSize, inChannels, nnXLen*nnYLen, hwSizePadded,
+            input, convWorkspace,
+            MAYBE_EVENTREF
+          );
+          CHECK_ERR(err);
+          MAYBE_PROFILE("PadNCHW");
+          MAYBE_FREE_EVENT;
+        }
+        // WMMA matmul on padded input
+        {
+          cl_int err;
+          MAYBE_EVENT;
+          err = doHGemmWmma_NCHW_ICOC(
+            handle->hgemmWmmaNCHWKernel,
+            handle->commandQueue,
+            handle->tuneParams,
+            batchSize, inChannels, nnXLen*nnYLen, outChannels,
+            convWorkspace, filter, output,
+            MAYBE_EVENTREF
+          );
+          CHECK_ERR(err);
+          MAYBE_PROFILE("HGEMM1x1");
+          MAYBE_FREE_EVENT;
+        }
       }
     }
     else if((convXSize == 3 && convYSize == 3) || (convXSize == 5 && convYSize == 5)) {
